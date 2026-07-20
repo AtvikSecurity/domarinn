@@ -1,5 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
   "definitions": {
     "Assert": {
       "description": "A single assertion with its common controls.",
@@ -377,6 +378,7 @@
       "type": "string"
     },
     "CacheCfg": {
+      "additionalProperties": false,
       "properties": {
         "backend": {
           "allOf": [
@@ -409,6 +411,7 @@
       "type": "string"
     },
     "Defaults": {
+      "additionalProperties": false,
       "description": "Values merged into every test before it runs.",
       "properties": {
         "assert": {
@@ -443,6 +446,7 @@
       "type": "object"
     },
     "GeneratorSpec": {
+      "additionalProperties": false,
       "properties": {
         "command": {
           "items": {
@@ -466,6 +470,7 @@
       "type": "object"
     },
     "GeneratorWrap": {
+      "additionalProperties": false,
       "properties": {
         "generator": {
           "$ref": "#/definitions/GeneratorSpec"
@@ -477,6 +482,7 @@
       "type": "object"
     },
     "Grader": {
+      "additionalProperties": false,
       "description": "The LLM grader for `llm-rubric`.",
       "properties": {
         "provider": {
@@ -524,6 +530,7 @@
       "type": "string"
     },
     "Message": {
+      "additionalProperties": false,
       "description": "A chat message; `content` may be `file://path` to load from disk.",
       "properties": {
         "content": {
@@ -540,6 +547,7 @@
       "type": "object"
     },
     "Prompt": {
+      "additionalProperties": false,
       "description": "A prompt template. Exactly one of `template` / `messages` must be set.",
       "properties": {
         "id": {
@@ -992,6 +1000,7 @@
       ]
     },
     "RateLimit": {
+      "additionalProperties": false,
       "properties": {
         "rps": {
           "format": "double",
@@ -1004,6 +1013,7 @@
       "type": "object"
     },
     "RetryCfg": {
+      "additionalProperties": false,
       "properties": {
         "initial_ms": {
           "format": "uint64",
@@ -1037,6 +1047,7 @@
       "type": "object"
     },
     "Runner": {
+      "additionalProperties": false,
       "properties": {
         "concurrency": {
           "format": "uint",
@@ -1085,6 +1096,7 @@
       "type": "object"
     },
     "S3Cfg": {
+      "additionalProperties": false,
       "description": "Non-secret S3 settings; credentials come from the environment / AWS chain.",
       "properties": {
         "bucket": {
@@ -1119,6 +1131,7 @@
       "type": "object"
     },
     "TestCase": {
+      "additionalProperties": false,
       "description": "A single test case.",
       "properties": {
         "assert": {
@@ -1197,7 +1210,7 @@
           "description": "An inline test case."
         }
       ],
-      "description": "An entry in the `tests:` list."
+      "description": "An entry in the `tests:` list.\n\n`Deserialize` is hand-written (rather than derived as `#[serde(untagged)]`) so a typo inside an inline test case surfaces the precise unknown-field error from [`TestCase`]'s `deny_unknown_fields` instead of the opaque \"data did not match any variant of untagged enum\" an untagged derive emits. `Serialize`/`JsonSchema` keep the untagged shape (a glob string, a `{generator: ...}` mapping, or an inline case mapping)."
     },
     "Val": true,
     "VerdictMode": {

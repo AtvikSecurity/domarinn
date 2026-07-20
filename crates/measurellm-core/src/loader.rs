@@ -44,25 +44,61 @@ pub enum LoadError {
     },
     #[error("parsing YAML: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
+    /// A well-formed YAML document that does not match the [`Suite`] schema
+    /// (a wrong type, a missing required field, or — most usefully — an
+    /// unknown/typo'd key). The message is pre-rendered with the file name (if
+    /// known) and the dotted path to the offending value, e.g.
+    /// `examples/x/measurellm.yaml: runner.retries: unknown field `maxx``.
+    #[error("{0}")]
+    Deserialize(String),
     #[error("cyclic extends/imports at {path}")]
     Cycle { path: PathBuf },
 }
 
+/// Deserialize the normalized YAML into a [`Suite`], attaching a dotted path to
+/// the offending value (via `serde_path_to_error`) and, when known, the source
+/// file name — so an unknown-key or type error points straight at the problem.
+fn deserialize_suite(raw: Yaml, file: Option<&Path>) -> Result<Suite, LoadError> {
+    serde_path_to_error::deserialize(raw).map_err(|err| {
+        let path = err.path().to_string();
+        let message = err.into_inner().to_string();
+        let located = match (file, path.is_empty()) {
+            (Some(f), false) => format!("{}: {}: {}", f.display(), path, message),
+            (Some(f), true) => format!("{}: {}", f.display(), message),
+            (None, false) => format!("{path}: {message}"),
+            (None, true) => message,
+        };
+        LoadError::Deserialize(located)
+    })
+}
+
 /// Parse a suite from a YAML string, applying all normalization passes.
 pub fn load_str(text: &str) -> Result<Suite, LoadError> {
-    let raw: Yaml = serde_yaml_ng::from_str(text)?;
-    let normalized = normalize(raw);
-    let suite: Suite = serde_yaml_ng::from_value(normalized)?;
-    Ok(suite)
+    Ok(load_str_raw(text)?.0)
+}
+
+/// Like [`load_str`], but also returns the normalized YAML the suite was built
+/// from. [`validate`] needs the raw shape to check for unknown keys in the
+/// `flatten`ed provider/assert mappings (which serde cannot deny).
+pub fn load_str_raw(text: &str) -> Result<(Suite, Yaml), LoadError> {
+    let raw = normalize(serde_yaml_ng::from_str(text)?);
+    let suite = deserialize_suite(raw.clone(), None)?;
+    Ok((suite, raw))
 }
 
 /// Parse a suite from a file, resolving `extends` / `imports` composition. If
 /// `path` is a directory, `measurellm.yaml` (or `.yml`) inside it is used.
 pub fn load_file(path: &Path) -> Result<Suite, LoadError> {
+    Ok(load_file_raw(path)?.0)
+}
+
+/// Like [`load_file`], but also returns the normalized (composed) YAML the
+/// suite was built from, for [`validate`]'s raw-shape checks.
+pub fn load_file_raw(path: &Path) -> Result<(Suite, Yaml), LoadError> {
     let file = resolve_suite_path(path);
-    let value = load_and_compose(&file, &mut Vec::new())?;
-    let suite: Suite = serde_yaml_ng::from_value(value)?;
-    Ok(suite)
+    let raw = load_and_compose(&file, &mut Vec::new())?;
+    let suite = deserialize_suite(raw.clone(), Some(&file))?;
+    Ok((suite, raw))
 }
 
 /// Load a suite file's YAML value with composition applied.
@@ -220,8 +256,16 @@ fn desugar_not_asserts(value: Yaml) -> Yaml {
 
 /// Run structural validation that does not require rendering templates or
 /// contacting providers. Returns an empty vec when the suite is well-formed.
-pub fn validate(suite: &Suite) -> Vec<Issue> {
+///
+/// `raw` is the normalized YAML the suite was deserialized from (see
+/// [`load_str_raw`] / [`load_file_raw`]). It is needed to catch unknown keys in
+/// the `flatten`ed provider and assert mappings, which serde's
+/// `deny_unknown_fields` cannot guard — an unknown key there is silently
+/// dropped during deserialization, so it must be found in the raw shape.
+pub fn validate(suite: &Suite, raw: &Yaml) -> Vec<Issue> {
     let mut issues = Vec::new();
+
+    check_unknown_flatten_keys(raw, &mut issues);
 
     if suite.version != 1 {
         issues.push(Issue::new(
@@ -266,6 +310,158 @@ pub fn validate(suite: &Suite) -> Vec<Issue> {
     }
 
     issues
+}
+
+/// The set of keys a `flatten`ed config enum (Provider or Assert) accepts,
+/// derived from the generated JSON Schema so it can never drift from the code.
+struct VariantKeys {
+    /// Keys common to every variant (the outer struct's own, un-flattened
+    /// fields — e.g. `id`/`label` for a provider, `weight`/`negate` for an
+    /// assert).
+    common: std::collections::BTreeSet<String>,
+    /// Keys accepted by each `type` variant, including `type` itself.
+    by_type: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+impl VariantKeys {
+    /// Read the key sets for `def` (`"Provider"` or `"Assert"`) out of the
+    /// `config_schema()` output. Each variant lives under `oneOf`, keyed by the
+    /// single value of its `type` enum.
+    fn from_schema(schema: &serde_json::Value, def: &str) -> VariantKeys {
+        use std::collections::{BTreeMap, BTreeSet};
+        let node = &schema["definitions"][def];
+        let common = node
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        let mut by_type = BTreeMap::new();
+        if let Some(variants) = node.get("oneOf").and_then(|v| v.as_array()) {
+            for variant in variants {
+                let Some(props) = variant.get("properties").and_then(|p| p.as_object()) else {
+                    continue;
+                };
+                let ty = props
+                    .get("type")
+                    .and_then(|t| t.get("enum"))
+                    .and_then(|e| e.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|s| s.as_str());
+                if let Some(ty) = ty {
+                    let keys: BTreeSet<String> = props.keys().cloned().collect();
+                    by_type.insert(ty.to_string(), keys);
+                }
+            }
+        }
+        VariantKeys { common, by_type }
+    }
+
+    /// The sorted union of common + variant keys for `ty`, for error messages.
+    fn allowed(&self, ty: &str) -> Vec<String> {
+        let mut all: Vec<String> = self.common.iter().cloned().collect();
+        if let Some(v) = self.by_type.get(ty) {
+            all.extend(v.iter().cloned());
+        }
+        all.sort_unstable();
+        all.dedup();
+        all
+    }
+}
+
+/// Flag unknown keys in the `flatten`ed provider and assert mappings of the raw
+/// YAML. serde silently drops such keys (a `flatten`ed, internally-tagged enum
+/// cannot use `deny_unknown_fields`), so a typo like `basurl` would otherwise
+/// go unmeasured. Key sets come entirely from the schema — no hand-maintained
+/// allowlist. Free-form bags (`params`, an exec assert's `config`, an http
+/// provider's `body`) are values, not mappings we walk, so their inner keys are
+/// never checked.
+fn check_unknown_flatten_keys(raw: &Yaml, issues: &mut Vec<Issue>) {
+    let schema = crate::config_schema();
+    let provider_keys = VariantKeys::from_schema(&schema, "Provider");
+    let assert_keys = VariantKeys::from_schema(&schema, "Assert");
+
+    if let Some(providers) = raw.get("providers").and_then(Yaml::as_sequence) {
+        for (i, entry) in providers.iter().enumerate() {
+            check_flatten_entry(
+                entry,
+                &provider_keys,
+                &format!("providers[{i}]"),
+                "provider",
+                issues,
+            );
+        }
+    }
+
+    if let Some(asserts) = raw
+        .get("defaults")
+        .and_then(|d| d.get("assert"))
+        .and_then(Yaml::as_sequence)
+    {
+        for (j, entry) in asserts.iter().enumerate() {
+            check_flatten_entry(
+                entry,
+                &assert_keys,
+                &format!("defaults.assert[{j}]"),
+                "assert",
+                issues,
+            );
+        }
+    }
+
+    if let Some(tests) = raw.get("tests").and_then(Yaml::as_sequence) {
+        for (i, test) in tests.iter().enumerate() {
+            // Only inline test cases carry an `assert` list; a `file://` glob is
+            // a string and a generator source is a `{generator: ...}` mapping.
+            if test.as_mapping().is_none() || test.get("generator").is_some() {
+                continue;
+            }
+            if let Some(asserts) = test.get("assert").and_then(Yaml::as_sequence) {
+                for (j, entry) in asserts.iter().enumerate() {
+                    check_flatten_entry(
+                        entry,
+                        &assert_keys,
+                        &format!("tests[{i}].assert[{j}]"),
+                        "assert",
+                        issues,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Check one provider/assert mapping against its schema-derived key set. The
+/// mapping's `type` selects the variant; an entry with no (or an unknown) type
+/// is skipped, since it would already have failed to deserialize before
+/// `validate` runs.
+fn check_flatten_entry(
+    entry: &Yaml,
+    keys: &VariantKeys,
+    path: &str,
+    kind: &str,
+    issues: &mut Vec<Issue>,
+) {
+    let Some(map) = entry.as_mapping() else {
+        return;
+    };
+    let Some(ty) = entry.get("type").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let Some(variant) = keys.by_type.get(ty) else {
+        return;
+    };
+    for (k, _) in map {
+        let Some(key) = k.as_str() else { continue };
+        if !keys.common.contains(key) && !variant.contains(key) {
+            issues.push(Issue::new(
+                path.to_string(),
+                format!(
+                    "unknown {kind} field '{key}'; expected one of {}",
+                    keys.allowed(ty).join(", ")
+                ),
+            ));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -315,8 +511,12 @@ runner: {concurrency: 4, retries: {max: 3, initial_ms: 500, max_ms: 8000, jitter
 
     #[test]
     fn example_a_parses_and_validates() {
-        let suite = load_str(EXAMPLE_A).unwrap();
-        assert!(validate(&suite).is_empty(), "{:?}", validate(&suite));
+        let (suite, raw) = load_str_raw(EXAMPLE_A).unwrap();
+        assert!(
+            validate(&suite, &raw).is_empty(),
+            "{:?}",
+            validate(&suite, &raw)
+        );
         assert_eq!(suite.providers.len(), 1);
         assert_eq!(suite.tests.len(), 2);
     }
@@ -351,8 +551,12 @@ runner: {concurrency: 4, retries: {max: 3, initial_ms: 500, max_ms: 8000, jitter
 
     #[test]
     fn example_b_parses_and_validates() {
-        let suite = load_str(EXAMPLE_B).unwrap();
-        assert!(validate(&suite).is_empty(), "{:?}", validate(&suite));
+        let (suite, raw) = load_str_raw(EXAMPLE_B).unwrap();
+        assert!(
+            validate(&suite, &raw).is_empty(),
+            "{:?}",
+            validate(&suite, &raw)
+        );
         assert!(suite.grader.is_some());
         assert!(suite.prompts[0].messages.is_some());
     }
@@ -384,8 +588,8 @@ tests:
 
     #[test]
     fn missing_providers_is_an_issue() {
-        let suite = load_str("version: 1\nproviders: []\n").unwrap();
-        let issues = validate(&suite);
+        let (suite, raw) = load_str_raw("version: 1\nproviders: []\n").unwrap();
+        let issues = validate(&suite, &raw);
         assert!(issues.iter().any(|i| i.path == "providers"));
     }
 
@@ -417,8 +621,12 @@ tests:
 "#,
         )
         .unwrap();
-        let suite = load_file(dir.path()).unwrap();
-        assert!(validate(&suite).is_empty(), "{:?}", validate(&suite));
+        let (suite, raw) = load_file_raw(dir.path()).unwrap();
+        assert!(
+            validate(&suite, &raw).is_empty(),
+            "{:?}",
+            validate(&suite, &raw)
+        );
         // project inherited from base, suite from child
         assert_eq!(suite.project.as_deref(), Some("base"));
         assert_eq!(suite.suite.as_deref(), Some("child"));
@@ -430,6 +638,21 @@ tests:
             defaults.assert[1].kind,
             AssertKind::Contains { .. }
         ));
+    }
+
+    #[test]
+    fn load_file_error_names_file_and_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("measurellm.yaml"),
+            "version: 1\nproviders: [{id: p, type: exec, command: [\"x\"]}]\nrunner: {concurrncy: 3}\n",
+        )
+        .unwrap();
+        let err = load_file(dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("measurellm.yaml"), "names the file: {msg}");
+        assert!(msg.contains("runner.concurrncy"), "names the path: {msg}");
+        assert!(msg.contains("unknown field"), "names the problem: {msg}");
     }
 
     #[test]
@@ -450,17 +673,130 @@ tests:
     }
 
     #[test]
-    fn duplicate_provider_ids_flagged() {
-        let suite = load_str(
+    fn unknown_top_level_key_is_rejected() {
+        // A typo'd top-level key must be a hard error naming the key, not
+        // silently ignored.
+        let err = load_str("version: 1\nprovidrs: []\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("providrs"), "error should name the key: {msg}");
+        assert!(
+            matches!(err, LoadError::Deserialize(_)),
+            "should be a Deserialize error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_test_case_key_names_the_key() {
+        // A typo'd key inside an inline test case must name the key rather than
+        // produce an opaque "did not match any variant of untagged enum" error.
+        let err = load_str(
             r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests:
+  - vars: {}
+    assrt: [{type: contains, value: "x"}]
+"#,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("assrt"), "error should name the key: {msg}");
+        assert!(
+            !msg.contains("did not match any variant"),
+            "should not be the opaque untagged-enum error: {msg}"
+        );
+    }
+
+    #[test]
+    fn typo_provider_key_is_flagged_by_validate() {
+        // `basurl` (a typo of `base_url`) is silently dropped by serde's
+        // `flatten` of the internally-tagged ProviderKind, so it must be caught
+        // by the schema-driven validate pass instead.
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers:
+  - {id: p, type: openai, model: gpt-x, basurl: "http://localhost"}
+"#,
+        )
+        .unwrap();
+        let issues = validate(&suite, &raw);
+        let hit = issues
+            .iter()
+            .find(|i| i.path == "providers[0]")
+            .unwrap_or_else(|| panic!("expected a providers[0] issue, got {issues:?}"));
+        assert!(
+            hit.message.contains("basurl"),
+            "message should name the key: {}",
+            hit.message
+        );
+    }
+
+    #[test]
+    fn typo_assert_key_is_flagged_by_validate() {
+        // `weigth` (a typo of `weight`) inside an inline assert is dropped by
+        // the flattened AssertKind; validate must flag it and name the key.
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers:
+  - {id: p, type: exec, command: ["x"]}
+tests:
+  - vars: {}
+    assert:
+      - {type: contains, value: "hi", weigth: 2}
+"#,
+        )
+        .unwrap();
+        let issues = validate(&suite, &raw);
+        let hit = issues
+            .iter()
+            .find(|i| i.path == "tests[0].assert[0]")
+            .unwrap_or_else(|| panic!("expected a tests[0].assert[0] issue, got {issues:?}"));
+        assert!(
+            hit.message.contains("weigth"),
+            "message should name the key: {}",
+            hit.message
+        );
+    }
+
+    #[test]
+    fn valid_provider_and_assert_keys_do_not_false_positive() {
+        // Every documented key — including free-form `params` contents and the
+        // desugared `not-*` assert's injected `negate` — must pass clean.
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers:
+  - {id: p, type: openai, model: m, base_url: "http://x", api_key_env: K, params: {anything_here: 1}}
+defaults:
+  assert:
+    - {type: length, max: 10}
+tests:
+  - vars: {}
+    assert:
+      - {type: not-contains, value: "x", weight: 2}
+      - {type: llm-rubric, value: "ok", params: {arbitrary: true}}
+"#,
+        )
+        .unwrap();
+        assert!(
+            validate(&suite, &raw).is_empty(),
+            "{:?}",
+            validate(&suite, &raw)
+        );
+    }
+
+    #[test]
+    fn duplicate_provider_ids_flagged() {
+        let dup = r#"
 version: 1
 providers:
   - {id: dup, type: exec, command: ["a"]}
   - {id: dup, type: exec, command: ["b"]}
-"#,
-        )
-        .unwrap();
-        let issues = validate(&suite);
+"#;
+        let (suite, raw) = load_str_raw(dup).unwrap();
+        let issues = validate(&suite, &raw);
         assert!(issues
             .iter()
             .any(|i| i.message.contains("duplicate provider id")));

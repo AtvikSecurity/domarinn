@@ -22,6 +22,7 @@ fn default_weight() -> f64 {
 
 /// The top-level eval suite.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Suite {
     /// Config schema version. Currently always `1`.
     pub version: u32,
@@ -61,6 +62,7 @@ pub struct Suite {
 
 /// Values merged into every test before it runs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Defaults {
     #[serde(default)]
     pub vars: BTreeMap<String, Val>,
@@ -166,6 +168,7 @@ pub enum ProviderKind {
 
 /// A prompt template. Exactly one of `template` / `messages` must be set.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Prompt {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,13 +179,21 @@ pub struct Prompt {
 
 /// A chat message; `content` may be `file://path` to load from disk.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Message {
     pub role: ChatRole,
     pub content: String,
 }
 
 /// An entry in the `tests:` list.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+///
+/// `Deserialize` is hand-written (rather than derived as `#[serde(untagged)]`)
+/// so a typo inside an inline test case surfaces the precise unknown-field
+/// error from [`TestCase`]'s `deny_unknown_fields` instead of the opaque
+/// "data did not match any variant of untagged enum" an untagged derive emits.
+/// `Serialize`/`JsonSchema` keep the untagged shape (a glob string, a
+/// `{generator: ...}` mapping, or an inline case mapping).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum TestSource {
     /// A `file://glob` reference to YAML/JSON/CSV/JSONL test files.
@@ -193,12 +204,40 @@ pub enum TestSource {
     Inline(TestCase),
 }
 
+impl<'de> Deserialize<'de> for TestSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        // Peek the value's shape, then deserialize the chosen variant directly
+        // so its own (deny-guarded) error message propagates verbatim.
+        let value = Json::deserialize(deserializer)?;
+        match value {
+            Json::String(s) => Ok(TestSource::Glob(s)),
+            Json::Object(ref map) if map.contains_key("generator") => {
+                GeneratorWrap::deserialize(value)
+                    .map(TestSource::Generator)
+                    .map_err(D::Error::custom)
+            }
+            Json::Object(_) => TestCase::deserialize(value)
+                .map(TestSource::Inline)
+                .map_err(D::Error::custom),
+            other => Err(D::Error::custom(format!(
+                "a test source must be a file:// glob string or a mapping, found {other}"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GeneratorWrap {
     pub generator: GeneratorSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GeneratorSpec {
     pub command: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -209,6 +248,7 @@ pub struct GeneratorSpec {
 
 /// A single test case.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TestCase {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -323,6 +363,7 @@ pub enum VerdictMode {
 
 /// The LLM grader for `llm-rubric`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Grader {
     /// The grading model. Should be a different model family than the SUT.
     pub provider: ProviderKind,
@@ -335,6 +376,7 @@ pub struct Grader {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Runner {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<usize>,
@@ -350,6 +392,7 @@ pub struct Runner {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RetryCfg {
     pub max: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -361,11 +404,13 @@ pub struct RetryCfg {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimit {
     pub rps: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CacheCfg {
     #[serde(default)]
     pub backend: CacheBackendKind,
@@ -385,6 +430,7 @@ pub enum CacheBackendKind {
 
 /// Non-secret S3 settings; credentials come from the environment / AWS chain.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct S3Cfg {
     pub bucket: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

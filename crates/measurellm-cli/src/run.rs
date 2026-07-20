@@ -71,14 +71,14 @@ pub struct RunArgs {
 }
 
 pub fn execute(args: RunArgs, server_url: Option<String>) -> u8 {
-    let suite = match measurellm_core::load_file(&args.path) {
-        Ok(s) => s,
+    let (suite, raw) = match measurellm_core::loader::load_file_raw(&args.path) {
+        Ok(pair) => pair,
         Err(e) => {
             eprintln!("error: {e}");
             return exit::USAGE;
         }
     };
-    let issues = measurellm_core::validate(&suite);
+    let issues = measurellm_core::validate(&suite, &raw);
     if !issues.is_empty() {
         eprintln!("{} validation issue(s):", issues.len());
         for issue in &issues {

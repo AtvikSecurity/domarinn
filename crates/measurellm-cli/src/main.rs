@@ -177,14 +177,14 @@ fn main() -> ExitCode {
 }
 
 fn cmd_validate(path: &Path) -> u8 {
-    let suite = match measurellm_core::load_file(path) {
-        Ok(s) => s,
+    let (suite, raw) = match measurellm_core::loader::load_file_raw(path) {
+        Ok(pair) => pair,
         Err(e) => {
             eprintln!("error: {e}");
             return exit::USAGE;
         }
     };
-    let issues = measurellm_core::validate(&suite);
+    let issues = measurellm_core::validate(&suite, &raw);
     if issues.is_empty() {
         let file = measurellm_core::loader::resolve_suite_path(path);
         println!(

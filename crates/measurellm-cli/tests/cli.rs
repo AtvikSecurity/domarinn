@@ -76,6 +76,20 @@ fn schema_config_emits_json_schema() {
         .stdout(predicate::str::contains("$schema"));
 }
 
+/// The shipped example must keep validating cleanly under the strict loader
+/// (deny-unknown-fields + the provider/assert flatten-gap check).
+#[test]
+fn shipped_example_validates() {
+    let example =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/render-health");
+    bin()
+        .arg("validate")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok:"));
+}
+
 #[test]
 fn run_passing_suite_exits_zero() {
     let dir = tempfile::tempdir().unwrap();

@@ -12,6 +12,7 @@ description = "Core eval engine, config schema, and traits for measurellm"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
+serde_path_to_error = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { version = "12", features = ["serde-json-impl", "chrono-impl", "no-serde-warnings"] }
 minijinja = { workspace = true }
