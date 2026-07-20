@@ -3,11 +3,12 @@
 //! axum's plain-text defaults, so every failure mode in the API responds with
 //! the server's standard `{"error": message}` body.
 //!
-//! Status mapping for JSON bodies: syntactically invalid JSON, a missing/wrong
-//! `Content-Type`, or a body-buffering failure all map to 400; a body that
-//! parses as JSON but fails to match the target type (e.g. an invalid `role`
-//! or `scope` string) maps to 422. Query strings only have one failure mode
-//! (`FailedToDeserializeQueryString`, already 400 by default) so `ApiQuery`
+//! Status mapping for JSON bodies: a missing/wrong `Content-Type` maps to 415
+//! (restoring axum's default for that case, which the wrapper had flattened to
+//! 400); syntactically invalid JSON or a body-buffering failure map to 400; a
+//! body that parses as JSON but fails to match the target type (e.g. an invalid
+//! `role` or `scope` string) maps to 422. Query strings only have one failure
+//! mode (`FailedToDeserializeQueryString`, already 400 by default) so `ApiQuery`
 //! always maps to 400.
 
 use axum::extract::rejection::{JsonRejection, QueryRejection};
@@ -57,14 +58,18 @@ where
     }
 }
 
-/// `JsonDataError` (valid JSON, wrong shape/values) -> 422; every other
-/// failure mode (syntax error, missing content-type, body-buffering error)
-/// -> 400.
+/// `JsonDataError` (valid JSON, wrong shape/values) -> 422;
+/// `MissingJsonContentType` (no/wrong `Content-Type`) -> 415, restoring axum's
+/// default status for that case; every other failure mode (syntax error,
+/// body-buffering error) -> 400.
 fn json_rejection_to_api_error(rejection: JsonRejection) -> ApiError {
     let message = rejection.body_text();
     match rejection {
         JsonRejection::JsonDataError(_) => {
             ApiError::status(StatusCode::UNPROCESSABLE_ENTITY, message)
+        }
+        JsonRejection::MissingJsonContentType(_) => {
+            ApiError::status(StatusCode::UNSUPPORTED_MEDIA_TYPE, message)
         }
         _ => ApiError::status(StatusCode::BAD_REQUEST, message),
     }

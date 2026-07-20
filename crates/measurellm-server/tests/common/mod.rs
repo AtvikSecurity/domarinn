@@ -89,6 +89,19 @@ pub async fn send(
     read_reply(resp).await
 }
 
+/// POST a raw body with an explicit `Content-Type` (or none at all when
+/// `content_type` is `None`). Unlike [`send`], this never adds a default
+/// `Content-Type`, so it can exercise the missing-content-type (415) path.
+pub async fn post_raw(app: &Router, uri: &str, content_type: Option<&str>, body: Vec<u8>) -> Reply {
+    let mut builder = Request::builder().method("POST").uri(uri);
+    if let Some(ct) = content_type {
+        builder = builder.header("content-type", ct);
+    }
+    let req = builder.body(Body::from(body)).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    read_reply(resp).await
+}
+
 pub async fn post_json(app: &Router, uri: &str, token: Option<&str>, value: &Value) -> Reply {
     send(
         app,

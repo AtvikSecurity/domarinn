@@ -317,6 +317,24 @@ async fn invalid_scope_in_apikey_body_is_422() {
 }
 
 #[tokio::test]
+async fn missing_content_type_on_json_body_is_415() {
+    let (app, _dir) = test_app(protected()).await;
+
+    // A JSON body sent without a `Content-Type: application/json` header is
+    // rejected by axum's Json extractor as `MissingJsonContentType`. The
+    // ApiJson wrapper surfaces this as 415 (Unsupported Media Type) with the
+    // standard `{"error": ...}` body — not the 400 it previously flattened to.
+    let body = serde_json::to_vec(&json!({ "username": "root", "password": ADMIN_PW })).unwrap();
+    let reply = post_raw(&app, "/api/v1/auth/setup", None, body).await;
+    assert_eq!(reply.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(
+        reply.json()["error"].is_string(),
+        "body: {:?}",
+        reply.json()
+    );
+}
+
+#[tokio::test]
 async fn unknown_field_in_body_is_422_naming_the_field() {
     let (app, _dir) = test_app(protected()).await;
     let admin = setup_admin(&app).await;
