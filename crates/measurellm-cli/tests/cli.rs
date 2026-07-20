@@ -282,3 +282,40 @@ fn rust_log_off_silences_cache_warning() {
         "RUST_LOG=off must suppress the cache WARN diagnostic; got:\n{stderr}"
     );
 }
+
+/// Regression: `measurellm server --data-dir` is bound to `MEASURELLM_DATA_DIR`
+/// (documented in server.md / cli.md), so the env var selects the state
+/// directory. We point the env at an *unopenable* path (a DB under a regular
+/// file) and assert the server fails fast referencing THAT path — proving it
+/// honored the env var instead of silently using the compiled-in `/data`
+/// default. Without the `env = "MEASURELLM_DATA_DIR"` binding on the arg, the
+/// server ignores the env and this test fails.
+#[test]
+fn server_honors_data_dir_env_var() {
+    let dir = tempfile::tempdir().unwrap();
+    // A regular file where a directory is expected: opening a SQLite DB beneath
+    // it fails immediately (ENOTDIR), so the server exits before it ever binds.
+    let blocker = dir.path().join("not-a-dir");
+    std::fs::write(&blocker, b"x").unwrap();
+    let data_dir = blocker.join("state");
+    let output = bin()
+        .arg("server")
+        .env("MEASURELLM_DATA_DIR", &data_dir)
+        .env("RUST_LOG", "off")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "server should fail fast on an unopenable data dir"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let marker = data_dir.to_string_lossy();
+    assert!(
+        stderr.contains(marker.as_ref()),
+        "error should reference the env-provided data dir ({marker}); got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("/data/measurellm.db"),
+        "server must not fall back to the /data default when MEASURELLM_DATA_DIR is set; got:\n{stderr}"
+    );
+}

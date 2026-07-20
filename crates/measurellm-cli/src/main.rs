@@ -108,7 +108,8 @@ enum Command {
     Server {
         #[arg(long, default_value_t = 8321)]
         port: u16,
-        #[arg(long, default_value = "/data")]
+        /// State directory holding the SQLite databases (env: MEASURELLM_DATA_DIR).
+        #[arg(long, env = "MEASURELLM_DATA_DIR", default_value = "/data")]
         data_dir: PathBuf,
     },
     /// Probe this binary's own /api/v1/health (used by container HEALTHCHECK).
