@@ -3,9 +3,15 @@
 use rusqlite_migration::{Migrations, M};
 
 /// Schema for `measurellm.db` (durable run history).
+///
+/// Migrations are forward-only and append-only: never edit an existing `M::up`,
+/// only add new ones to the end of the vec so existing databases upgrade in
+/// place. The accounts tables (migration 2) live in the runs database so they
+/// share its writer-mutex and reader-pool.
 pub(super) fn runs_migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(
-        r#"
+    Migrations::new(vec![
+        M::up(
+            r#"
         CREATE TABLE runs (
             id                TEXT PRIMARY KEY,
             project           TEXT,
@@ -83,7 +89,43 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
             PRIMARY KEY (project, suite)
         );
         "#,
-    )])
+        ),
+        M::up(
+            r#"
+        CREATE TABLE users (
+            id            TEXT PRIMARY KEY,
+            username      TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL CHECK (role IN ('admin','member')),
+            disabled      INTEGER NOT NULL DEFAULT 0,
+            created_at    INTEGER NOT NULL
+        );
+
+        CREATE TABLE sessions (
+            token_hash   TEXT PRIMARY KEY,
+            user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at   INTEGER,
+            expires_at   INTEGER,
+            last_used_at INTEGER
+        );
+        CREATE INDEX idx_sessions_user ON sessions(user_id);
+
+        CREATE TABLE api_keys (
+            id           TEXT PRIMARY KEY,
+            user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name         TEXT,
+            prefix       TEXT NOT NULL,
+            key_hash     TEXT NOT NULL,
+            scope        TEXT NOT NULL,
+            created_at   INTEGER,
+            last_used_at INTEGER,
+            revoked      INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX idx_api_keys_prefix ON api_keys(prefix);
+        CREATE INDEX idx_api_keys_user ON api_keys(user_id);
+        "#,
+        ),
+    ])
 }
 
 /// Schema for `cache.db` (disposable content-addressed cache).

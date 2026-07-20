@@ -34,6 +34,7 @@ use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
+mod auth;
 mod cache;
 mod cases;
 mod compare;
@@ -41,6 +42,7 @@ mod projects;
 mod runs;
 mod schema;
 
+pub use auth::{ApiKeyAuth, ApiKeyInfo, DeleteUserOutcome, SessionUser, UserRow};
 pub use cases::CaseListFilter;
 pub use runs::{RunListFilter, RunListPage};
 

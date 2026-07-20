@@ -2,10 +2,11 @@
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
+use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -22,10 +23,29 @@ const MAX_BODY: usize = 64 * 1024 * 1024;
 
 /// Build the full API router with all middleware layers applied.
 pub fn router(state: AppState) -> Router {
+    use crate::accounts;
     let api = Router::new()
         .route("/health", get(health))
         .route("/api/v1/health", get(health))
         .route("/api/v1/meta", get(meta))
+        // Local accounts, sessions, and API keys.
+        .route("/api/v1/auth/setup", post(accounts::setup))
+        .route("/api/v1/auth/login", post(accounts::login))
+        .route("/api/v1/auth/logout", post(accounts::logout))
+        .route("/api/v1/auth/me", get(accounts::me))
+        .route(
+            "/api/v1/apikeys",
+            get(accounts::list_apikeys).post(accounts::create_apikey),
+        )
+        .route("/api/v1/apikeys/{id}", delete(accounts::delete_apikey))
+        .route(
+            "/api/v1/users",
+            get(accounts::list_users).post(accounts::create_user),
+        )
+        .route(
+            "/api/v1/users/{id}",
+            patch(accounts::patch_user).delete(accounts::delete_user),
+        )
         .route("/api/v1/runs", get(list_runs).post(post_run))
         .route("/api/v1/runs/{id}", get(get_run).delete(delete_run))
         .route("/api/v1/runs/{id}/cases", get(list_cases))
@@ -44,6 +64,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/cache/{key}",
             get(cache_get).head(cache_head).put(cache_put),
         )
+        .route("/assets/{*path}", get(serve_asset))
         .fallback(spa_fallback);
 
     api.layer(axum::middleware::from_fn_with_state(
@@ -67,7 +88,7 @@ pub enum ApiError {
 }
 
 impl ApiError {
-    fn status(code: StatusCode, msg: impl Into<String>) -> Self {
+    pub(crate) fn status(code: StatusCode, msg: impl Into<String>) -> Self {
         ApiError::Status(code, msg.into())
     }
 }
@@ -94,7 +115,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-type ApiResult<T> = Result<T, ApiError>;
+pub(crate) type ApiResult<T> = Result<T, ApiError>;
 
 // ---------------------------------------------------------------------------
 // Open endpoints
@@ -104,14 +125,16 @@ async fn health() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
 }
 
-async fn meta(State(state): State<AppState>) -> impl IntoResponse {
+async fn meta(State(state): State<AppState>) -> ApiResult<Response> {
     let current = RESULT_SCHEMA_VERSION;
     let min = current.saturating_sub(1);
     let supported: Vec<u32> = (min..=current).collect();
-    Json(json!({
+    let setup_required = state.storage.count_users().await? == 0;
+    Ok(Json(json!({
         "name": "measurellm",
         "version": measurellm_core::VERSION,
         "auth_mode": state.auth_mode.as_str(),
+        "setup_required": setup_required,
         "supported_schema_versions": supported,
         "result_schema_version": current,
         "cache": {
@@ -120,15 +143,83 @@ async fn meta(State(state): State<AppState>) -> impl IntoResponse {
             "max_age_days": state.cache_limits.max_age_days,
         },
     }))
+    .into_response())
 }
 
-async fn spa_fallback() -> impl IntoResponse {
-    Html(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>measurellm</title></head>\
-         <body style=\"font-family:system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem\">\
-         <h1>measurellm</h1><p>The results UI is not built into this binary yet. \
-         The JSON API is available under <code>/api/v1</code>.</p></body></html>",
-    )
+// ---------------------------------------------------------------------------
+// Embedded web UI
+// ---------------------------------------------------------------------------
+
+/// The built React/Vite UI, embedded from `web/dist`. In debug builds
+/// `rust-embed` reads these files from disk at runtime; release builds embed
+/// them into the binary. The folder path is relative to this crate's
+/// `Cargo.toml`.
+#[derive(RustEmbed)]
+#[folder = "../../web/dist"]
+struct WebAssets;
+
+/// Vite fingerprints every file under `/assets`, so those may be cached
+/// forever.
+const ASSET_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+/// The SPA shell (and un-hashed top-level files) must be revalidated so a new
+/// deploy is picked up.
+const SHELL_CACHE_CONTROL: &str = "no-cache";
+
+/// Shown only when no `index.html` is embedded at all (e.g. the UI was never
+/// built). The real embedded `index.html` is always preferred when present.
+const UNBUILT_HTML: &str =
+    "<!doctype html><html><head><meta charset=\"utf-8\"><title>measurellm</title></head>\
+     <body style=\"font-family:system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem\">\
+     <h1>measurellm</h1><p>The results UI is not built into this binary yet. \
+     The JSON API is available under <code>/api/v1</code>.</p></body></html>";
+
+/// Build a response for the embedded file at `path` (relative to `web/dist`),
+/// deriving `Content-Type` from its extension and applying `cache_control`.
+/// Returns `None` when no such file is embedded.
+fn embedded_file(path: &str, cache_control: &'static str) -> Option<Response> {
+    let file = WebAssets::get(path)?;
+    let content_type = mime_guess::from_path(path)
+        .first_or_octet_stream()
+        .to_string();
+    let headers = [
+        (header::CONTENT_TYPE, content_type),
+        (header::CACHE_CONTROL, cache_control.to_string()),
+    ];
+    Some((headers, file.data.into_owned()).into_response())
+}
+
+/// Serve the SPA shell (`index.html`) with a revalidating cache header, falling
+/// back to a built-in "UI not built" page when nothing is embedded.
+fn serve_shell() -> Response {
+    embedded_file("index.html", SHELL_CACHE_CONTROL)
+        .unwrap_or_else(|| Html(UNBUILT_HTML).into_response())
+}
+
+/// `GET /assets/{*path}` — hashed, immutable static assets emitted by Vite. A
+/// miss returns a JSON 404 rather than the SPA shell.
+async fn serve_asset(Path(path): Path<String>) -> Response {
+    match embedded_file(&format!("assets/{path}"), ASSET_CACHE_CONTROL) {
+        Some(resp) => resp,
+        None => not_found("asset").into_response(),
+    }
+}
+
+/// Router fallback. Requests under `/api/` that matched no route stay JSON 404
+/// (never the SPA). Any other path serves a top-level embedded file when one
+/// exists (e.g. `/favicon.ico`, `/vite.svg`), otherwise the SPA shell so that
+/// client-side routes resolve to the app.
+async fn spa_fallback(uri: Uri) -> Response {
+    let path = uri.path();
+    if path.starts_with("/api/") {
+        return not_found("route").into_response();
+    }
+    let rel = path.trim_start_matches('/');
+    if !rel.is_empty() {
+        if let Some(resp) = embedded_file(rel, SHELL_CACHE_CONTROL) {
+            return resp;
+        }
+    }
+    serve_shell()
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +574,6 @@ fn clamp_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
-fn not_found(what: &str) -> ApiError {
+pub(crate) fn not_found(what: &str) -> ApiError {
     ApiError::status(StatusCode::NOT_FOUND, format!("{what} not found"))
 }

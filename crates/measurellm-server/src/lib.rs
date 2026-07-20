@@ -25,9 +25,12 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::Router;
 
-use crate::auth::{Authenticator, StaticTokenAuthenticator};
+use crate::auth::{
+    ApiKeyAuthenticator, Authenticator, SessionAuthenticator, StaticTokenAuthenticator,
+};
 use crate::storage::Storage;
 
+pub mod accounts;
 pub mod auth;
 pub mod routes;
 pub mod storage;
@@ -110,6 +113,10 @@ pub struct Settings {
     pub cache_max_entry_bytes: Option<usize>,
     pub cache_max_bytes: Option<u64>,
     pub cache_max_age_days: Option<u64>,
+    /// Bootstrap admin username (`MEASURELLM_ADMIN_USER`).
+    pub admin_user: Option<String>,
+    /// Bootstrap admin password (`MEASURELLM_ADMIN_PASSWORD`).
+    pub admin_password: Option<String>,
 }
 
 impl Settings {
@@ -123,6 +130,8 @@ impl Settings {
                 .and_then(|v| v.parse().ok()),
             cache_max_bytes: env("MEASURELLM_CACHE_MAX_BYTES").and_then(|v| v.parse().ok()),
             cache_max_age_days: env("MEASURELLM_CACHE_MAX_AGE_DAYS").and_then(|v| v.parse().ok()),
+            admin_user: env("MEASURELLM_ADMIN_USER"),
+            admin_password: env("MEASURELLM_ADMIN_PASSWORD"),
         }
     }
 }
@@ -132,19 +141,32 @@ impl Settings {
 pub struct AppState {
     pub(crate) storage: Storage,
     pub(crate) auth: Arc<dyn Authenticator>,
+    pub(crate) api_key_auth: Arc<ApiKeyAuthenticator>,
+    pub(crate) session_auth: Arc<SessionAuthenticator>,
     pub(crate) auth_mode: AuthMode,
     pub(crate) public_url: Option<String>,
     pub(crate) cache_limits: CacheLimits,
 }
 
 impl AppState {
-    /// Open storage and derive the effective auth mode.
+    /// Open storage, bootstrap any configured admin, and derive the effective
+    /// auth mode.
     pub async fn new(config: &ServerConfig, settings: Settings) -> anyhow::Result<AppState> {
         let storage = Storage::open(config.data_dir.clone()).await?;
         let authenticator =
             StaticTokenAuthenticator::from_env_value(settings.tokens.as_deref().unwrap_or(""));
         let has_tokens = authenticator.has_tokens();
-        let auth_mode = resolve_mode(config.auth_mode, settings.auth_mode.as_deref(), has_tokens);
+
+        // Ensure a bootstrap admin exists before deriving the mode, so that a
+        // freshly-seeded instance is protected rather than open.
+        bootstrap_admin(&storage, &settings).await?;
+        let has_accounts = storage.count_users().await? > 0;
+
+        let auth_mode = resolve_mode(
+            config.auth_mode,
+            settings.auth_mode.as_deref(),
+            has_tokens || has_accounts,
+        );
         let cache_limits = CacheLimits {
             max_entry_bytes: settings
                 .cache_max_entry_bytes
@@ -153,6 +175,8 @@ impl AppState {
             max_age_days: settings.cache_max_age_days.unwrap_or(DEFAULT_MAX_AGE_DAYS),
         };
         Ok(AppState {
+            api_key_auth: Arc::new(ApiKeyAuthenticator::new(storage.clone())),
+            session_auth: Arc::new(SessionAuthenticator::new(storage.clone())),
             storage,
             auth: Arc::new(authenticator),
             auth_mode,
@@ -162,7 +186,47 @@ impl AppState {
     }
 }
 
-fn resolve_mode(config_mode: AuthMode, env_mode: Option<&str>, has_tokens: bool) -> AuthMode {
+/// Idempotently ensure the `MEASURELLM_ADMIN_USER` / `MEASURELLM_ADMIN_PASSWORD`
+/// account exists as an enabled admin, updating its password if it changed.
+async fn bootstrap_admin(storage: &Storage, settings: &Settings) -> anyhow::Result<()> {
+    let (Some(username), Some(password)) = (
+        settings.admin_user.as_deref(),
+        settings.admin_password.as_deref(),
+    ) else {
+        return Ok(());
+    };
+    if username.is_empty() || password.is_empty() {
+        return Ok(());
+    }
+
+    match storage.get_user_by_username(username.to_string()).await? {
+        None => {
+            let hash = auth::hash_password(password)?;
+            storage
+                .create_user(username.to_string(), hash, "admin".to_string())
+                .await?;
+        }
+        Some(existing) => {
+            if existing.role != "admin" {
+                storage
+                    .set_user_role(existing.id.clone(), "admin".to_string())
+                    .await?;
+            }
+            if existing.disabled {
+                storage
+                    .set_user_disabled(existing.id.clone(), false)
+                    .await?;
+            }
+            if !auth::verify_password(&existing.password_hash, password) {
+                let hash = auth::hash_password(password)?;
+                storage.update_password(existing.id.clone(), hash).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_mode(config_mode: AuthMode, env_mode: Option<&str>, has_credentials: bool) -> AuthMode {
     if let Some(mode) = env_mode {
         match mode {
             "open" => return AuthMode::Open,
@@ -174,7 +238,7 @@ fn resolve_mode(config_mode: AuthMode, env_mode: Option<&str>, has_tokens: bool)
     if config_mode != AuthMode::Open {
         return config_mode;
     }
-    if has_tokens {
+    if has_credentials {
         AuthMode::ProtectWrites
     } else {
         AuthMode::Open
@@ -188,7 +252,14 @@ pub(crate) async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let identity = auth::authenticate(state.auth.as_ref(), state.auth_mode, req.headers());
+    let identity = auth::authenticate(
+        state.auth.as_ref(),
+        state.api_key_auth.as_ref(),
+        state.session_auth.as_ref(),
+        state.auth_mode,
+        req.headers(),
+    )
+    .await;
     req.extensions_mut().insert(identity);
     next.run(req).await
 }

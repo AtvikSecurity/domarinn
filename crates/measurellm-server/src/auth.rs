@@ -10,14 +10,30 @@
 
 use std::marker::PhantomData;
 
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::Argon2;
 use axum::extract::FromRequestParts;
 use axum::http::{request::Parts, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use rand::RngCore;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
+use crate::storage::{ApiKeyAuth, SessionUser, Storage};
 use crate::AuthMode;
+
+/// Prefix for API-key secrets (`mllm_<hex>`).
+pub const API_KEY_PREFIX: &str = "mllm_";
+/// Prefix for session-token secrets (`mses_<hex>`).
+pub const SESSION_PREFIX: &str = "mses_";
+/// Random bytes behind every session token / API key (256 bits of entropy).
+const RANDOM_BYTES: usize = 32;
+/// How many leading characters of a key are stored/displayed as its `prefix`.
+const PREFIX_LEN: usize = 12;
+/// Session lifetime: 30 days.
+const SESSION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Access scopes, ordered so that a higher scope subsumes lower ones
 /// (`Admin` ⊃ `Write` ⊃ `Read`).
@@ -29,7 +45,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    fn parse(s: &str) -> Option<Scope> {
+    pub(crate) fn parse(s: &str) -> Option<Scope> {
         match s.trim() {
             "read" => Some(Scope::Read),
             "write" => Some(Scope::Write),
@@ -38,11 +54,19 @@ impl Scope {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Scope::Read => "read",
             Scope::Write => "write",
             Scope::Admin => "admin",
+        }
+    }
+
+    /// Scope granted to a user of the given role.
+    pub(crate) fn for_role(role: &str) -> Scope {
+        match role {
+            "admin" => Scope::Admin,
+            _ => Scope::Write,
         }
     }
 }
@@ -118,15 +142,69 @@ impl Authenticator for StaticTokenAuthenticator {
     }
 }
 
+/// Where a request's credentials came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentitySource {
+    Anonymous,
+    /// A configured `MEASURELLM_TOKENS` static token.
+    Static,
+    /// A local-account API key (`mllm_...`).
+    ApiKey,
+    /// A local-account browser session (`mses_...`).
+    Session,
+}
+
+impl IdentitySource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            IdentitySource::Anonymous => "anonymous",
+            IdentitySource::Static => "static",
+            IdentitySource::ApiKey => "apikey",
+            IdentitySource::Session => "session",
+        }
+    }
+}
+
 /// The authenticated (or anonymous) identity attached to every request.
 #[derive(Debug, Clone)]
 pub struct Identity {
-    /// The scope granted by a valid token, or `None` when anonymous.
+    /// The scope granted by valid credentials, or `None` when anonymous.
     pub scope: Option<Scope>,
     /// The active auth mode.
     pub mode: AuthMode,
-    /// The token's scope label, used for `uploaded_by`.
+    /// A human label for the principal, used for `uploaded_by`
+    /// (username for accounts, scope label for static tokens).
     pub label: Option<String>,
+    /// The backing user id, when the credentials resolve to a local account.
+    pub user_id: Option<String>,
+    /// The backing username, when known.
+    pub username: Option<String>,
+    /// The account role (`admin` | `member`), when known.
+    pub role: Option<String>,
+    /// Which authenticator resolved the request.
+    pub source: IdentitySource,
+    /// The presenting session's token hash, so `logout` can revoke it.
+    pub session_token_hash: Option<String>,
+}
+
+impl Identity {
+    fn anonymous(mode: AuthMode) -> Identity {
+        Identity {
+            scope: None,
+            mode,
+            label: None,
+            user_id: None,
+            username: None,
+            role: None,
+            source: IdentitySource::Anonymous,
+            session_token_hash: None,
+        }
+    }
+
+    /// Whether any authenticator matched (static token, API key, or session).
+    pub fn is_authenticated(&self) -> bool {
+        self.source != IdentitySource::Anonymous
+    }
 }
 
 /// The outcome of checking an identity against a route's required scope.
@@ -161,14 +239,161 @@ impl Identity {
     }
 }
 
-/// Build an [`Identity`] from the request headers.
-pub fn authenticate(auth: &dyn Authenticator, mode: AuthMode, headers: &HeaderMap) -> Identity {
-    let grant = bearer_token(headers).and_then(|token| auth.authenticate(&token));
-    Identity {
-        scope: grant.as_ref().map(|g| g.scope),
-        mode,
-        label: grant.map(|g| g.label),
+/// Storage-backed authenticator for local-account API keys (`mllm_...`).
+pub struct ApiKeyAuthenticator {
+    storage: Storage,
+}
+
+impl ApiKeyAuthenticator {
+    pub fn new(storage: Storage) -> ApiKeyAuthenticator {
+        ApiKeyAuthenticator { storage }
     }
+
+    async fn resolve(&self, token: &str) -> Option<ApiKeyAuth> {
+        let prefix = key_prefix(token);
+        let hash = token_hash(token);
+        self.storage
+            .lookup_api_key(prefix, hash)
+            .await
+            .ok()
+            .flatten()
+    }
+}
+
+/// Storage-backed authenticator for local-account sessions (`mses_...`).
+pub struct SessionAuthenticator {
+    storage: Storage,
+}
+
+impl SessionAuthenticator {
+    pub fn new(storage: Storage) -> SessionAuthenticator {
+        SessionAuthenticator { storage }
+    }
+
+    async fn resolve(&self, token: &str) -> Option<SessionUser> {
+        self.storage
+            .lookup_session(token_hash(token))
+            .await
+            .ok()
+            .flatten()
+    }
+}
+
+/// Build an [`Identity`] from the request headers, consulting the full
+/// authenticator chain in order: static token → API key → session. Static
+/// tokens are matched first (constant-time, no I/O); the account-backed
+/// lookups are dispatched by token prefix so at most one DB hit occurs.
+pub async fn authenticate(
+    static_auth: &dyn Authenticator,
+    api_keys: &ApiKeyAuthenticator,
+    sessions: &SessionAuthenticator,
+    mode: AuthMode,
+    headers: &HeaderMap,
+) -> Identity {
+    let mut identity = Identity::anonymous(mode);
+    let Some(token) = bearer_token(headers) else {
+        return identity;
+    };
+
+    // 1. Static tokens (exact, constant-time match against configuration).
+    if let Some(grant) = static_auth.authenticate(&token) {
+        identity.scope = Some(grant.scope);
+        identity.label = Some(grant.label);
+        identity.source = IdentitySource::Static;
+        return identity;
+    }
+
+    // 2. Account API keys.
+    if token.starts_with(API_KEY_PREFIX) {
+        if let Some(key) = api_keys.resolve(&token).await {
+            let scope = Scope::parse(&key.scope).unwrap_or(Scope::Read);
+            identity.scope = Some(scope);
+            identity.label = Some(key.username.clone());
+            identity.user_id = Some(key.user_id);
+            identity.username = Some(key.username);
+            identity.role = Some(key.role);
+            identity.source = IdentitySource::ApiKey;
+            return identity;
+        }
+    }
+
+    // 3. Account sessions.
+    if token.starts_with(SESSION_PREFIX) {
+        if let Some(user) = sessions.resolve(&token).await {
+            identity.scope = Some(Scope::for_role(&user.role));
+            identity.label = Some(user.username.clone());
+            identity.user_id = Some(user.user_id);
+            identity.username = Some(user.username);
+            identity.role = Some(user.role);
+            identity.source = IdentitySource::Session;
+            identity.session_token_hash = Some(token_hash(&token));
+            return identity;
+        }
+    }
+
+    identity
+}
+
+// ---------------------------------------------------------------------------
+// Password hashing (argon2) and token generation
+// ---------------------------------------------------------------------------
+
+/// Hash a plaintext password into an argon2 PHC string with a random salt.
+pub fn hash_password(password: &str) -> anyhow::Result<String> {
+    let mut salt_bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut salt_bytes);
+    let salt =
+        SaltString::encode_b64(&salt_bytes).map_err(|e| anyhow::anyhow!("encoding salt: {e}"))?;
+    let hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| anyhow::anyhow!("hashing password: {e}"))?
+        .to_string();
+    Ok(hash)
+}
+
+/// Verify a plaintext password against a stored argon2 PHC string.
+pub fn verify_password(stored_hash: &str, password: &str) -> bool {
+    match PasswordHash::new(stored_hash) {
+        Ok(parsed) => Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok(),
+        Err(_) => false,
+    }
+}
+
+fn random_hex() -> String {
+    let mut buf = [0u8; RANDOM_BYTES];
+    rand::rng().fill_bytes(&mut buf);
+    hex::encode(buf)
+}
+
+/// Mint a fresh session token (`mses_<64 hex>`).
+pub fn generate_session_token() -> String {
+    format!("{SESSION_PREFIX}{}", random_hex())
+}
+
+/// Mint a fresh API key (`mllm_<64 hex>`).
+pub fn generate_api_key() -> String {
+    format!("{API_KEY_PREFIX}{}", random_hex())
+}
+
+/// The leading `PREFIX_LEN` characters of a key, used for display + lookup.
+pub fn key_prefix(token: &str) -> String {
+    token.chars().take(PREFIX_LEN).collect()
+}
+
+/// sha256 hex of a high-entropy secret (session token or API key). argon2 is
+/// reserved for low-entropy user passwords; these tokens need only a fast,
+/// pre-image-resistant hash.
+pub fn token_hash(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// The expiry timestamp (epoch ms) for a session minted now.
+pub fn session_expiry(now_ms: i64) -> i64 {
+    now_ms + SESSION_TTL_MS
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -254,6 +479,13 @@ fn error_response(status: StatusCode, message: &str) -> Response {
 mod tests {
     use super::*;
 
+    fn ident(scope: Option<Scope>, mode: AuthMode) -> Identity {
+        Identity {
+            scope,
+            ..Identity::anonymous(mode)
+        }
+    }
+
     #[test]
     fn parses_token_env() {
         let auth = StaticTokenAuthenticator::from_env_value(
@@ -273,40 +505,57 @@ mod tests {
     }
 
     #[test]
+    fn role_scope_mapping() {
+        assert_eq!(Scope::for_role("admin"), Scope::Admin);
+        assert_eq!(Scope::for_role("member"), Scope::Write);
+        assert_eq!(Scope::for_role("anything-else"), Scope::Write);
+    }
+
+    #[test]
     fn open_mode_grants_everything() {
-        let id = Identity {
-            scope: None,
-            mode: AuthMode::Open,
-            label: None,
-        };
+        let id = ident(None, AuthMode::Open);
         assert!(matches!(id.check(Scope::Admin), Access::Granted));
     }
 
     #[test]
     fn protect_writes_allows_anonymous_reads() {
-        let id = Identity {
-            scope: None,
-            mode: AuthMode::ProtectWrites,
-            label: None,
-        };
+        let id = ident(None, AuthMode::ProtectWrites);
         assert!(matches!(id.check(Scope::Read), Access::Granted));
         assert!(matches!(id.check(Scope::Write), Access::Unauthenticated));
     }
 
     #[test]
     fn closed_mode_requires_token_for_reads() {
-        let id = Identity {
-            scope: None,
-            mode: AuthMode::Closed,
-            label: None,
-        };
+        let id = ident(None, AuthMode::Closed);
         assert!(matches!(id.check(Scope::Read), Access::Unauthenticated));
-        let reader = Identity {
-            scope: Some(Scope::Read),
-            mode: AuthMode::Closed,
-            label: None,
-        };
+        let reader = ident(Some(Scope::Read), AuthMode::Closed);
         assert!(matches!(reader.check(Scope::Read), Access::Granted));
         assert!(matches!(reader.check(Scope::Write), Access::Forbidden));
+    }
+
+    #[test]
+    fn password_hash_round_trips() {
+        let hash = hash_password("correct horse battery staple").unwrap();
+        assert!(hash.starts_with("$argon2"));
+        assert!(verify_password(&hash, "correct horse battery staple"));
+        assert!(!verify_password(&hash, "wrong password"));
+        assert!(!verify_password("not-a-phc-string", "whatever"));
+    }
+
+    #[test]
+    fn token_formats_and_prefix() {
+        let session = generate_session_token();
+        assert!(session.starts_with("mses_"));
+        assert_eq!(session.len(), "mses_".len() + 64);
+
+        let key = generate_api_key();
+        assert!(key.starts_with("mllm_"));
+        assert_eq!(key.len(), "mllm_".len() + 64);
+        assert_eq!(key_prefix(&key).len(), 12);
+        assert!(key.starts_with(&key_prefix(&key)));
+
+        // Hashing is deterministic and hides the secret.
+        assert_eq!(token_hash(&key), token_hash(&key));
+        assert_ne!(token_hash(&key), key);
     }
 }

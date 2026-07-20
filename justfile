@@ -29,9 +29,18 @@ build:
 dev:
     cargo run -p measurellm-cli -- server
 
-# Run the whole test suite.
+# Run the Rust test suite.
 test:
     cargo test --workspace
+
+# Run every test: Rust workspace tests + the web unit tests (vitest).
+test-all: test
+    pnpm -C web test
+
+# Run the web end-to-end tests (Playwright). Builds the mock UI and previews it
+# via the config's webServer, so no Rust backend is required.
+e2e:
+    pnpm -C web test:e2e
 
 # Lint: clippy as errors + a formatting check. Mirrors CI.
 lint:
@@ -45,18 +54,13 @@ fmt:
 # Regenerate the config JSON Schema that editors and CI consume. Keep the
 # result committed; CI fails if it drifts (see .github/workflows/ci.yml).
 schema:
-    cargo run -p measurellm-cli -- schema config > measurellm.schema.json
+    cargo run -q -p measurellm-cli -- schema config > measurellm.schema.json
 
-# Export TypeScript types for the web UI from the Rust DTOs.
-#
-# TODO: wire this up once ts-rs (or an equivalent) is added to the core crate.
-# Intended shape (do not enable until the crate exposes it):
-#
-#     cargo test -p measurellm-core export_bindings
-#     # -> emits web/src/types/*.ts from the #[derive(TS)] DTOs
+# Export TypeScript DTOs for the web UI from the Rust result/diff types. This
+# directory is the web type source of truth; keep it committed. CI regenerates
+# it and fails on drift (see the gen-types-check job in ci.yml).
 gen-types:
-    @echo "TODO: gen-types is a placeholder until ts-rs export lands in measurellm-core"
-    @echo "      (RunResult / config DTOs -> web/src/types). See justfile."
+    cargo run -q -p measurellm-cli -- gen-types web/src/api/generated
 
 # Build the container image locally (multi-stage; produces the distroless image).
 docker-build:

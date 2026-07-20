@@ -1,22 +1,22 @@
 # measurellm-eval — run a measurellm suite in CI and gate the PR on the result.
 #
-# SKELETON: coherent and documented, but the run/regression-summary wiring
-# assumes CLI subcommands (`run`, `diff`) that land in later phases. The
-# contract (inputs, outputs, exit-code semantics, PR comment) is stable.
+# Fully functional: resolves a `measurellm` binary, runs a suite, parses the
+# result, uploads the JUnit report, comments the Markdown summary on the PR, and
+# gates the job on the CLI's exit code.
 #
 # Usage:
 #   - uses: perfectra1n/measurellm/.github/actions/measurellm-eval@v1
 #     with:
 #       config: eval/measurellm.yaml
-#       server-url: https://measurellm.example.com
-#       token: ${{ secrets.MEASURELLM_TOKEN }}
-#       against: latest        # baseline run to diff against (optional)
+#       server-url: https://measurellm.example.com   # optional (enables --share)
+#       token: ${{ secrets.MEASURELLM_TOKEN }}        # optional bearer token
+#       against: latest                               # optional baseline to diff
 #       fail-on-regression: "true"
 #
 # Exit-code contract (from the CLI): 0 = all pass; 1 = assertion failure or
-# regression; 2 = config/usage error; 3 = infrastructure error. This action
-# maps 1 to a failed check only when `fail-on-regression` is true; 2 and 3
-# always fail the job.
+# regression; 2 = config/usage error; 3 = infrastructure error. This action maps
+# 1 to a failed check only when `fail-on-regression` is true; 2 and 3 always fail
+# the job. The artifact upload and the PR comment run regardless of the result.
 
 name: measurellm eval
 description: Run a measurellm eval suite, gate on regressions, and comment the result on the PR.
@@ -26,73 +26,100 @@ inputs:
     description: Path to the suite file or a directory containing measurellm.yaml.
     required: false
     default: "measurellm.yaml"
-  version:
-    description: measurellm version to download (a release tag like v0.1.0, or "latest").
-    required: false
-    default: "latest"
-  binary:
-    description: Path to a prebuilt measurellm binary. If set, skips the download.
+  binary-path:
+    description: >-
+      Path to a prebuilt `measurellm` binary. When set, resolution stops here
+      (no download, no build).
     required: false
     default: ""
+  version:
+    description: >-
+      Release tag to download the binary from (e.g. "v0.1.0"), or "latest".
+      Used only when `binary-path` is empty. If the download fails, the action
+      falls back to building/installing from source with cargo.
+    required: false
+    default: "latest"
   server-url:
-    description: Results server to upload the run to (enables share links / baselines). Optional.
+    description: >-
+      Results server base URL. When set, the run is uploaded with `--share`
+      (exported as MEASURELLM_SERVER_URL). Optional.
     required: false
     default: ""
   token:
-    description: Bearer token for the results server. Pass a secret, never a literal.
+    description: >-
+      Bearer token for the results server (exported as MEASURELLM_TOKEN). Pass a
+      secret, never a literal. Optional.
     required: false
     default: ""
   against:
-    description: Baseline to diff this run against (e.g. "latest", a run id, or a git ref). Empty disables the diff.
-    required: false
-    default: ""
-  threshold:
-    description: Minimum overall pass rate (0.0-1.0) required to pass. Empty disables the threshold gate.
+    description: >-
+      Baseline to diff this run against (e.g. "latest", a run id, or a
+      result.json path). Empty disables the diff. A regression against the
+      baseline makes the CLI exit 1.
     required: false
     default: ""
   fail-on-regression:
-    description: If "true", a regression vs the baseline (CLI exit 1) fails the check.
+    description: >-
+      If "true" (default), an assertion failure or regression (CLI exit 1) fails
+      the check. If "false", exit 1 is reported as a warning and does not fail
+      the job. Exit 2 (config/usage) and exit 3 (infra) always fail the job.
     required: false
     default: "true"
   comment:
-    description: If "true", post/update a summary comment on the PR.
+    description: If "true" (default), post/update a summary comment on the PR.
     required: false
     default: "true"
+  artifact-name:
+    description: Name of the uploaded artifact holding results.xml and summary.md.
+    required: false
+    default: "measurellm-results"
 
 outputs:
-  pass-rate:
-    description: Overall pass rate of the run (0.0-1.0).
-    value: ${{ steps.eval.outputs.pass-rate }}
-  regressions:
-    description: Number of tests that regressed vs the baseline.
-    value: ${{ steps.eval.outputs.regressions }}
+  exit-code:
+    description: The CLI's raw exit code (0 pass, 1 fail/regression, 2 usage, 3 infra).
+    value: ${{ steps.eval.outputs.exit-code }}
+  passed:
+    description: Number of test cases that passed.
+    value: ${{ steps.eval.outputs.passed }}
+  failed:
+    description: Number of test cases that failed or errored.
+    value: ${{ steps.eval.outputs.failed }}
+  regressed:
+    description: Number of tests that newly regressed vs the baseline (0 without `against`).
+    value: ${{ steps.eval.outputs.regressed }}
   summary-path:
     description: Path to the Markdown summary written by the run.
     value: ${{ steps.eval.outputs.summary-path }}
+  results-path:
+    description: Path to the JUnit XML report written by the run.
+    value: ${{ steps.eval.outputs.results-path }}
 
 runs:
   using: composite
   steps:
-    # -- Obtain the binary: use a provided path, else download the release. ----
+    # -- Resolve the binary: provided path -> release download -> build. -------
     - name: Resolve measurellm binary
       id: bin
       shell: bash
       env:
-        INPUT_BINARY: ${{ inputs.binary }}
+        INPUT_BINARY_PATH: ${{ inputs.binary-path }}
         INPUT_VERSION: ${{ inputs.version }}
       run: |
-        set -euo pipefail
-        if [ -n "${INPUT_BINARY}" ]; then
-          echo "path=${INPUT_BINARY}" >> "$GITHUB_OUTPUT"
+        set -uo pipefail
+
+        if [ -n "${INPUT_BINARY_PATH}" ]; then
+          echo "Using provided binary: ${INPUT_BINARY_PATH}"
+          echo "path=${INPUT_BINARY_PATH}" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        # Download the static musl binary from the GitHub Release.
+
         arch="$(uname -m)"
         case "$arch" in
           x86_64)  target="x86_64-unknown-linux-musl" ;;
-          aarch64) target="aarch64-unknown-linux-musl" ;;
+          aarch64|arm64) target="aarch64-unknown-linux-musl" ;;
           *) echo "::error::unsupported arch $arch"; exit 3 ;;
         esac
+
         ver="${INPUT_VERSION}"
         base="https://github.com/perfectra1n/measurellm/releases"
         if [ "$ver" = "latest" ]; then
@@ -100,12 +127,30 @@ runs:
         else
           url="${base}/download/${ver}/measurellm-${target}"
         fi
-        echo "Downloading $url"
-        curl -fsSL "$url" -o measurellm
-        chmod +x measurellm
-        echo "path=$(pwd)/measurellm" >> "$GITHUB_OUTPUT"
 
-    # -- Run the suite. Uploads to the server when configured. -----------------
+        echo "Downloading $url"
+        if curl -fsSL "$url" -o measurellm; then
+          chmod +x measurellm
+          echo "path=$(pwd)/measurellm" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Fallback: build from source. Prefer a local checkout of this repo;
+        # otherwise install straight from git. Requires a Rust toolchain.
+        echo "::warning::release download failed for $url; building measurellm from source"
+        if ! command -v cargo >/dev/null 2>&1; then
+          echo "::error::no prebuilt binary available and cargo is not installed (add dtolnay/rust-toolchain before this action)"
+          exit 3
+        fi
+        root="${RUNNER_TEMP}/measurellm-install"
+        if [ -f "${GITHUB_WORKSPACE}/crates/measurellm-cli/Cargo.toml" ]; then
+          cargo install --path "${GITHUB_WORKSPACE}/crates/measurellm-cli" --locked --root "$root"
+        else
+          cargo install --git https://github.com/perfectra1n/measurellm --locked --root "$root" measurellm-cli
+        fi
+        echo "path=${root}/bin/measurellm" >> "$GITHUB_OUTPUT"
+
+    # -- Run the suite: JUnit report + Markdown summary, optional baseline. -----
     - name: Run eval
       id: eval
       shell: bash
@@ -115,43 +160,63 @@ runs:
         MEASURELLM_TOKEN: ${{ inputs.token }}
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_AGAINST: ${{ inputs.against }}
-        INPUT_THRESHOLD: ${{ inputs.threshold }}
-        INPUT_FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
       run: |
+        # No `set -e`: we must capture the CLI exit code and keep going so the
+        # artifact upload, PR comment, and gate step still run.
         set -uo pipefail
-        summary="measurellm-summary.md"
 
-        args=(run "${INPUT_CONFIG}" --summary-md "${summary}")
-        [ -n "${INPUT_AGAINST}" ]   && args+=(--against "${INPUT_AGAINST}")
-        [ -n "${INPUT_THRESHOLD}" ] && args+=(--threshold "${INPUT_THRESHOLD}")
-        [ -n "${MEASURELLM_SERVER_URL}" ] && args+=(--server-url "${MEASURELLM_SERVER_URL}" --share)
+        results="results.xml"
+        summary="summary.md"
+
+        args=(run "${INPUT_CONFIG}" --format junit --out "${results}" --summary-md "${summary}")
+        [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
+        # Upload the run when a server is configured (token via MEASURELLM_TOKEN).
+        [ -n "${MEASURELLM_SERVER_URL}" ] && args+=(--share)
 
         echo "Running: measurellm ${args[*]}"
         "${MEASURELLM_BIN}" "${args[@]}"
         code=$?
+        echo "measurellm exited with $code"
 
-        # Best-effort extraction of headline numbers for outputs (the CLI is the
-        # source of truth; parse its machine-readable summary once available).
-        echo "summary-path=${summary}" >> "$GITHUB_OUTPUT"
-        echo "pass-rate=" >> "$GITHUB_OUTPUT"
-        echo "regressions=" >> "$GITHUB_OUTPUT"
+        # Parse headline numbers from the JUnit report:
+        #   <testsuite ... tests="T" failures="F" errors="E">
+        attr() { grep -oE "$1=\"[0-9]+\"" "$results" 2>/dev/null | head -1 | grep -oE '[0-9]+'; }
+        tests="$(attr tests)";     tests="${tests:-0}"
+        failures="$(attr failures)"; failures="${failures:-0}"
+        errors="$(attr errors)";   errors="${errors:-0}"
+        passed=$(( tests - failures - errors ))
+        [ "$passed" -lt 0 ] && passed=0
+        failed=$(( failures + errors ))
 
-        # Map CLI exit codes to a check result.
-        #   0 pass; 1 assertion/regression; 2 usage; 3 infra.
-        if [ "$code" -eq 0 ]; then
-          echo "eval passed"
-        elif [ "$code" -eq 1 ]; then
-          if [ "${INPUT_FAIL_ON_REGRESSION}" = "true" ]; then
-            echo "::error::measurellm reported failures/regressions"
-            echo "exit-code=1" >> "$GITHUB_OUTPUT"
-            exit 1
-          else
-            echo "::warning::measurellm reported failures/regressions (not gated)"
-          fi
-        else
-          echo "::error::measurellm errored (exit $code: 2=config/usage, 3=infra)"
-          exit "$code"
+        # Regressions come from the baseline comparison table in the summary:
+        #   | Newly failing | N |
+        regressed="$(grep -oE '^\| Newly failing \| [0-9]+ \|' "$summary" 2>/dev/null | grep -oE '[0-9]+' | head -1)"
+        regressed="${regressed:-0}"
+
+        {
+          echo "exit-code=$code"
+          echo "passed=$passed"
+          echo "failed=$failed"
+          echo "regressed=$regressed"
+          echo "summary-path=${summary}"
+          echo "results-path=${results}"
+        } >> "$GITHUB_OUTPUT"
+
+        # Surface the summary in the job's step summary too.
+        if [ -f "$summary" ]; then
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
         fi
+
+    # -- Upload the JUnit report + summary as an artifact (always). -------------
+    - name: Upload results
+      if: ${{ always() && steps.eval.outputs.results-path != '' }}
+      uses: actions/upload-artifact@v4 # pin to SHA
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ steps.eval.outputs.results-path }}
+          ${{ steps.eval.outputs.summary-path }}
+        if-no-files-found: warn
 
     # -- Comment the summary on the PR (create-or-update a single comment). -----
     - name: Comment on PR
@@ -161,14 +226,13 @@ runs:
         script: |
           const fs = require('fs');
           const path = '${{ steps.eval.outputs.summary-path }}';
-          let body = '### measurellm eval\n\n_No summary was produced._';
+          const marker = '<!-- measurellm-eval -->';
+          let body = `${marker}\n### measurellm eval\n\n_No summary was produced._`;
           try {
-            body = '### measurellm eval\n\n' + fs.readFileSync(path, 'utf8');
+            body = `${marker}\n` + fs.readFileSync(path, 'utf8');
           } catch (e) {
             core.warning(`no summary at ${path}: ${e}`);
           }
-          const marker = '<!-- measurellm-eval -->';
-          body = `${marker}\n${body}`;
           const { owner, repo } = context.repo;
           const issue_number = context.issue.number;
           const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
@@ -178,3 +242,38 @@ runs:
           } else {
             await github.rest.issues.createComment({ owner, repo, issue_number, body });
           }
+
+    # -- Gate the job on the CLI exit code (runs after upload + comment). -------
+    - name: Gate on result
+      if: ${{ always() }}
+      shell: bash
+      env:
+        CODE: ${{ steps.eval.outputs.exit-code }}
+        FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+      run: |
+        set -uo pipefail
+        code="${CODE:-3}"
+        case "$code" in
+          0)
+            echo "measurellm: all checks passed"
+            ;;
+          1)
+            if [ "${FAIL_ON_REGRESSION}" = "true" ]; then
+              echo "::error::measurellm reported assertion failures or regressions (exit 1)"
+              exit 1
+            fi
+            echo "::warning::measurellm reported failures/regressions (exit 1, not gated)"
+            ;;
+          2)
+            echo "::error::measurellm config/usage error (exit 2)"
+            exit 2
+            ;;
+          3)
+            echo "::error::measurellm infrastructure error (exit 3)"
+            exit 3
+            ;;
+          *)
+            echo "::error::measurellm exited with $code"
+            exit "$code"
+            ;;
+        esac

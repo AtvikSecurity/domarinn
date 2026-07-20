@@ -1,0 +1,434 @@
+//! Local accounts, sessions, and API keys.
+//!
+//! These tables live in the runs database (see [`super::schema`]) so they share
+//! its writer-mutex + reader-pool. Passwords are stored as argon2 PHC strings;
+//! session tokens and API keys are stored only as sha256 hashes (the hashing
+//! itself happens in [`crate::auth`] before values reach this layer).
+//!
+//! Every method runs through the same [`super::Db`] `read`/`write` helpers as
+//! the rest of storage, so all SQL executes inside `spawn_blocking`.
+
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+
+use super::{now_ms, Storage};
+
+// ---------------------------------------------------------------------------
+// Row / view types
+// ---------------------------------------------------------------------------
+
+/// A full user record, including the argon2 password hash. Kept crate-internal;
+/// route handlers project it to a hash-free JSON view before responding.
+#[derive(Debug, Clone)]
+pub struct UserRow {
+    pub id: String,
+    pub username: String,
+    pub password_hash: String,
+    pub role: String,
+    pub disabled: bool,
+    pub created_at: i64,
+}
+
+/// The user behind a valid session (no secrets).
+#[derive(Debug, Clone)]
+pub struct SessionUser {
+    pub user_id: String,
+    pub username: String,
+    pub role: String,
+}
+
+/// The resolved principal behind a valid API key.
+#[derive(Debug, Clone)]
+pub struct ApiKeyAuth {
+    pub id: String,
+    pub user_id: String,
+    pub username: String,
+    pub role: String,
+    pub scope: String,
+}
+
+/// API-key metadata for listing (never includes the secret or its hash).
+#[derive(Debug, Clone)]
+pub struct ApiKeyInfo {
+    pub id: String,
+    pub user_id: String,
+    pub name: Option<String>,
+    pub prefix: String,
+    pub scope: String,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+    pub revoked: bool,
+}
+
+/// Outcome of [`Storage::delete_user`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteUserOutcome {
+    Deleted,
+    NotFound,
+    /// The target is the only remaining admin; deletion is refused.
+    LastAdmin,
+}
+
+fn new_id() -> String {
+    ulid::Ulid::new().to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Users
+// ---------------------------------------------------------------------------
+
+impl Storage {
+    /// Create a user, returning the stored row. Returns `Ok(None)` if the
+    /// username is already taken.
+    pub async fn create_user(
+        &self,
+        username: String,
+        password_hash: String,
+        role: String,
+    ) -> anyhow::Result<Option<UserRow>> {
+        self.runs
+            .write(move |conn| {
+                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let taken = tx
+                    .query_row(
+                        "SELECT 1 FROM users WHERE username = ?1",
+                        params![username],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some();
+                if taken {
+                    return Ok(None);
+                }
+                let id = new_id();
+                let created_at = now_ms();
+                tx.execute(
+                    "INSERT INTO users (id, username, password_hash, role, disabled, created_at)
+                     VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+                    params![id, username, password_hash, role, created_at],
+                )?;
+                tx.commit()?;
+                Ok(Some(UserRow {
+                    id,
+                    username,
+                    password_hash,
+                    role,
+                    disabled: false,
+                    created_at,
+                }))
+            })
+            .await
+    }
+
+    pub async fn get_user_by_username(&self, username: String) -> anyhow::Result<Option<UserRow>> {
+        self.runs
+            .read(move |conn| {
+                get_user(conn, "SELECT id, username, password_hash, role, disabled, created_at FROM users WHERE username = ?1", &username)
+            })
+            .await
+    }
+
+    pub async fn get_user_by_id(&self, id: String) -> anyhow::Result<Option<UserRow>> {
+        self.runs
+            .read(move |conn| {
+                get_user(conn, "SELECT id, username, password_hash, role, disabled, created_at FROM users WHERE id = ?1", &id)
+            })
+            .await
+    }
+
+    pub async fn list_users(&self) -> anyhow::Result<Vec<UserRow>> {
+        self.runs
+            .read(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, username, password_hash, role, disabled, created_at
+                     FROM users ORDER BY created_at ASC",
+                )?;
+                let rows = stmt.query_map([], row_to_user)?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })
+            .await
+    }
+
+    pub async fn count_users(&self) -> anyhow::Result<i64> {
+        self.runs
+            .read(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?))
+            .await
+    }
+
+    pub async fn set_user_role(&self, id: String, role: String) -> anyhow::Result<bool> {
+        self.runs
+            .write(move |conn| {
+                let n = conn.execute(
+                    "UPDATE users SET role = ?2 WHERE id = ?1",
+                    params![id, role],
+                )?;
+                Ok(n > 0)
+            })
+            .await
+    }
+
+    pub async fn set_user_disabled(&self, id: String, disabled: bool) -> anyhow::Result<bool> {
+        self.runs
+            .write(move |conn| {
+                let n = conn.execute(
+                    "UPDATE users SET disabled = ?2 WHERE id = ?1",
+                    params![id, disabled as i64],
+                )?;
+                Ok(n > 0)
+            })
+            .await
+    }
+
+    pub async fn update_password(&self, id: String, password_hash: String) -> anyhow::Result<bool> {
+        self.runs
+            .write(move |conn| {
+                let n = conn.execute(
+                    "UPDATE users SET password_hash = ?2 WHERE id = ?1",
+                    params![id, password_hash],
+                )?;
+                Ok(n > 0)
+            })
+            .await
+    }
+
+    /// Delete a user, refusing to remove the final admin so the instance can
+    /// never be locked out of its own administration.
+    pub async fn delete_user(&self, id: String) -> anyhow::Result<DeleteUserOutcome> {
+        self.runs
+            .write(move |conn| {
+                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let role: Option<String> = tx
+                    .query_row("SELECT role FROM users WHERE id = ?1", params![id], |r| {
+                        r.get(0)
+                    })
+                    .optional()?;
+                let Some(role) = role else {
+                    return Ok(DeleteUserOutcome::NotFound);
+                };
+                if role == "admin" {
+                    let admins: i64 =
+                        tx.query_row("SELECT COUNT(*) FROM users WHERE role = 'admin'", [], |r| {
+                            r.get(0)
+                        })?;
+                    if admins <= 1 {
+                        return Ok(DeleteUserOutcome::LastAdmin);
+                    }
+                }
+                tx.execute("DELETE FROM users WHERE id = ?1", params![id])?;
+                tx.commit()?;
+                Ok(DeleteUserOutcome::Deleted)
+            })
+            .await
+    }
+}
+
+fn get_user(conn: &Connection, sql: &str, key: &str) -> anyhow::Result<Option<UserRow>> {
+    Ok(conn.query_row(sql, params![key], row_to_user).optional()?)
+}
+
+fn row_to_user(row: &rusqlite::Row) -> rusqlite::Result<UserRow> {
+    Ok(UserRow {
+        id: row.get(0)?,
+        username: row.get(1)?,
+        password_hash: row.get(2)?,
+        role: row.get(3)?,
+        disabled: row.get::<_, i64>(4)? != 0,
+        created_at: row.get(5)?,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+impl Storage {
+    pub async fn create_session(
+        &self,
+        token_hash: String,
+        user_id: String,
+        expires_at: i64,
+    ) -> anyhow::Result<()> {
+        self.runs
+            .write(move |conn| {
+                let now = now_ms();
+                conn.execute(
+                    "INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_used_at)
+                     VALUES (?1, ?2, ?3, ?4, ?3)",
+                    params![token_hash, user_id, now, expires_at],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Resolve a session by its token hash. Returns `None` if it does not exist,
+    /// has expired, or belongs to a disabled user. Refreshes `last_used_at`.
+    pub async fn lookup_session(&self, token_hash: String) -> anyhow::Result<Option<SessionUser>> {
+        self.runs
+            .write(move |conn| {
+                let now = now_ms();
+                let found: Option<SessionUser> = conn
+                    .query_row(
+                        "SELECT u.id, u.username, u.role
+                         FROM sessions s JOIN users u ON u.id = s.user_id
+                         WHERE s.token_hash = ?1 AND s.expires_at > ?2 AND u.disabled = 0",
+                        params![token_hash, now],
+                        |row| {
+                            Ok(SessionUser {
+                                user_id: row.get(0)?,
+                                username: row.get(1)?,
+                                role: row.get(2)?,
+                            })
+                        },
+                    )
+                    .optional()?;
+                if found.is_some() {
+                    conn.execute(
+                        "UPDATE sessions SET last_used_at = ?2 WHERE token_hash = ?1",
+                        params![token_hash, now],
+                    )?;
+                }
+                Ok(found)
+            })
+            .await
+    }
+
+    pub async fn delete_session(&self, token_hash: String) -> anyhow::Result<bool> {
+        self.runs
+            .write(move |conn| {
+                let n = conn.execute(
+                    "DELETE FROM sessions WHERE token_hash = ?1",
+                    params![token_hash],
+                )?;
+                Ok(n > 0)
+            })
+            .await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// API keys
+// ---------------------------------------------------------------------------
+
+impl Storage {
+    pub async fn create_api_key(
+        &self,
+        user_id: String,
+        name: Option<String>,
+        prefix: String,
+        key_hash: String,
+        scope: String,
+    ) -> anyhow::Result<ApiKeyInfo> {
+        self.runs
+            .write(move |conn| {
+                let id = new_id();
+                let created_at = now_ms();
+                conn.execute(
+                    "INSERT INTO api_keys
+                        (id, user_id, name, prefix, key_hash, scope, created_at, last_used_at, revoked)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 0)",
+                    params![id, user_id, name, prefix, key_hash, scope, created_at],
+                )?;
+                Ok(ApiKeyInfo {
+                    id,
+                    user_id,
+                    name,
+                    prefix,
+                    scope,
+                    created_at,
+                    last_used_at: None,
+                    revoked: false,
+                })
+            })
+            .await
+    }
+
+    /// Resolve an API key by prefix + hash. Returns `None` unless the key exists,
+    /// is not revoked, and belongs to an enabled user. Refreshes `last_used_at`.
+    pub async fn lookup_api_key(
+        &self,
+        prefix: String,
+        key_hash: String,
+    ) -> anyhow::Result<Option<ApiKeyAuth>> {
+        self.runs
+            .write(move |conn| {
+                let now = now_ms();
+                let found: Option<ApiKeyAuth> = conn
+                    .query_row(
+                        "SELECT k.id, k.user_id, u.username, u.role, k.scope
+                         FROM api_keys k JOIN users u ON u.id = k.user_id
+                         WHERE k.prefix = ?1 AND k.key_hash = ?2 AND k.revoked = 0
+                           AND u.disabled = 0",
+                        params![prefix, key_hash],
+                        |row| {
+                            Ok(ApiKeyAuth {
+                                id: row.get(0)?,
+                                user_id: row.get(1)?,
+                                username: row.get(2)?,
+                                role: row.get(3)?,
+                                scope: row.get(4)?,
+                            })
+                        },
+                    )
+                    .optional()?;
+                if let Some(key) = &found {
+                    conn.execute(
+                        "UPDATE api_keys SET last_used_at = ?2 WHERE id = ?1",
+                        params![key.id, now],
+                    )?;
+                }
+                Ok(found)
+            })
+            .await
+    }
+
+    pub async fn list_api_keys(&self, user_id: String) -> anyhow::Result<Vec<ApiKeyInfo>> {
+        self.runs
+            .read(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, user_id, name, prefix, scope, created_at, last_used_at, revoked
+                     FROM api_keys WHERE user_id = ?1 ORDER BY created_at DESC",
+                )?;
+                let rows = stmt.query_map(params![user_id], row_to_api_key)?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })
+            .await
+    }
+
+    pub async fn get_api_key(&self, id: String) -> anyhow::Result<Option<ApiKeyInfo>> {
+        self.runs
+            .read(move |conn| {
+                Ok(conn
+                    .query_row(
+                        "SELECT id, user_id, name, prefix, scope, created_at, last_used_at, revoked
+                         FROM api_keys WHERE id = ?1",
+                        params![id],
+                        row_to_api_key,
+                    )
+                    .optional()?)
+            })
+            .await
+    }
+
+    pub async fn revoke_api_key(&self, id: String) -> anyhow::Result<bool> {
+        self.runs
+            .write(move |conn| {
+                let n =
+                    conn.execute("UPDATE api_keys SET revoked = 1 WHERE id = ?1", params![id])?;
+                Ok(n > 0)
+            })
+            .await
+    }
+}
+
+fn row_to_api_key(row: &rusqlite::Row) -> rusqlite::Result<ApiKeyInfo> {
+    Ok(ApiKeyInfo {
+        id: row.get(0)?,
+        user_id: row.get(1)?,
+        name: row.get(2)?,
+        prefix: row.get(3)?,
+        scope: row.get(4)?,
+        created_at: row.get(5)?,
+        last_used_at: row.get(6)?,
+        revoked: row.get::<_, i64>(7)? != 0,
+    })
+}

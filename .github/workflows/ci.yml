@@ -69,7 +69,7 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm -C web install --frozen-lockfile
       - run: pnpm -C web build
-      - run: pnpm -C web test -- --run
+      - run: pnpm -C web test
 
   schema-check:
     name: schema is up to date
@@ -78,16 +78,40 @@ jobs:
       - uses: actions/checkout@v4 # pin to SHA
       - uses: dtolnay/rust-toolchain@stable # pin to SHA
       - uses: Swatinem/rust-cache@v2 # pin to SHA
-      # Regenerate the checked-in schema and fail if it drifts. Keep this in
-      # sync with the `schema` recipe in the justfile.
-      - name: Regenerate config schema
-        run: cargo run -p measurellm-cli -- schema config > measurellm.schema.json
-      - name: Fail on drift
+      # Regenerate the schema on the fly and diff it against the committed copy.
+      # `diff` exits nonzero (failing the job) on any drift. Keep this in sync
+      # with the `schema` recipe in the justfile.
+      - name: Fail on schema drift
         run: |
-          if ! git diff --exit-code --stat measurellm.schema.json; then
+          if ! cargo run -q -p measurellm-cli -- schema config | diff -u measurellm.schema.json -; then
             echo "::error::measurellm.schema.json is out of date. Run 'just schema' and commit the result."
-            git --no-pager diff measurellm.schema.json
             exit 1
+          fi
+
+  gen-types-check:
+    name: generated TS types are up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 # pin to SHA
+      - uses: dtolnay/rust-toolchain@stable # pin to SHA
+      - uses: Swatinem/rust-cache@v2 # pin to SHA
+      # Regenerate the TypeScript DTOs into their committed location and fail if
+      # they differ. When the directory is not yet committed (bootstrap), soft
+      # check: generate and report, but do not block the build. Keep in sync
+      # with the `gen-types` recipe in the justfile.
+      - name: Generate types
+        run: cargo run -q -p measurellm-cli -- gen-types web/src/api/generated
+      - name: Fail on drift (when committed)
+        run: |
+          if git ls-files --error-unmatch web/src/api/generated >/dev/null 2>&1; then
+            if ! git diff --exit-code -- web/src/api/generated; then
+              echo "::error::web/src/api/generated is out of date. Run 'just gen-types' and commit the result."
+              exit 1
+            fi
+            echo "generated types are up to date"
+          else
+            echo "::warning::web/src/api/generated is not committed yet; generated types are not enforced. Run 'just gen-types' and commit the result to turn this into a hard check."
+            git --no-pager status --porcelain -- web/src/api/generated || true
           fi
 
   musl-build:

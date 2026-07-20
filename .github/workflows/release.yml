@@ -33,6 +33,9 @@ jobs:
             cross: false
           - target: aarch64-unknown-linux-musl
             cross: true
+    # A cross-toolchain hiccup on the aarch64 leg must not block the release of
+    # the x86_64 binary; the `release` job attaches whichever binaries built.
+    continue-on-error: ${{ matrix.cross }}
     steps:
       - uses: actions/checkout@v4 # pin to SHA
 
@@ -141,8 +144,8 @@ jobs:
         uses: docker/build-push-action@v6 # pin to SHA
         with:
           context: .
-          # aarch64 in-image build is slow under QEMU; keep it if you need
-          # arm64 images, or drop to linux/amd64 for faster releases.
+          # Multi-arch image. The arm64 layer builds under QEMU emulation, which
+          # is slower; GHA layer caching (below) keeps repeat releases cheap.
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
