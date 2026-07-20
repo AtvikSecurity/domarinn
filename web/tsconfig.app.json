@@ -18,6 +18,11 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "noImplicitOverride": true,
+    // exactOptionalPropertyTypes intentionally omitted: with the generated-type
+    // policy it buys no runtime safety and forces pervasive `| undefined` churn.
 
     "types": ["vite/client", "vitest/globals"],
 

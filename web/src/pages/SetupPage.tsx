@@ -33,7 +33,7 @@ export function SetupPage() {
     setPending(true);
     try {
       await setup(username.trim(), password);
-      navigate("/", { replace: true });
+      void navigate("/", { replace: true });
     } catch {
       setError("Setup failed. Please try again.");
       setPending(false);

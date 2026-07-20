@@ -152,8 +152,9 @@ export function useSetBaseline(project: string, suite: string) {
         { method: "PUT", body: { run_id: runId } },
       ),
     onSuccess: () => {
-      client.invalidateQueries({ queryKey: qk.suites(project) });
-      client.invalidateQueries({ queryKey: ["compare"] });
+      // Fire-and-forget refetches; react-query owns the resulting promises.
+      void client.invalidateQueries({ queryKey: qk.suites(project) });
+      void client.invalidateQueries({ queryKey: ["compare"] });
     },
   });
 }

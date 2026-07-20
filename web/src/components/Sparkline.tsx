@@ -49,9 +49,22 @@ export function Sparkline({
   });
 
   const line = points.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
-  const area = `${line} L${points[points.length - 1][0].toFixed(1)} ${height - pad} L${points[0][0].toFixed(1)} ${height - pad} Z`;
+
+  const first = points[0];
   const last = points[points.length - 1];
-  const trendUp = values[values.length - 1] >= values[0];
+  const firstVal = values[0];
+  const lastVal = values[values.length - 1];
+  // `values` is non-empty (guarded at the top) and `points` is 1:1 with it, so
+  // both ends always exist; this guard is unreachable but narrows the indexed
+  // access for noUncheckedIndexedAccess without a non-null assertion.
+  if (!first || !last || firstVal === undefined || lastVal === undefined) {
+    return (
+      <svg width={width} height={height} className={cn("text-muted", className)} aria-hidden />
+    );
+  }
+
+  const area = `${line} L${last[0].toFixed(1)} ${height - pad} L${first[0].toFixed(1)} ${height - pad} Z`;
+  const trendUp = lastVal >= firstVal;
   const stroke = trendUp ? "var(--color-pass)" : "var(--color-fail)";
 
   return (

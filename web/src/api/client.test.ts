@@ -25,7 +25,9 @@ describe("apiRequest against the mock", () => {
 
   it("returns lean case rows for a run, without per-case tags or full detail fields", async () => {
     const runs = await apiRequest<RunListResponse>("/runs", { params: { limit: 1 } });
-    const id = runs.runs[0].id;
+    const first = runs.runs[0];
+    if (!first) throw new Error("mock must return at least one run");
+    const id = first.id;
     const res = await apiRequest<CaseListResponse>(
       `/runs/${encodeURIComponent(id)}/cases`,
       { params: { limit: 5 } },

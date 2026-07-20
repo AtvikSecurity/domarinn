@@ -57,7 +57,7 @@ jobs:
       - run: cargo test --workspace
 
   web:
-    name: web (build + vitest)
+    name: web (lint + build + vitest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # pin to SHA
@@ -70,6 +70,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm -C web install --frozen-lockfile
+      # Type-checked lint (--max-warnings=0). The `build` step below runs
+      # `tsc -b`, which already fails the job on any type error, so no separate
+      # typecheck step is needed.
+      - run: pnpm -C web lint
       - run: pnpm -C web build
       - run: pnpm -C web test
 

@@ -54,7 +54,10 @@ function rand(...parts: (string | number)[]): number {
 }
 
 function pick<T>(arr: readonly T[], ...seed: (string | number)[]): T {
-  return arr[Math.floor(rand(...seed) * arr.length)];
+  // `rand()` is in [0, 1), so `floor(rand() * len)` is always a valid index in
+  // [0, len - 1] for any non-empty array; every call site passes a non-empty
+  // constant pool. The assertion encodes that proven in-bounds invariant.
+  return arr[Math.floor(rand(...seed) * arr.length)]!;
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -212,8 +215,10 @@ for (const m of RUN_METAS) {
 // Mutable baselines (default: previous run in the series).
 const BASELINE_BY_SUITE = new Map<string, string>();
 for (const [suiteKey, ids] of SUITE_RUN_IDS) {
-  if (ids.length >= 2) BASELINE_BY_SUITE.set(suiteKey, ids[ids.length - 2]);
-  else BASELINE_BY_SUITE.set(suiteKey, ids[0]);
+  // Default baseline = previous run in the series (or the sole run). Guard the
+  // indexed reads instead of asserting; an empty series simply gets no baseline.
+  const baseline = ids.length >= 2 ? ids[ids.length - 2] : ids[0];
+  if (baseline !== undefined) BASELINE_BY_SUITE.set(suiteKey, baseline);
 }
 
 // ---------------------------------------------------------------------------

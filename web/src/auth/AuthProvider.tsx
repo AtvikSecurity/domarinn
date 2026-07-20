@@ -43,7 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () =>
       onAuthChange(() => {
         dispatch({ type: "sync", token: getToken() });
-        queryClient.invalidateQueries({ queryKey: qk.me });
+        void queryClient.invalidateQueries({ queryKey: qk.me });
       }),
     [queryClient],
   );

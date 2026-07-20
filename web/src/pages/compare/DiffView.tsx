@@ -18,7 +18,7 @@ export function DiffView({ base, head }: { base: string; head: string }) {
     setParts(null);
     import("diff")
       .then((mod) => {
-        if (alive) setParts(mod.diffWords(base ?? "", head ?? "") as Part[]);
+        if (alive) setParts(mod.diffWords(base ?? "", head ?? ""));
       })
       .catch(() => {
         if (alive) setParts([{ value: head }]);

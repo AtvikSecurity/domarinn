@@ -213,7 +213,7 @@ function DeltaTable({
     getScrollElement: () => parentRef.current,
     estimateSize: () => 46,
     overscan: 12,
-    getItemKey: (i) => rows[i].case_key,
+    getItemKey: (i) => rows[i]?.case_key ?? String(i),
   });
 
   return (
@@ -232,6 +232,7 @@ function DeltaTable({
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((vi) => {
             const row = rows[vi.index];
+            if (!row) return null;
             const isOpen = expanded === row.case_key;
             return (
               <div

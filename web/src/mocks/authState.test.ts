@@ -72,8 +72,8 @@ describe("api keys", () => {
     const listed = listApiKeys("u_admin");
     expect(listed).toHaveLength(1);
     expect(listed[0]).not.toHaveProperty("key");
-    expect(listed[0].prefix).toBe(created.prefix);
-    expect(listed[0].revoked).toBe(false);
+    expect(listed[0]?.prefix).toBe(created.prefix);
+    expect(listed[0]?.revoked).toBe(false);
 
     // A write-scoped caller cannot mint an admin key.
     const clamped = createApiKey("u_member", "over", "admin", "write");
@@ -83,7 +83,7 @@ describe("api keys", () => {
   it("revokes a key", () => {
     const created = createApiKey("u_admin", "temp", "read", "admin");
     expect(revokeApiKey("u_admin", created.id)).toBe(true);
-    expect(listApiKeys("u_admin")[0].revoked).toBe(true);
+    expect(listApiKeys("u_admin")[0]?.revoked).toBe(true);
     // A revoked key no longer authenticates.
     expect(resolveAuth(created.key).me.authenticated).toBe(false);
   });

@@ -28,9 +28,11 @@ function comparePair(
   if (selected.length !== 2) return null;
   const picked = runs.filter((r) => selected.includes(r.id));
   if (picked.length !== 2) return null;
-  const [older, newer] = [...picked].sort(
+  const sorted = [...picked].sort(
     (a, b) => parseTimestamp(a.created_at) - parseTimestamp(b.created_at),
   );
+  const [older, newer] = sorted;
+  if (!older || !newer) return null;
   return { baseId: older.id, headId: newer.id };
 }
 
@@ -51,13 +53,17 @@ function groupRuns(runs: RunListItem[]): Group[] {
   }
   const groups: Group[] = [];
   for (const [key, list] of map) {
+    const first = list[0];
+    // Every map entry is created by pushing at least one run, so `first` is
+    // always present; skip defensively rather than assert.
+    if (!first) continue;
     const byDateAsc = [...list].sort(
       (a, b) => parseTimestamp(a.created_at) - parseTimestamp(b.created_at),
     );
     groups.push({
       key,
-      project: list[0].project,
-      suite: list[0].suite,
+      project: first.project,
+      suite: first.suite,
       runs: [...list].sort(
         (a, b) => parseTimestamp(b.created_at) - parseTimestamp(a.created_at),
       ),

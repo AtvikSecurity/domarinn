@@ -19,8 +19,11 @@ describe("fixture dataset", () => {
       expect(Number.isNaN(parseTimestamp(r.created_at))).toBe(false);
     }
     for (let i = 1; i < runs.length; i++) {
-      expect(parseTimestamp(runs[i - 1].created_at)).toBeGreaterThanOrEqual(
-        parseTimestamp(runs[i].created_at),
+      const prev = runs[i - 1];
+      const cur = runs[i];
+      if (!prev || !cur) continue;
+      expect(parseTimestamp(prev.created_at)).toBeGreaterThanOrEqual(
+        parseTimestamp(cur.created_at),
       );
     }
   });
@@ -47,7 +50,9 @@ describe("fixture dataset", () => {
 
   it("returns full case detail (a real CaseResult) with output and per-assert reasons", () => {
     const featured = runs.find((r) => r.case_count === 500)!;
-    const key = runCases(featured.id)[0].case_key;
+    const firstCase = runCases(featured.id)[0];
+    if (!firstCase) throw new Error("fixture run must have at least one case");
+    const key = firstCase.case_key;
     const detail = caseDetail(featured.id, key);
     expect(detail).toBeTruthy();
     expect(typeof detail!.output).toBe("string");

@@ -62,12 +62,15 @@ function bearer(init: RequestInit): string | null {
   const value = headers?.["Authorization"] ?? headers?.["authorization"];
   if (!value) return null;
   const match = /^Bearer\s+(.+)$/i.exec(value);
-  return match ? match[1] : null;
+  return match?.[1] ?? null;
 }
 
 function readJson<T = Record<string, unknown>>(init: RequestInit): T {
+  // The client always serializes bodies to a JSON string; ignore any other
+  // BodyInit rather than stringifying it into "[object Object]".
+  if (typeof init.body !== "string") return {} as T;
   try {
-    return init.body ? (JSON.parse(String(init.body)) as T) : ({} as T);
+    return JSON.parse(init.body) as T;
   } catch {
     return {} as T;
   }
@@ -127,6 +130,11 @@ function filterCases(cases: MockCaseRow[], p: URLSearchParams): MockCaseRow[] {
   });
 }
 
+// Mirrors `fetch`'s async signature so the client can `await` the mock and the
+// real `fetch` through one code path (awaiting a sync value would trip
+// await-thenable at the call site). No handler awaits today, hence the one
+// targeted require-await exemption.
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise<Response> {
   const url = new URL(rawUrl, "http://mock.local");
   const method = (init.method ?? "GET").toUpperCase();
@@ -183,7 +191,9 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       );
     }
     if (method === "DELETE" && seg.length === 2) {
-      return auth.revokeApiKey(userId, seg[1]) ? noContent() : notFound();
+      const keyId = seg[1];
+      if (keyId === undefined) return notFound();
+      return auth.revokeApiKey(userId, keyId) ? noContent() : notFound();
     }
   }
 
@@ -205,14 +215,18 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       return created ? json(created, 201) : json({ error: "username_taken" }, 409);
     }
     if (method === "PATCH" && seg.length === 2) {
+      const targetId = seg[1];
+      if (targetId === undefined) return notFound();
       const body = readJson<auth.UserPatch>(init);
-      const res = auth.updateUser(seg[1], body);
+      const res = auth.updateUser(targetId, body);
       if (res === "last_admin") return json({ error: "last_admin" }, 409);
       if (res === "not_found") return notFound();
       return json(res);
     }
     if (method === "DELETE" && seg.length === 2) {
-      const res = auth.deleteUser(seg[1]);
+      const targetId = seg[1];
+      if (targetId === undefined) return notFound();
+      const res = auth.deleteUser(targetId);
       if (res === "last_admin") return json({ error: "last_admin" }, 409);
       if (res === "not_found") return notFound();
       return noContent();
@@ -229,6 +243,7 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       return json(res);
     }
     const runId = seg[1];
+    if (runId === undefined) return notFound();
     // GET /runs/:id
     if (method === "GET" && seg.length === 2) {
       try {
@@ -250,7 +265,9 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       }
       // GET /runs/:id/cases/:case_key
       if (method === "GET" && seg.length === 4) {
-        const detail = fx.caseDetail(runId, seg[3]);
+        const caseKey = seg[3];
+        if (caseKey === undefined) return notFound();
+        const detail = fx.caseDetail(runId, caseKey);
         return detail ? json(detail) : notFound();
       }
     }
@@ -261,6 +278,7 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       // synthesizing a default target here.
       if (seg.length !== 4) return notFound();
       const other = seg[3];
+      if (other === undefined) return notFound();
       // First segment = base, second = head — matches
       // `storage.compare_runs(id, other)` -> `{ base: id, head: other }`
       // (crates/measurellm-server/tests/compare.rs pins this order).
@@ -275,6 +293,7 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       return json({ projects: fx.projectSummaries() });
     }
     const project = seg[1];
+    if (project === undefined) return notFound();
     if (seg[2] === "suites") {
       // GET /projects/:project/suites
       if (method === "GET" && seg.length === 3) {
@@ -283,12 +302,8 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       // PUT /projects/:project/suites/:suite/baseline
       if (method === "PUT" && seg[4] === "baseline" && seg.length === 5) {
         const suite = seg[3];
-        let runId = "";
-        try {
-          runId = JSON.parse(String(init.body ?? "{}")).run_id ?? "";
-        } catch {
-          /* ignore */
-        }
+        if (suite === undefined) return notFound();
+        const runId = readJson<{ run_id?: string }>(init).run_id ?? "";
         if (!runId) return json({ error: "run_id required" }, 400);
         fx.setSuiteBaseline(project, suite, runId);
         return json({ project, suite, run_id: runId });

@@ -4,7 +4,6 @@ import {
   flexRender,
   getCoreRowModel,
   useReactTable,
-  type ColumnDef,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { CaseListItem } from "@/api";
@@ -40,7 +39,7 @@ export function CaseGrid({
   isFetchingNextPage,
   totalCount,
 }: CaseGridProps) {
-  const columns = useMemo<ColumnDef<CaseListItem, any>[]>(() => {
+  const columns = useMemo(() => {
     const assertCols = assertLabels.map((label) =>
       col.display({
         id: `assert:${label}`,
@@ -179,6 +178,7 @@ export function CaseGrid({
           >
             {virtualItems.map((vi) => {
               const row = rows[vi.index];
+              if (!row) return null;
               const c = row.original;
               const selected = c.case_key === selectedKey;
               return (

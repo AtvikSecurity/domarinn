@@ -31,7 +31,7 @@ export function LoginPage() {
     setPending(true);
     try {
       await login(username.trim(), password);
-      navigate(from, { replace: true });
+      void navigate(from, { replace: true });
     } catch (err) {
       setError(
         err instanceof ApiError && err.status === 401
