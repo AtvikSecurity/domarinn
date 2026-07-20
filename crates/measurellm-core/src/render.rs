@@ -29,27 +29,43 @@ pub enum RenderError {
     BadPrompt(String),
 }
 
-/// Build the JSON context used to render prompts for a single test.
+/// Render a test's vars to a plain map.
 ///
 /// Each var is rendered (unless it is [`Val::Raw`]) against a base context that
-/// exposes `env`. The result is the rendered vars plus an `env` object.
+/// exposes `env`. The result is the rendered vars only — it does NOT include the
+/// environment, so it is safe to use as the provider request identity (cache key)
+/// and to hand to exec providers without leaking the whole environment.
+pub fn render_vars(
+    vars: &BTreeMap<String, Val>,
+    engine: &TemplateEngine,
+) -> Result<serde_json::Map<String, Json>, RenderError> {
+    let base = serde_json::json!({ "env": env_object() });
+    let mut out = serde_json::Map::new();
+    for (key, val) in vars {
+        out.insert(key.clone(), engine.render_val(val, &base)?);
+    }
+    Ok(out)
+}
+
+/// Build a template context from rendered vars plus an `env` object. Used for
+/// rendering prompts and evaluating `jinja` assertions, where `{{ env.X }}` is
+/// allowed. `env` is added here and never enters the request identity.
+pub fn context_with_env(vars: &serde_json::Map<String, Json>) -> Json {
+    let mut ctx = vars.clone();
+    ctx.insert("env".to_string(), env_object());
+    Json::Object(ctx)
+}
+
+/// The rendered vars plus `env`, as one context. Convenience wrapper.
 pub fn build_context(
     vars: &BTreeMap<String, Val>,
     engine: &TemplateEngine,
 ) -> Result<Json, RenderError> {
-    let env = env_object();
-    let base = serde_json::json!({ "env": env });
-
-    let mut ctx = serde_json::Map::new();
-    for (key, val) in vars {
-        let rendered = engine.render_val(val, &base)?;
-        ctx.insert(key.clone(), rendered);
-    }
-    ctx.insert("env".to_string(), base["env"].clone());
-    Ok(Json::Object(ctx))
+    Ok(context_with_env(&render_vars(vars, engine)?))
 }
 
-fn env_object() -> Json {
+/// A snapshot of the process environment as a JSON object of strings.
+pub fn env_object() -> Json {
     let map: serde_json::Map<String, Json> = std::env::vars()
         .map(|(k, v)| (k, Json::String(v)))
         .collect();

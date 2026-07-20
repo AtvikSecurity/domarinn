@@ -142,6 +142,9 @@ fn render_context(req: &ProviderRequest) -> Json {
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect::<serde_json::Map<_, _>>();
+    // Request vars intentionally omit the environment (so it stays out of the
+    // cache key); expose it here for `{{ env.X }}` in url/headers/body.
+    obj.insert("env".to_string(), crate::render::env_object());
     if let Some(prompt) = &req.prompt {
         let text = match prompt {
             RenderedPrompt::Text(t) => t.clone(),

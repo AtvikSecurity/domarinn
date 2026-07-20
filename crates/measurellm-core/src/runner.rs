@@ -5,7 +5,6 @@
 //! parallelize it while preserving deterministic output order (cells carry their
 //! index).
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 
@@ -25,7 +24,7 @@ use crate::provider::{
     CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse, TestMeta,
 };
 use crate::provider_factory::build_provider;
-use crate::render::{build_context, render_prompt};
+use crate::render::{self, render_prompt};
 use crate::resolve::expand_tests;
 use crate::result::{
     AssertResult, AssertStatus, CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary,
@@ -297,11 +296,15 @@ async fn run_cell(
     let case_key = cell.case_key();
     let name = test.description.clone().or_else(|| test.id.clone());
 
-    // Render context and prompt.
-    let var_ctx = match build_context(&test.vars, engine) {
-        Ok(c) => c,
+    // Render the test's vars once. `rendered_vars` excludes the environment, so
+    // it is a stable request identity (cache key) and does not leak the whole
+    // environment to exec providers. `render_ctx` adds `env` for rendering
+    // prompts and `jinja` assertions (`{{ env.X }}`), and never enters the key.
+    let rendered_vars = match render::render_vars(&test.vars, engine) {
+        Ok(v) => v,
         Err(e) => return error_case(cell, case_key, name, test, format!("rendering vars: {e}")),
     };
+    let var_ctx = render::context_with_env(&rendered_vars);
     let rendered_prompt = match prompt {
         Some(p) => match render_prompt(p, &var_ctx, engine, base_dir) {
             Ok(rp) => Some(rp),
@@ -314,7 +317,7 @@ async fn run_cell(
 
     let req = ProviderRequest {
         prompt: rendered_prompt.clone(),
-        vars: json_object(&var_ctx),
+        vars: rendered_vars.into_iter().collect(),
         params: serde_json::Map::new(),
         test: TestMeta {
             id: test_id.clone(),
@@ -649,13 +652,6 @@ fn summarize(cases: &[CaseResult]) -> RunSummary {
     }
     s.cost_usd = any_cost.then_some(cost);
     s
-}
-
-fn json_object(value: &Json) -> BTreeMap<String, Json> {
-    value
-        .as_object()
-        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-        .unwrap_or_default()
 }
 
 fn entry_to_response(entry: CacheEntry) -> ProviderResponse {

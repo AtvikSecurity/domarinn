@@ -132,6 +132,29 @@ async fn cache_hit_on_second_run() {
 }
 
 #[tokio::test]
+async fn cache_key_is_stable_across_unrelated_env_changes() {
+    // The request identity (cache key) must not include the process environment,
+    // or unrelated env changes (and different machines) would never share cache.
+    let yaml = fixed_output_suite(
+        "cached",
+        true,
+        "      - {type: contains, value: \"cached\"}",
+    );
+    let cache = MemCache::default();
+    let first = run_suite(&yaml, RunOptions::default(), &cache).await;
+    assert_eq!(first.summary.cache_hits, 0);
+
+    std::env::set_var("MEASURELLM_UNRELATED_ENV_PROBE", "changed-between-runs");
+    let second = run_suite(&yaml, RunOptions::default(), &cache).await;
+    std::env::remove_var("MEASURELLM_UNRELATED_ENV_PROBE");
+
+    assert_eq!(
+        second.summary.cache_hits, 1,
+        "an unrelated environment change must not bust the cache"
+    );
+}
+
+#[tokio::test]
 async fn no_cache_mode_never_hits() {
     let yaml = fixed_output_suite("x", true, "      - {type: contains, value: \"x\"}");
     let cache = MemCache::default();

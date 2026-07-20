@@ -41,6 +41,8 @@ jobs:
 
       # The release binary embeds the web UI, so build web/dist first.
       - uses: pnpm/action-setup@v4 # pin to SHA
+        with:
+          version: 11
       - uses: actions/setup-node@v4 # pin to SHA
         with:
           node-version: 22
