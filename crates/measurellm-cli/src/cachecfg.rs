@@ -46,13 +46,14 @@ fn layer_remote(local: Arc<dyn CacheBackend>, server_url: Option<&str>) -> Arc<d
         Some(u) => match RemoteHttpCache::new(&u, token) {
             Ok(remote) => Arc::new(LayeredCache::new(local, Arc::new(remote))),
             Err(e) => {
-                eprintln!("warning: remote cache unavailable ({e}); using local disk");
+                tracing::warn!(error = %e, backend = "http", "remote cache unavailable; using local disk");
                 local
             }
         },
         None => {
-            eprintln!(
-                "warning: cache backend 'http' needs a server URL (--server-url / MEASURELLM_SERVER_URL); using local disk"
+            tracing::warn!(
+                backend = "http",
+                "cache backend needs a server URL (--server-url / MEASURELLM_SERVER_URL); using local disk"
             );
             local
         }
@@ -63,7 +64,10 @@ fn layer_s3(local: Arc<dyn CacheBackend>, suite: &Suite) -> Arc<dyn CacheBackend
     let s3 = match suite.cache.as_ref().and_then(|c| c.s3.as_ref()) {
         Some(s) => s,
         None => {
-            eprintln!("warning: cache backend 's3' needs a cache.s3 config; using local disk");
+            tracing::warn!(
+                backend = "s3",
+                "cache backend needs a cache.s3 config; using local disk"
+            );
             return local;
         }
     };
@@ -77,7 +81,7 @@ fn layer_s3(local: Arc<dyn CacheBackend>, suite: &Suite) -> Arc<dyn CacheBackend
     match S3Cache::new(config) {
         Ok(remote) => Arc::new(LayeredCache::new(local, Arc::new(remote))),
         Err(e) => {
-            eprintln!("warning: S3 cache unavailable ({e}); using local disk");
+            tracing::warn!(error = %e, backend = "s3", "S3 cache unavailable; using local disk");
             local
         }
     }

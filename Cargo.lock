@@ -1316,6 +1316,7 @@ dependencies = [
  "serde_yaml_ng",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

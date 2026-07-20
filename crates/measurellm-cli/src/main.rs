@@ -26,6 +26,17 @@ pub mod exit {
     pub const INFRA: u8 = 3;
 }
 
+/// Report a final-outcome failure holding an [`anyhow::Error`] and return its
+/// exit code. `{err:#}` prints the whole `anyhow` context chain — plain
+/// `Display` shows only the outermost context (e.g. "opening sqlite db"),
+/// hiding the root cause (e.g. the underlying permissions error). Routing every
+/// `anyhow` outcome site through here keeps that chain visible and prevents a
+/// future `error: {e}` from silently dropping it.
+fn fail(code: u8, err: &anyhow::Error) -> u8 {
+    eprintln!("error: {err:#}");
+    code
+}
+
 #[derive(Parser)]
 #[command(name = "measurellm", version, about = "A declarative LLM eval harness")]
 struct Cli {
@@ -294,13 +305,7 @@ fn cmd_server(port: u16, data_dir: PathBuf) -> u8 {
     };
     match runtime.block_on(measurellm_server::serve(config)) {
         Ok(()) => exit::OK,
-        Err(e) => {
-            // `{e:#}` prints the whole anyhow context chain — the root cause
-            // (e.g. a permissions error under the "opening sqlite db" context)
-            // is invisible with plain Display.
-            eprintln!("server error: {e:#}");
-            exit::INFRA
-        }
+        Err(e) => fail(exit::INFRA, &e),
     }
 }
 

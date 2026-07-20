@@ -43,6 +43,26 @@ tests:
       - {type: contains, value: "goodbye"}
 "#;
 
+/// A passing suite that also names an `http` cache backend with no server URL,
+/// so `build_cache` degrades to local disk and emits a `WARN` diagnostic. The
+/// run itself still passes — the warning is a mid-flight fallback, not the
+/// command outcome.
+const CACHE_WARN_SUITE: &str = r#"
+version: 1
+suite: smoke
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"hello world\"}'"]
+cache:
+  backend: http
+tests:
+  - id: greet
+    vars: {}
+    assert:
+      - {type: contains, value: "hello"}
+"#;
+
 #[test]
 fn validate_ok() {
     let dir = tempfile::tempdir().unwrap();
@@ -170,4 +190,95 @@ fn log_format_json_flag_is_accepted() {
         .assert()
         .success()
         .stdout(predicate::str::contains("ok:"));
+}
+
+/// Hard invariant: results go to stdout, diagnostics to stderr. Even with a
+/// cache-fallback WARN in flight, stdout carries only the semantic results
+/// (PASS/FAIL) and no log-formatted lines leak into it.
+#[test]
+fn stdout_stays_pure_results_diagnostics_go_to_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), CACHE_WARN_SUITE);
+    let output = bin()
+        .arg("run")
+        .current_dir(dir.path())
+        .env_remove("MEASURELLM_SERVER_URL")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "cache-fallback run should pass");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Results land on stdout.
+    assert!(stdout.contains("PASS"), "stdout should carry results");
+    // No log lines pollute stdout.
+    assert!(
+        !stdout.contains(" WARN ") && !stdout.contains(" INFO "),
+        "stdout must not contain log-level tokens; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("using local disk"),
+        "the cache diagnostic must not appear on stdout; got:\n{stdout}"
+    );
+    // The diagnostic itself lands on stderr as a log line.
+    assert!(
+        stderr.contains("using local disk"),
+        "the cache diagnostic should appear on stderr; got:\n{stderr}"
+    );
+}
+
+/// With `--log-format json`, every stderr line is a JSON object and the cache
+/// fallback surfaces as a structured `WARN` event. This proves the print
+/// conversion end-to-end: an `eprintln!` warning could never satisfy this.
+#[test]
+fn json_log_format_emits_structured_warn_on_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), CACHE_WARN_SUITE);
+    let output = bin()
+        .args(["--log-format", "json", "run"])
+        .current_dir(dir.path())
+        .env_remove("MEASURELLM_SERVER_URL")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "cache-fallback run should pass");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(!lines.is_empty(), "expected at least one stderr log line");
+    let mut saw_cache_warn = false;
+    for line in &lines {
+        let value: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("stderr line is not JSON ({e}): {line}"));
+        if value["level"] == "WARN"
+            && value["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("using local disk"))
+        {
+            saw_cache_warn = true;
+        }
+    }
+    assert!(
+        saw_cache_warn,
+        "expected a JSON WARN line for the cache fallback; got:\n{stderr}"
+    );
+}
+
+/// `RUST_LOG` replaces the default filter entirely, so `RUST_LOG=off` silences
+/// the cache-fallback WARN. Converted diagnostics honor the filter — an
+/// `eprintln!` would print regardless.
+#[test]
+fn rust_log_off_silences_cache_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), CACHE_WARN_SUITE);
+    let output = bin()
+        .arg("run")
+        .current_dir(dir.path())
+        .env("RUST_LOG", "off")
+        .env_remove("MEASURELLM_SERVER_URL")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "cache-fallback run should pass");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("using local disk"),
+        "RUST_LOG=off must suppress the cache WARN diagnostic; got:\n{stderr}"
+    );
 }

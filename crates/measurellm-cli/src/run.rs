@@ -144,7 +144,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>) -> u8 {
     };
 
     if let Err(e) = output::persist(&result) {
-        eprintln!("warning: could not persist run: {e}");
+        tracing::warn!(error = %e, "could not persist run");
     }
 
     let formats = if args.format.is_empty() {
@@ -170,19 +170,19 @@ pub fn execute(args: RunArgs, server_url: Option<String>) -> u8 {
                 regressed = d.has_regression();
                 comparison = Some(d);
             }
-            Err(e) => eprintln!("warning: --against baseline unavailable: {e}"),
+            Err(e) => tracing::warn!(error = %e, "--against baseline unavailable"),
         }
     }
 
     if let Some(path) = &args.summary_md {
         if let Err(e) = diffcmd::write_summary_md(path, &result, comparison.as_ref()) {
-            eprintln!("warning: could not write summary: {e}");
+            tracing::warn!(error = %e, "could not write summary");
         }
     }
 
     if args.share {
         if let Err(e) = crate::share::upload_run(&result, server_url.as_deref(), false) {
-            eprintln!("warning: share failed: {e}");
+            tracing::warn!(error = %e, "share failed");
         }
     }
 
