@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useRuns } from "@/api/queries";
-import type { RunSummaryRow } from "@/api/types";
+import type { RunListItem } from "@/api";
 import { parseRunsFilters } from "@/lib/filters";
 import {
   formatCost,
   formatDuration,
   formatRelative,
   formatTokens,
+  parseTimestamp,
   passRate,
 } from "@/lib/format";
 import { RunsFilterBar } from "@/components/RunsFilterBar";
@@ -20,43 +21,49 @@ import { Button } from "@/components/ui/Button";
 
 /** From a pair of selected run ids, resolve which is base (older) / head (newer). */
 function comparePair(
-  runs: RunSummaryRow[],
+  runs: RunListItem[],
   selected: string[],
 ): { baseId: string; headId: string } | null {
   if (selected.length !== 2) return null;
   const picked = runs.filter((r) => selected.includes(r.id));
   if (picked.length !== 2) return null;
-  const [older, newer] = [...picked].sort((a, b) => a.created_at - b.created_at);
+  const [older, newer] = [...picked].sort(
+    (a, b) => parseTimestamp(a.created_at) - parseTimestamp(b.created_at),
+  );
   return { baseId: older.id, headId: newer.id };
 }
 
 interface Group {
   key: string;
-  project: string;
-  suite: string;
-  runs: RunSummaryRow[]; // newest first
+  project: string | null;
+  suite: string | null;
+  runs: RunListItem[]; // newest first
   series: number[]; // pass rate oldest -> newest
   latest: number;
 }
 
-function groupRuns(runs: RunSummaryRow[]): Group[] {
-  const map = new Map<string, RunSummaryRow[]>();
+function groupRuns(runs: RunListItem[]): Group[] {
+  const map = new Map<string, RunListItem[]>();
   for (const r of runs) {
     const key = `${r.project}/${r.suite}`;
     (map.get(key) ?? map.set(key, []).get(key)!).push(r);
   }
   const groups: Group[] = [];
   for (const [key, list] of map) {
-    const byDateAsc = [...list].sort((a, b) => a.created_at - b.created_at);
+    const byDateAsc = [...list].sort(
+      (a, b) => parseTimestamp(a.created_at) - parseTimestamp(b.created_at),
+    );
     groups.push({
       key,
       project: list[0].project,
       suite: list[0].suite,
-      runs: [...list].sort((a, b) => b.created_at - a.created_at),
+      runs: [...list].sort(
+        (a, b) => parseTimestamp(b.created_at) - parseTimestamp(a.created_at),
+      ),
       series: byDateAsc.map(
         (r) => passRate(r.pass_count, r.fail_count, r.error_count) ?? 0,
       ),
-      latest: Math.max(...list.map((r) => r.created_at)),
+      latest: Math.max(...list.map((r) => parseTimestamp(r.created_at))),
     });
   }
   return groups.sort((a, b) => b.latest - a.latest);

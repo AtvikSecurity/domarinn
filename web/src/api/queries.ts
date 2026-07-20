@@ -6,22 +6,24 @@ import {
 } from "@tanstack/react-query";
 import { apiRequest } from "./client";
 import type {
-  AdminUser,
-  ApiKey,
-  ApiKeyCreated,
+  ApiKeyCreatedResponse,
+  ApiKeyListResponse,
   AuthScope,
-  CacheStats,
-  CaseDetail,
-  CasesResponse,
-  CompareResult,
-  Meta,
+  CacheStatsResponse,
+  CaseListResponse,
+  CaseResult,
+  CompareResponse,
+  MetaResponse,
   MeResponse,
   ProjectsResponse,
+  PruneResponse,
   Role,
-  RunDetailResult,
-  RunsResponse,
+  RunDetailResponse,
+  RunListResponse,
   SuitesResponse,
-} from "./types";
+  UserListResponse,
+  UserView,
+} from "@/api";
 import type { CaseFilters, RunsFilters } from "@/lib/filters";
 
 export const qk = {
@@ -43,7 +45,7 @@ export const qk = {
 export function useMeta() {
   return useQuery({
     queryKey: qk.meta,
-    queryFn: () => apiRequest<Meta>("/meta"),
+    queryFn: () => apiRequest<MetaResponse>("/meta"),
     staleTime: Infinity,
   });
 }
@@ -62,19 +64,21 @@ export function useRuns(filters: RunsFilters) {
     queryKey: qk.runs(filters),
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
-      apiRequest<RunsResponse>("/runs", {
+      apiRequest<RunListResponse>("/runs", {
         params: { ...filters, limit: 50, cursor: pageParam },
         signal,
       }),
-    getNextPageParam: (last) => last.next_cursor,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
   });
 }
 
-export function useRun(id: string) {
+export function useRun(id: string, opts: { enabled?: boolean } = {}) {
+  const enabled = (opts.enabled ?? true) && !!id;
   return useQuery({
     queryKey: qk.run(id),
     queryFn: ({ signal }) =>
-      apiRequest<RunDetailResult>(`/runs/${encodeURIComponent(id)}`, { signal }),
+      apiRequest<RunDetailResponse>(`/runs/${encodeURIComponent(id)}`, { signal }),
+    enabled,
   });
 }
 
@@ -86,11 +90,11 @@ export function useRunCases(id: string, filters: CaseFilters) {
     queryKey: qk.cases(id, serverFilters),
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
-      apiRequest<CasesResponse>(`/runs/${encodeURIComponent(id)}/cases`, {
+      apiRequest<CaseListResponse>(`/runs/${encodeURIComponent(id)}/cases`, {
         params: { ...serverFilters, limit: 250, cursor: pageParam },
         signal,
       }),
-    getNextPageParam: (last) => last.next_cursor,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
   });
 }
 
@@ -98,7 +102,7 @@ export function useCaseDetail(id: string, caseKey: string | undefined) {
   return useQuery({
     queryKey: qk.caseDetail(id, caseKey ?? ""),
     queryFn: ({ signal }) =>
-      apiRequest<CaseDetail>(
+      apiRequest<CaseResult>(
         `/runs/${encodeURIComponent(id)}/cases/${encodeURIComponent(caseKey!)}`,
         { signal },
       ),
@@ -111,7 +115,7 @@ export function useCompare(id: string, other?: string) {
   return useQuery({
     queryKey: qk.compare(id, other),
     queryFn: ({ signal }) =>
-      apiRequest<CompareResult>(
+      apiRequest<CompareResponse>(
         `/runs/${encodeURIComponent(id)}/compare${suffix}`,
         { signal },
       ),
@@ -157,14 +161,14 @@ export function useSetBaseline(project: string, suite: string) {
 export function useCacheStats() {
   return useQuery({
     queryKey: qk.cacheStats,
-    queryFn: ({ signal }) => apiRequest<CacheStats>("/cache/stats", { signal }),
+    queryFn: ({ signal }) => apiRequest<CacheStatsResponse>("/cache/stats", { signal }),
   });
 }
 
 export function usePruneCache() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: () => apiRequest("/cache/prune", { method: "POST" }),
+    mutationFn: () => apiRequest<PruneResponse>("/cache/prune", { method: "POST" }),
     onSuccess: () => client.invalidateQueries({ queryKey: qk.cacheStats }),
   });
 }
@@ -174,7 +178,8 @@ export function usePruneCache() {
 export function useApiKeys(enabled = true) {
   return useQuery({
     queryKey: qk.apiKeys,
-    queryFn: ({ signal }) => apiRequest<ApiKey[]>("/apikeys", { signal }),
+    queryFn: ({ signal }) =>
+      apiRequest<ApiKeyListResponse>("/apikeys", { signal }).then((r) => r.keys),
     enabled,
   });
 }
@@ -183,7 +188,7 @@ export function useCreateApiKey() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (input: { name: string; scope?: AuthScope }) =>
-      apiRequest<ApiKeyCreated>("/apikeys", { method: "POST", body: input }),
+      apiRequest<ApiKeyCreatedResponse>("/apikeys", { method: "POST", body: input }),
     onSuccess: () => client.invalidateQueries({ queryKey: qk.apiKeys }),
   });
 }
@@ -202,7 +207,8 @@ export function useRevokeApiKey() {
 export function useUsers(enabled = true) {
   return useQuery({
     queryKey: qk.users,
-    queryFn: ({ signal }) => apiRequest<AdminUser[]>("/users", { signal }),
+    queryFn: ({ signal }) =>
+      apiRequest<UserListResponse>("/users", { signal }).then((r) => r.users),
     enabled,
   });
 }
@@ -211,7 +217,7 @@ export function useCreateUser() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (input: { username: string; password: string; role: Role }) =>
-      apiRequest<AdminUser>("/users", { method: "POST", body: input }),
+      apiRequest<UserView>("/users", { method: "POST", body: input }),
     onSuccess: () => client.invalidateQueries({ queryKey: qk.users }),
   });
 }
@@ -223,7 +229,7 @@ export function useUpdateUser() {
       id: string;
       patch: { role?: Role; disabled?: boolean; password?: string };
     }) =>
-      apiRequest<AdminUser>(`/users/${encodeURIComponent(input.id)}`, {
+      apiRequest<UserView>(`/users/${encodeURIComponent(input.id)}`, {
         method: "PATCH",
         body: input.patch,
       }),

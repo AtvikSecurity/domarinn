@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyDelta, isFailing } from "./compare";
-import type { CaseStatus } from "@/api/types";
+import type { CaseStatus } from "@/api";
 
 describe("isFailing", () => {
   it("treats fail and error as failing, pass/skip/null as not", () => {
@@ -21,7 +21,7 @@ describe("classifyDelta", () => {
     ["fail", "fail", "still_failing"],
     ["fail", "error", "still_failing"],
     ["error", "error", "still_failing"],
-    ["pass", "pass", "unchanged"],
+    ["pass", "pass", "still_passing"],
     ["skip", "skip", "unchanged"],
     [null, "pass", "added"],
     [null, "fail", "added"],

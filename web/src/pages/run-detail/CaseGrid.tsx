@@ -7,7 +7,7 @@ import {
   type ColumnDef,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { CaseRow } from "@/api/types";
+import type { CaseListItem } from "@/api";
 import { AssertDot, StatusBadge } from "@/components/StatusBadge";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { formatCost, formatLatency, formatTokens } from "@/lib/format";
@@ -18,7 +18,7 @@ const ASSERT_W = 92;
 const NUM_W = 84;
 
 interface CaseGridProps {
-  cases: CaseRow[];
+  cases: CaseListItem[];
   assertLabels: string[];
   selectedKey?: string;
   onSelect: (caseKey: string) => void;
@@ -28,7 +28,7 @@ interface CaseGridProps {
   totalCount?: number;
 }
 
-const col = createColumnHelper<CaseRow>();
+const col = createColumnHelper<CaseListItem>();
 
 export function CaseGrid({
   cases,
@@ -40,7 +40,7 @@ export function CaseGrid({
   isFetchingNextPage,
   totalCount,
 }: CaseGridProps) {
-  const columns = useMemo<ColumnDef<CaseRow, any>[]>(() => {
+  const columns = useMemo<ColumnDef<CaseListItem, any>[]>(() => {
     const assertCols = assertLabels.map((label) =>
       col.display({
         id: `assert:${label}`,

@@ -10,20 +10,20 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/api/client";
 import { qk, useMe, useMeta } from "@/api/queries";
-import type { AuthResponse, Meta, MeResponse } from "@/api/types";
+import type { AuthSessionResponse, MetaResponse, MeResponse } from "@/api";
 import { clearToken, getToken, onAuthChange, setToken } from "@/lib/auth";
 import { deriveAuthView, type AuthView } from "@/lib/authz";
 import { authTokenReducer, initialAuthTokenState } from "./reducer";
 
 interface AuthContextValue {
   view: AuthView;
-  meta: Meta | undefined;
+  meta: MetaResponse | undefined;
   me: MeResponse | undefined;
   token: string | null;
   isLoading: boolean;
   refetchMe: () => void;
-  login: (username: string, password: string) => Promise<AuthResponse>;
-  setup: (username: string, password: string) => Promise<AuthResponse>;
+  login: (username: string, password: string) => Promise<AuthSessionResponse>;
+  setup: (username: string, password: string) => Promise<AuthSessionResponse>;
   logout: () => Promise<void>;
 }
 
@@ -53,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(
     async (username: string, password: string) => {
-      const res = await apiRequest<AuthResponse>("/auth/login", {
+      const res = await apiRequest<AuthSessionResponse>("/auth/login", {
         method: "POST",
         body: { username, password },
         skipAuthRedirect: true,
@@ -67,7 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const setup = useCallback(
     async (username: string, password: string) => {
-      const res = await apiRequest<AuthResponse>("/auth/setup", {
+      const res = await apiRequest<AuthSessionResponse>("/auth/setup", {
         method: "POST",
         body: { username, password },
         skipAuthRedirect: true,

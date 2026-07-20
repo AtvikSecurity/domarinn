@@ -4,12 +4,12 @@
 import type {
   AuthMode,
   AuthScope,
-  AuthSource,
-  AuthUser,
-  Meta,
+  IdentitySource,
+  MetaResponse,
   MeResponse,
+  MeUser,
   Role,
-} from "@/api/types";
+} from "@/api";
 
 /** Ordering of scopes; a higher rank subsumes the lower ones. */
 export const SCOPE_RANK: Record<AuthScope, number> = {
@@ -51,22 +51,22 @@ export function canWrite(
   mode: AuthMode | undefined,
 ): boolean {
   if (mode === "open") return true;
-  return scopeAtLeast(me?.scope, "write");
+  return scopeAtLeast(me?.scope ?? undefined, "write");
 }
 
 /** Admin actions always require an authenticated principal with admin scope. */
 export function canAdmin(me: MeResponse | undefined): boolean {
-  return !!me?.authenticated && scopeAtLeast(me?.scope, "admin");
+  return !!me?.authenticated && scopeAtLeast(me?.scope ?? undefined, "admin");
 }
 
 /** A flattened, presentation-ready view of the current auth state. */
 export interface AuthView {
   authMode?: AuthMode;
   authenticated: boolean;
-  user?: AuthUser;
+  user?: MeUser;
   role?: Role;
   scope: AuthScope;
-  source?: AuthSource;
+  source?: IdentitySource;
   setupRequired: boolean;
   canWrite: boolean;
   canAdmin: boolean;
@@ -79,7 +79,7 @@ export interface AuthView {
 
 /** Derive the presentation view from the two server truths: meta + me. */
 export function deriveAuthView(
-  meta: Meta | undefined,
+  meta: MetaResponse | undefined,
   me: MeResponse | undefined,
 ): AuthView {
   const authMode = meta?.auth_mode;
@@ -89,7 +89,7 @@ export function deriveAuthView(
   return {
     authMode,
     authenticated,
-    user: me?.user,
+    user: me?.user ?? undefined,
     role: me?.user?.role,
     scope,
     source,

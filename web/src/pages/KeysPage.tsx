@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from "@/api/queries";
-import type { ApiKey, ApiKeyCreated, AuthScope } from "@/api/types";
+import type { ApiKeyCreatedResponse, ApiKeyView, AuthScope } from "@/api";
 import { useAuth } from "@/auth/AuthProvider";
 import { scopesAtMost } from "@/lib/authz";
 import { formatDate, formatRelative } from "@/lib/format";
@@ -24,8 +24,8 @@ export function KeysPage() {
 
   const [name, setName] = useState("");
   const [scope, setScope] = useState<AuthScope>("read");
-  const [secret, setSecret] = useState<ApiKeyCreated | null>(null);
-  const [revoking, setRevoking] = useState<ApiKey | null>(null);
+  const [secret, setSecret] = useState<ApiKeyCreatedResponse | null>(null);
+  const [revoking, setRevoking] = useState<ApiKeyView | null>(null);
 
   if (isLoading) {
     return (

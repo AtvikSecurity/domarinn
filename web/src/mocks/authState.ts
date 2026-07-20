@@ -6,17 +6,20 @@
 // unauthenticated request resolves to a static admin principal. This means the
 // existing e2e specs (which never log in) keep working — they browse as an
 // implicit admin, exactly as an `open`-mode dev server would behave.
+//
+// Every function that models a response wire shape returns (or is wrapped
+// into, by the mock handler) the exact generated response type — see `@/api`.
 
 import type {
-  AdminUser,
-  ApiKey,
-  ApiKeyCreated,
-  AuthResponse,
+  ApiKeyCreatedResponse,
+  ApiKeyView,
   AuthScope,
-  AuthUser,
+  AuthSessionResponse,
   MeResponse,
+  MeUser,
   Role,
-} from "@/api/types";
+  UserView,
+} from "@/api";
 import { scopeAtLeast } from "@/lib/authz";
 
 interface UserRecord {
@@ -25,7 +28,7 @@ interface UserRecord {
   password: string;
   role: Role;
   disabled: boolean;
-  created_at: number;
+  created_at: number; // epoch millis internally; RFC3339 on the wire
 }
 
 interface ApiKeyRecord {
@@ -52,6 +55,10 @@ interface MockAuthState {
 const SEED_TIME = Date.UTC(2026, 5, 1, 12, 0, 0);
 const SETUP_FLAG = "measurellm.mock.setup";
 const STATIC_ADMIN_ID = "u_admin";
+
+function toIso(ms: number): string {
+  return new Date(ms).toISOString();
+}
 
 function seededState(): MockAuthState {
   const users = new Map<string, UserRecord>();
@@ -102,28 +109,28 @@ function scopeForRole(role: Role): AuthScope {
   return role === "admin" ? "admin" : "write";
 }
 
-function pubUser(u: UserRecord): AuthUser {
+function pubUser(u: UserRecord): MeUser {
   return { id: u.id, username: u.username, role: u.role };
 }
 
-function pubAdminUser(u: UserRecord): AdminUser {
+function pubUserView(u: UserRecord): UserView {
   return {
     id: u.id,
     username: u.username,
     role: u.role,
     disabled: u.disabled,
-    created_at: u.created_at,
+    created_at: toIso(u.created_at),
   };
 }
 
-function pubKey(k: ApiKeyRecord): ApiKey {
+function pubKey(k: ApiKeyRecord): ApiKeyView {
   return {
     id: k.id,
     name: k.name,
     prefix: k.prefix,
     scope: k.scope,
-    created_at: k.created_at,
-    last_used_at: k.last_used_at ?? null,
+    created_at: toIso(k.created_at),
+    last_used_at: k.last_used_at !== undefined ? toIso(k.last_used_at) : null,
     revoked: k.revoked,
   };
 }
@@ -190,7 +197,7 @@ export function resolveAuth(token: string | null): ResolvedAuth {
         return {
           me: {
             authenticated: true,
-            user: owner ? pubUser(owner) : undefined,
+            user: owner ? pubUser(owner) : null,
             source: "apikey",
             scope: k.scope,
           },
@@ -199,13 +206,13 @@ export function resolveAuth(token: string | null): ResolvedAuth {
       }
     }
     // A token we don't recognise: report unauthenticated (never 401 from /me).
-    return { me: { authenticated: false, source: "session", scope: "read" } };
+    return { me: { authenticated: false, user: null, source: "anonymous", scope: null } };
   }
 
   // No token. During first-run setup nobody is signed in; otherwise fall back
   // to the implicit static admin (dev/open-mode default).
   if (setupRequired()) {
-    return { me: { authenticated: false, source: "session", scope: "read" } };
+    return { me: { authenticated: false, user: null, source: "anonymous", scope: null } };
   }
   const admin = state.users.get(STATIC_ADMIN_ID);
   return {
@@ -221,15 +228,15 @@ export function resolveAuth(token: string | null): ResolvedAuth {
 
 // --- auth actions ----------------------------------------------------------
 
-export function login(username: string, password: string): AuthResponse | null {
+export function login(username: string, password: string): AuthSessionResponse | null {
   const u = findByUsername(username);
   if (!u || u.disabled || u.password !== password) return null;
   const token = randomToken("sess");
   state.sessions.set(token, u.id);
-  return { token, user: pubUser(u) };
+  return { token, user: pubUserView(u) };
 }
 
-export function setup(username: string, password: string): AuthResponse {
+export function setup(username: string, password: string): AuthSessionResponse {
   const id = nextId("u");
   const rec: UserRecord = {
     id,
@@ -243,7 +250,7 @@ export function setup(username: string, password: string): AuthResponse {
   state.setupCompleted = true;
   const token = randomToken("sess");
   state.sessions.set(token, id);
-  return { token, user: pubUser(rec) };
+  return { token, user: pubUserView(rec) };
 }
 
 export function logout(token: string | null): void {
@@ -252,7 +259,7 @@ export function logout(token: string | null): void {
 
 // --- api keys --------------------------------------------------------------
 
-export function listApiKeys(ownerId: string | undefined): ApiKey[] {
+export function listApiKeys(ownerId: string | undefined): ApiKeyView[] {
   return [...state.apikeys.values()]
     .filter((k) => !ownerId || k.ownerId === ownerId)
     .sort((a, b) => b.created_at - a.created_at)
@@ -264,7 +271,7 @@ export function createApiKey(
   name: string | undefined,
   scope: AuthScope | undefined,
   callerScope: AuthScope,
-): ApiKeyCreated {
+): ApiKeyCreatedResponse {
   const wanted: AuthScope = scope ?? "read";
   // Clamp the granted scope to at most the caller's own scope.
   const granted: AuthScope = scopeAtLeast(callerScope, wanted)
@@ -284,14 +291,7 @@ export function createApiKey(
     secret,
   };
   state.apikeys.set(id, rec);
-  return {
-    id,
-    key: secret,
-    prefix,
-    name: rec.name,
-    scope: granted,
-    created_at: rec.created_at,
-  };
+  return { key: secret, ...pubKey(rec) };
 }
 
 export function revokeApiKey(
@@ -307,17 +307,17 @@ export function revokeApiKey(
 
 // --- users (admin) ---------------------------------------------------------
 
-export function listUsers(): AdminUser[] {
+export function listUsers(): UserView[] {
   return [...state.users.values()]
     .sort((a, b) => a.created_at - b.created_at)
-    .map(pubAdminUser);
+    .map(pubUserView);
 }
 
 export function createUser(
   username: string | undefined,
   password: string | undefined,
   role: Role | undefined,
-): AdminUser | null {
+): UserView | null {
   if (!username || findByUsername(username)) return null;
   const id = nextId("u");
   const rec: UserRecord = {
@@ -329,7 +329,7 @@ export function createUser(
     created_at: Date.now(),
   };
   state.users.set(id, rec);
-  return pubAdminUser(rec);
+  return pubUserView(rec);
 }
 
 export interface UserPatch {
@@ -338,7 +338,7 @@ export interface UserPatch {
   password?: string;
 }
 
-export type UserMutationResult = AdminUser | "last_admin" | "not_found";
+export type UserMutationResult = UserView | "last_admin" | "not_found";
 
 export function updateUser(id: string, patch: UserPatch): UserMutationResult {
   const u = state.users.get(id);
@@ -353,7 +353,7 @@ export function updateUser(id: string, patch: UserPatch): UserMutationResult {
   if (patch.role !== undefined) u.role = patch.role === "admin" ? "admin" : "member";
   if (patch.disabled !== undefined) u.disabled = !!patch.disabled;
   if (patch.password) u.password = patch.password;
-  return pubAdminUser(u);
+  return pubUserView(u);
 }
 
 export function deleteUser(id: string): UserMutationResult {
@@ -363,5 +363,5 @@ export function deleteUser(id: string): UserMutationResult {
     return "last_admin";
   }
   state.users.delete(id);
-  return pubAdminUser(u);
+  return pubUserView(u);
 }

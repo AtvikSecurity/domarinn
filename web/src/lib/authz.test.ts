@@ -7,15 +7,17 @@ import {
   scopeAtLeast,
   scopesAtMost,
 } from "./authz";
-import type { AuthMode, Meta, MeResponse } from "@/api/types";
+import type { AuthMode, MetaResponse, MeResponse } from "@/api";
 
-function meta(auth_mode: AuthMode, setup_required = false): Meta {
+function meta(auth_mode: AuthMode, setup_required = false): MetaResponse {
   return {
     name: "measurellm",
     version: "test",
     auth_mode,
     setup_required,
     supported_schema_versions: [1],
+    result_schema_version: 1,
+    cache: { max_entry_bytes: 1_048_576, max_bytes: 1_073_741_824, max_age_days: 30 },
   };
 }
 
@@ -35,6 +37,7 @@ const sessionMember: MeResponse = {
 
 const anonymous: MeResponse = {
   authenticated: false,
+  user: null,
   source: "session",
   scope: "read",
 };
@@ -118,5 +121,30 @@ describe("deriveAuthView", () => {
     expect(view.setupRequired).toBe(true);
     expect(view.scope).toBe("read");
     expect(view.authenticated).toBe(false);
+  });
+
+  // Regression guard: the real `/auth/me` response always carries `user` and
+  // `scope` as explicit `null` (never omitted, never `undefined`) for an
+  // anonymous caller, and `source` can be the literal string "anonymous"
+  // (see generated MeResponse.ts / IdentitySource.ts). The hand-written mock
+  // types never modeled this; make sure the view degrades gracefully instead
+  // of throwing on `me.user.role` or similar.
+  it("handles the wire-accurate anonymous shape (null user/scope, source: anonymous)", () => {
+    const wireAnonymous: MeResponse = {
+      authenticated: false,
+      user: null,
+      source: "anonymous",
+      scope: null,
+    };
+    const view = deriveAuthView(meta("protect-writes"), wireAnonymous);
+    expect(view.authenticated).toBe(false);
+    expect(view.user).toBeUndefined();
+    expect(view.role).toBeUndefined();
+    expect(view.scope).toBe("read");
+    expect(view.source).toBe("anonymous");
+    expect(view.canWrite).toBe(false);
+    expect(view.canAdmin).toBe(false);
+    expect(view.needsLogin).toBe(true);
+    expect(view.hasRealSession).toBe(false);
   });
 });

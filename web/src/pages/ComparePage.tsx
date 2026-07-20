@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCompare, useRun, useRuns } from "@/api/queries";
-import type { CaseStatus, CompareRow, CompareSummary } from "@/api/types";
+import type { CaseStatus, CompareCaseRow, CompareSummary } from "@/api";
 import { DELTA_LABEL } from "@/lib/compare";
 import { mergeParams } from "@/lib/filters";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -34,11 +34,15 @@ export function ComparePage() {
   const navigate = useNavigate();
   const activeDelta = params.get("delta") as ChipKey | null;
 
-  const run = useRun(id);
   const compare = useCompare(id, other);
+  // The real CompareResponse carries `base`/`head` as plain run ids, not
+  // embedded run rows (see generated CompareResponse.ts) — fetch each run's
+  // row via the existing `useRun` hook once the compare response resolves.
+  const baseRun = useRun(compare.data?.base ?? "", { enabled: !!compare.data });
+  const headRun = useRun(compare.data?.head ?? "", { enabled: !!compare.data });
   const suiteRuns = useRuns({
-    project: run.data?.project,
-    suite: run.data?.suite,
+    project: headRun.data?.project ?? undefined,
+    suite: headRun.data?.suite ?? undefined,
   });
 
   const rows = useMemo(() => {
@@ -58,8 +62,17 @@ export function ComparePage() {
   if (compare.isPending) return <CenteredSpinner label="Computing comparison…" />;
   if (compare.isError)
     return <ErrorState error={compare.error} onRetry={() => compare.refetch()} />;
+  if (baseRun.isPending || headRun.isPending) {
+    return <CenteredSpinner label="Loading runs…" />;
+  }
+  if (baseRun.isError)
+    return <ErrorState error={baseRun.error} onRetry={() => baseRun.refetch()} />;
+  if (headRun.isError)
+    return <ErrorState error={headRun.error} onRetry={() => headRun.refetch()} />;
 
-  const { base, head, summary } = compare.data;
+  const { summary } = compare.data;
+  const base = baseRun.data;
+  const head = headRun.data;
   const runOptions = suiteRuns.data?.pages.flatMap((p) => p.runs) ?? [];
 
   return (
@@ -186,7 +199,7 @@ function DeltaTable({
 }: {
   baseId: string;
   headId: string;
-  rows: CompareRow[];
+  rows: CompareCaseRow[];
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<string | null>(null);

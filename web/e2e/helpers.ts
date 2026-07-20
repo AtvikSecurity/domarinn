@@ -6,13 +6,14 @@ import type { Page } from "@playwright/test";
 /** The featured ~500-case "money" run (latest run of checkout-agent/regression). */
 export const MONEY_RUN = "checkout-agent-regression-12";
 
-/** Assert labels rendered as columns for the regression suite. */
+/** Assert labels (real AssertName kinds) rendered as columns for the
+ *  regression suite — see SUITE_DEFS in src/mocks/fixtures.ts. */
 export const REGRESSION_ASSERT_LABELS = [
-  "schema_valid",
-  "answer_match",
-  "no_pii",
-  "tone",
-  "latency_budget",
+  "is-json",
+  "contains",
+  "llm-rubric",
+  "latency",
+  "cost",
 ] as const;
 
 /** Read the `?case=` value out of the current URL, if present. */

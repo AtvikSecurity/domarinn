@@ -5,7 +5,7 @@ import {
   useUpdateUser,
   useUsers,
 } from "@/api/queries";
-import type { AdminUser, Role } from "@/api/types";
+import type { Role, UserView } from "@/api";
 import { ApiError } from "@/api/client";
 import { useAuthView } from "@/auth/AuthProvider";
 import { formatDate } from "@/lib/format";
@@ -40,10 +40,10 @@ export function AdminPage() {
   const deleteUser = useDeleteUser();
 
   const [banner, setBanner] = useState<string | null>(null);
-  const [resetting, setResetting] = useState<AdminUser | null>(null);
-  const [deleting, setDeleting] = useState<AdminUser | null>(null);
+  const [resetting, setResetting] = useState<UserView | null>(null);
+  const [deleting, setDeleting] = useState<UserView | null>(null);
 
-  async function changeRole(user: AdminUser, role: Role) {
+  async function changeRole(user: UserView, role: Role) {
     setBanner(null);
     try {
       await updateUser.mutateAsync({ id: user.id, patch: { role } });
@@ -52,7 +52,7 @@ export function AdminPage() {
     }
   }
 
-  async function toggleDisabled(user: AdminUser) {
+  async function toggleDisabled(user: UserView) {
     setBanner(null);
     try {
       await updateUser.mutateAsync({
@@ -298,7 +298,7 @@ function ResetPasswordModal({
   onClose,
   onError,
 }: {
-  user: AdminUser | null;
+  user: UserView | null;
   onClose: () => void;
   onError: (message: string) => void;
 }) {

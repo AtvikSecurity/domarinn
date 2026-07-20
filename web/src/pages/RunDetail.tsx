@@ -56,22 +56,10 @@ export function RunDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  const availableTags = useMemo(() => {
-    const set = new Set<string>();
-    for (const c of cases) for (const t of c.tags) set.add(t);
-    return [...set].sort();
-  }, [cases]);
-
   function setStatus(value: string) {
     setParams(mergeParams(params, { status: value || undefined }), {
       replace: true,
     });
-  }
-  function toggleTag(tag: string) {
-    setParams(
-      mergeParams(params, { tag: filters.tag === tag ? undefined : tag }),
-      { replace: true },
-    );
   }
   function selectCase(caseKey: string) {
     setParams(mergeParams(params, { case: caseKey }));
@@ -184,25 +172,6 @@ export function RunDetail() {
             </button>
           ))}
         </div>
-
-        {availableTags.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-1">
-            {availableTags.map((t) => (
-              <button
-                key={t}
-                onClick={() => toggleTag(t)}
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-xs ring-1 ring-inset transition-colors",
-                  filters.tag === t
-                    ? "bg-accent/12 text-accent ring-accent/30"
-                    : "text-muted ring-border hover:text-fg",
-                )}
-              >
-                #{t}
-              </button>
-            ))}
-          </div>
-        ) : null}
 
         <div className="ml-auto">
           <input

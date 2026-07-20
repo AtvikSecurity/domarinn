@@ -15,7 +15,7 @@ test.describe("Run detail", () => {
     const grid = page.getByRole("grid");
     await expect(grid).toBeVisible();
     await expect(
-      page.getByRole("columnheader", { name: "answer_match" }),
+      page.getByRole("columnheader", { name: "contains" }),
     ).toBeVisible();
 
     const dataRows = grid.getByRole("row").filter({ has: page.getByRole("gridcell") });
@@ -38,7 +38,7 @@ test.describe("Run detail", () => {
     await expect(page.getByText("case-0002")).toHaveCount(0);
   });
 
-  test("clicking a case opens the drawer with prompt, output and assert reasoning; deep-linkable", async ({
+  test("clicking a case opens the drawer with output and assert reasoning; deep-linkable", async ({
     page,
   }) => {
     await page.goto(`/runs/${MONEY_RUN}`);
@@ -62,13 +62,9 @@ test.describe("Run detail", () => {
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
 
-    // Rendered prompt.
-    await expect(
-      drawer.getByRole("heading", { name: "Rendered prompt" }),
-    ).toBeVisible();
-    await expect(drawer.getByText(/careful assistant/)).toBeVisible();
-
-    // Output.
+    // Output. Note: the real case-detail endpoint returns the stored
+    // `CaseResult` verbatim, which has no "rendered prompt" field, so the
+    // drawer no longer renders one (see generated CaseResult.ts).
     await expect(drawer.getByRole("heading", { name: "Output" })).toBeVisible();
     await expect(drawer.getByText(/"intent"/)).toBeVisible();
 
@@ -83,7 +79,7 @@ test.describe("Run detail", () => {
     const reopened = page.getByRole("dialog");
     await expect(reopened).toBeVisible();
     await expect(
-      reopened.getByRole("heading", { name: "Rendered prompt" }),
+      reopened.getByRole("heading", { name: "Output" }),
     ).toBeVisible();
     expect(caseParam(page)).toBe(openedCase);
   });

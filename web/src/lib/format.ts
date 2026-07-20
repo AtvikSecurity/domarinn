@@ -74,18 +74,34 @@ const dateFmt = new Intl.DateTimeFormat("en-US", {
   minute: "2-digit",
 });
 
-export function formatDate(epochMs: number | undefined | null): string {
-  if (epochMs === undefined || epochMs === null) return "-";
-  return dateFmt.format(new Date(epochMs));
+/**
+ * RFC3339 -> epoch millis. The server emits every timestamp field
+ * (`created_at`, `uploaded_at`, `last_used_at`, `last_run_at`,
+ * `oldest_entry_at`, ...) as an RFC3339 string; this is the one place that
+ * converts one to a number for date math (sorting, deltas) or formatting.
+ * Returns `NaN` for an unparseable string, same as the underlying
+ * `Date.parse` — never throws.
+ */
+export function parseTimestamp(iso: string): number {
+  return Date.parse(iso);
+}
+
+export function formatDate(iso: string | undefined | null): string {
+  if (!iso) return "-";
+  const ms = parseTimestamp(iso);
+  if (Number.isNaN(ms)) return "-";
+  return dateFmt.format(new Date(ms));
 }
 
 /** "3h ago", "2d ago" — coarse relative time for list rows. */
 export function formatRelative(
-  epochMs: number | undefined | null,
+  iso: string | undefined | null,
   now: number = Date.now(),
 ): string {
-  if (epochMs === undefined || epochMs === null) return "-";
-  const diff = now - epochMs;
+  if (!iso) return "-";
+  const ms = parseTimestamp(iso);
+  if (Number.isNaN(ms)) return "-";
+  const diff = now - ms;
   const abs = Math.abs(diff);
   const min = 60_000;
   const hour = 60 * min;
@@ -95,5 +111,5 @@ export function formatRelative(
   if (abs < hour) return `${Math.round(abs / min)}m ${suffix}`;
   if (abs < day) return `${Math.round(abs / hour)}h ${suffix}`;
   if (abs < 30 * day) return `${Math.round(abs / day)}d ${suffix}`;
-  return formatDate(epochMs);
+  return formatDate(iso);
 }

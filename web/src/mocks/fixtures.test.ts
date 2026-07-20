@@ -5,17 +5,23 @@ import {
   compareRuns,
   defaultCompareTarget,
   runCases,
-  summarizeRun,
+  runListItem,
 } from "./fixtures";
 import { classifyDelta } from "@/lib/compare";
+import { parseTimestamp } from "@/lib/format";
 
 describe("fixture dataset", () => {
   const runs = allRunSummaries();
 
-  it("exposes runs sorted newest-first", () => {
+  it("exposes runs sorted newest-first, with RFC3339 created_at", () => {
     expect(runs.length).toBeGreaterThan(20);
+    for (const r of runs) {
+      expect(Number.isNaN(parseTimestamp(r.created_at))).toBe(false);
+    }
     for (let i = 1; i < runs.length; i++) {
-      expect(runs[i - 1].created_at).toBeGreaterThanOrEqual(runs[i].created_at);
+      expect(parseTimestamp(runs[i - 1].created_at)).toBeGreaterThanOrEqual(
+        parseTimestamp(runs[i].created_at),
+      );
     }
   });
 
@@ -28,7 +34,7 @@ describe("fixture dataset", () => {
     expect(cases).toHaveLength(500);
 
     // Header counts must reconcile with the generated grid.
-    const summary = summarizeRun(id);
+    const summary = runListItem(id);
     const pass = cases.filter((c) => c.status === "pass").length;
     const fail = cases.filter((c) => c.status === "fail").length;
     const error = cases.filter((c) => c.status === "error").length;
@@ -39,26 +45,31 @@ describe("fixture dataset", () => {
     expect(pass + fail + error + skip).toBe(500);
   });
 
-  it("returns full case detail with prompt, output, and per-assert reasons", () => {
+  it("returns full case detail (a real CaseResult) with output and per-assert reasons", () => {
     const featured = runs.find((r) => r.case_count === 500)!;
     const key = runCases(featured.id)[0].case_key;
     const detail = caseDetail(featured.id, key);
     expect(detail).toBeTruthy();
-    expect(detail!.rendered_prompt).toBeTruthy();
     expect(typeof detail!.output).toBe("string");
     for (const a of detail!.asserts) {
       expect(a.reason.length).toBeGreaterThan(0);
       expect(typeof a.weight).toBe("number");
+      // `AssertResult.kind` must be a real AssertName, not a fabricated
+      // human label — this is what the wire (and the generated
+      // `CaseAssertLean`/`AssertResult` types) actually carries.
+      expect(typeof a.kind).toBe("string");
     }
   });
 
-  it("produces a compare whose summary matches per-row classification", () => {
+  it("produces a compare whose base/head are the plain run ids, matching per-row classification", () => {
     const head = runs.find((r) => r.case_count === 500)!;
     const base = defaultCompareTarget(head.id);
     expect(base).toBeTruthy();
 
     const result = compareRuns(base!, head.id)!;
     expect(result).toBeTruthy();
+    expect(result.base).toBe(base);
+    expect(result.head).toBe(head.id);
 
     let newlyFailing = 0;
     let newlyPassing = 0;

@@ -1,10 +1,27 @@
 // Fetch-level mock. When enabled, apiRequest routes here instead of the
 // network, so the whole app (and tests) runs against the fixture dataset with
 // no service worker and no backend.
+//
+// Every response constructed here matches the generated response type's wire
+// shape exactly — wrapped list envelopes (`{keys: [...]}`, `{users: [...]}`),
+// RFC3339 timestamps, etc. — so the mock exercises the same drift-prone paths
+// the real server does.
 
-import type { AuthScope, CaseRow, RunSummaryRow, Role } from "@/api/types";
+import type {
+  ApiKeyListResponse,
+  AuthScope,
+  CaseListResponse,
+  OkResponse,
+  PruneResponse,
+  Role,
+  RunListItem,
+  RunListResponse,
+  UserListResponse,
+} from "@/api";
 import { scopeAtLeast } from "@/lib/authz";
+import { parseTimestamp } from "@/lib/format";
 import * as fx from "./fixtures";
+import type { MockCaseRow } from "./fixtures";
 import * as auth from "./authState";
 
 let MOCK_FORCED: boolean | null = null;
@@ -69,13 +86,13 @@ function paginate<T>(
   return { page, next_cursor: next < items.length ? String(next) : undefined };
 }
 
-function derivedRunStatus(r: RunSummaryRow): string {
+function derivedRunStatus(r: RunListItem): string {
   if (r.error_count > 0) return "error";
   if (r.fail_count > 0) return "fail";
   return "pass";
 }
 
-function filterRuns(runs: RunSummaryRow[], p: URLSearchParams): RunSummaryRow[] {
+function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
   const project = p.get("project");
   const suite = p.get("suite");
   const tag = p.get("tag");
@@ -88,14 +105,14 @@ function filterRuns(runs: RunSummaryRow[], p: URLSearchParams): RunSummaryRow[] 
     if (suite && r.suite !== suite) return false;
     if (tag && !r.tags.includes(tag)) return false;
     if (branch && r.git_branch !== branch) return false;
-    if (since && r.created_at < Number(since)) return false;
-    if (until && r.created_at > Number(until)) return false;
+    if (since && parseTimestamp(r.created_at) < Number(since)) return false;
+    if (until && parseTimestamp(r.created_at) > Number(until)) return false;
     if (status && derivedRunStatus(r) !== status) return false;
     return true;
   });
 }
 
-function filterCases(cases: CaseRow[], p: URLSearchParams): CaseRow[] {
+function filterCases(cases: MockCaseRow[], p: URLSearchParams): MockCaseRow[] {
   const status = p.get("status");
   const tag = p.get("tag");
   const q = p.get("q")?.toLowerCase().trim();
@@ -103,7 +120,7 @@ function filterCases(cases: CaseRow[], p: URLSearchParams): CaseRow[] {
     if (status && c.status !== status) return false;
     if (tag && !c.tags.includes(tag)) return false;
     if (q) {
-      const hay = `${c.name ?? ""} ${c.output_preview ?? ""} ${c.case_key}`.toLowerCase();
+      const hay = `${c.name} ${c.output_preview} ${c.case_key}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -138,25 +155,30 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
     if (method === "POST" && seg[1] === "setup" && seg.length === 2) {
       if (!auth.setupRequired()) return json({ error: "already_setup" }, 409);
       const body = readJson<{ username?: string; password?: string }>(init);
-      return json(auth.setup(body.username ?? "", body.password ?? ""));
+      return json(auth.setup(body.username ?? "", body.password ?? ""), 201);
     }
     if (method === "POST" && seg[1] === "logout" && seg.length === 2) {
+      // Real server: 401 for an anonymous caller, otherwise `OkResponse`.
+      const { me } = auth.resolveAuth(token);
+      if (!me.authenticated) return json({ error: "authentication required" }, 401);
       auth.logout(token);
-      return noContent();
+      const ok: OkResponse = { ok: true };
+      return json(ok);
     }
   }
 
   // /apikeys — write scope
   if (seg[0] === "apikeys") {
     const { me, userId } = auth.resolveAuth(bearer(init));
-    if (!scopeAtLeast(me.scope, "write")) return forbidden();
+    if (!scopeAtLeast(me.scope ?? undefined, "write")) return forbidden();
     if (method === "GET" && seg.length === 1) {
-      return json(auth.listApiKeys(userId));
+      const res: ApiKeyListResponse = { keys: auth.listApiKeys(userId) };
+      return json(res);
     }
     if (method === "POST" && seg.length === 1) {
       const body = readJson<{ name?: string; scope?: AuthScope }>(init);
       return json(
-        auth.createApiKey(userId, body.name, body.scope, me.scope),
+        auth.createApiKey(userId, body.name, body.scope, me.scope ?? "read"),
         201,
       );
     }
@@ -168,9 +190,10 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
   // /users — admin scope
   if (seg[0] === "users") {
     const { me } = auth.resolveAuth(bearer(init));
-    if (!scopeAtLeast(me.scope, "admin")) return forbidden();
+    if (!scopeAtLeast(me.scope ?? undefined, "admin")) return forbidden();
     if (method === "GET" && seg.length === 1) {
-      return json(auth.listUsers());
+      const res: UserListResponse = { users: auth.listUsers() };
+      return json(res);
     }
     if (method === "POST" && seg.length === 1) {
       const body = readJson<{
@@ -202,14 +225,14 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
     if (method === "GET" && seg.length === 1) {
       const filtered = filterRuns(fx.allRunSummaries(), p);
       const { page, next_cursor } = paginate(filtered, p);
-      return json({ runs: page, next_cursor });
+      const res: RunListResponse = { runs: page, next_cursor: next_cursor ?? null };
+      return json(res);
     }
     const runId = seg[1];
     // GET /runs/:id
     if (method === "GET" && seg.length === 2) {
       try {
-        const summary = fx.summarizeRun(runId);
-        return json({ ...summary, assert_labels: fx.runAssertLabels(runId) });
+        return json(fx.runDetail(runId));
       } catch {
         return notFound();
       }
@@ -219,8 +242,11 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       if (method === "GET" && seg.length === 3) {
         const filtered = filterCases(fx.runCases(runId), p);
         const { page, next_cursor } = paginate(filtered, p);
-        // Return lean rows (drop nothing extra; CaseRow is already lean).
-        return json({ cases: page, next_cursor });
+        const res: CaseListResponse = {
+          cases: page.map(fx.toCaseListItem),
+          next_cursor: next_cursor ?? null,
+        };
+        return json(res);
       }
       // GET /runs/:id/cases/:case_key
       if (method === "GET" && seg.length === 4) {
@@ -274,7 +300,8 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
         "Authorization"
       ];
       if (!authed) return json({ error: "unauthorized" }, 401);
-      return json({ pruned: 128, freed_bytes: 12_582_912 });
+      const res: PruneResponse = { pruned: 128 };
+      return json(res);
     }
   }
 

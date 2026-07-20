@@ -1,14 +1,14 @@
 import type { ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useCaseDetail } from "@/api/queries";
-import type { CaseAssertDetail } from "@/api/types";
+import type { AssertResult } from "@/api";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState } from "@/components/States";
 import { formatCost, formatLatency, formatTokens } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
-function stringify(v: string | Record<string, unknown> | undefined): string {
+function stringify(v: unknown): string {
   if (v === undefined) return "";
   return typeof v === "string" ? v : JSON.stringify(v, null, 2);
 }
@@ -66,8 +66,8 @@ export function CaseDrawer({
                   ))}
                   <span className="ml-auto text-xs text-muted">
                     {formatTokens(
-                      (detail.data.prompt_tokens ?? 0) +
-                        (detail.data.completion_tokens ?? 0),
+                      (detail.data.usage?.input_tokens ?? 0) +
+                        (detail.data.usage?.output_tokens ?? 0),
                     )}{" "}
                     tok · {formatCost(detail.data.cost_usd)} ·{" "}
                     {formatLatency(detail.data.latency_ms)}
@@ -77,16 +77,12 @@ export function CaseDrawer({
                 <Section title="Assertions">
                   <div className="space-y-2">
                     {detail.data.asserts.map((a, i) => (
-                      <AssertRow key={`${a.label}-${i}`} assert={a} />
+                      <AssertRow key={`${a.kind}-${i}`} assert={a} />
                     ))}
                     {detail.data.asserts.length === 0 ? (
                       <p className="text-sm text-muted">No assertions were evaluated.</p>
                     ) : null}
                   </div>
-                </Section>
-
-                <Section title="Rendered prompt">
-                  <CodeBlock text={stringify(detail.data.rendered_prompt)} />
                 </Section>
 
                 <Section title="Output">
@@ -120,7 +116,7 @@ function CodeBlock({ text }: { text: string }) {
   );
 }
 
-function AssertRow({ assert }: { assert: CaseAssertDetail }) {
+function AssertRow({ assert }: { assert: AssertResult }) {
   return (
     <div
       className={cn(
@@ -134,8 +130,7 @@ function AssertRow({ assert }: { assert: CaseAssertDetail }) {
     >
       <div className="flex items-center gap-2">
         <StatusBadge status={assert.status} size="xs" />
-        <span className="font-medium">{assert.label}</span>
-        <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-muted">
+        <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] font-medium text-fg">
           {assert.kind}
         </span>
         <span className="ml-auto text-xs tabular-nums text-muted">

@@ -2,7 +2,7 @@ import { useCaseDetail } from "@/api/queries";
 import { Spinner } from "@/components/ui/Spinner";
 import { DiffView } from "./DiffView";
 
-function outputString(v: string | Record<string, unknown> | undefined): string {
+function outputString(v: unknown): string {
   if (v === undefined) return "";
   return typeof v === "string" ? v : JSON.stringify(v, null, 2);
 }

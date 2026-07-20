@@ -1,23 +1,33 @@
 // Deterministic in-memory fixture dataset for demo + tests. No randomness that
 // changes between reloads: everything is derived from stable seeds so the 500
 // case money page, compare deltas, and sparklines are reproducible.
+//
+// Every function here returns (or is projected into, right before the mock
+// handler serializes it) the exact wire shape of the matching generated
+// response type — imported from `@/api` so tsc enforces fixture correctness
+// against the real server contract, not the other way around.
 
 import type {
-  CacheStats,
-  CaseAssertDetail,
+  AssertResult,
+  AssertStatus,
+  CacheStatsResponse,
   CaseAssertLean,
-  CaseDetail,
-  CaseRow,
+  CaseListItem,
+  CaseResult,
   CaseStatus,
-  CompareResult,
-  CompareRow,
+  CompareCaseRow,
+  CompareResponse,
   CompareSummary,
-  Meta,
-  ProjectSummary,
-  RunSummaryRow,
+  MetaResponse,
+  ProjectListItem,
+  RunDetailResponse,
+  RunListItem,
+  SuitePoint,
   SuiteSummary,
-} from "@/api/types";
+} from "@/api";
+import type { AssertName } from "@/api";
 import { classifyDelta } from "@/lib/compare";
+import { parseTimestamp } from "@/lib/format";
 
 // ---------------------------------------------------------------------------
 // Seeded RNG helpers (mulberry32 + a small string/number hash).
@@ -51,29 +61,27 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/** Epoch millis -> RFC3339, matching the server's wire format for every
+ *  timestamp field (see `crates/measurellm-server/src/dto/accounts.rs::rfc3339`
+ *  for the server-side equivalent). */
+function toIso(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
 // ---------------------------------------------------------------------------
 // Static shape of the world.
 // ---------------------------------------------------------------------------
 
 const NOW = Date.UTC(2026, 6, 19, 15, 0, 0); // fixed reference time
 const DAY = 86_400_000;
-
-const ASSERT_KINDS: Record<string, string> = {
-  schema_valid: "json-schema",
-  answer_match: "contains",
-  no_pii: "llm-judge",
-  tone: "llm-judge",
-  latency_budget: "latency",
-  cost_budget: "cost",
-  json_parse: "json-parse",
-  refusal_correct: "llm-judge",
-  citation_present: "contains",
-};
+const RESULT_SCHEMA_VERSION = 1;
 
 interface SuiteDef {
   project: string;
   suite: string;
-  labels: string[];
+  /** Real `AssertName` kinds (label === kind on the wire, per CaseAssertLean's
+   *  doc comment) always evaluated for every case in this suite. */
+  labels: AssertName[];
   runs: number;
   featured?: boolean;
 }
@@ -82,32 +90,32 @@ const SUITE_DEFS: SuiteDef[] = [
   {
     project: "checkout-agent",
     suite: "regression",
-    labels: ["schema_valid", "answer_match", "no_pii", "tone", "latency_budget"],
+    labels: ["is-json", "contains", "llm-rubric", "latency", "cost"],
     runs: 12,
     featured: true,
   },
   {
     project: "checkout-agent",
     suite: "smoke",
-    labels: ["schema_valid", "answer_match", "latency_budget"],
+    labels: ["is-json", "contains", "latency"],
     runs: 8,
   },
   {
     project: "search-rerank",
     suite: "ndcg-eval",
-    labels: ["json_parse", "answer_match", "cost_budget", "no_pii"],
+    labels: ["is-json", "contains", "cost", "llm-rubric"],
     runs: 10,
   },
   {
     project: "support-bot",
     suite: "tone-and-safety",
-    labels: ["no_pii", "tone", "refusal_correct", "schema_valid"],
+    labels: ["llm-rubric", "regex", "contains", "is-json"],
     runs: 9,
   },
   {
     project: "support-bot",
     suite: "faq-accuracy",
-    labels: ["answer_match", "citation_present", "tone"],
+    labels: ["contains", "similar", "llm-rubric"],
     runs: 6,
   },
 ];
@@ -135,9 +143,9 @@ export interface RunMeta {
   suiteDef: SuiteDef;
   runIndex: number; // 0 = oldest in its suite
   runsInSuite: number;
-  created_at: number;
-  git_branch?: string;
-  git_commit?: string;
+  created_at: number; // epoch millis (internal only; the wire shape is RFC3339)
+  git_branch: string;
+  git_commit: string;
   ci_run_url?: string;
   tags: string[];
   caseCount: number;
@@ -209,10 +217,28 @@ for (const [suiteKey, ids] of SUITE_RUN_IDS) {
 }
 
 // ---------------------------------------------------------------------------
-// Case generation (deterministic per run, cached).
+// Case generation (deterministic per run, cached). `MockCaseRow` is an
+// internal-only shape (richer than the wire `CaseListItem`: it keeps
+// per-case tags for server-side filtering, mirroring how the real server
+// filters `/runs/{id}/cases?tag=` against stored data that the lean list
+// projection itself does not return — see `CaseListItem`'s doc comment).
 // ---------------------------------------------------------------------------
 
-const CASE_CACHE = new Map<string, CaseRow[]>();
+export interface MockCaseRow {
+  case_key: string;
+  idx: number;
+  name: string;
+  tags: string[];
+  status: CaseStatus;
+  output_preview: string;
+  asserts: CaseAssertLean[];
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  latency_ms: number;
+}
+
+const CASE_CACHE = new Map<string, MockCaseRow[]>();
 
 function caseName(caseIndex: number): string {
   return `${pick(VERBS, "verb", caseIndex)} ${pick(NOUNS, "noun", caseIndex)}`;
@@ -248,28 +274,29 @@ function statusFor(meta: RunMeta, caseIndex: number): CaseStatus {
 
 function leanAsserts(meta: RunMeta, caseIndex: number, status: CaseStatus): CaseAssertLean[] {
   if (status === "skip") return [];
-  const labels = meta.suiteDef.labels;
+  const kinds = meta.suiteDef.labels;
   // For a failing/error case, choose which labels are the culprits.
   const failingIdx =
     status === "pass"
       ? -1
-      : Math.floor(rand(meta.suiteKey, caseIndex, meta.runIndex, "fl") * labels.length);
-  return labels.map((label, li) => {
+      : Math.floor(rand(meta.suiteKey, caseIndex, meta.runIndex, "fl") * kinds.length);
+  return kinds.map((kind, li) => {
     const isCulprit = status !== "pass" && (li === failingIdx || (status === "error" && li === 0));
     const passed = !isCulprit;
     const score = passed
-      ? 0.8 + rand(meta.suiteKey, caseIndex, label, "s") * 0.2
-      : rand(meta.suiteKey, caseIndex, label, "s") * 0.45;
-    return { label, kind: ASSERT_KINDS[label] ?? "custom", passed, score: round2(score) };
+      ? 0.8 + rand(meta.suiteKey, caseIndex, kind, "s") * 0.2
+      : rand(meta.suiteKey, caseIndex, kind, "s") * 0.45;
+    // label === kind: both are the assert's AssertName (see CaseAssertLean's doc).
+    return { label: kind, kind, passed, score: round2(score) };
   });
 }
 
-function generateCases(runId: string): CaseRow[] {
+function generateCases(runId: string): MockCaseRow[] {
   const cached = CASE_CACHE.get(runId);
   if (cached) return cached;
   const meta = RUN_META_BY_ID.get(runId);
   if (!meta) return [];
-  const rows: CaseRow[] = [];
+  const rows: MockCaseRow[] = [];
   for (let i = 0; i < meta.caseCount; i++) {
     const status = statusFor(meta, i);
     const asserts = leanAsserts(meta, i, status);
@@ -280,6 +307,7 @@ function generateCases(runId: string): CaseRow[] {
     const ct = Math.round(40 + rand(meta.suiteKey, i, "cot") * 500);
     rows.push({
       case_key: `case-${String(i).padStart(4, "0")}`,
+      idx: i,
       name: caseName(i),
       tags,
       status,
@@ -323,48 +351,85 @@ function fullOutput(meta: RunMeta, caseIndex: number, status: CaseStatus): strin
   ].join("\n");
 }
 
-function renderedPrompt(meta: RunMeta, caseIndex: number): string {
-  const noun = pick(NOUNS, "noun", caseIndex);
-  return [
-    `System: You are a careful assistant for ${meta.suiteDef.project}.`,
-    `Follow the policy and return strict JSON.`,
-    ``,
-    `User: Please handle the following situation: "${noun}".`,
-    `Respond with {intent, action, revision, confidence, explanation}.`,
-  ].join("\n");
-}
-
+/** Full per-assert verdict for the case-detail endpoint's `AssertResult[]`. */
 function detailAsserts(
   meta: RunMeta,
   caseIndex: number,
   status: CaseStatus,
   lean: CaseAssertLean[],
-): CaseAssertDetail[] {
+): AssertResult[] {
   return lean.map((a) => {
-    const weight = round2(0.5 + rand(meta.suiteKey, caseIndex, a.label, "w") * 1.5);
-    const st: CaseStatus = a.passed ? "pass" : status === "error" ? "error" : "fail";
+    const weight = round2(0.5 + rand(meta.suiteKey, caseIndex, a.kind, "w") * 1.5);
+    const st: AssertStatus = a.passed ? "pass" : status === "error" ? "error" : "fail";
     const reason = a.passed
       ? `${a.kind} check satisfied (score ${a.score.toFixed(2)}).`
       : status === "error"
         ? `${a.kind} could not be evaluated: grader errored on provider output.`
         : `${a.kind} check failed: expected value not found (score ${a.score.toFixed(2)}).`;
     return {
-      label: a.label,
       kind: a.kind,
       status: st,
       score: a.score,
       weight,
       reason,
       details: a.passed ? undefined : { expected: "policy-compliant", got: "divergent" },
+      cached: false,
     };
   });
 }
 
+/** Project the internal row down to the lean wire shape `GET .../cases` returns
+ *  (notably: no `tags` — see `CaseListItem`'s doc comment on the generated type). */
+export function toCaseListItem(c: MockCaseRow): CaseListItem {
+  return {
+    case_key: c.case_key,
+    idx: c.idx,
+    name: c.name,
+    status: c.status,
+    output_preview: c.output_preview,
+    asserts: c.asserts,
+    prompt_tokens: c.prompt_tokens,
+    completion_tokens: c.completion_tokens,
+    cost_usd: c.cost_usd,
+    latency_ms: c.latency_ms,
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Public dataset API used by the mock handlers.
+// Run stats: one internal computation, projected into the two distinct wire
+// shapes the real server exposes (`RunListItem` for `GET /runs`, richer
+// `RunDetailResponse` for `GET /runs/{id}` — they diverge: only the list item
+// carries `pass_rate`, only the detail response carries `assert_labels`/
+// `uploaded_at`/etc; see the generated types).
 // ---------------------------------------------------------------------------
 
-export function summarizeRun(runId: string): RunSummaryRow {
+interface RunStats {
+  id: string;
+  project: string;
+  suite: string;
+  created_at: string;
+  uploaded_at: string;
+  schema_version: number;
+  git_branch: string;
+  git_commit: string;
+  git_dirty: boolean;
+  ci_provider: string | null;
+  ci_run_url: string | null;
+  case_count: number;
+  pass_count: number;
+  fail_count: number;
+  error_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  duration_ms: number;
+  content_hash: string;
+  uploaded_by: string | null;
+  tags: string[];
+  assert_labels: string[];
+}
+
+function runStats(runId: string): RunStats {
   const meta = RUN_META_BY_ID.get(runId);
   if (!meta) throw new Error(`unknown run ${runId}`);
   const cases = generateCases(runId);
@@ -379,19 +444,24 @@ export function summarizeRun(runId: string): RunSummaryRow {
     if (c.status === "pass") pass++;
     else if (c.status === "fail") fail++;
     else if (c.status === "error") error++;
-    prompt_tokens += c.prompt_tokens ?? 0;
-    completion_tokens += c.completion_tokens ?? 0;
-    cost += c.cost_usd ?? 0;
+    prompt_tokens += c.prompt_tokens;
+    completion_tokens += c.completion_tokens;
+    cost += c.cost_usd;
     duration += c.latency_ms;
   }
+  const uploadDelayMs = 1500 + Math.floor(rand(meta.suiteKey, meta.runIndex, "upl") * 4000);
   return {
     id: meta.id,
     project: meta.suiteDef.project,
     suite: meta.suiteDef.suite,
-    created_at: meta.created_at,
+    created_at: toIso(meta.created_at),
+    uploaded_at: toIso(meta.created_at + uploadDelayMs),
+    schema_version: RESULT_SCHEMA_VERSION,
     git_branch: meta.git_branch,
     git_commit: meta.git_commit,
-    ci_run_url: meta.ci_run_url,
+    git_dirty: rand(meta.suiteKey, meta.runIndex, "dirty") > 0.9,
+    ci_provider: meta.ci_run_url ? "github-actions" : null,
+    ci_run_url: meta.ci_run_url ?? null,
     case_count: cases.length,
     pass_count: pass,
     fail_count: fail,
@@ -400,44 +470,118 @@ export function summarizeRun(runId: string): RunSummaryRow {
     completion_tokens,
     cost_usd: round4(cost),
     duration_ms: duration,
+    content_hash: `sha256:${hash(meta.id, "hash").toString(16).padStart(16, "0")}`,
+    uploaded_by: null,
     tags: meta.tags,
+    assert_labels: [...new Set(meta.suiteDef.labels)],
   };
 }
 
-export function allRunSummaries(): RunSummaryRow[] {
-  return RUN_METAS.map((m) => summarizeRun(m.id)).sort(
-    (a, b) => b.created_at - a.created_at,
+function toRunListItem(s: RunStats): RunListItem {
+  const denom = s.pass_count + s.fail_count + s.error_count;
+  return {
+    id: s.id,
+    project: s.project,
+    suite: s.suite,
+    created_at: s.created_at,
+    git_branch: s.git_branch,
+    git_commit: s.git_commit,
+    git_dirty: s.git_dirty,
+    case_count: s.case_count,
+    pass_count: s.pass_count,
+    fail_count: s.fail_count,
+    error_count: s.error_count,
+    pass_rate: denom === 0 ? 0 : round4(s.pass_count / denom),
+    prompt_tokens: s.prompt_tokens,
+    completion_tokens: s.completion_tokens,
+    cost_usd: s.cost_usd,
+    duration_ms: s.duration_ms,
+    tags: s.tags,
+  };
+}
+
+function toRunDetailResponse(s: RunStats): RunDetailResponse {
+  return {
+    id: s.id,
+    project: s.project,
+    suite: s.suite,
+    created_at: s.created_at,
+    uploaded_at: s.uploaded_at,
+    schema_version: s.schema_version,
+    git_branch: s.git_branch,
+    git_commit: s.git_commit,
+    git_dirty: s.git_dirty,
+    ci_provider: s.ci_provider,
+    ci_run_url: s.ci_run_url,
+    case_count: s.case_count,
+    pass_count: s.pass_count,
+    fail_count: s.fail_count,
+    error_count: s.error_count,
+    prompt_tokens: s.prompt_tokens,
+    completion_tokens: s.completion_tokens,
+    cost_usd: s.cost_usd,
+    duration_ms: s.duration_ms,
+    content_hash: s.content_hash,
+    uploaded_by: s.uploaded_by,
+    tags: s.tags,
+    assert_labels: s.assert_labels,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public dataset API used by the mock handlers.
+// ---------------------------------------------------------------------------
+
+/** `GET /runs` row shape. */
+export function runListItem(runId: string): RunListItem {
+  return toRunListItem(runStats(runId));
+}
+
+/** `GET /runs/{id}` response shape. */
+export function runDetail(runId: string): RunDetailResponse {
+  return toRunDetailResponse(runStats(runId));
+}
+
+export function allRunSummaries(): RunListItem[] {
+  return RUN_METAS.map((m) => runListItem(m.id)).sort(
+    (a, b) => parseTimestamp(b.created_at) - parseTimestamp(a.created_at),
   );
 }
 
-export function runAssertLabels(runId: string): string[] {
-  return RUN_META_BY_ID.get(runId)?.suiteDef.labels ?? [];
-}
-
-export function runCases(runId: string): CaseRow[] {
+export function runCases(runId: string): MockCaseRow[] {
   return generateCases(runId);
 }
 
-export function caseDetail(runId: string, caseKey: string): CaseDetail | undefined {
+export function caseDetail(runId: string, caseKey: string): CaseResult | undefined {
   const meta = RUN_META_BY_ID.get(runId);
   if (!meta) return undefined;
   const row = generateCases(runId).find((c) => c.case_key === caseKey);
   if (!row) return undefined;
-  const caseIndex = Number(caseKey.replace("case-", ""));
-  const lean = leanAsserts(meta, caseIndex, row.status);
+  const asserts = detailAsserts(meta, row.idx, row.status, row.asserts);
+  const score =
+    asserts.length === 0
+      ? row.status === "pass"
+        ? 1
+        : 0
+      : round2(asserts.reduce((sum, a) => sum + a.score, 0) / asserts.length);
   return {
+    cell: { provider_id: "openai", test_id: row.case_key, repeat: 0 },
     case_key: row.case_key,
     name: row.name,
     tags: row.tags,
     status: row.status,
-    output_preview: row.output_preview,
-    prompt_tokens: row.prompt_tokens,
-    completion_tokens: row.completion_tokens,
+    score,
+    output: fullOutput(meta, row.idx, row.status),
+    asserts,
+    usage: { input_tokens: row.prompt_tokens, output_tokens: row.completion_tokens },
     cost_usd: row.cost_usd,
     latency_ms: row.latency_ms,
-    rendered_prompt: renderedPrompt(meta, caseIndex),
-    output: fullOutput(meta, caseIndex, row.status),
-    asserts: detailAsserts(meta, caseIndex, row.status, lean),
+    cached: false,
+    attempts: row.status === "error" ? 3 : 1,
+    error:
+      row.status === "error"
+        ? "upstream provider returned HTTP 502 (Bad Gateway) after 3 retries."
+        : undefined,
   };
 }
 
@@ -459,7 +603,10 @@ export function defaultCompareTarget(runId: string): string | undefined {
   return idx > 0 ? ids[idx - 1] : undefined;
 }
 
-export function compareRuns(baseId: string, headId: string): CompareResult | undefined {
+/** `GET /runs/{base}/compare/{head}` response: base/head are the run ids
+ *  themselves (see generated `CompareResponse` — the server never embeds the
+ *  run rows), not the run summary objects. */
+export function compareRuns(baseId: string, headId: string): CompareResponse | undefined {
   const base = RUN_META_BY_ID.get(baseId);
   const head = RUN_META_BY_ID.get(headId);
   if (!base || !head) return undefined;
@@ -468,7 +615,7 @@ export function compareRuns(baseId: string, headId: string): CompareResult | und
   const headCases = new Map(generateCases(headId).map((c) => [c.case_key, c]));
   const keys = new Set([...baseCases.keys(), ...headCases.keys()]);
 
-  const rows: CompareRow[] = [];
+  const rows: CompareCaseRow[] = [];
   const summary: CompareSummary = {
     newly_failing: 0,
     newly_passing: 0,
@@ -481,17 +628,17 @@ export function compareRuns(baseId: string, headId: string): CompareResult | und
   for (const key of keys) {
     const b = baseCases.get(key);
     const h = headCases.get(key);
-    const caseIndex = Number(key.replace("case-", ""));
+    const caseIdx = (b ?? h)!.idx;
     const delta = classifyDelta(b?.status ?? null, h?.status ?? null);
     let output_changed = false;
     if (b && h) {
       output_changed =
-        outputRevision(base.suiteKey, caseIndex, base.runIndex) !==
-        outputRevision(head.suiteKey, caseIndex, head.runIndex);
+        outputRevision(base.suiteKey, caseIdx, base.runIndex) !==
+        outputRevision(head.suiteKey, caseIdx, head.runIndex);
     }
     rows.push({
       case_key: key,
-      name: (h ?? b)?.name,
+      name: (h ?? b)?.name ?? null,
       base_status: b?.status ?? null,
       head_status: h?.status ?? null,
       delta,
@@ -507,24 +654,24 @@ export function compareRuns(baseId: string, headId: string): CompareResult | und
 
   rows.sort((a, b) => a.case_key.localeCompare(b.case_key));
 
-  return { base: summarizeRun(baseId), head: summarizeRun(headId), summary, cases: rows };
+  return { base: baseId, head: headId, summary, cases: rows };
 }
 
-export function projectSummaries(): ProjectSummary[] {
+export function projectSummaries(): ProjectListItem[] {
   const byProject = new Map<string, { runs: number; suites: Set<string>; last: number }>();
-  for (const s of allRunSummaries()) {
-    const p = byProject.get(s.project) ?? { runs: 0, suites: new Set(), last: 0 };
+  for (const meta of RUN_METAS) {
+    const p = byProject.get(meta.suiteDef.project) ?? { runs: 0, suites: new Set<string>(), last: 0 };
     p.runs++;
-    p.suites.add(s.suite);
-    p.last = Math.max(p.last, s.created_at);
-    byProject.set(s.project, p);
+    p.suites.add(meta.suiteDef.suite);
+    p.last = Math.max(p.last, meta.created_at);
+    byProject.set(meta.suiteDef.project, p);
   }
   return [...byProject.entries()]
     .map(([project, v]) => ({
       project,
       run_count: v.runs,
       suite_count: v.suites.size,
-      last_run_at: v.last,
+      last_run_at: toIso(v.last),
     }))
     .sort((a, b) => a.project.localeCompare(b.project));
 }
@@ -535,39 +682,53 @@ export function suiteSummaries(project: string): SuiteSummary[] {
     if (def.project !== project) continue;
     const suiteKey = suiteKeyOf(def);
     const ids = SUITE_RUN_IDS.get(suiteKey) ?? [];
-    const series = ids.map((id) => {
-      const s = summarizeRun(id);
+    // SuitePoint.series is newest-first, capped at 20 runs (see the generated
+    // type's doc comment).
+    const newestFirst = [...ids].reverse().slice(0, 20);
+    const series: SuitePoint[] = newestFirst.map((id) => {
+      const s = runStats(id);
       const denom = s.pass_count + s.fail_count + s.error_count;
-      return denom === 0 ? 0 : round4(s.pass_count / denom);
+      return {
+        run_id: id,
+        created_at: s.created_at,
+        total: s.case_count,
+        passed: s.pass_count,
+        pass_rate: denom === 0 ? 0 : round4(s.pass_count / denom),
+      };
     });
     const lastId = ids[ids.length - 1];
     out.push({
       suite: def.suite,
       run_count: ids.length,
-      baseline_run_id: BASELINE_BY_SUITE.get(suiteKey),
-      pass_rate_series: series,
-      last_run_id: lastId,
-      last_run_at: lastId ? summarizeRun(lastId).created_at : undefined,
+      last_run_at: lastId ? runStats(lastId).created_at : null,
+      baseline_run_id: BASELINE_BY_SUITE.get(suiteKey) ?? null,
+      series,
     });
   }
   return out;
 }
 
-export const META: Meta = {
+export const META: MetaResponse = {
   name: "measurellm",
   version: "0.1.0-mock",
   auth_mode: "open",
   setup_required: false,
   supported_schema_versions: [1],
+  result_schema_version: RESULT_SCHEMA_VERSION,
+  cache: {
+    max_entry_bytes: 10_485_760,
+    max_bytes: 5_368_709_120,
+    max_age_days: 30,
+  },
 };
 
-export function cacheStats(): CacheStats {
+export function cacheStats(): CacheStatsResponse {
   return {
     entries: 4821,
     total_bytes: 268_435_456,
     hits: 19_233,
     misses: 4821,
-    oldest_entry_at: NOW - 37 * DAY,
+    oldest_entry_at: toIso(NOW - 37 * DAY),
   };
 }
 
