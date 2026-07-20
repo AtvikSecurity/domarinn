@@ -198,13 +198,19 @@ save minutes, and the workflow has read-only repo permissions.
 | **clippy**       | `cargo clippy --workspace --all-targets -- -D warnings` | Lints as hard errors. |
 | **test**         | `cargo test --workspace` | The Rust test suite. |
 | **web**          | `pnpm -C web install --frozen-lockfile`, `pnpm -C web build`, `pnpm -C web test` | The web UI builds and its vitest suite passes. |
-| **schema-check** | Regenerates `measurellm schema config` and `diff`s it against the committed `measurellm.schema.json` | The checked-in JSON Schema hasn't drifted (run `just schema` to fix). |
-| **gen-types-check** | Regenerates the TS DTOs into `web/src/api/generated` and diffs | Generated TypeScript types are current. Hard-fails when the dir is committed; a soft warning until then (run `just gen-types`). |
+| **schema-check** | Regenerates `measurellm schema config` and `diff`s it against the committed `measurellm.schema.json` | The checked-in JSON Schema hasn't drifted (run `mise run schema` to fix). |
+| **gen-types-check** | Regenerates the TS DTOs into `web/src/api/generated` and diffs | Generated TypeScript types are current. Hard-fails when the dir is committed; a soft warning until then (run `mise run gen-types`). |
 | **musl-build**   | Static `cargo build --release -p measurellm-cli` for `x86_64-unknown-linux-musl` (native) and `aarch64-unknown-linux-musl` (via `cross`) | The fully static binary links on both arches. The aarch64 leg is `continue-on-error` so a cross-toolchain hiccup doesn't block the x86_64 gate. |
 
 The `schema-check` and `gen-types-check` jobs enforce the same generators as the
-`just schema` / `just gen-types` recipes — keep those in sync when you change
-them.
+`schema` / `gen-types` mise tasks (`.mise/config.toml`) — keep those in sync when
+you change them.
+
+Every job installs its toolchain with [mise](https://mise.jdx.dev) via
+[`jdx/mise-action`](https://github.com/jdx/mise-action) (pinned to a commit SHA),
+reading the Rust/Node/pnpm versions from `.mise/config.toml` + `.mise/mise.lock`
+so local and CI builds share one pinned toolchain. Rust compile caching stays on
+`Swatinem/rust-cache`.
 
 ---
 

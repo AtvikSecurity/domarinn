@@ -35,7 +35,7 @@ measurellm inverts that:
 ## Quick start
 
 ```sh
-cargo build --release        # or: just build   (builds the web UI too)
+cargo build --release        # or: mise run build   (builds the web UI too)
 
 # Run a suite offline (no API key) and see it pass
 measurellm run examples/render-health
@@ -91,11 +91,18 @@ Full docs live in **[`docs/`](docs/README.md)**:
 
 ## Development
 
+Tasks and the toolchain are managed by [mise](https://mise.jdx.dev). Install it
+once (see the [getting-started guide](https://mise.jdx.dev/getting-started.html)),
+then let it provision the pinned Rust, Node, and pnpm from `.mise/config.toml`:
+
 ```sh
-just build      # pnpm build the web UI, then cargo build --release
-just test       # cargo test --workspace
-just lint       # clippy -D warnings + cargo fmt --check
-just dev        # run the server; run `pnpm -C web dev` alongside for the UI
+mise install    # install the pinned toolchain (Rust, Node, pnpm)
+mise tasks      # list every available task
+
+mise run build  # pnpm build the web UI, then cargo build --release
+mise run test   # cargo test --workspace
+mise run lint   # clippy -D warnings + cargo fmt --check
+mise run dev    # run the server; run `pnpm -C web dev` alongside for the UI
 ```
 
 Every source file is kept under 1000 lines (enforced by a ratchet test), and CI

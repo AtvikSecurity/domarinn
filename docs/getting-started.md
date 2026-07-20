@@ -11,8 +11,8 @@ you from install to a graded, shareable run in a few minutes.
 git clone https://github.com/perfectra1n/measurellm
 cd measurellm
 cargo build --release            # binary at target/release/measurellm
-# with the web UI embedded:
-just build                       # builds web/dist, then the release binary
+# with the web UI embedded (via mise — https://mise.jdx.dev):
+mise run build                   # builds web/dist, then the release binary
 ```
 
 **Docker** (the server + embedded UI):
