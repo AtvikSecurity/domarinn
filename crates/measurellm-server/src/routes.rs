@@ -1,14 +1,19 @@
 //! HTTP handlers and the API router.
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tower_http::request_id::{
+    MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
+};
+use tower_http::trace::{DefaultOnFailure, TraceLayer};
+use tracing::{info_span, Level, Span};
 use ts_rs::TS;
 
 use measurellm_core::cache::CacheKey;
@@ -74,14 +79,62 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/{*path}", get(serve_asset))
         .fallback(spa_fallback);
 
+    // Request-id + tracing. axum applies the LAST `.layer()` outermost, so the
+    // three request-id/trace layers are added inner-first (propagate, trace,
+    // set) to yield the canonical tower-http order a request/response flows
+    // through: SetRequestId (assigns a ULID, or keeps an inbound id) is
+    // outermost so the id exists before TraceLayer builds its span; TraceLayer
+    // reads that id into the span; PropagateRequestId copies the id onto the
+    // response before it reaches TraceLayer's `on_response`. Auth, body-limit,
+    // and decompression stay inner so their early responses still carry the id.
+    let trace = TraceLayer::new_for_http()
+        .make_span_with(|req: &Request<Body>| {
+            let request_id = req
+                .headers()
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("-");
+            info_span!(
+                "http",
+                method = %req.method(),
+                path = %req.uri().path(),
+                request_id = %request_id,
+            )
+        })
+        .on_response(
+            |res: &Response<Body>, latency: std::time::Duration, _span: &Span| {
+                tracing::info!(
+                    status = res.status().as_u16(),
+                    latency_ms = latency.as_millis() as u64,
+                    "response"
+                );
+            },
+        )
+        .on_failure(DefaultOnFailure::new().level(Level::WARN));
+
     api.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         crate::auth_middleware,
     ))
     .layer(tower_http::decompression::RequestDecompressionLayer::new())
     .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY))
-    .layer(tower_http::trace::TraceLayer::new_for_http())
+    .layer(PropagateRequestIdLayer::x_request_id())
+    .layer(trace)
+    .layer(SetRequestIdLayer::x_request_id(MakeUlidRequestId))
     .with_state(state)
+}
+
+/// ULID request-id maker. Only invoked by [`SetRequestIdLayer`] when the request
+/// has no `x-request-id` header, so an inbound id is always respected.
+#[derive(Clone, Default)]
+struct MakeUlidRequestId;
+
+impl MakeRequestId for MakeUlidRequestId {
+    fn make_request_id<B>(&mut self, _: &Request<B>) -> Option<RequestId> {
+        HeaderValue::from_str(&ulid::Ulid::new().to_string())
+            .ok()
+            .map(RequestId::new)
+    }
 }
 
 // ---------------------------------------------------------------------------
