@@ -74,10 +74,26 @@ impl CaseListFilter {
 
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+            let case_key: String = row.get(0)?;
             let asserts_str: Option<String> = row.get(5)?;
-            let asserts: Vec<CaseAssertLean> = asserts_str
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
+            // Graceful degrade: the `asserts` column is always written by this
+            // codebase as a serialized `Vec<CaseAssertLean>`, so any row it
+            // produced parses cleanly. A parse failure therefore means a
+            // hand-tampered or otherwise corrupt blob; rather than fail the
+            // whole case listing we treat it as "no asserts" and warn so the
+            // bad row is visible in logs.
+            let asserts: Vec<CaseAssertLean> = match asserts_str {
+                Some(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        run_id = %self.run_id.as_str(),
+                        case_key = %case_key,
+                        error = %e,
+                        "unparseable stored asserts; treating as empty"
+                    );
+                    Vec::new()
+                }),
+                None => Vec::new(),
+            };
             let status_raw: String = row.get(3)?;
             let status = CaseStatus::from_str(&status_raw).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, e.into())

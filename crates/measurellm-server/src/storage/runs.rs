@@ -557,7 +557,19 @@ fn distinct_assert_labels(conn: &Connection, run_id: &str) -> anyhow::Result<Vec
     let mut seen: Vec<String> = Vec::new();
     for row in rows {
         let Some(json) = row? else { continue };
-        let parsed: Vec<CaseAssertLean> = serde_json::from_str(&json).unwrap_or_default();
+        // Graceful degrade (same rationale as `CaseListFilter::query` in
+        // storage/cases.rs): rows written by this codebase always serialize as
+        // a `Vec<CaseAssertLean>`, so a parse failure here means a hand-tampered
+        // or corrupt `asserts` blob. Treat it as empty (contributing no labels)
+        // and warn rather than failing the whole run detail.
+        let parsed: Vec<CaseAssertLean> = serde_json::from_str(&json).unwrap_or_else(|e| {
+            tracing::warn!(
+                run_id = %run_id,
+                error = %e,
+                "unparseable stored asserts; treating as empty"
+            );
+            Vec::new()
+        });
         for a in parsed {
             let label = a.label.as_str();
             if !seen.iter().any(|s| s == label) {
