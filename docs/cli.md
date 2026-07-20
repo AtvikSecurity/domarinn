@@ -9,12 +9,47 @@ measurellm [-v|-vv] [--server-url URL] <command> [args]
 
 | Global flag | Effect |
 |-------------|--------|
-| `-v`, `-vv` | Increase log verbosity (`warn` → `info` → `debug`). Logs go to **stderr**. |
+| `-v`, `-vv` | Increase log verbosity: `warn` (default) → `info` → `debug` → `trace`. Logs go to **stderr**. See [Logging](#logging). |
+| `--log-format <fmt>` | How log lines are rendered: `auto` (default), `pretty`, `compact`, or `json` (also `MEASURELLM_LOG_FORMAT`). See [Logging](#logging). |
 | `--server-url <url>` | Results server base URL (or set `MEASURELLM_SERVER_URL`). Used by `run --share`, `share`, and the `http` cache backend. |
 | `--version` | Print the version. |
 | `--help` | Print help for the binary or a subcommand. |
 
-Logging respects `RUST_LOG` if set (e.g. `RUST_LOG=measurellm=debug`).
+## Logging
+
+Logs are diagnostics, not results: **they go to stderr**, while command output
+(tables, JSON, JSONL, JUnit, schemas) goes to **stdout**. You can redirect or
+pipe stdout for a machine — `measurellm run --format json > out.json` — and still
+watch progress and warnings on the terminal.
+
+**Verbosity.** A plain invocation logs at `warn`. Each `-v` raises the level one
+step: `-v` → `info`, `-vv` → `debug`, `-vvv` → `trace`. Only measurellm's own
+crates are affected.
+
+**Format** — `--log-format`, or the `MEASURELLM_LOG_FORMAT` environment variable:
+
+| Value | Rendering |
+|-------|-----------|
+| `auto` (default) | Pretty when stderr is a terminal; **compact** (single line) when it is not — e.g. a captured CI log. |
+| `pretty` | Human-readable, multi-line. No timestamps — a short command's own output is the clock. |
+| `compact` | Human-readable, single line, with timestamps. |
+| `json` | One JSON object per line, for log aggregation. |
+
+Precedence is flag → env → autodetect: `--log-format` wins over
+`MEASURELLM_LOG_FORMAT`, which wins over the terminal autodetection above. An
+unrecognized env value is ignored with a warning and autodetection is used.
+
+**`RUST_LOG` overrides everything.** When set, it **replaces the default filter
+wholesale** (standard `tracing` env-filter syntax), which also makes `-v` a
+no-op — so set the level you want directly:
+
+```sh
+RUST_LOG=measurellm=debug measurellm run .                # -v is ignored; RUST_LOG wins
+RUST_LOG=measurellm_core::runner=trace measurellm run .   # one module at trace
+```
+
+**Color.** ANSI color is used only when stderr is a terminal, and is disabled
+entirely when [`NO_COLOR`](https://no-color.org/) is set (to any value).
 
 ## Exit codes
 

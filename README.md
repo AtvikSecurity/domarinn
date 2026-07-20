@@ -29,6 +29,8 @@ measurellm inverts that:
   server URL or an S3-compatible bucket.
 - **A self-hostable server + web UI** with real accounts — local logins, an admin
   role, and per-user API keys — plus run comparison and a shared cache.
+- **Structured logging** — human-readable on a terminal, JSON one-object-per-line
+  when piped or run in a container, with per-request ids on the server.
 
 ## Quick start
 

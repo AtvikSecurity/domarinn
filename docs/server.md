@@ -23,7 +23,9 @@ hosting.
 - [Accounts & auth model](#accounts--auth-model)
 - [First run: creating the admin](#first-run-creating-the-admin)
 - [The API surface](#the-api-surface)
+- [Strict request validation](#strict-request-validation)
 - [Environment variables](#environment-variables)
+- [Logging & observability](#logging--observability)
 - [Storage](#storage)
 - [Web UI tour](#web-ui-tour)
 - [curl cookbook](#curl-cookbook)
@@ -73,6 +75,12 @@ effective mode is *derived* from whether any credentials exist.
 So a fresh, credential-less instance is fully open; the first token you configure
 or the first account you create flips it to `protect-writes`. The active mode is
 reported by `GET /api/v1/meta` as `auth_mode`.
+
+> **`MEASURELLM_AUTH_MODE` is validated at startup.** An unrecognized value (a
+> typo like `protectwrites`) **aborts the launch with an error** rather than
+> silently falling back to `open` — a silent downgrade to a wide-open server
+> would be a security hole. The accepted values are `open`, `protect-writes` (the
+> `protect_writes` underscore spelling is also taken), and `closed`.
 
 > Scopes are ordered: **`admin` ⊃ `write` ⊃ `read`**. A route asks for a minimum
 > scope; a higher scope always satisfies it. In `open` mode no scope is required
@@ -287,6 +295,32 @@ for the client side.
 
 ---
 
+## Strict request validation
+
+The API rejects malformed requests loudly instead of quietly guessing. A typo in
+a query string or a stale field name fails fast with a clear status, rather than
+being silently ignored and masking the mistake.
+
+- **Unknown query parameters, and unparseable filter values, are `400`.** An
+  unrecognized value for `?status=` on `GET /runs` or `GET /runs/{id}/cases` is a
+  `400`, and so is a query string carrying a parameter the endpoint does not
+  define. The two `status` filters are deliberately different: the case filter
+  accepts `pass | fail | error | skip`, but the **run-level** filter accepts only
+  `pass | fail | error`. A skipped case never moves a run's pass/fail/error
+  counters, so `GET /runs?status=skip` is a `400` — not an empty result set.
+- **Unknown fields in a JSON request body are `422`.** A misspelled or stray key
+  (in a user, API-key, baseline, or cache-prune body) is rejected rather than
+  dropped — as is a value of the wrong type or an unrecognized enum value (any
+  body that parses as JSON but does not match the target shape). Syntactically
+  invalid JSON, or a missing/incorrect `Content-Type`, is a `400`.
+- **An unrecognized assertion `kind` in an ingested run document is `422`.**
+  `POST /api/v1/runs` deserializes the body into the strict `RunResult` schema, so
+  an unknown assert kind — or any other unknown field or out-of-range value —
+  fails validation instead of being stored as-is. (A body outside the supported
+  `schema_version` window is also `422`; see [ingest](#run-ingest).)
+
+---
+
 ## Environment variables
 
 **Read by the server** (`measurellm server`):
@@ -302,7 +336,8 @@ for the client side.
 | `MEASURELLM_CACHE_MAX_ENTRY_BYTES` | `4194304` (4 MiB)   | Max size of a single cache entry. |
 | `MEASURELLM_CACHE_MAX_BYTES`    | `1073741824` (1 GiB) | Total cache size target for retention. |
 | `MEASURELLM_CACHE_MAX_AGE_DAYS` | `30`           | Cache entry max age for retention. |
-| `RUST_LOG`                      | (off)          | Log filter, e.g. `RUST_LOG=measurellm=debug`. Logs go to stderr. |
+| `MEASURELLM_LOG_FORMAT`         | (auto)         | Log rendering: `pretty` \| `compact` \| `json`. Auto-selected from the terminal when unset — see [Logging & observability](#logging--observability). |
+| `RUST_LOG`                      | (unset)        | Overrides the default log filter wholesale, e.g. `RUST_LOG=measurellm=debug,tower_http=off`. When unset the server logs at `info`. Logs go to stderr. |
 
 **Read by the CLI** (when uploading runs / using an HTTP cache — *not* the
 server):
@@ -314,6 +349,43 @@ server):
 
 See [`./cli.md`](./cli.md) and [`./caching.md`](./caching.md) for the client
 side.
+
+---
+
+## Logging & observability
+
+The server logs to **stderr** at `info` by default. API responses go over the
+wire, never into the log stream, so structured logs stay clean for aggregation.
+
+**Request logging.** Every HTTP request produces an `http` span carrying its
+`method`, `path`, and `request_id`, and a `response` event carrying the `status`
+and `latency_ms`. Schematically, one request reads:
+
+```
+INFO http{method=GET path=/api/v1/runs request_id=01J...}: response status=200 latency_ms=7
+```
+
+**Request ids.** If a request arrives with an `x-request-id` header, that id is
+honored and threaded through its log line; otherwise the server mints a ULID. In
+both cases the id is echoed back on the response's `x-request-id` header, so a
+client or a proxy can correlate a single call end to end.
+
+**Format.** As on the CLI, rendering is auto-selected: **pretty** when stderr is
+a terminal, and **JSON** (one object per line) when it is not — which is the usual
+case under Docker/Kubernetes, so container logs are structured out of the box.
+Force a format with `MEASURELLM_LOG_FORMAT=pretty|compact|json`.
+
+**Turning the volume down.** `RUST_LOG` replaces the default filter entirely. To
+keep warnings and errors but silence the per-request `info` lines:
+
+```sh
+RUST_LOG=measurellm=warn,tower_http=off measurellm server
+```
+
+> Known consideration: the container healthcheck probes `/health` on an interval,
+> so at the default `info` level you will see periodic `GET /health` request lines
+> — the `RUST_LOG` filter above removes all request logging if that noise is
+> unwelcome.
 
 ---
 

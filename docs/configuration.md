@@ -650,6 +650,35 @@ child appended.
 
 ---
 
+## Strict validation
+
+A suite is validated structurally before any provider is contacted — both by
+`measurellm validate` and at the start of `measurellm run`. Validation is strict
+on purpose: a typo is an error you can fix, not a field that is silently ignored
+while the setting it was meant to change quietly does nothing.
+
+- **Unknown or misspelled keys are a hard error that names the file, the dotted
+  path, and the key.** A stray `maxx:` under `runner.retries`, for instance,
+  fails with a message like ``examples/x/measurellm.yaml: runner.retries: unknown
+  field `maxx` `` — so you can jump straight to the offending line.
+- **The check reaches inside provider, assertion, and grader mappings.** A typo'd
+  provider field (`basurl:` for `base_url:`) or assertion option is flagged,
+  **including the `provider:` block nested inside a grader** — both the top-level
+  `grader.provider` and the inner grader on any `llm-rubric` assertion (in
+  `defaults.assert` or an inline test's `assert`). Free-form bags — a provider's
+  `params`, an `http` provider's `body`, an `exec` assertion's `config` — are
+  opaque values, not schema, so their inner keys are intentionally left unchecked.
+- **A message `role` must be `system`, `user`, or `assistant`.** Any other value
+  is rejected at load time.
+- **An `http` provider's `method` is normalized to upper case.** You may write
+  `method: get` or `method: GET`; the method sent on the wire — and the value
+  recorded in the cache fingerprint — is always the upper-case form. If a suite
+  previously used a lower-case method, its cached responses were fingerprinted
+  under the lower-case spelling, so it will take a **one-time cache miss** the
+  first time it runs after upgrading, then reuse the cache normally.
+
+---
+
 ## See also
 
 - [`assertions.md`](./assertions.md) — every assertion `type` and its options.
