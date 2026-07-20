@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use measurellm_core::cache::CacheKey;
+use measurellm_core::ids::{CaseKey, RunId};
 use measurellm_core::result::{CaseStatus, RunResult, RESULT_SCHEMA_VERSION};
 
 use crate::auth::{Admin, Read, Scoped, Write};
@@ -283,7 +284,7 @@ async fn post_run(
     }
 }
 
-fn build_run_url(state: &AppState, headers: &HeaderMap, run_id: &str) -> String {
+fn build_run_url(state: &AppState, headers: &HeaderMap, run_id: &RunId) -> String {
     let base = if let Some(public) = &state.public_url {
         public.trim_end_matches('/').to_string()
     } else {
@@ -344,7 +345,7 @@ async fn list_runs(
 async fn get_run(
     _scope: Scoped<Read>,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<RunId>,
 ) -> ApiResult<Response> {
     match state.storage.get_run(id).await? {
         Some(detail) => Ok(Json(detail).into_response()),
@@ -364,7 +365,7 @@ struct CaseQuery {
 async fn list_cases(
     _scope: Scoped<Read>,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<RunId>,
     ApiQuery(q): ApiQuery<CaseQuery>,
 ) -> ApiResult<Response> {
     if !state.storage.run_exists(id.clone()).await? {
@@ -385,7 +386,7 @@ async fn list_cases(
 async fn get_case(
     _scope: Scoped<Read>,
     State(state): State<AppState>,
-    Path((id, case_key)): Path<(String, String)>,
+    Path((id, case_key)): Path<(RunId, CaseKey)>,
 ) -> ApiResult<Response> {
     match state.storage.get_case(id, case_key).await? {
         Some(detail) => Ok(Json(detail).into_response()),
@@ -396,7 +397,7 @@ async fn get_case(
 async fn export_run(
     _scope: Scoped<Read>,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<RunId>,
 ) -> ApiResult<Response> {
     match state.storage.export_run(id).await? {
         Some(doc) => Ok(Json(doc).into_response()),
@@ -407,7 +408,7 @@ async fn export_run(
 async fn compare_runs(
     _scope: Scoped<Read>,
     State(state): State<AppState>,
-    Path((id, other)): Path<(String, String)>,
+    Path((id, other)): Path<(RunId, RunId)>,
 ) -> ApiResult<Response> {
     match state.storage.compare_runs(id, other).await? {
         Some(cmp) => Ok(Json(cmp).into_response()),
@@ -418,7 +419,7 @@ async fn compare_runs(
 async fn delete_run(
     _scope: Scoped<Admin>,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<RunId>,
 ) -> ApiResult<Response> {
     if state.storage.delete_run(id).await? {
         Ok(StatusCode::NO_CONTENT.into_response())
@@ -445,7 +446,7 @@ async fn list_suites(
 
 #[derive(Debug, Deserialize)]
 struct BaselineBody {
-    run_id: String,
+    run_id: RunId,
 }
 
 async fn put_baseline(

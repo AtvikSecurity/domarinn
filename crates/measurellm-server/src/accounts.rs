@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::auth::{self, Admin, Identity, Scope, Scoped, Write};
-use crate::domain::Role;
+use crate::domain::{ApiKeyId, Role, UserId};
 use crate::extract::ApiJson;
 use crate::routes::{not_found, ApiError, ApiResult};
 use crate::storage::{ApiKeyInfo, DeleteUserOutcome, UserRow};
@@ -179,7 +179,7 @@ pub(crate) async fn create_apikey(
 pub(crate) async fn delete_apikey(
     scope: Scoped<Write>,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<ApiKeyId>,
 ) -> ApiResult<Response> {
     let requester = require_user(&scope.identity)?;
     let is_admin = scope.identity.role == Some(Role::Admin);
@@ -244,7 +244,7 @@ pub(crate) async fn create_user(
 pub(crate) async fn patch_user(
     _scope: Scoped<Admin>,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<UserId>,
     ApiJson(body): ApiJson<PatchUserBody>,
 ) -> ApiResult<Response> {
     // Confirm the target exists before applying any partial update.
@@ -277,7 +277,7 @@ pub(crate) async fn patch_user(
 pub(crate) async fn delete_user(
     _scope: Scoped<Admin>,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<UserId>,
 ) -> ApiResult<Response> {
     match state.storage.delete_user(id).await? {
         DeleteUserOutcome::Deleted => Ok(StatusCode::NO_CONTENT.into_response()),
@@ -294,20 +294,20 @@ pub(crate) async fn delete_user(
 // ---------------------------------------------------------------------------
 
 /// Mint a session for `user_id` and persist its hash; returns the raw token.
-async fn issue_session(state: &AppState, user_id: &str) -> ApiResult<String> {
+async fn issue_session(state: &AppState, user_id: &UserId) -> ApiResult<String> {
     let token = auth::generate_session_token();
     let hash = auth::token_hash(&token);
     let expires_at = auth::session_expiry(Utc::now().timestamp_millis());
     state
         .storage
-        .create_session(hash, user_id.to_string(), expires_at)
+        .create_session(hash, user_id.clone(), expires_at)
         .await?;
     Ok(token)
 }
 
 /// The user id behind the request, or a 403 when the credentials are not
 /// account-backed (e.g. a static token has no owning user).
-fn require_user(identity: &Identity) -> ApiResult<String> {
+fn require_user(identity: &Identity) -> ApiResult<UserId> {
     identity.user_id.clone().ok_or_else(|| {
         ApiError::status(
             StatusCode::FORBIDDEN,

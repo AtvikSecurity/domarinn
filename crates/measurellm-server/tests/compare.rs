@@ -69,21 +69,21 @@ async fn compare_classifies_case_transitions() {
     let cases = body["cases"].as_array().unwrap();
     let find = |ck: &str| cases.iter().find(|c| c["case_key"] == ck).unwrap().clone();
 
-    let t1 = find(&key("p", "t1"));
+    let t1 = find(key("p", "t1").as_str());
     assert_eq!(t1["delta"], "newly_failing");
     assert_eq!(t1["base_status"], "pass");
     assert_eq!(t1["head_status"], "fail");
     assert_eq!(t1["output_changed"], false);
 
-    let t3 = find(&key("p", "t3"));
+    let t3 = find(key("p", "t3").as_str());
     assert_eq!(t3["delta"], "still_passing");
     assert_eq!(t3["output_changed"], true);
 
-    let t4 = find(&key("p", "t4"));
+    let t4 = find(key("p", "t4").as_str());
     assert_eq!(t4["delta"], "removed");
     assert!(t4["head_status"].is_null());
 
-    let t5 = find(&key("p", "t5"));
+    let t5 = find(key("p", "t5").as_str());
     assert_eq!(t5["delta"], "added");
     assert!(t5["base_status"].is_null());
 }

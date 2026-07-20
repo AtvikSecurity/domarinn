@@ -246,7 +246,7 @@ pub fn make_run(
 
     RunResult {
         schema_version: measurellm_core::RESULT_SCHEMA_VERSION,
-        run_id: run_id.to_string(),
+        run_id: run_id.into(),
         project: project.map(str::to_string),
         suite: suite.map(str::to_string),
         started_at: started,

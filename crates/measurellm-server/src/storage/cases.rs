@@ -2,6 +2,7 @@
 
 use rusqlite::{params, Connection};
 
+use measurellm_core::ids::{CaseKey, RunId};
 use measurellm_core::result::CaseStatus;
 
 use super::{decompress, from_microusd, Storage};
@@ -13,8 +14,8 @@ impl Storage {
 
     pub async fn get_case(
         &self,
-        run_id: String,
-        case_key: String,
+        run_id: RunId,
+        case_key: CaseKey,
     ) -> anyhow::Result<Option<serde_json::Value>> {
         self.runs
             .read(move |conn| get_case_detail(conn, &run_id, &case_key))
@@ -23,9 +24,9 @@ impl Storage {
 }
 
 /// Filters for `GET /runs/{id}/cases`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CaseListFilter {
-    pub run_id: String,
+    pub run_id: RunId,
     pub status: Option<CaseStatus>,
     pub tag: Option<String>,
     pub q: Option<String>,
@@ -40,7 +41,7 @@ impl CaseListFilter {
                     prompt_tokens, completion_tokens, cost_microusd, latency_ms
              FROM cases WHERE run_id = ?1",
         );
-        let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.clone().into()];
+        let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
         if let Some(status) = self.status {
             args.push(status.as_str().to_string().into());
             sql.push_str(&format!(" AND status = ?{}", args.len()));
@@ -112,13 +113,13 @@ impl CaseListFilter {
 
 fn get_case_detail(
     conn: &Connection,
-    run_id: &str,
-    case_key: &str,
+    run_id: &RunId,
+    case_key: &CaseKey,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let blob: Option<Vec<u8>> = conn
         .query_row(
             "SELECT detail FROM cases WHERE run_id = ?1 AND case_key = ?2",
-            params![run_id, case_key],
+            params![run_id.as_str(), case_key.as_str()],
             |row| row.get(0),
         )
         .ok();

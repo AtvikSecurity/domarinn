@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use rusqlite::{params, Connection};
 
+use measurellm_core::ids::RunId;
 use measurellm_core::result::CaseStatus;
 
 use super::Storage;
@@ -14,8 +15,8 @@ use super::Storage;
 impl Storage {
     pub async fn compare_runs(
         &self,
-        base: String,
-        head: String,
+        base: RunId,
+        head: RunId,
     ) -> anyhow::Result<Option<serde_json::Value>> {
         self.runs
             .read(move |conn| compare_runs(conn, &base, &head))
@@ -63,20 +64,20 @@ fn is_failing(status: CaseStatus) -> bool {
 
 fn compare_runs(
     conn: &Connection,
-    base: &str,
-    head: &str,
+    base: &RunId,
+    head: &RunId,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let base_exists = conn
         .query_row(
             "SELECT 1 FROM runs WHERE id = ?1",
-            params![base],
+            params![base.as_str()],
             |_| Ok(()),
         )
         .is_ok();
     let head_exists = conn
         .query_row(
             "SELECT 1 FROM runs WHERE id = ?1",
-            params![head],
+            params![head.as_str()],
             |_| Ok(()),
         )
         .is_ok();
@@ -84,8 +85,8 @@ fn compare_runs(
         return Ok(None);
     }
 
-    let base_cases = load_compare_cases(conn, base)?;
-    let head_cases = load_compare_cases(conn, head)?;
+    let base_cases = load_compare_cases(conn, base.as_str())?;
+    let head_cases = load_compare_cases(conn, head.as_str())?;
 
     let mut keys: Vec<String> = base_cases.keys().cloned().collect();
     for k in head_cases.keys() {

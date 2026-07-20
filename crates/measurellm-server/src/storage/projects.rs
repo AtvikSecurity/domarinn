@@ -2,6 +2,8 @@
 
 use rusqlite::{params, Connection, TransactionBehavior};
 
+use measurellm_core::ids::RunId;
+
 use super::{ms_to_rfc3339, now_ms, Storage};
 
 impl Storage {
@@ -19,13 +21,17 @@ impl Storage {
         &self,
         project: String,
         suite: String,
-        run_id: String,
+        run_id: RunId,
     ) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 let exists = tx
-                    .query_row("SELECT 1 FROM runs WHERE id = ?1", params![run_id], |_| Ok(()))
+                    .query_row(
+                        "SELECT 1 FROM runs WHERE id = ?1",
+                        params![run_id.as_str()],
+                        |_| Ok(()),
+                    )
                     .is_ok();
                 if !exists {
                     return Ok(false);
@@ -34,7 +40,7 @@ impl Storage {
                     "INSERT INTO baselines (project, suite, run_id, set_at)
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT(project, suite) DO UPDATE SET run_id = excluded.run_id, set_at = excluded.set_at",
-                    params![project, suite, run_id, now_ms()],
+                    params![project, suite, run_id.as_str(), now_ms()],
                 )?;
                 tx.commit()?;
                 Ok(true)

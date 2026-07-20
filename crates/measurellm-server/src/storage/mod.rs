@@ -30,6 +30,7 @@ use std::sync::Mutex as StdMutex;
 
 use anyhow::Context;
 use chrono::{DateTime, TimeZone, Utc};
+use measurellm_core::ids::RunId;
 use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
@@ -249,14 +250,14 @@ pub(super) fn content_hash(value: &serde_json::Value) -> String {
 }
 
 /// Cursor encodes `created_at_ms:run_id`.
-pub fn encode_cursor(created_at: i64, id: &str) -> String {
+pub fn encode_cursor(created_at: i64, id: &RunId) -> String {
     format!("{created_at}:{id}")
 }
 
 /// Parse a run-list cursor of the form `created_at_ms:run_id`.
-pub fn decode_cursor(cursor: &str) -> Option<(i64, String)> {
+pub fn decode_cursor(cursor: &str) -> Option<(i64, RunId)> {
     let (ms, id) = cursor.split_once(':')?;
-    Some((ms.parse().ok()?, id.to_string()))
+    Some((ms.parse().ok()?, RunId::new(id)))
 }
 
 /// Parse a `since`/`until` query value: either epoch-ms or an RFC3339 timestamp.

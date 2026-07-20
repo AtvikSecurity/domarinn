@@ -172,7 +172,7 @@ async fn cases_are_lean_but_detail_is_full() {
     assert_eq!(full.status, StatusCode::OK);
     // The full detail decompresses the original CaseResult (untagged Output::Text).
     assert_eq!(full.json()["output"], serde_json::json!(long_output));
-    assert_eq!(full.json()["case_key"], case_key);
+    assert_eq!(full.json()["case_key"], case_key.as_str());
 }
 
 #[tokio::test]
@@ -213,7 +213,7 @@ async fn export_returns_original_document() {
     // Round-trips back into a RunResult identical to what we sent.
     let restored: measurellm_core::result::RunResult =
         serde_json::from_slice(&export.body).unwrap();
-    assert_eq!(restored.run_id, "r-export");
+    assert_eq!(restored.run_id.as_str(), "r-export");
     assert_eq!(restored.summary.total, 1);
     assert_eq!(restored.cases.len(), 1);
 }

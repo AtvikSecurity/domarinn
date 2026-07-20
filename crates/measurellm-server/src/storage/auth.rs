@@ -12,7 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::{now_ms, Storage};
 use crate::auth::Scope;
-use crate::domain::Role;
+use crate::domain::{ApiKeyId, Role, UserId};
 
 // ---------------------------------------------------------------------------
 // Row / view types
@@ -22,7 +22,7 @@ use crate::domain::Role;
 /// route handlers project it to a hash-free JSON view before responding.
 #[derive(Debug, Clone)]
 pub struct UserRow {
-    pub id: String,
+    pub id: UserId,
     pub username: String,
     pub password_hash: String,
     pub role: Role,
@@ -33,7 +33,7 @@ pub struct UserRow {
 /// The user behind a valid session (no secrets).
 #[derive(Debug, Clone)]
 pub struct SessionUser {
-    pub user_id: String,
+    pub user_id: UserId,
     pub username: String,
     pub role: Role,
 }
@@ -41,8 +41,8 @@ pub struct SessionUser {
 /// The resolved principal behind a valid API key.
 #[derive(Debug, Clone)]
 pub struct ApiKeyAuth {
-    pub id: String,
-    pub user_id: String,
+    pub id: ApiKeyId,
+    pub user_id: UserId,
     pub username: String,
     pub role: Role,
     pub scope: Scope,
@@ -51,8 +51,8 @@ pub struct ApiKeyAuth {
 /// API-key metadata for listing (never includes the secret or its hash).
 #[derive(Debug, Clone)]
 pub struct ApiKeyInfo {
-    pub id: String,
-    pub user_id: String,
+    pub id: ApiKeyId,
+    pub user_id: UserId,
     pub name: Option<String>,
     pub prefix: String,
     pub scope: Scope,
@@ -70,8 +70,9 @@ pub enum DeleteUserOutcome {
     LastAdmin,
 }
 
-fn new_id() -> String {
-    ulid::Ulid::new().to_string()
+/// Mint a fresh id (a ULID) for either id newtype used in this module.
+fn new_id<T: From<String>>() -> T {
+    T::from(ulid::Ulid::new().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +102,7 @@ impl Storage {
                 if taken {
                     return Ok(None);
                 }
-                let id = new_id();
+                let id: UserId = new_id();
                 let created_at = now_ms();
                 tx.execute(
                     "INSERT INTO users (id, username, password_hash, role, disabled, created_at)
@@ -129,7 +130,7 @@ impl Storage {
             .await
     }
 
-    pub async fn get_user_by_id(&self, id: String) -> anyhow::Result<Option<UserRow>> {
+    pub async fn get_user_by_id(&self, id: UserId) -> anyhow::Result<Option<UserRow>> {
         self.runs
             .read(move |conn| {
                 get_user(conn, "SELECT id, username, password_hash, role, disabled, created_at FROM users WHERE id = ?1", &id)
@@ -156,7 +157,7 @@ impl Storage {
             .await
     }
 
-    pub async fn set_user_role(&self, id: String, role: Role) -> anyhow::Result<bool> {
+    pub async fn set_user_role(&self, id: UserId, role: Role) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
                 let n = conn.execute(
@@ -168,7 +169,7 @@ impl Storage {
             .await
     }
 
-    pub async fn set_user_disabled(&self, id: String, disabled: bool) -> anyhow::Result<bool> {
+    pub async fn set_user_disabled(&self, id: UserId, disabled: bool) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
                 let n = conn.execute(
@@ -180,7 +181,7 @@ impl Storage {
             .await
     }
 
-    pub async fn update_password(&self, id: String, password_hash: String) -> anyhow::Result<bool> {
+    pub async fn update_password(&self, id: UserId, password_hash: String) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
                 let n = conn.execute(
@@ -194,7 +195,7 @@ impl Storage {
 
     /// Delete a user, refusing to remove the final admin so the instance can
     /// never be locked out of its own administration.
-    pub async fn delete_user(&self, id: String) -> anyhow::Result<DeleteUserOutcome> {
+    pub async fn delete_user(&self, id: UserId) -> anyhow::Result<DeleteUserOutcome> {
         self.runs
             .write(move |conn| {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -223,7 +224,11 @@ impl Storage {
     }
 }
 
-fn get_user(conn: &Connection, sql: &str, key: &str) -> anyhow::Result<Option<UserRow>> {
+fn get_user<K: rusqlite::ToSql>(
+    conn: &Connection,
+    sql: &str,
+    key: K,
+) -> anyhow::Result<Option<UserRow>> {
     Ok(conn.query_row(sql, params![key], row_to_user).optional()?)
 }
 
@@ -246,7 +251,7 @@ impl Storage {
     pub async fn create_session(
         &self,
         token_hash: String,
-        user_id: String,
+        user_id: UserId,
         expires_at: i64,
     ) -> anyhow::Result<()> {
         self.runs
@@ -314,7 +319,7 @@ impl Storage {
 impl Storage {
     pub async fn create_api_key(
         &self,
-        user_id: String,
+        user_id: UserId,
         name: Option<String>,
         prefix: String,
         key_hash: String,
@@ -322,7 +327,7 @@ impl Storage {
     ) -> anyhow::Result<ApiKeyInfo> {
         self.runs
             .write(move |conn| {
-                let id = new_id();
+                let id: ApiKeyId = new_id();
                 let created_at = now_ms();
                 conn.execute(
                     "INSERT INTO api_keys
@@ -383,7 +388,7 @@ impl Storage {
             .await
     }
 
-    pub async fn list_api_keys(&self, user_id: String) -> anyhow::Result<Vec<ApiKeyInfo>> {
+    pub async fn list_api_keys(&self, user_id: UserId) -> anyhow::Result<Vec<ApiKeyInfo>> {
         self.runs
             .read(move |conn| {
                 let mut stmt = conn.prepare(
@@ -396,7 +401,7 @@ impl Storage {
             .await
     }
 
-    pub async fn get_api_key(&self, id: String) -> anyhow::Result<Option<ApiKeyInfo>> {
+    pub async fn get_api_key(&self, id: ApiKeyId) -> anyhow::Result<Option<ApiKeyInfo>> {
         self.runs
             .read(move |conn| {
                 Ok(conn
@@ -411,7 +416,7 @@ impl Storage {
             .await
     }
 
-    pub async fn revoke_api_key(&self, id: String) -> anyhow::Result<bool> {
+    pub async fn revoke_api_key(&self, id: ApiKeyId) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
                 let n =

@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use ts_rs::TS;
 
-use crate::domain::Role;
+use crate::domain::{Role, UserId};
 use crate::storage::{ApiKeyAuth, SessionUser, Storage};
 use crate::AuthMode;
 
@@ -191,7 +191,7 @@ pub struct Identity {
     /// (username for accounts, scope label for static tokens).
     pub label: Option<String>,
     /// The backing user id, when the credentials resolve to a local account.
-    pub user_id: Option<String>,
+    pub user_id: Option<UserId>,
     /// The backing username, when known.
     pub username: Option<String>,
     /// The account role (`admin` | `member`), when known.

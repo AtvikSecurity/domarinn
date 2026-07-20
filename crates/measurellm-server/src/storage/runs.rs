@@ -3,6 +3,7 @@
 use anyhow::Context;
 use rusqlite::{params, Connection, TransactionBehavior};
 
+use measurellm_core::ids::RunId;
 use measurellm_core::result::RunResult;
 
 use super::{
@@ -26,29 +27,33 @@ impl Storage {
         self.runs.read(move |conn| filter.query(conn)).await
     }
 
-    pub async fn get_run(&self, id: String) -> anyhow::Result<Option<serde_json::Value>> {
+    pub async fn get_run(&self, id: RunId) -> anyhow::Result<Option<serde_json::Value>> {
         self.runs.read(move |conn| get_run_detail(conn, &id)).await
     }
 
-    pub async fn export_run(&self, id: String) -> anyhow::Result<Option<serde_json::Value>> {
+    pub async fn export_run(&self, id: RunId) -> anyhow::Result<Option<serde_json::Value>> {
         self.runs.read(move |conn| export_run_blob(conn, &id)).await
     }
 
-    pub async fn run_exists(&self, id: String) -> anyhow::Result<bool> {
+    pub async fn run_exists(&self, id: RunId) -> anyhow::Result<bool> {
         self.runs
             .read(move |conn| {
                 Ok(conn
-                    .query_row("SELECT 1 FROM runs WHERE id = ?1", params![id], |_| Ok(()))
+                    .query_row(
+                        "SELECT 1 FROM runs WHERE id = ?1",
+                        params![id.as_str()],
+                        |_| Ok(()),
+                    )
                     .is_ok())
             })
             .await
     }
 
-    pub async fn delete_run(&self, id: String) -> anyhow::Result<bool> {
+    pub async fn delete_run(&self, id: RunId) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let n = tx.execute("DELETE FROM runs WHERE id = ?1", params![id])?;
+                let n = tx.execute("DELETE FROM runs WHERE id = ?1", params![id.as_str()])?;
                 tx.commit()?;
                 Ok(n > 0)
             })
@@ -59,6 +64,11 @@ impl Storage {
 // ---------------------------------------------------------------------------
 // Prepared run: everything computed before we take the write lock.
 // ---------------------------------------------------------------------------
+
+// `id`/`case_key` are plain `String` here (converted from `RunId`/`CaseKey` at
+// construction, below) since every field in these two structs exists only to
+// be bound straight into `params![]` a few lines later — there is no further
+// logic that benefits from the newtype.
 
 struct PreparedCase {
     case_key: String,
@@ -142,7 +152,7 @@ impl PreparedRun {
             let detail = compress(&serde_json::to_vec(case)?)?;
             let usage = case.usage.as_ref();
             cases.push(PreparedCase {
-                case_key: case.case_key.clone(),
+                case_key: case.case_key.to_string(),
                 idx: idx as i64,
                 name: case.name.clone(),
                 status: case.status.as_str().to_string(),
@@ -160,7 +170,7 @@ impl PreparedRun {
         }
 
         Ok(PreparedRun {
-            id: run.run_id.clone(),
+            id: run.run_id.to_string(),
             project: run.project.clone(),
             suite: run.suite.clone(),
             created_at,
@@ -307,7 +317,7 @@ pub struct RunListFilter {
     pub until_ms: Option<i64>,
     pub status: Option<RunStatusFilter>,
     pub limit: i64,
-    pub cursor: Option<(i64, String)>,
+    pub cursor: Option<(i64, RunId)>,
 }
 
 /// A page of run summaries plus an optional next cursor.
@@ -369,7 +379,7 @@ impl RunListFilter {
                 b = args.len() + 2
             ));
             args.push((*c_created).into());
-            args.push(c_id.clone().into());
+            args.push(c_id.as_str().to_string().into());
         }
 
         if !clauses.is_empty() {
@@ -412,7 +422,10 @@ impl RunListFilter {
         if collected.len() as i64 > self.limit {
             let last = collected.pop().unwrap();
             let anchor = collected.last().unwrap_or(&last);
-            next_cursor = Some(encode_cursor(anchor.created_at, &anchor.id));
+            next_cursor = Some(encode_cursor(
+                anchor.created_at,
+                &RunId::new(anchor.id.as_str()),
+            ));
         }
 
         let mut out = Vec::with_capacity(collected.len());
@@ -485,7 +498,7 @@ pub(super) fn load_run_tags(conn: &Connection, run_id: &str) -> anyhow::Result<V
 // Run detail & export
 // ---------------------------------------------------------------------------
 
-fn get_run_detail(conn: &Connection, id: &str) -> anyhow::Result<Option<serde_json::Value>> {
+fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<serde_json::Value>> {
     let row = conn
         .query_row(
             "SELECT id, project, suite, created_at, uploaded_at, schema_version,
@@ -494,7 +507,7 @@ fn get_run_detail(conn: &Connection, id: &str) -> anyhow::Result<Option<serde_js
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
                     content_hash, uploaded_by
              FROM runs WHERE id = ?1",
-            params![id],
+            params![id.as_str()],
             |row| {
                 Ok(serde_json::json!({
                     "id": row.get::<_, String>(0)?,
@@ -527,8 +540,8 @@ fn get_run_detail(conn: &Connection, id: &str) -> anyhow::Result<Option<serde_js
         return Ok(None);
     };
 
-    let tags = load_run_tags(conn, id)?;
-    let labels = distinct_assert_labels(conn, id)?;
+    let tags = load_run_tags(conn, id.as_str())?;
+    let labels = distinct_assert_labels(conn, id.as_str())?;
     if let serde_json::Value::Object(map) = &mut detail {
         map.insert("tags".into(), serde_json::json!(tags));
         map.insert("assert_labels".into(), serde_json::json!(labels));
@@ -555,11 +568,11 @@ fn distinct_assert_labels(conn: &Connection, run_id: &str) -> anyhow::Result<Vec
     Ok(seen)
 }
 
-fn export_run_blob(conn: &Connection, id: &str) -> anyhow::Result<Option<serde_json::Value>> {
+fn export_run_blob(conn: &Connection, id: &RunId) -> anyhow::Result<Option<serde_json::Value>> {
     let blob: Option<Vec<u8>> = conn
         .query_row(
             "SELECT body FROM run_blobs WHERE run_id = ?1",
-            params![id],
+            params![id.as_str()],
             |row| row.get(0),
         )
         .ok();

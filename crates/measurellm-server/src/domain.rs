@@ -1,4 +1,4 @@
-//! Enums shared across the HTTP and SQLite boundaries.
+//! Enums and id newtypes shared across the HTTP and SQLite boundaries.
 //!
 //! [`Role`] and [`crate::auth::Scope`] cross both boundaries: they are stored
 //! in SQLite (via [`rusqlite::types::ToSql`]/[`rusqlite::types::FromSql`]) and
@@ -10,12 +10,89 @@
 //! `Role`'s and `Scope`'s SQL glue is kept together in this module even
 //! though `Scope` itself is defined in [`crate::auth`] (it needs the
 //! `Read`/`Write`/`Admin` ordering that lives alongside the auth logic).
+//!
+//! [`UserId`] and [`ApiKeyId`] are the server-local counterparts of core's
+//! [`measurellm_core::ids::RunId`]/[`measurellm_core::ids::CaseKey`]: opaque,
+//! `#[serde(transparent)]` string newtypes (see that module's docs for why
+//! `transparent` is load-bearing) with a `ToSql`/`FromSql` pair so storage
+//! code binds them directly instead of threading `.as_str()` through every
+//! call site. The macro is a local copy rather than a re-export from core —
+//! core stays rusqlite-free (orphan rule), and these two ids are server-only.
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::auth::Scope;
+
+macro_rules! string_id {
+    ($(#[$meta:meta])* pub struct $name:ident;) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            /// Wrap an existing id verbatim. No format validation: ids are
+            /// opaque, client-supplied strings.
+            pub fn new(id: impl Into<String>) -> Self {
+                $name(id.into())
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = std::convert::Infallible;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok($name::new(s))
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(s: String) -> Self {
+                $name(s)
+            }
+        }
+
+        impl From<&str> for $name {
+            fn from(s: &str) -> Self {
+                $name::new(s)
+            }
+        }
+
+        impl ToSql for $name {
+            fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+                Ok(self.as_str().into())
+            }
+        }
+
+        impl FromSql for $name {
+            fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+                Ok($name::new(value.as_str()?))
+            }
+        }
+    };
+}
+
+string_id!(
+    /// A local account's id.
+    pub struct UserId;
+);
+
+string_id!(
+    /// An API key's id (distinct from the key secret and from its hash).
+    pub struct ApiKeyId;
+);
 
 /// A local account's role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -131,6 +208,43 @@ mod tests {
             .query_row("SELECT scope FROM t", [], |r| r.get(0))
             .unwrap();
         assert_eq!(got, Scope::Write);
+    }
+
+    #[test]
+    fn user_id_round_trips_through_rusqlite() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id TEXT NOT NULL)")
+            .unwrap();
+        let id = UserId::new("usr_abc123");
+        conn.execute("INSERT INTO t (id) VALUES (?1)", rusqlite::params![id])
+            .unwrap();
+        let got: UserId = conn
+            .query_row("SELECT id FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(got, id);
+    }
+
+    #[test]
+    fn api_key_id_round_trips_through_rusqlite() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id TEXT NOT NULL)")
+            .unwrap();
+        let id = ApiKeyId::new("key_xyz789");
+        conn.execute("INSERT INTO t (id) VALUES (?1)", rusqlite::params![id])
+            .unwrap();
+        let got: ApiKeyId = conn
+            .query_row("SELECT id FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(got, id);
+    }
+
+    #[test]
+    fn user_id_serializes_as_a_bare_string_not_an_object() {
+        let id = UserId::new("usr_abc123");
+        let json = serde_json::to_value(&id).unwrap();
+        assert_eq!(json, serde_json::json!("usr_abc123"));
+        let back: UserId = serde_json::from_value(json).unwrap();
+        assert_eq!(back, id);
     }
 
     #[test]
