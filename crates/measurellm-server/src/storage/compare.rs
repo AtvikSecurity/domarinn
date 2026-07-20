@@ -1,23 +1,30 @@
 //! Run/run comparison: load both runs' cases, join on `case_key`, classify
 //! transitions. `output_changed` compares the stored `output_hash` only (no blob
 //! loads).
+//!
+//! The per-case classification (see [`classify`]) is deliberately *not*
+//! [`measurellm_core::diff::Delta`]: this endpoint special-cases a pass/pass
+//! pair as `still_passing`, where core's `diff_runs` folds every same-status
+//! pair (including e.g. skip/skip) into a single `unchanged`. See
+//! [`crate::dto::compare::CompareDelta`]'s doc comment for the full story.
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use rusqlite::{params, Connection};
 
-use measurellm_core::ids::RunId;
+use measurellm_core::ids::{CaseKey, RunId};
 use measurellm_core::result::CaseStatus;
 
 use super::Storage;
+use crate::dto::compare::{CompareCaseRow, CompareDelta, CompareResponse, CompareSummary};
 
 impl Storage {
     pub async fn compare_runs(
         &self,
         base: RunId,
         head: RunId,
-    ) -> anyhow::Result<Option<serde_json::Value>> {
+    ) -> anyhow::Result<Option<CompareResponse>> {
         self.runs
             .read(move |conn| compare_runs(conn, &base, &head))
             .await
@@ -62,11 +69,37 @@ fn is_failing(status: CaseStatus) -> bool {
     matches!(status, CaseStatus::Fail | CaseStatus::Error)
 }
 
+/// Classify one case's transition from `b` (base, if present) to `h` (head,
+/// if present). Mirrors today's endpoint behavior exactly (see the module
+/// doc): pass/pass is its own `StillPassing` variant, and anything else with
+/// matching presence-but-non-failing/non-passing status (in practice, a
+/// `skip` on either side) falls back to `Unchanged`.
+fn classify(b: Option<&CmpCase>, h: Option<&CmpCase>) -> CompareDelta {
+    match (b, h) {
+        (Some(b), Some(h)) => {
+            if b.status == CaseStatus::Pass && is_failing(h.status) {
+                CompareDelta::NewlyFailing
+            } else if is_failing(b.status) && h.status == CaseStatus::Pass {
+                CompareDelta::NewlyPassing
+            } else if is_failing(b.status) && is_failing(h.status) {
+                CompareDelta::StillFailing
+            } else if b.status == CaseStatus::Pass && h.status == CaseStatus::Pass {
+                CompareDelta::StillPassing
+            } else {
+                CompareDelta::Unchanged
+            }
+        }
+        (None, Some(_)) => CompareDelta::Added,
+        (Some(_), None) => CompareDelta::Removed,
+        (None, None) => unreachable!(),
+    }
+}
+
 fn compare_runs(
     conn: &Connection,
     base: &RunId,
     head: &RunId,
-) -> anyhow::Result<Option<serde_json::Value>> {
+) -> anyhow::Result<Option<CompareResponse>> {
     let base_exists = conn
         .query_row(
             "SELECT 1 FROM runs WHERE id = ?1",
@@ -96,73 +129,54 @@ fn compare_runs(
     }
     keys.sort();
 
-    let mut newly_failing = 0u64;
-    let mut newly_passing = 0u64;
-    let mut still_failing = 0u64;
-    let mut output_changed = 0u64;
-    let mut added = 0u64;
-    let mut removed = 0u64;
+    let mut summary = CompareSummary {
+        newly_failing: 0,
+        newly_passing: 0,
+        still_failing: 0,
+        output_changed: 0,
+        added: 0,
+        removed: 0,
+    };
     let mut cases = Vec::new();
 
     for key in keys {
         let b = base_cases.get(&key);
         let h = head_cases.get(&key);
-        let (delta, out_changed) = match (b, h) {
-            (Some(b), Some(h)) => {
-                let out_changed = b.output_hash != h.output_hash;
-                if out_changed {
-                    output_changed += 1;
-                }
-                let delta = if b.status == CaseStatus::Pass && is_failing(h.status) {
-                    newly_failing += 1;
-                    "newly_failing"
-                } else if is_failing(b.status) && h.status == CaseStatus::Pass {
-                    newly_passing += 1;
-                    "newly_passing"
-                } else if is_failing(b.status) && is_failing(h.status) {
-                    still_failing += 1;
-                    "still_failing"
-                } else if b.status == CaseStatus::Pass && h.status == CaseStatus::Pass {
-                    "still_passing"
-                } else {
-                    "unchanged"
-                };
-                (delta, out_changed)
-            }
-            (None, Some(_)) => {
-                added += 1;
-                ("added", false)
-            }
-            (Some(_), None) => {
-                removed += 1;
-                ("removed", false)
-            }
-            (None, None) => unreachable!(),
+        let delta = classify(b, h);
+        let out_changed = match (b, h) {
+            (Some(b), Some(h)) => b.output_hash != h.output_hash,
+            _ => false,
         };
+
+        match delta {
+            CompareDelta::NewlyFailing => summary.newly_failing += 1,
+            CompareDelta::NewlyPassing => summary.newly_passing += 1,
+            CompareDelta::StillFailing => summary.still_failing += 1,
+            CompareDelta::Added => summary.added += 1,
+            CompareDelta::Removed => summary.removed += 1,
+            CompareDelta::StillPassing | CompareDelta::Unchanged => {}
+        }
+        if out_changed {
+            summary.output_changed += 1;
+        }
+
         let name = h
             .and_then(|c| c.name.clone())
             .or_else(|| b.and_then(|c| c.name.clone()));
-        cases.push(serde_json::json!({
-            "case_key": key,
-            "name": name,
-            "base_status": b.map(|c| c.status.as_str()),
-            "head_status": h.map(|c| c.status.as_str()),
-            "delta": delta,
-            "output_changed": out_changed,
-        }));
+        cases.push(CompareCaseRow {
+            case_key: CaseKey::new(key),
+            name,
+            base_status: b.map(|c| c.status),
+            head_status: h.map(|c| c.status),
+            delta,
+            output_changed: out_changed,
+        });
     }
 
-    Ok(Some(serde_json::json!({
-        "base": base,
-        "head": head,
-        "summary": {
-            "newly_failing": newly_failing,
-            "newly_passing": newly_passing,
-            "still_failing": still_failing,
-            "output_changed": output_changed,
-            "added": added,
-            "removed": removed,
-        },
-        "cases": cases,
-    })))
+    Ok(Some(CompareResponse {
+        base: base.clone(),
+        head: head.clone(),
+        summary,
+        cases,
+    }))
 }

@@ -4,6 +4,7 @@
 use rusqlite::{params, Connection, TransactionBehavior};
 
 use super::{ms_to_rfc3339, now_ms, CachePutOutcome, Storage};
+use crate::dto::cache::CacheStatsResponse;
 
 impl Storage {
     pub async fn cache_get(&self, key: String) -> anyhow::Result<Option<Vec<u8>>> {
@@ -89,7 +90,7 @@ impl Storage {
             .await
     }
 
-    pub async fn cache_stats(&self) -> anyhow::Result<serde_json::Value> {
+    pub async fn cache_stats(&self) -> anyhow::Result<CacheStatsResponse> {
         self.cache.read(cache_stats).await
     }
 
@@ -105,7 +106,7 @@ impl Storage {
     }
 }
 
-fn cache_stats(conn: &Connection) -> anyhow::Result<serde_json::Value> {
+fn cache_stats(conn: &Connection) -> anyhow::Result<CacheStatsResponse> {
     let (entries, total_bytes, oldest): (i64, i64, Option<i64>) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(size), 0), MIN(created_at) FROM cache_entries",
         [],
@@ -116,13 +117,13 @@ fn cache_stats(conn: &Connection) -> anyhow::Result<serde_json::Value> {
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    Ok(serde_json::json!({
-        "entries": entries,
-        "total_bytes": total_bytes,
-        "hits": hits,
-        "misses": misses,
-        "oldest_entry_at": oldest.map(ms_to_rfc3339),
-    }))
+    Ok(CacheStatsResponse {
+        entries,
+        total_bytes,
+        hits,
+        misses,
+        oldest_entry_at: oldest.map(ms_to_rfc3339),
+    })
 }
 
 fn cache_prune(

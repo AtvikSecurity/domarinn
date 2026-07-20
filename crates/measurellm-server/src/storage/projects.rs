@@ -5,13 +5,16 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use measurellm_core::ids::RunId;
 
 use super::{ms_to_rfc3339, now_ms, Storage};
+use crate::dto::projects::{
+    ProjectListItem, ProjectsResponse, SuitePoint, SuiteSummary, SuitesResponse,
+};
 
 impl Storage {
-    pub async fn list_projects(&self) -> anyhow::Result<serde_json::Value> {
+    pub async fn list_projects(&self) -> anyhow::Result<ProjectsResponse> {
         self.runs.read(list_projects).await
     }
 
-    pub async fn list_suites(&self, project: String) -> anyhow::Result<serde_json::Value> {
+    pub async fn list_suites(&self, project: String) -> anyhow::Result<SuitesResponse> {
         self.runs
             .read(move |conn| list_suites(conn, &project))
             .await
@@ -61,7 +64,7 @@ impl Storage {
     }
 }
 
-fn list_projects(conn: &Connection) -> anyhow::Result<serde_json::Value> {
+fn list_projects(conn: &Connection) -> anyhow::Result<ProjectsResponse> {
     let mut stmt = conn.prepare(
         "SELECT project,
                 COUNT(*) AS run_count,
@@ -73,18 +76,18 @@ fn list_projects(conn: &Connection) -> anyhow::Result<serde_json::Value> {
          ORDER BY last_run_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok(serde_json::json!({
-            "project": row.get::<_, String>(0)?,
-            "run_count": row.get::<_, i64>(1)?,
-            "suite_count": row.get::<_, i64>(2)?,
-            "last_run_at": ms_to_rfc3339(row.get::<_, i64>(3)?),
-        }))
+        Ok(ProjectListItem {
+            project: row.get::<_, String>(0)?,
+            run_count: row.get::<_, i64>(1)?,
+            suite_count: row.get::<_, i64>(2)?,
+            last_run_at: ms_to_rfc3339(row.get::<_, i64>(3)?),
+        })
     })?;
-    let projects: Vec<serde_json::Value> = rows.collect::<Result<_, _>>()?;
-    Ok(serde_json::json!({ "projects": projects }))
+    let projects: Vec<ProjectListItem> = rows.collect::<Result<_, _>>()?;
+    Ok(ProjectsResponse { projects })
 }
 
-fn list_suites(conn: &Connection, project: &str) -> anyhow::Result<serde_json::Value> {
+fn list_suites(conn: &Connection, project: &str) -> anyhow::Result<SuitesResponse> {
     let mut stmt =
         conn.prepare("SELECT DISTINCT suite FROM runs WHERE project = ?1 AND suite IS NOT NULL")?;
     let suite_names: Vec<String> = stmt
@@ -98,7 +101,7 @@ fn list_suites(conn: &Connection, project: &str) -> anyhow::Result<serde_json::V
              FROM runs WHERE project = ?1 AND suite = ?2
              ORDER BY created_at DESC LIMIT 20",
         )?;
-        let series: Vec<serde_json::Value> = series_stmt
+        let series: Vec<SuitePoint> = series_stmt
             .query_map(params![project, suite], |row| {
                 let case_count: i64 = row.get(2)?;
                 let pass_count: i64 = row.get(3)?;
@@ -107,13 +110,13 @@ fn list_suites(conn: &Connection, project: &str) -> anyhow::Result<serde_json::V
                 } else {
                     0.0
                 };
-                Ok(serde_json::json!({
-                    "run_id": row.get::<_, String>(0)?,
-                    "created_at": ms_to_rfc3339(row.get::<_, i64>(1)?),
-                    "total": case_count,
-                    "passed": pass_count,
-                    "pass_rate": pass_rate,
-                }))
+                Ok(SuitePoint {
+                    run_id: RunId::new(row.get::<_, String>(0)?),
+                    created_at: ms_to_rfc3339(row.get::<_, i64>(1)?),
+                    total: case_count,
+                    passed: pass_count,
+                    pass_rate,
+                })
             })?
             .collect::<Result<_, _>>()?;
 
@@ -125,19 +128,19 @@ fn list_suites(conn: &Connection, project: &str) -> anyhow::Result<serde_json::V
             )
             .ok();
 
-        let last_run_at = series.first().and_then(|s| s.get("created_at").cloned());
+        let last_run_at = series.first().map(|s| s.created_at.clone());
 
-        suites.push(serde_json::json!({
-            "suite": suite,
-            "run_count": series.len(),
-            "last_run_at": last_run_at,
-            "baseline_run_id": baseline_run_id,
-            "series": series,
-        }));
+        suites.push(SuiteSummary {
+            suite,
+            run_count: series.len() as i64,
+            last_run_at,
+            baseline_run_id: baseline_run_id.map(RunId::new),
+            series,
+        });
     }
 
-    Ok(serde_json::json!({
-        "project": project,
-        "suites": suites,
-    }))
+    Ok(SuitesResponse {
+        project: project.to_string(),
+        suites,
+    })
 }

@@ -1,14 +1,18 @@
 //! Case list (lean rows) and case detail (blob decompress).
 
+use std::str::FromStr;
+
 use rusqlite::{params, Connection};
 
 use measurellm_core::ids::{CaseKey, RunId};
 use measurellm_core::result::CaseStatus;
 
 use super::{decompress, from_microusd, Storage};
+use crate::dto::cases::{CaseDetailResponse, CaseListItem, CaseListResponse};
+use crate::dto::runs::CaseAssertLean;
 
 impl Storage {
-    pub async fn list_cases(&self, filter: CaseListFilter) -> anyhow::Result<serde_json::Value> {
+    pub async fn list_cases(&self, filter: CaseListFilter) -> anyhow::Result<CaseListResponse> {
         self.runs.read(move |conn| filter.query(conn)).await
     }
 
@@ -16,7 +20,7 @@ impl Storage {
         &self,
         run_id: RunId,
         case_key: CaseKey,
-    ) -> anyhow::Result<Option<serde_json::Value>> {
+    ) -> anyhow::Result<Option<CaseDetailResponse>> {
         self.runs
             .read(move |conn| get_case_detail(conn, &run_id, &case_key))
             .await
@@ -35,7 +39,7 @@ pub struct CaseListFilter {
 }
 
 impl CaseListFilter {
-    fn query(self, conn: &Connection) -> anyhow::Result<serde_json::Value> {
+    fn query(self, conn: &Connection) -> anyhow::Result<CaseListResponse> {
         let mut sql = String::from(
             "SELECT case_key, idx, name, status, output_preview, asserts,
                     prompt_tokens, completion_tokens, cost_microusd, latency_ms
@@ -71,26 +75,31 @@ impl CaseListFilter {
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
             let asserts_str: Option<String> = row.get(5)?;
-            let asserts: serde_json::Value = asserts_str
+            let asserts: Vec<CaseAssertLean> = asserts_str
                 .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_else(|| serde_json::json!([]));
+                .unwrap_or_default();
+            let status_raw: String = row.get(3)?;
+            let status = CaseStatus::from_str(&status_raw).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, e.into())
+            })?;
+            let idx: i64 = row.get(1)?;
             Ok((
-                row.get::<_, i64>(1)?, // idx
-                serde_json::json!({
-                    "case_key": row.get::<_, String>(0)?,
-                    "idx": row.get::<_, i64>(1)?,
-                    "name": row.get::<_, Option<String>>(2)?,
-                    "status": row.get::<_, String>(3)?,
-                    "output_preview": row.get::<_, Option<String>>(4)?,
-                    "asserts": asserts,
-                    "prompt_tokens": row.get::<_, Option<i64>>(6)?,
-                    "completion_tokens": row.get::<_, Option<i64>>(7)?,
-                    "cost_usd": from_microusd(row.get::<_, Option<i64>>(8)?),
-                    "latency_ms": row.get::<_, Option<i64>>(9)?,
-                }),
+                idx,
+                CaseListItem {
+                    case_key: CaseKey::new(row.get::<_, String>(0)?),
+                    idx,
+                    name: row.get::<_, Option<String>>(2)?,
+                    status,
+                    output_preview: row.get::<_, Option<String>>(4)?,
+                    asserts,
+                    prompt_tokens: row.get::<_, Option<i64>>(6)?,
+                    completion_tokens: row.get::<_, Option<i64>>(7)?,
+                    cost_usd: from_microusd(row.get::<_, Option<i64>>(8)?),
+                    latency_ms: row.get::<_, Option<i64>>(9)?,
+                },
             ))
         })?;
-        let mut collected: Vec<(i64, serde_json::Value)> = Vec::new();
+        let mut collected: Vec<(i64, CaseListItem)> = Vec::new();
         for row in rows {
             collected.push(row?);
         }
@@ -103,11 +112,8 @@ impl CaseListFilter {
             }
         }
 
-        let cases: Vec<serde_json::Value> = collected.into_iter().map(|(_, v)| v).collect();
-        Ok(serde_json::json!({
-            "cases": cases,
-            "next_cursor": next_cursor,
-        }))
+        let cases: Vec<CaseListItem> = collected.into_iter().map(|(_, v)| v).collect();
+        Ok(CaseListResponse { cases, next_cursor })
     }
 }
 
@@ -115,7 +121,7 @@ fn get_case_detail(
     conn: &Connection,
     run_id: &RunId,
     case_key: &CaseKey,
-) -> anyhow::Result<Option<serde_json::Value>> {
+) -> anyhow::Result<Option<CaseDetailResponse>> {
     let blob: Option<Vec<u8>> = conn
         .query_row(
             "SELECT detail FROM cases WHERE run_id = ?1 AND case_key = ?2",
@@ -128,5 +134,5 @@ fn get_case_detail(
     };
     let bytes = decompress(&blob)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    Ok(Some(value))
+    Ok(Some(CaseDetailResponse(value)))
 }

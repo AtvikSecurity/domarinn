@@ -4,13 +4,14 @@ use anyhow::Context;
 use rusqlite::{params, Connection, TransactionBehavior};
 
 use measurellm_core::ids::RunId;
-use measurellm_core::result::RunResult;
+use measurellm_core::result::{AssertStatus, RunResult};
 
 use super::{
     compress, content_hash, decompress, encode_cursor, from_microusd, ms_to_rfc3339, now_ms,
     sha256_hex, to_microusd, IngestOutcome, Storage,
 };
 use crate::domain::RunStatusFilter;
+use crate::dto::runs::{CaseAssertLean, RunDetailResponse, RunListItem};
 
 impl Storage {
     /// Ingest a run in a single transaction. Idempotent by (id, content_hash).
@@ -27,7 +28,7 @@ impl Storage {
         self.runs.read(move |conn| filter.query(conn)).await
     }
 
-    pub async fn get_run(&self, id: RunId) -> anyhow::Result<Option<serde_json::Value>> {
+    pub async fn get_run(&self, id: RunId) -> anyhow::Result<Option<RunDetailResponse>> {
         self.runs.read(move |conn| get_run_detail(conn, &id)).await
     }
 
@@ -139,13 +140,11 @@ impl PreparedRun {
                 &case
                     .asserts
                     .iter()
-                    .map(|a| {
-                        serde_json::json!({
-                            "label": a.kind,
-                            "kind": a.kind,
-                            "passed": matches!(a.status, measurellm_core::result::AssertStatus::Pass),
-                            "score": a.score,
-                        })
+                    .map(|a| CaseAssertLean {
+                        label: a.kind,
+                        kind: a.kind,
+                        passed: matches!(a.status, AssertStatus::Pass),
+                        score: a.score,
                     })
                     .collect::<Vec<_>>(),
             )?;
@@ -322,7 +321,7 @@ pub struct RunListFilter {
 
 /// A page of run summaries plus an optional next cursor.
 pub struct RunListPage {
-    pub runs: Vec<serde_json::Value>,
+    pub runs: Vec<RunListItem>,
     pub next_cursor: Option<String>,
 }
 
@@ -431,7 +430,7 @@ impl RunListFilter {
         let mut out = Vec::with_capacity(collected.len());
         for run in &collected {
             let tags = load_run_tags(conn, &run.id)?;
-            out.push(run.to_json(tags));
+            out.push(run.to_dto(tags));
         }
 
         Ok(RunListPage {
@@ -460,31 +459,31 @@ struct RunRow {
 }
 
 impl RunRow {
-    fn to_json(&self, tags: Vec<String>) -> serde_json::Value {
+    fn to_dto(&self, tags: Vec<String>) -> RunListItem {
         let pass_rate = if self.case_count > 0 {
             self.pass_count as f64 / self.case_count as f64
         } else {
             0.0
         };
-        serde_json::json!({
-            "id": self.id,
-            "project": self.project,
-            "suite": self.suite,
-            "created_at": ms_to_rfc3339(self.created_at),
-            "git_branch": self.git_branch,
-            "git_commit": self.git_commit,
-            "git_dirty": self.git_dirty.map(|d| d != 0),
-            "case_count": self.case_count,
-            "pass_count": self.pass_count,
-            "fail_count": self.fail_count,
-            "error_count": self.error_count,
-            "pass_rate": pass_rate,
-            "prompt_tokens": self.prompt_tokens,
-            "completion_tokens": self.completion_tokens,
-            "cost_usd": from_microusd(self.cost_microusd),
-            "duration_ms": self.duration_ms,
-            "tags": tags,
-        })
+        RunListItem {
+            id: RunId::new(self.id.as_str()),
+            project: self.project.clone(),
+            suite: self.suite.clone(),
+            created_at: ms_to_rfc3339(self.created_at),
+            git_branch: self.git_branch.clone(),
+            git_commit: self.git_commit.clone(),
+            git_dirty: self.git_dirty.map(|d| d != 0),
+            case_count: self.case_count,
+            pass_count: self.pass_count,
+            fail_count: self.fail_count,
+            error_count: self.error_count,
+            pass_rate,
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            cost_usd: from_microusd(self.cost_microusd),
+            duration_ms: self.duration_ms,
+            tags,
+        }
     }
 }
 
@@ -498,7 +497,7 @@ pub(super) fn load_run_tags(conn: &Connection, run_id: &str) -> anyhow::Result<V
 // Run detail & export
 // ---------------------------------------------------------------------------
 
-fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<serde_json::Value>> {
+fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDetailResponse>> {
     let row = conn
         .query_row(
             "SELECT id, project, suite, created_at, uploaded_at, schema_version,
@@ -509,29 +508,32 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<serde_
              FROM runs WHERE id = ?1",
             params![id.as_str()],
             |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, String>(0)?,
-                    "project": row.get::<_, Option<String>>(1)?,
-                    "suite": row.get::<_, Option<String>>(2)?,
-                    "created_at": ms_to_rfc3339(row.get::<_, i64>(3)?),
-                    "uploaded_at": ms_to_rfc3339(row.get::<_, i64>(4)?),
-                    "schema_version": row.get::<_, i64>(5)?,
-                    "git_branch": row.get::<_, Option<String>>(6)?,
-                    "git_commit": row.get::<_, Option<String>>(7)?,
-                    "git_dirty": row.get::<_, Option<i64>>(8)?.map(|d| d != 0),
-                    "ci_provider": row.get::<_, Option<String>>(9)?,
-                    "ci_run_url": row.get::<_, Option<String>>(10)?,
-                    "case_count": row.get::<_, i64>(11)?,
-                    "pass_count": row.get::<_, i64>(12)?,
-                    "fail_count": row.get::<_, i64>(13)?,
-                    "error_count": row.get::<_, i64>(14)?,
-                    "prompt_tokens": row.get::<_, i64>(15)?,
-                    "completion_tokens": row.get::<_, i64>(16)?,
-                    "cost_usd": from_microusd(row.get::<_, Option<i64>>(17)?),
-                    "duration_ms": row.get::<_, i64>(18)?,
-                    "content_hash": row.get::<_, String>(19)?,
-                    "uploaded_by": row.get::<_, Option<String>>(20)?,
-                }))
+                Ok(RunDetailResponse {
+                    id: RunId::new(row.get::<_, String>(0)?),
+                    project: row.get::<_, Option<String>>(1)?,
+                    suite: row.get::<_, Option<String>>(2)?,
+                    created_at: ms_to_rfc3339(row.get::<_, i64>(3)?),
+                    uploaded_at: ms_to_rfc3339(row.get::<_, i64>(4)?),
+                    schema_version: row.get::<_, i64>(5)?,
+                    git_branch: row.get::<_, Option<String>>(6)?,
+                    git_commit: row.get::<_, Option<String>>(7)?,
+                    git_dirty: row.get::<_, Option<i64>>(8)?.map(|d| d != 0),
+                    ci_provider: row.get::<_, Option<String>>(9)?,
+                    ci_run_url: row.get::<_, Option<String>>(10)?,
+                    case_count: row.get::<_, i64>(11)?,
+                    pass_count: row.get::<_, i64>(12)?,
+                    fail_count: row.get::<_, i64>(13)?,
+                    error_count: row.get::<_, i64>(14)?,
+                    prompt_tokens: row.get::<_, i64>(15)?,
+                    completion_tokens: row.get::<_, i64>(16)?,
+                    cost_usd: from_microusd(row.get::<_, Option<i64>>(17)?),
+                    duration_ms: row.get::<_, i64>(18)?,
+                    content_hash: row.get::<_, String>(19)?,
+                    uploaded_by: row.get::<_, Option<String>>(20)?,
+                    // Filled in below, after the row is loaded.
+                    tags: Vec::new(),
+                    assert_labels: Vec::new(),
+                })
             },
         )
         .ok();
@@ -540,12 +542,8 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<serde_
         return Ok(None);
     };
 
-    let tags = load_run_tags(conn, id.as_str())?;
-    let labels = distinct_assert_labels(conn, id.as_str())?;
-    if let serde_json::Value::Object(map) = &mut detail {
-        map.insert("tags".into(), serde_json::json!(tags));
-        map.insert("assert_labels".into(), serde_json::json!(labels));
-    }
+    detail.tags = load_run_tags(conn, id.as_str())?;
+    detail.assert_labels = distinct_assert_labels(conn, id.as_str())?;
     Ok(Some(detail))
 }
 
@@ -555,12 +553,11 @@ fn distinct_assert_labels(conn: &Connection, run_id: &str) -> anyhow::Result<Vec
     let mut seen: Vec<String> = Vec::new();
     for row in rows {
         let Some(json) = row? else { continue };
-        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
+        let parsed: Vec<CaseAssertLean> = serde_json::from_str(&json).unwrap_or_default();
         for a in parsed {
-            if let Some(label) = a.get("label").and_then(|v| v.as_str()) {
-                if !seen.iter().any(|s| s == label) {
-                    seen.push(label.to_string());
-                }
+            let label = a.label.as_str();
+            if !seen.iter().any(|s| s == label) {
+                seen.push(label.to_string());
             }
         }
     }
