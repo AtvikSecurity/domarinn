@@ -18,6 +18,14 @@
 # https://mise.jdx.dev/configuration/settings.html#lockfile).
 lockfile = true
 
+# Node ships official precompiled binaries for every platform CI and developers
+# use, so never build it from source. Some environments default `node.compile`
+# to true, which makes `mise lock` bake source tarballs (`node-*.tar.gz`) with
+# `install = "source"` into the lockfile — a 15-40 min cold build in CI. Pin it
+# off so the lockfile always resolves precompiled Node.
+[settings.node]
+compile = false
+
 [tools]
 # Versions match what CI used before this migration: Rust stable
 # (dtolnay/rust-toolchain@stable), Node 22 (actions/setup-node), pnpm 11
