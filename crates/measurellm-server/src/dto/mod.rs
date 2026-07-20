@@ -9,6 +9,8 @@
 //! does not call `TS::export` anywhere itself).
 //!
 //! Split by the storage submodule each DTO family serves:
+//! * [`accounts`] — local accounts, sessions, and API keys (`/auth/*`,
+//!   `/apikeys`, `/users`).
 //! * [`runs`] — run list/detail items and the lean per-case assert record
 //!   stored in the `cases.asserts` DB column.
 //! * [`cases`] — case list items and the case detail envelope.
@@ -17,6 +19,7 @@
 //! * [`cache`] — cache stats and prune responses.
 //! * [`meta`] — the `/api/v1/meta` response.
 
+pub mod accounts;
 pub mod cache;
 pub mod cases;
 pub mod compare;

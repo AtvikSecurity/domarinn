@@ -9,15 +9,19 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use ts_rs::TS;
 
 use crate::auth::{self, Admin, Identity, Scope, Scoped, Write};
 use crate::domain::{ApiKeyId, Role, UserId};
+use crate::dto::accounts::{
+    ApiKeyCreatedResponse, ApiKeyListResponse, ApiKeyView, AuthSessionResponse, MeResponse, MeUser,
+    OkResponse, UserListResponse, UserView,
+};
 use crate::extract::ApiJson;
 use crate::routes::{not_found, ApiError, ApiResult};
-use crate::storage::{ApiKeyInfo, DeleteUserOutcome, UserRow};
+use crate::storage::DeleteUserOutcome;
 use crate::AppState;
 
 /// Minimum acceptable password length.
@@ -27,7 +31,7 @@ const MIN_PASSWORD_LEN: usize = 8;
 // Setup / login / logout / me
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
 pub(crate) struct CredentialsBody {
     username: String,
     password: String,
@@ -56,7 +60,10 @@ pub(crate) async fn setup(
     let token = issue_session(&state, &user.id).await?;
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "token": token, "user": user_json(&user) })),
+        Json(AuthSessionResponse {
+            token,
+            user: UserView::from(&user),
+        }),
     )
         .into_response())
 }
@@ -80,7 +87,10 @@ pub(crate) async fn login(
     let token = issue_session(&state, &user.id).await?;
     Ok((
         StatusCode::OK,
-        Json(json!({ "token": token, "user": user_json(&user) })),
+        Json(AuthSessionResponse {
+            token,
+            user: UserView::from(&user),
+        }),
     )
         .into_response())
 }
@@ -90,7 +100,7 @@ pub(crate) async fn login(
 pub(crate) async fn logout(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
-) -> ApiResult<Response> {
+) -> ApiResult<Json<OkResponse>> {
     if !identity.is_authenticated() {
         return Err(ApiError::status(
             StatusCode::UNAUTHORIZED,
@@ -100,33 +110,32 @@ pub(crate) async fn logout(
     if let Some(hash) = identity.session_token_hash {
         state.storage.delete_session(hash).await?;
     }
-    Ok(Json(json!({ "ok": true })).into_response())
+    Ok(Json(OkResponse { ok: true }))
 }
 
 /// `GET /auth/me` — report the current identity (or anonymity).
-pub(crate) async fn me(Extension(identity): Extension<Identity>) -> ApiResult<Response> {
+pub(crate) async fn me(Extension(identity): Extension<Identity>) -> ApiResult<Json<MeResponse>> {
     let user = match (&identity.user_id, &identity.username, &identity.role) {
-        (Some(id), Some(username), Some(role)) => Some(json!({
-            "id": id,
-            "username": username,
-            "role": role,
-        })),
+        (Some(id), Some(username), Some(role)) => Some(MeUser {
+            id: id.clone(),
+            username: username.clone(),
+            role: *role,
+        }),
         _ => None,
     };
-    Ok(Json(json!({
-        "authenticated": identity.is_authenticated(),
-        "user": user,
-        "source": identity.source.as_str(),
-        "scope": identity.scope.map(|s| s.label()),
+    Ok(Json(MeResponse {
+        authenticated: identity.is_authenticated(),
+        user,
+        source: identity.source,
+        scope: identity.scope,
     }))
-    .into_response())
 }
 
 // ---------------------------------------------------------------------------
 // API keys
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
 pub(crate) struct CreateKeyBody {
     name: Option<String>,
     scope: Option<Scope>,
@@ -136,11 +145,11 @@ pub(crate) struct CreateKeyBody {
 pub(crate) async fn list_apikeys(
     scope: Scoped<Write>,
     State(state): State<AppState>,
-) -> ApiResult<Response> {
+) -> ApiResult<Json<ApiKeyListResponse>> {
     let user_id = require_user(&scope.identity)?;
     let keys = state.storage.list_api_keys(user_id).await?;
-    let keys: Vec<Value> = keys.iter().map(apikey_json).collect();
-    Ok(Json(json!({ "keys": keys })).into_response())
+    let keys = keys.iter().map(ApiKeyView::from).collect();
+    Ok(Json(ApiKeyListResponse { keys }))
 }
 
 /// `POST /apikeys` — mint a key, returning its secret exactly once. The scope
@@ -168,11 +177,11 @@ pub(crate) async fn create_apikey(
         .create_api_key(user_id, body.name.clone(), prefix, hash, requested)
         .await?;
 
-    let mut view = apikey_json(&info);
-    if let Value::Object(map) = &mut view {
-        map.insert("key".to_string(), json!(secret));
-    }
-    Ok((StatusCode::CREATED, Json(view)).into_response())
+    let response = ApiKeyCreatedResponse {
+        key: secret,
+        view: ApiKeyView::from(&info),
+    };
+    Ok((StatusCode::CREATED, Json(response)).into_response())
 }
 
 /// `DELETE /apikeys/{id}` — revoke a key. Allowed for its owner or any admin.
@@ -199,14 +208,14 @@ pub(crate) async fn delete_apikey(
 // User administration
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
 pub(crate) struct CreateUserBody {
     username: String,
     password: String,
     role: Role,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
 pub(crate) struct PatchUserBody {
     role: Option<Role>,
     disabled: Option<bool>,
@@ -217,10 +226,10 @@ pub(crate) struct PatchUserBody {
 pub(crate) async fn list_users(
     _scope: Scoped<Admin>,
     State(state): State<AppState>,
-) -> ApiResult<Response> {
+) -> ApiResult<Json<UserListResponse>> {
     let users = state.storage.list_users().await?;
-    let users: Vec<Value> = users.iter().map(user_json).collect();
-    Ok(Json(json!({ "users": users })).into_response())
+    let users = users.iter().map(UserView::from).collect();
+    Ok(Json(UserListResponse { users }))
 }
 
 /// `POST /users` — create an account (admin only).
@@ -237,7 +246,7 @@ pub(crate) async fn create_user(
         .create_user(username, hash, body.role)
         .await?
         .ok_or_else(|| ApiError::status(StatusCode::CONFLICT, "username already exists"))?;
-    Ok((StatusCode::CREATED, Json(user_json(&user))).into_response())
+    Ok((StatusCode::CREATED, Json(UserView::from(&user))).into_response())
 }
 
 /// `PATCH /users/{id}` — change role, enabled state, and/or password.
@@ -246,7 +255,7 @@ pub(crate) async fn patch_user(
     State(state): State<AppState>,
     Path(id): Path<UserId>,
     ApiJson(body): ApiJson<PatchUserBody>,
-) -> ApiResult<Response> {
+) -> ApiResult<Json<UserView>> {
     // Confirm the target exists before applying any partial update.
     if state.storage.get_user_by_id(id.clone()).await?.is_none() {
         return Err(not_found("user"));
@@ -270,7 +279,7 @@ pub(crate) async fn patch_user(
         .get_user_by_id(id)
         .await?
         .ok_or_else(|| not_found("user"))?;
-    Ok(Json(user_json(&updated)).into_response())
+    Ok(Json(UserView::from(&updated)))
 }
 
 /// `DELETE /users/{id}` — remove an account, refusing the last admin.
@@ -335,33 +344,4 @@ fn validate_password(password: &str) -> ApiResult<()> {
         ));
     }
     Ok(())
-}
-
-fn user_json(user: &UserRow) -> Value {
-    json!({
-        "id": user.id,
-        "username": user.username,
-        "role": user.role,
-        "disabled": user.disabled,
-        "created_at": rfc3339(user.created_at),
-    })
-}
-
-fn apikey_json(info: &ApiKeyInfo) -> Value {
-    json!({
-        "id": info.id,
-        "name": info.name,
-        "prefix": info.prefix,
-        "scope": info.scope,
-        "created_at": rfc3339(info.created_at),
-        "last_used_at": info.last_used_at.map(rfc3339),
-        "revoked": info.revoked,
-    })
-}
-
-fn rfc3339(ms: i64) -> String {
-    Utc.timestamp_millis_opt(ms)
-        .single()
-        .map(|dt| dt.to_rfc3339())
-        .unwrap_or_default()
 }

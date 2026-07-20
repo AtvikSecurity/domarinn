@@ -157,8 +157,12 @@ impl Authenticator for StaticTokenAuthenticator {
     }
 }
 
-/// Where a request's credentials came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where a request's credentials came from. Mirrors [`IdentitySource::as_str`]
+/// via `#[serde(rename_all = "lowercase")]` — `ApiKey` lowercases (no word
+/// split) to `"apikey"`, matching the wire string `me` returned before this
+/// derive existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "lowercase")]
 pub enum IdentitySource {
     Anonymous,
     /// A configured `MEASURELLM_TOKENS` static token.
@@ -516,6 +520,21 @@ mod tests {
     fn scope_hierarchy() {
         assert!(Scope::Admin > Scope::Write);
         assert!(Scope::Write > Scope::Read);
+    }
+
+    #[test]
+    fn identity_source_serde_matches_as_str() {
+        for source in [
+            IdentitySource::Anonymous,
+            IdentitySource::Static,
+            IdentitySource::ApiKey,
+            IdentitySource::Session,
+        ] {
+            assert_eq!(
+                serde_json::to_value(source).unwrap(),
+                serde_json::json!(source.as_str())
+            );
+        }
     }
 
     #[test]

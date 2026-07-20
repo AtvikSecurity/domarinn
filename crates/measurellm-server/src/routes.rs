@@ -9,6 +9,7 @@ use axum::{Json, Router};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use ts_rs::TS;
 
 use measurellm_core::cache::CacheKey;
 use measurellm_core::ids::{CaseKey, RunId};
@@ -447,7 +448,7 @@ async fn list_suites(
     Ok(Json(state.storage.list_suites(project).await?).into_response())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
 struct BaselineBody {
     run_id: RunId,
 }
