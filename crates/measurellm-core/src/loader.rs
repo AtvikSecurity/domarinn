@@ -44,6 +44,8 @@ pub enum LoadError {
     },
     #[error("parsing YAML: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
+    #[error("cyclic extends/imports at {path}")]
+    Cycle { path: PathBuf },
 }
 
 /// Parse a suite from a YAML string, applying all normalization passes.
@@ -54,15 +56,122 @@ pub fn load_str(text: &str) -> Result<Suite, LoadError> {
     Ok(suite)
 }
 
-/// Parse a suite from a file. If `path` is a directory, `measurellm.yaml` (or
-/// `.yml`) inside it is used.
+/// Parse a suite from a file, resolving `extends` / `imports` composition. If
+/// `path` is a directory, `measurellm.yaml` (or `.yml`) inside it is used.
 pub fn load_file(path: &Path) -> Result<Suite, LoadError> {
     let file = resolve_suite_path(path);
-    let text = std::fs::read_to_string(&file).map_err(|source| LoadError::Io {
-        path: file.clone(),
+    let value = load_and_compose(&file, &mut Vec::new())?;
+    let suite: Suite = serde_yaml_ng::from_value(value)?;
+    Ok(suite)
+}
+
+/// Load a suite file's YAML value with composition applied.
+///
+/// Precedence low to high: `extends` base, then each `imports` fragment in
+/// order, then the file itself. Objects deep-merge (higher precedence wins);
+/// sequences are replaced, except `assert` lists, which append.
+fn load_and_compose(file: &Path, stack: &mut Vec<PathBuf>) -> Result<Yaml, LoadError> {
+    let canonical = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    if stack.contains(&canonical) {
+        return Err(LoadError::Cycle {
+            path: file.to_path_buf(),
+        });
+    }
+    stack.push(canonical);
+
+    let text = std::fs::read_to_string(file).map_err(|source| LoadError::Io {
+        path: file.to_path_buf(),
         source,
     })?;
-    load_str(&text)
+    let mut value = normalize(serde_yaml_ng::from_str(text.as_str())?);
+    let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
+
+    let extends = take_string(&mut value, "extends");
+    let imports = take_string_seq(&mut value, "imports");
+
+    let mut acc: Option<Yaml> = None;
+    if let Some(spec) = extends {
+        let base = load_and_compose(&resolve_ref(&spec, base_dir), stack)?;
+        acc = Some(base);
+    }
+    for spec in imports {
+        let fragment = load_and_compose(&resolve_ref(&spec, base_dir), stack)?;
+        acc = Some(match acc {
+            Some(a) => deep_merge(a, fragment),
+            None => fragment,
+        });
+    }
+    let merged = match acc {
+        Some(a) => deep_merge(a, value),
+        None => value,
+    };
+
+    stack.pop();
+    Ok(merged)
+}
+
+fn resolve_ref(spec: &str, base_dir: &Path) -> PathBuf {
+    let rel = spec.strip_prefix("file://").unwrap_or(spec);
+    base_dir.join(rel)
+}
+
+fn take_string(value: &mut Yaml, key: &str) -> Option<String> {
+    if let Yaml::Mapping(map) = value {
+        if let Some(Yaml::String(s)) = map.remove(Yaml::String(key.to_string())) {
+            return Some(s);
+        }
+    }
+    None
+}
+
+fn take_string_seq(value: &mut Yaml, key: &str) -> Vec<String> {
+    if let Yaml::Mapping(map) = value {
+        if let Some(Yaml::Sequence(seq)) = map.remove(Yaml::String(key.to_string())) {
+            return seq
+                .into_iter()
+                .filter_map(|v| match v {
+                    Yaml::String(s) => Some(s),
+                    _ => None,
+                })
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// Deep-merge two YAML values. `over` takes precedence. Mappings merge key by
+/// key; a shared `assert` sequence appends (base then over); other sequences and
+/// scalars are replaced by `over`.
+fn deep_merge(base: Yaml, over: Yaml) -> Yaml {
+    match (base, over) {
+        (Yaml::Mapping(mut base_map), Yaml::Mapping(over_map)) => {
+            for (k, over_val) in over_map {
+                let merged = match base_map.remove(&k) {
+                    Some(base_val) => {
+                        if matches!(&k, Yaml::String(s) if s == "assert") {
+                            append_sequences(base_val, over_val)
+                        } else {
+                            deep_merge(base_val, over_val)
+                        }
+                    }
+                    None => over_val,
+                };
+                base_map.insert(k, merged);
+            }
+            Yaml::Mapping(base_map)
+        }
+        (_, over) => over,
+    }
+}
+
+fn append_sequences(base: Yaml, over: Yaml) -> Yaml {
+    match (base, over) {
+        (Yaml::Sequence(mut a), Yaml::Sequence(b)) => {
+            a.extend(b);
+            Yaml::Sequence(a)
+        }
+        (_, over) => over,
+    }
 }
 
 /// Resolve a user-supplied path to a concrete suite file.
@@ -281,6 +390,66 @@ tests:
     }
 
     #[test]
+    fn extends_deep_merges_and_appends_asserts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("base.yaml"),
+            r#"
+version: 1
+project: base
+providers: [{id: p, type: exec, command: ["base"]}]
+defaults:
+  assert: [{type: is-json}]
+  tags: [inherited]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("measurellm.yaml"),
+            r#"
+version: 1
+extends: "file://base.yaml"
+suite: child
+defaults:
+  assert: [{type: contains, value: "x"}]
+tests:
+  - {vars: {a: "1"}}
+"#,
+        )
+        .unwrap();
+        let suite = load_file(dir.path()).unwrap();
+        assert!(validate(&suite).is_empty(), "{:?}", validate(&suite));
+        // project inherited from base, suite from child
+        assert_eq!(suite.project.as_deref(), Some("base"));
+        assert_eq!(suite.suite.as_deref(), Some("child"));
+        // defaults.assert appended: is-json (base) then contains (child)
+        let defaults = suite.defaults.unwrap();
+        assert_eq!(defaults.assert.len(), 2);
+        assert!(matches!(defaults.assert[0].kind, AssertKind::IsJson));
+        assert!(matches!(
+            defaults.assert[1].kind,
+            AssertKind::Contains { .. }
+        ));
+    }
+
+    #[test]
+    fn cyclic_extends_is_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.yaml"),
+            "version: 1\nextends: \"file://b.yaml\"\nproviders: []\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.yaml"),
+            "version: 1\nextends: \"file://a.yaml\"\nproviders: []\n",
+        )
+        .unwrap();
+        let err = load_file(&dir.path().join("a.yaml")).unwrap_err();
+        assert!(matches!(err, LoadError::Cycle { .. }), "{err:?}");
+    }
+
+    #[test]
     fn duplicate_provider_ids_flagged() {
         let suite = load_str(
             r#"
@@ -292,6 +461,8 @@ providers:
         )
         .unwrap();
         let issues = validate(&suite);
-        assert!(issues.iter().any(|i| i.message.contains("duplicate provider id")));
+        assert!(issues
+            .iter()
+            .any(|i| i.message.contains("duplicate provider id")));
     }
 }

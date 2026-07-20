@@ -4,20 +4,38 @@
 //! the shapes the CLI and server share ([`RunResult`], the exec protocol) and the
 //! extension seams ([`Provider`], [`Assertion`], [`CacheBackend`]).
 
+pub mod anthropic;
 pub mod assertion;
+pub mod asserts;
 pub mod cache;
+pub mod cache_key;
 pub mod config;
+pub mod exec;
 pub mod exec_protocol;
+pub mod exec_provider;
+pub mod filter;
+pub mod generate;
+pub mod http_provider;
 pub mod loader;
+pub mod net;
+pub mod openai;
 pub mod provider;
+pub mod provider_factory;
+pub mod render;
+pub mod resolve;
 pub mod result;
+pub mod runner;
+pub mod scoring;
 pub mod template;
 pub mod types;
 pub mod val;
 
 pub use config::Suite;
+pub use filter::{Filter, FilterOpts};
 pub use loader::{load_file, load_str, validate, Issue};
+pub use resolve::{expand_tests, Expanded};
 pub use result::{RunResult, RESULT_SCHEMA_VERSION};
+pub use runner::{run, AssertGrader, RunOptions};
 pub use template::TemplateEngine;
 pub use val::Val;
 

@@ -36,6 +36,8 @@ tests:
         max: 200000
 
 defaults:
+  # A deterministic guard applied to every case: the rendered output must never
+  # be unreasonably large (a cheap catch for a runaway template).
   assert:
-    - type: is-json
-      # every rendered output is echoed as JSON by the fake provider
+    - type: length
+      max: 100000

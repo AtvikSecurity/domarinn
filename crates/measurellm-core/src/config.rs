@@ -223,12 +223,24 @@ pub struct Assert {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum AssertKind {
-    Contains { value: String },
-    Icontains { value: String },
-    IcontainsAny { values: Vec<String> },
-    Regex { value: String },
-    Equals { value: Val },
-    StartsWith { value: String },
+    Contains {
+        value: String,
+    },
+    Icontains {
+        value: String,
+    },
+    IcontainsAny {
+        values: Vec<String>,
+    },
+    Regex {
+        value: String,
+    },
+    Equals {
+        value: Val,
+    },
+    StartsWith {
+        value: String,
+    },
     IsJson,
     ContainsJson {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,7 +252,9 @@ pub enum AssertKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max: Option<u64>,
     },
-    Jinja { value: String },
+    Jinja {
+        value: String,
+    },
     Exec {
         command: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -256,11 +270,17 @@ pub enum AssertKind {
         params: Option<ParamMap>,
     },
     /// Total cost in USD must be <= max. Bypasses the cache.
-    Cost { max: f64 },
+    Cost {
+        max: f64,
+    },
     /// Latency in ms must be <= max. Bypasses the cache.
-    Latency { max: u64 },
+    Latency {
+        max: u64,
+    },
     /// Total tokens must be <= max.
-    Tokens { max: u64 },
+    Tokens {
+        max: u64,
+    },
     /// Embedding cosine similarity to a reference must be >= threshold.
     Similar {
         value: Val,

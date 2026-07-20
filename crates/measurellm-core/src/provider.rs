@@ -87,4 +87,11 @@ pub trait Provider: Send + Sync {
         req: &ProviderRequest,
         ctx: &CallCtx,
     ) -> Result<ProviderResponse, ProviderError>;
+
+    /// Whether responses from this provider may be cached. Defaults to true;
+    /// exec providers return false unless a `cache_salt` pins the version of the
+    /// system under test, so a rebuilt binary is never served stale output.
+    fn cacheable(&self) -> bool {
+        true
+    }
 }

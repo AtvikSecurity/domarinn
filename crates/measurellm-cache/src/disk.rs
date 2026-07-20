@@ -45,8 +45,9 @@ impl CacheBackend for LocalDiskCache {
         let path = self.path_for(key);
         match tokio::fs::read(&path).await {
             Ok(bytes) => {
-                let entry = serde_json::from_slice(&bytes)
-                    .map_err(|e| CacheError(anyhow::anyhow!("corrupt cache entry {path:?}: {e}")))?;
+                let entry = serde_json::from_slice(&bytes).map_err(|e| {
+                    CacheError(anyhow::anyhow!("corrupt cache entry {path:?}: {e}"))
+                })?;
                 Ok(Some(entry))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -124,9 +125,7 @@ impl CacheBackend for LocalDiskCache {
     }
 
     async fn purge(&self, filter: &PurgeFilter) -> Result<u64, CacheError> {
-        let cutoff = filter
-            .older_than
-            .map(|d| chrono::Utc::now() - d);
+        let cutoff = filter.older_than.map(|d| chrono::Utc::now() - d);
         let mut removed = 0u64;
         let mut shards = match tokio::fs::read_dir(&self.root).await {
             Ok(rd) => rd,
@@ -223,7 +222,11 @@ mod tests {
         second.output = Output::Text("changed".into());
         cache.put(&key, &second).await.unwrap();
         let got = cache.get(&key).await.unwrap().unwrap();
-        assert_eq!(got.output, Output::Text("hi".into()), "first write should win");
+        assert_eq!(
+            got.output,
+            Output::Text("hi".into()),
+            "first write should win"
+        );
     }
 
     #[tokio::test]

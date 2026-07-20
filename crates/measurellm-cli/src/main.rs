@@ -9,9 +9,12 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod output;
+mod run;
+mod share;
+
 /// Exit codes with meaning to CI.
-#[allow(dead_code)] // ASSERT_FAIL is used once `run` lands in Phase 2.
-mod exit {
+pub mod exit {
     pub const OK: u8 = 0;
     pub const ASSERT_FAIL: u8 = 1;
     pub const USAGE: u8 = 2;
@@ -27,10 +30,18 @@ struct Cli {
     /// Increase logging verbosity (-v, -vv).
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
+
+    /// Results server base URL (or set MEASURELLM_SERVER_URL).
+    #[arg(long, global = true)]
+    server_url: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run a suite: call providers, evaluate assertions, report results.
+    Run(run::RunArgs),
+    /// Upload a completed run to a results server and print its URL.
+    Share(share::ShareArgs),
     /// Parse and structurally validate a suite (no provider calls).
     Validate {
         /// Path to a suite file or a directory containing measurellm.yaml.
@@ -84,6 +95,8 @@ fn main() -> ExitCode {
     init_tracing(cli.verbose);
 
     let code = match cli.command {
+        Command::Run(args) => run::execute(args),
+        Command::Share(args) => share::execute(args, cli.server_url),
         Command::Validate { path } => cmd_validate(&path),
         Command::Schema { which } => cmd_schema(which),
         Command::List { what, path, json } => cmd_list(what, &path, json),
@@ -169,22 +182,27 @@ fn cmd_list(what: ListKind, path: &Path, json: bool) -> u8 {
             print_list(&ids, json);
         }
         ListKind::Tests => {
-            // Full test resolution (globs, generators) lands in Phase 1; for now
-            // list inline test ids and note the unresolved sources.
-            let mut ids: Vec<String> = Vec::new();
-            let mut unresolved = 0;
-            for (i, source) in suite.tests.iter().enumerate() {
-                match source {
-                    measurellm_core::config::TestSource::Inline(tc) => {
-                        ids.push(tc.id.clone().unwrap_or_else(|| format!("inline/{i}")));
+            // Resolve inline + file globs; generators are listed as a count since
+            // they only produce cases at run time.
+            let file = measurellm_core::loader::resolve_suite_path(path);
+            let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
+            match measurellm_core::expand_tests(&suite, base_dir) {
+                Ok(expanded) => {
+                    let ids: Vec<String> =
+                        expanded.tests.iter().filter_map(|t| t.id.clone()).collect();
+                    let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+                    print_list(&refs, json);
+                    if !expanded.deferred_generators.is_empty() && !json {
+                        eprintln!(
+                            "note: {} generator(s) produce additional tests at run time",
+                            expanded.deferred_generators.len()
+                        );
                     }
-                    _ => unresolved += 1,
                 }
-            }
-            let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
-            print_list(&refs, json);
-            if unresolved > 0 && !json {
-                eprintln!("note: {unresolved} test source(s) require resolution (Phase 1)");
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return exit::USAGE;
+                }
             }
         }
     }
@@ -193,7 +211,10 @@ fn cmd_list(what: ListKind, path: &Path, json: bool) -> u8 {
 
 fn print_list(items: &[&str], json: bool) {
     if json {
-        println!("{}", serde_json::to_string(items).unwrap_or_else(|_| "[]".into()));
+        println!(
+            "{}",
+            serde_json::to_string(items).unwrap_or_else(|_| "[]".into())
+        );
     } else {
         for item in items {
             println!("{item}");

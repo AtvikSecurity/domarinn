@@ -32,7 +32,12 @@ impl CacheKey {
     /// True when the string is a well-formed key.
     pub fn is_valid(s: &str) -> bool {
         s.strip_prefix("sha256:")
-            .map(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+            .map(|hex| {
+                hex.len() == 64
+                    && hex
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            })
             .unwrap_or(false)
     }
 }
