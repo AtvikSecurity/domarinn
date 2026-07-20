@@ -5,6 +5,7 @@ members = [
     "crates/measurellm-cache",
     "crates/measurellm-server",
     "crates/measurellm-cli",
+    "crates/measurellm-logging",
     "crates/measurellm-testkit",
 ]
 
@@ -20,6 +21,7 @@ authors = ["perfectra1n"]
 measurellm-core = { path = "crates/measurellm-core" }
 measurellm-cache = { path = "crates/measurellm-cache" }
 measurellm-server = { path = "crates/measurellm-server" }
+measurellm-logging = { path = "crates/measurellm-logging" }
 
 # serialization
 serde = { version = "1", features = ["derive"] }
@@ -43,7 +45,7 @@ ulid = { version = "1", features = ["serde"] }
 thiserror = "1"
 anyhow = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi", "json"] }
 
 # misc
 globset = "0.4"
