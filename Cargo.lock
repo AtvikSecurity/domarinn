@@ -1307,6 +1307,7 @@ dependencies = [
  "clap",
  "measurellm-cache",
  "measurellm-core",
+ "measurellm-logging",
  "measurellm-server",
  "predicates",
  "reqwest",
@@ -1315,8 +1316,6 @@ dependencies = [
  "serde_yaml_ng",
  "tempfile",
  "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

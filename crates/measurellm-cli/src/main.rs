@@ -36,6 +36,11 @@ struct Cli {
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
 
+    /// Log format: auto, pretty, compact, json (env: MEASURELLM_LOG_FORMAT).
+    /// Logs go to stderr; RUST_LOG overrides the default filter entirely.
+    #[arg(long, global = true, value_enum, default_value_t = LogFormatArg::Auto)]
+    log_format: LogFormatArg,
+
     /// Results server base URL (or set MEASURELLM_SERVER_URL).
     #[arg(long, global = true)]
     server_url: Option<String>,
@@ -120,9 +125,37 @@ enum ImportFormat {
     Promptfoo,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum LogFormatArg {
+    Auto,
+    Pretty,
+    Compact,
+    Json,
+}
+
+impl From<LogFormatArg> for measurellm_logging::LogFormat {
+    fn from(value: LogFormatArg) -> Self {
+        match value {
+            LogFormatArg::Auto => measurellm_logging::LogFormat::Auto,
+            LogFormatArg::Pretty => measurellm_logging::LogFormat::Pretty,
+            LogFormatArg::Compact => measurellm_logging::LogFormat::Compact,
+            LogFormatArg::Json => measurellm_logging::LogFormat::Json,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
+
+    let profile = match &cli.command {
+        Command::Server { .. } => measurellm_logging::LogProfile::Server,
+        _ => measurellm_logging::LogProfile::Cli,
+    };
+    measurellm_logging::init(&measurellm_logging::LogOptions {
+        profile,
+        verbose: cli.verbose,
+        format: cli.log_format.into(),
+    });
 
     let code = match cli.command {
         Command::Run(args) => run::execute(args, cli.server_url),
@@ -141,19 +174,6 @@ fn main() -> ExitCode {
         Command::Healthcheck { port } => cmd_healthcheck(port),
     };
     ExitCode::from(code)
-}
-
-fn init_tracing(verbose: u8) {
-    let level = match verbose {
-        0 => "warn",
-        1 => "info",
-        _ => "debug",
-    };
-    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| format!("measurellm={level}"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
 }
 
 fn cmd_validate(path: &Path) -> u8 {

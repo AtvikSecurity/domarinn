@@ -145,3 +145,15 @@ fn run_persists_latest_pointer() {
     let latest = dir.path().join(".measurellm").join("runs").join("latest");
     assert!(latest.exists(), "latest pointer should be written");
 }
+
+#[test]
+fn log_format_json_flag_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    bin()
+        .args(["--log-format", "json", "validate"])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok:"));
+}
