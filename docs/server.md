@@ -308,8 +308,10 @@ being silently ignored and masking the mistake.
   accepts `pass | fail | error | skip`, but the **run-level** filter accepts only
   `pass | fail | error`. A skipped case never moves a run's pass/fail/error
   counters, so `GET /runs?status=skip` is a `400` — not an empty result set.
+  Likewise, `POST /cache/prune` takes `older_than_days` and `target_bytes` as
+  **query** parameters, so an unknown param there is a `400` as well.
 - **Unknown fields in a JSON request body are `422`.** A misspelled or stray key
-  (in a user, API-key, baseline, or cache-prune body) is rejected rather than
+  (in a user, API-key, or baseline body) is rejected rather than
   dropped — as is a value of the wrong type or an unrecognized enum value (any
   body that parses as JSON but does not match the target shape). Syntactically
   invalid JSON, or a missing/incorrect `Content-Type`, is a `400`.
