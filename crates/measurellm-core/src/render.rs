@@ -90,7 +90,7 @@ pub fn render_prompt(
             for message in messages {
                 let source = load_content(&message.content, base_dir)?;
                 rendered.push(ChatMessage {
-                    role: message.role.clone(),
+                    role: message.role,
                     content: engine.render_str(&source, ctx)?,
                 });
             }
@@ -118,6 +118,7 @@ pub fn load_content(spec: &str, base_dir: &Path) -> Result<String, RenderError> 
 mod tests {
     use super::*;
     use crate::config::Message;
+    use crate::types::ChatRole;
 
     #[test]
     fn raw_var_passes_through_context_unrendered() {
@@ -159,11 +160,11 @@ mod tests {
             template: None,
             messages: Some(vec![
                 Message {
-                    role: "system".into(),
+                    role: ChatRole::System,
                     content: "You are helpful".into(),
                 },
                 Message {
-                    role: "user".into(),
+                    role: ChatRole::User,
                     content: "{{ request }}".into(),
                 },
             ]),

@@ -10,6 +10,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+use measurellm_core::asserts::AssertName;
 use measurellm_core::result::{
     AssertResult, AssertStatus, CaseResult, CaseStatus, CellKey, CiMeta, FilterSpec, GitMeta,
     RunResult, RunSummary,
@@ -125,7 +126,7 @@ pub struct CaseSpec {
     pub status: CaseStatus,
     pub output: Option<&'static str>,
     pub tags: Vec<&'static str>,
-    pub asserts: Vec<(&'static str, AssertStatus)>,
+    pub asserts: Vec<(AssertName, AssertStatus)>,
 }
 
 impl CaseSpec {
@@ -137,7 +138,7 @@ impl CaseSpec {
             status,
             output: Some("hello"),
             tags: Vec::new(),
-            asserts: vec![("contains", AssertStatus::Pass)],
+            asserts: vec![(AssertName::Contains, AssertStatus::Pass)],
         }
     }
 
@@ -151,7 +152,7 @@ impl CaseSpec {
         self
     }
 
-    pub fn asserts(mut self, asserts: Vec<(&'static str, AssertStatus)>) -> Self {
+    pub fn asserts(mut self, asserts: Vec<(AssertName, AssertStatus)>) -> Self {
         self.asserts = asserts;
         self
     }
@@ -169,7 +170,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         .asserts
         .iter()
         .map(|(kind, status)| AssertResult {
-            kind: kind.to_string(),
+            kind: *kind,
             status: *status,
             score: if matches!(status, AssertStatus::Pass) {
                 1.0

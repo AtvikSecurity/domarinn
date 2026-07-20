@@ -14,7 +14,7 @@ use futures::StreamExt;
 use serde_json::Value as Json;
 
 use crate::assertion::AssertOutcome;
-use crate::asserts::{evaluate_local, is_local, kind_name, MetricCtx};
+use crate::asserts::{evaluate_local, is_local, MetricCtx};
 use crate::cache::{CacheBackend, CacheEntry, CacheMode};
 use crate::cache_key::provider_cache_key;
 use crate::config::{Assert, AssertKind, Suite, TestCase};
@@ -527,7 +527,7 @@ async fn evaluate_asserts(
                     assert,
                     format!(
                         "no grader available for '{}' assertions in this run",
-                        kind_name(&assert.kind)
+                        assert.kind.name().as_str()
                     ),
                 ));
             }
@@ -547,7 +547,7 @@ fn scored_of(assert: &Assert, outcome: &AssertOutcome) -> Scored {
 
 fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus) -> AssertResult {
     AssertResult {
-        kind: kind_name(&assert.kind).to_string(),
+        kind: assert.kind.name(),
         status,
         score: outcome.score,
         weight: assert.weight,
@@ -559,7 +559,7 @@ fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus)
 
 fn error_assert(assert: &Assert, reason: String) -> AssertResult {
     AssertResult {
-        kind: kind_name(&assert.kind).to_string(),
+        kind: assert.kind.name(),
         status: AssertStatus::Error,
         score: 0.0,
         weight: assert.weight,
@@ -571,7 +571,7 @@ fn error_assert(assert: &Assert, reason: String) -> AssertResult {
 
 fn skipped_result(assert: &Assert) -> AssertResult {
     AssertResult {
-        kind: kind_name(&assert.kind).to_string(),
+        kind: assert.kind.name(),
         status: AssertStatus::Skipped,
         score: 0.0,
         weight: assert.weight,

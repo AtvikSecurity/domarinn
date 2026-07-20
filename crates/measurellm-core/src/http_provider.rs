@@ -11,6 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
+use crate::config::HttpMethod;
 use crate::net::{http_client, parse_retry_after, status_error, transport_error};
 use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
 use crate::template::TemplateEngine;
@@ -22,7 +23,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct HttpProvider {
     id: String,
     url: String,
-    method: String,
+    method: HttpMethod,
     headers: BTreeMap<String, String>,
     body: Option<Json>,
     output_expr: Option<String>,
@@ -33,7 +34,7 @@ impl HttpProvider {
     pub fn new(
         id: impl Into<String>,
         url: impl Into<String>,
-        method: Option<String>,
+        method: Option<HttpMethod>,
         headers: BTreeMap<String, String>,
         body: Option<Json>,
         output_expr: Option<String>,
@@ -41,7 +42,7 @@ impl HttpProvider {
         HttpProvider {
             id: id.into(),
             url: url.into(),
-            method: method.unwrap_or_else(|| "POST".to_string()),
+            method: method.unwrap_or_default(),
             headers,
             body,
             output_expr,
@@ -77,8 +78,16 @@ impl Provider for HttpProvider {
         let url = engine
             .render_str(&self.url, &render_ctx)
             .map_err(|e| ProviderError::Fatal(anyhow::anyhow!("rendering url: {e}")))?;
-        let method = reqwest::Method::from_bytes(self.method.as_bytes())
-            .map_err(|e| ProviderError::Fatal(anyhow::anyhow!("bad method: {e}")))?;
+        // Infallible: `HttpMethod` is a closed set validated at config parse
+        // time, so there is no invalid-method error path left to handle here.
+        let method = match self.method {
+            HttpMethod::Get => reqwest::Method::GET,
+            HttpMethod::Post => reqwest::Method::POST,
+            HttpMethod::Put => reqwest::Method::PUT,
+            HttpMethod::Patch => reqwest::Method::PATCH,
+            HttpMethod::Delete => reqwest::Method::DELETE,
+            HttpMethod::Head => reqwest::Method::HEAD,
+        };
 
         let mut request = self.client.request(method, &url);
         for (name, template) in &self.headers {
@@ -150,7 +159,7 @@ fn render_context(req: &ProviderRequest) -> Json {
             RenderedPrompt::Text(t) => t.clone(),
             RenderedPrompt::Messages(msgs) => msgs
                 .iter()
-                .map(|m| format!("{}: {}", m.role, m.content))
+                .map(|m| format!("{}: {}", m.role.as_str(), m.content))
                 .collect::<Vec<_>>()
                 .join("\n"),
         };
@@ -199,7 +208,7 @@ mod tests {
         let p = HttpProvider::new(
             "gw",
             format!("{}/complete", server.uri()),
-            Some("POST".into()),
+            Some(HttpMethod::Post),
             BTreeMap::new(),
             Some(json!({"prompt": "{{ prompt }}", "doc": "{{ doc }}"})),
             Some("response.json.completion".into()),
@@ -221,7 +230,7 @@ mod tests {
         let p = HttpProvider::new(
             "gw",
             server.uri(),
-            Some("GET".into()),
+            Some(HttpMethod::Get),
             BTreeMap::new(),
             None,
             None,
@@ -231,5 +240,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.output, Output::Text("plain body".into()));
+    }
+
+    #[tokio::test]
+    async fn missing_method_defaults_to_post_on_the_wire_and_in_the_fingerprint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+        let p = HttpProvider::new("gw", server.uri(), None, BTreeMap::new(), None, None);
+        assert_eq!(p.fingerprint()["method"], json!("POST"));
+        let resp = p
+            .call(&request_with_var("x", "y"), &CallCtx::default())
+            .await
+            .unwrap();
+        assert_eq!(resp.output, Output::Text("ok".into()));
     }
 }

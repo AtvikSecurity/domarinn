@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
+use crate::asserts::AssertName;
 use crate::types::{Output, TokenUsage};
 
 pub const RESULT_SCHEMA_VERSION: u32 = 1;
@@ -97,7 +98,7 @@ pub enum AssertStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(optional_fields)]
 pub struct AssertResult {
-    pub kind: String,
+    pub kind: AssertName,
     pub status: AssertStatus,
     pub score: f64,
     pub weight: f64,

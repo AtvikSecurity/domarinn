@@ -10,6 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
+use crate::types::ChatRole;
 use crate::val::Val;
 
 /// A free-form bag of provider/grader parameters passed to the model verbatim.
@@ -81,6 +82,27 @@ pub struct Provider {
     pub kind: ProviderKind,
 }
 
+/// The HTTP method for a `type: http` provider. Authors may write either case
+/// (`get` or `GET`) in YAML; the wire method (and the request/cache
+/// fingerprint) is always the uppercase form.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum HttpMethod {
+    #[serde(alias = "get")]
+    Get,
+    #[default]
+    #[serde(alias = "post")]
+    Post,
+    #[serde(alias = "put")]
+    Put,
+    #[serde(alias = "patch")]
+    Patch,
+    #[serde(alias = "delete")]
+    Delete,
+    #[serde(alias = "head")]
+    Head,
+}
+
 /// The behavior of a provider, selected by `type`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -121,7 +143,7 @@ pub enum ProviderKind {
     Http {
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        method: Option<String>,
+        method: Option<HttpMethod>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         headers: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,7 +177,7 @@ pub struct Prompt {
 /// A chat message; `content` may be `file://path` to load from disk.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Message {
-    pub role: String,
+    pub role: ChatRole,
     pub content: String,
 }
 
@@ -289,6 +311,16 @@ pub enum AssertKind {
     },
 }
 
+/// How an `llm-rubric` grader's structured verdict is obtained. `Forced` is
+/// the default; `Auto` is documented but currently unread by the grader.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum VerdictMode {
+    #[default]
+    Forced,
+    Auto,
+}
+
 /// The LLM grader for `llm-rubric`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Grader {
@@ -299,7 +331,7 @@ pub struct Grader {
     pub template: Option<String>,
     /// `forced` (default) or `auto` — how the structured verdict is obtained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verdict_mode: Option<String>,
+    pub verdict_mode: Option<VerdictMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -363,4 +395,50 @@ pub struct S3Cfg {
     pub prefix: Option<String>,
     #[serde(default)]
     pub force_path_style: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_method_defaults_to_post() {
+        assert_eq!(HttpMethod::default(), HttpMethod::Post);
+    }
+
+    #[test]
+    fn http_method_emits_uppercase_and_accepts_lowercase_alias() {
+        for (variant, upper, lower) in [
+            (HttpMethod::Get, "GET", "get"),
+            (HttpMethod::Post, "POST", "post"),
+            (HttpMethod::Put, "PUT", "put"),
+            (HttpMethod::Patch, "PATCH", "patch"),
+            (HttpMethod::Delete, "DELETE", "delete"),
+            (HttpMethod::Head, "HEAD", "head"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(variant).unwrap(),
+                serde_json::json!(upper)
+            );
+            let from_upper: HttpMethod = serde_json::from_value(serde_json::json!(upper)).unwrap();
+            assert_eq!(from_upper, variant);
+            let from_lower: HttpMethod = serde_json::from_value(serde_json::json!(lower)).unwrap();
+            assert_eq!(from_lower, variant);
+        }
+        assert!(serde_json::from_value::<HttpMethod>(serde_json::json!("Trace")).is_err());
+    }
+
+    #[test]
+    fn verdict_mode_round_trips_and_defaults_to_forced() {
+        assert_eq!(VerdictMode::default(), VerdictMode::Forced);
+        for (variant, wire) in [(VerdictMode::Forced, "forced"), (VerdictMode::Auto, "auto")] {
+            assert_eq!(
+                serde_json::to_value(variant).unwrap(),
+                serde_json::json!(wire)
+            );
+            let parsed: VerdictMode = serde_json::from_value(serde_json::json!(wire)).unwrap();
+            assert_eq!(parsed, variant);
+        }
+        assert!(serde_json::from_value::<VerdictMode>(serde_json::json!("manual")).is_err());
+    }
 }

@@ -65,7 +65,7 @@ pub fn build_provider(cfg: &ProviderCfg) -> Result<Box<dyn Provider>, FactoryErr
         } => Ok(Box::new(HttpProvider::new(
             cfg.id.clone(),
             url.clone(),
-            method.clone(),
+            *method,
             headers.clone(),
             body.clone(),
             output_expr.clone(),

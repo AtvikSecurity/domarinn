@@ -298,7 +298,7 @@ tests:
     .unwrap();
     assert_eq!(result.cases[0].status, CaseStatus::Pass);
     assert!((result.cases[0].score - 0.95).abs() < 1e-9);
-    assert_eq!(result.cases[0].asserts[0].kind, "llm-rubric");
+    assert_eq!(result.cases[0].asserts[0].kind.as_str(), "llm-rubric");
 }
 
 #[tokio::test]

@@ -49,10 +49,30 @@ impl TokenUsage {
     }
 }
 
+/// A chat message role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatRole {
+    System,
+    User,
+    Assistant,
+}
+
+impl ChatRole {
+    /// The wire string for this role (identical to its serde encoding).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChatRole::System => "system",
+            ChatRole::User => "user",
+            ChatRole::Assistant => "assistant",
+        }
+    }
+}
+
 /// A chat message in a rendered prompt.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ChatMessage {
-    pub role: String,
+    pub role: ChatRole,
     pub content: String,
 }
 
@@ -62,4 +82,24 @@ pub struct ChatMessage {
 pub enum RenderedPrompt {
     Text(String),
     Messages(Vec<ChatMessage>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_role_round_trips_and_matches_as_str() {
+        for (role, wire) in [
+            (ChatRole::System, "system"),
+            (ChatRole::User, "user"),
+            (ChatRole::Assistant, "assistant"),
+        ] {
+            assert_eq!(role.as_str(), wire);
+            assert_eq!(serde_json::to_value(role).unwrap(), serde_json::json!(wire));
+            let parsed: ChatRole = serde_json::from_value(serde_json::json!(wire)).unwrap();
+            assert_eq!(parsed, role);
+        }
+        assert!(serde_json::from_value::<ChatRole>(serde_json::json!("developer")).is_err());
+    }
 }

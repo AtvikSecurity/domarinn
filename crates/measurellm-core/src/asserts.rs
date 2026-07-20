@@ -5,7 +5,10 @@
 //! (`exec`, `llm-rubric`, `similar`) are handled by the runner's async path and
 //! return `None` here.
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use ts_rs::TS;
 
 use crate::assertion::AssertOutcome;
 use crate::config::{Assert, AssertKind};
@@ -20,25 +23,75 @@ pub struct MetricCtx {
     pub total_tokens: Option<u64>,
 }
 
-/// The stable kind name recorded in results (matches the config `type`).
-pub fn kind_name(kind: &AssertKind) -> &'static str {
-    match kind {
-        AssertKind::Contains { .. } => "contains",
-        AssertKind::Icontains { .. } => "icontains",
-        AssertKind::IcontainsAny { .. } => "icontains-any",
-        AssertKind::Regex { .. } => "regex",
-        AssertKind::Equals { .. } => "equals",
-        AssertKind::StartsWith { .. } => "starts-with",
-        AssertKind::IsJson => "is-json",
-        AssertKind::ContainsJson { .. } => "contains-json",
-        AssertKind::Length { .. } => "length",
-        AssertKind::Jinja { .. } => "jinja",
-        AssertKind::Exec { .. } => "exec",
-        AssertKind::LlmRubric { .. } => "llm-rubric",
-        AssertKind::Cost { .. } => "cost",
-        AssertKind::Latency { .. } => "latency",
-        AssertKind::Tokens { .. } => "tokens",
-        AssertKind::Similar { .. } => "similar",
+/// A field-less mirror of every [`AssertKind`] variant, recorded in results as
+/// the stable "kind" name (matches the config `type` tag). Kept in sync with
+/// `AssertKind` by [`AssertKind::name`] and the pin test below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum AssertName {
+    Contains,
+    Icontains,
+    IcontainsAny,
+    Regex,
+    Equals,
+    StartsWith,
+    IsJson,
+    ContainsJson,
+    Length,
+    Jinja,
+    Exec,
+    LlmRubric,
+    Cost,
+    Latency,
+    Tokens,
+    Similar,
+}
+
+impl AssertName {
+    /// The wire string for this kind (identical to its serde encoding).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AssertName::Contains => "contains",
+            AssertName::Icontains => "icontains",
+            AssertName::IcontainsAny => "icontains-any",
+            AssertName::Regex => "regex",
+            AssertName::Equals => "equals",
+            AssertName::StartsWith => "starts-with",
+            AssertName::IsJson => "is-json",
+            AssertName::ContainsJson => "contains-json",
+            AssertName::Length => "length",
+            AssertName::Jinja => "jinja",
+            AssertName::Exec => "exec",
+            AssertName::LlmRubric => "llm-rubric",
+            AssertName::Cost => "cost",
+            AssertName::Latency => "latency",
+            AssertName::Tokens => "tokens",
+            AssertName::Similar => "similar",
+        }
+    }
+}
+
+impl AssertKind {
+    /// The stable kind name recorded in results (matches the config `type`).
+    pub fn name(&self) -> AssertName {
+        match self {
+            AssertKind::Contains { .. } => AssertName::Contains,
+            AssertKind::Icontains { .. } => AssertName::Icontains,
+            AssertKind::IcontainsAny { .. } => AssertName::IcontainsAny,
+            AssertKind::Regex { .. } => AssertName::Regex,
+            AssertKind::Equals { .. } => AssertName::Equals,
+            AssertKind::StartsWith { .. } => AssertName::StartsWith,
+            AssertKind::IsJson => AssertName::IsJson,
+            AssertKind::ContainsJson { .. } => AssertName::ContainsJson,
+            AssertKind::Length { .. } => AssertName::Length,
+            AssertKind::Jinja { .. } => AssertName::Jinja,
+            AssertKind::Exec { .. } => AssertName::Exec,
+            AssertKind::LlmRubric { .. } => AssertName::LlmRubric,
+            AssertKind::Cost { .. } => AssertName::Cost,
+            AssertKind::Latency { .. } => AssertName::Latency,
+            AssertKind::Tokens { .. } => AssertName::Tokens,
+            AssertKind::Similar { .. } => AssertName::Similar,
+        }
     }
 }
 
@@ -397,5 +450,75 @@ mod tests {
             &MetricCtx::default()
         )
         .is_none());
+    }
+
+    /// Pin test: for every `AssertKind` variant, `AssertKind::name()` must
+    /// serialize to exactly the same string as the variant's own serde `type`
+    /// tag. This guards `AssertKind` <-> `AssertName` drift forever — if a
+    /// variant is added, renamed, or its tag changes without updating
+    /// `AssertName`/`AssertKind::name`, this test (or a compile error from the
+    /// exhaustive match in `AssertKind::name`) catches it.
+    #[test]
+    fn assert_name_matches_assert_kind_tag_for_every_variant() {
+        use crate::val::Val;
+
+        let variants: Vec<AssertKind> = vec![
+            AssertKind::Contains {
+                value: String::new(),
+            },
+            AssertKind::Icontains {
+                value: String::new(),
+            },
+            AssertKind::IcontainsAny { values: vec![] },
+            AssertKind::Regex {
+                value: String::new(),
+            },
+            AssertKind::Equals {
+                value: Val::Raw(Json::Null),
+            },
+            AssertKind::StartsWith {
+                value: String::new(),
+            },
+            AssertKind::IsJson,
+            AssertKind::ContainsJson { schema: None },
+            AssertKind::Length {
+                min: None,
+                max: None,
+            },
+            AssertKind::Jinja {
+                value: String::new(),
+            },
+            AssertKind::Exec {
+                command: vec![],
+                config: None,
+            },
+            AssertKind::LlmRubric {
+                value: String::new(),
+                grader: None,
+                threshold: None,
+                params: None,
+            },
+            AssertKind::Cost { max: 0.0 },
+            AssertKind::Latency { max: 0 },
+            AssertKind::Tokens { max: 0 },
+            AssertKind::Similar {
+                value: Val::Raw(Json::Null),
+                threshold: None,
+            },
+        ];
+        assert_eq!(variants.len(), 16, "update this test when adding a variant");
+
+        for kind in variants {
+            // The actual tag the `Assert` config schema produces for this
+            // variant (from AssertKind's own `#[serde(tag = "type")]`
+            // encoding), not a hand-typed expectation.
+            let assert_json = serde_json::to_value(a(kind.clone())).unwrap();
+            let tag = assert_json["type"].clone();
+            let name_json = serde_json::to_value(kind.name()).unwrap();
+            assert_eq!(
+                name_json, tag,
+                "AssertName for {kind:?} must equal its AssertKind tag"
+            );
+        }
     }
 }

@@ -12,7 +12,7 @@ use serde_json::{json, Value as Json};
 use crate::config::ParamMap;
 use crate::net::{api_key, http_client, parse_retry_after, status_error, transport_error};
 use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
-use crate::types::{Output, RenderedPrompt, TokenUsage};
+use crate::types::{ChatRole, Output, RenderedPrompt, TokenUsage};
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -122,7 +122,7 @@ fn to_messages(prompt: &RenderedPrompt) -> (Option<String>, Vec<Json>) {
             let mut system: Vec<String> = Vec::new();
             let mut out = Vec::new();
             for m in msgs {
-                if m.role == "system" {
+                if m.role == ChatRole::System {
                     system.push(m.content.clone());
                 } else {
                     out.push(json!({"role": m.role, "content": m.content}));
@@ -199,11 +199,11 @@ mod tests {
     fn system_messages_are_extracted() {
         let prompt = RenderedPrompt::Messages(vec![
             crate::types::ChatMessage {
-                role: "system".into(),
+                role: ChatRole::System,
                 content: "be nice".into(),
             },
             crate::types::ChatMessage {
-                role: "user".into(),
+                role: ChatRole::User,
                 content: "hi".into(),
             },
         ]);

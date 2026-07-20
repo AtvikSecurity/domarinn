@@ -2,6 +2,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::*;
+use measurellm_core::asserts::AssertName;
 use measurellm_core::result::{AssertStatus, CaseStatus};
 use measurellm_server::Settings;
 
@@ -126,11 +127,11 @@ async fn run_detail_reports_assert_labels() {
         0,
         &[
             CaseSpec::new("openai", "t1", CaseStatus::Pass).asserts(vec![
-                ("contains", AssertStatus::Pass),
-                ("regex", AssertStatus::Pass),
+                (AssertName::Contains, AssertStatus::Pass),
+                (AssertName::Regex, AssertStatus::Pass),
             ]),
             CaseSpec::new("openai", "t2", CaseStatus::Fail)
-                .asserts(vec![("llm_judge", AssertStatus::Fail)]),
+                .asserts(vec![(AssertName::LlmRubric, AssertStatus::Fail)]),
         ],
     );
     post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
@@ -143,7 +144,7 @@ async fn run_detail_reports_assert_labels() {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
-    assert_eq!(labels, vec!["contains", "llm_judge", "regex"]);
+    assert_eq!(labels, vec!["contains", "llm-rubric", "regex"]);
 }
 
 #[tokio::test]
