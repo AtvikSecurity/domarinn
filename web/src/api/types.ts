@@ -7,7 +7,65 @@ export interface Meta {
   name: string;
   version: string;
   auth_mode: AuthMode;
+  setup_required: boolean;
   supported_schema_versions: number[];
+}
+
+// --- Accounts / auth -------------------------------------------------------
+
+export type Role = "admin" | "member";
+export type AuthSource = "static" | "apikey" | "session";
+export type AuthScope = "read" | "write" | "admin";
+
+/** The compact user shape returned by login/setup and embedded in `me`. */
+export interface AuthUser {
+  id: string;
+  username: string;
+  role: Role;
+}
+
+/** Response of POST /auth/login and POST /auth/setup. */
+export interface AuthResponse {
+  token: string;
+  user: AuthUser;
+}
+
+/** Response of GET /auth/me. Never a 401 — `authenticated` carries the answer. */
+export interface MeResponse {
+  authenticated: boolean;
+  user?: AuthUser;
+  source: AuthSource;
+  scope: AuthScope;
+}
+
+/** An API key as listed by GET /apikeys (never includes the secret). */
+export interface ApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  scope: AuthScope;
+  created_at: number;
+  last_used_at?: number | null;
+  revoked: boolean;
+}
+
+/** POST /apikeys response — the only time the full secret is returned. */
+export interface ApiKeyCreated {
+  id: string;
+  key: string;
+  prefix: string;
+  name: string;
+  scope: AuthScope;
+  created_at: number;
+}
+
+/** A user row from the admin GET /users endpoint. */
+export interface AdminUser {
+  id: string;
+  username: string;
+  role: Role;
+  disabled: boolean;
+  created_at: number;
 }
 
 export type CaseStatus = "pass" | "fail" | "error" | "skip";

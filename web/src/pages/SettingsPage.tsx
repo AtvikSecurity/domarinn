@@ -1,14 +1,18 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { Link } from "react-router";
 import { useMeta } from "@/api/queries";
 import { clearToken, getToken, onAuthChange, setToken } from "@/lib/auth";
 import { isMockEnabled } from "@/api/client";
+import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
 import { ThemeSegmented } from "@/components/ThemeToggle";
 
 export function SettingsPage() {
   const meta = useMeta();
+  const { view, logout } = useAuth();
   const [token, setTokenValue] = useState("");
   const [hasToken, setHasToken] = useState(!!getToken());
+  const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => onAuthChange(() => setHasToken(!!getToken())), []);
 
@@ -16,8 +20,46 @@ export function SettingsPage() {
     <div className="max-w-2xl space-y-6">
       <div>
         <h1 className="text-lg font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted">Token, appearance, and server info.</p>
+        <p className="text-sm text-muted">Account, appearance, and server info.</p>
       </div>
+
+      <Card title="Account">
+        {view.authenticated ? (
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+              <dt className="text-muted">Username</dt>
+              <dd className="font-medium">{view.user?.username ?? "—"}</dd>
+              <dt className="text-muted">Role</dt>
+              <dd className="font-mono">{view.role ?? "—"}</dd>
+              <dt className="text-muted">Source</dt>
+              <dd className="font-mono">{view.source ?? "—"}</dd>
+              <dt className="text-muted">Scope</dt>
+              <dd className="font-mono">{view.scope}</dd>
+            </dl>
+            <Button
+              variant="secondary"
+              onClick={async () => {
+                setLoggingOut(true);
+                try {
+                  await logout();
+                } finally {
+                  setLoggingOut(false);
+                }
+              }}
+              disabled={loggingOut}
+            >
+              {loggingOut ? "Signing out…" : "Log out"}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <p className="text-sm text-muted">You are not signed in.</p>
+            <Link to="/login">
+              <Button variant="primary">Sign in</Button>
+            </Link>
+          </div>
+        )}
+      </Card>
 
       <Card title="Appearance">
         <div className="flex items-center justify-between gap-4">

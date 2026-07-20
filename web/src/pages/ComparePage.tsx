@@ -74,11 +74,12 @@ export function ComparePage() {
         <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
           <span className="text-muted">base</span>
           <select
+            aria-label="Base run"
             className="h-8 rounded-md border border-border bg-surface px-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
             value={base.id}
             onChange={(e) =>
               navigate(
-                `/runs/${encodeURIComponent(id)}/compare/${encodeURIComponent(e.target.value)}`,
+                `/runs/${encodeURIComponent(head.id)}/compare/${encodeURIComponent(e.target.value)}`,
               )
             }
           >
@@ -93,9 +94,31 @@ export function ComparePage() {
             )}
           </select>
           <span className="text-muted">→ head</span>
-          <span className="rounded-md bg-surface-2 px-2 py-1 font-mono text-xs">
-            {head.id}
-          </span>
+          <select
+            aria-label="Head run"
+            className="h-8 rounded-md border border-border bg-surface px-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
+            value={head.id}
+            onChange={(e) =>
+              navigate(
+                `/runs/${encodeURIComponent(e.target.value)}/compare/${encodeURIComponent(base.id)}`,
+              )
+            }
+          >
+            {runOptions.length === 0 ? (
+              <option value={head.id}>{head.id}</option>
+            ) : (
+              runOptions.map((r) => (
+                <option key={r.id} value={r.id} disabled={r.id === base.id}>
+                  {r.id}
+                </option>
+              ))
+            )}
+          </select>
+          {base.id === head.id ? (
+            <span className="text-xs text-amber">
+              Pick two different runs to compare.
+            </span>
+          ) : null}
         </div>
       </div>
 

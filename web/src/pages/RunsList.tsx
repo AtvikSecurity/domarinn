@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useRuns } from "@/api/queries";
 import type { RunSummaryRow } from "@/api/types";
@@ -13,9 +13,22 @@ import {
 import { RunsFilterBar } from "@/components/RunsFilterBar";
 import { Sparkline } from "@/components/Sparkline";
 import { PassRateBadge } from "@/components/PassRateBadge";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
+
+/** From a pair of selected run ids, resolve which is base (older) / head (newer). */
+function comparePair(
+  runs: RunSummaryRow[],
+  selected: string[],
+): { baseId: string; headId: string } | null {
+  if (selected.length !== 2) return null;
+  const picked = runs.filter((r) => selected.includes(r.id));
+  if (picked.length !== 2) return null;
+  const [older, newer] = [...picked].sort((a, b) => a.created_at - b.created_at);
+  return { baseId: older.id, headId: newer.id };
+}
 
 interface Group {
   key: string;
@@ -102,6 +115,18 @@ export function RunsList() {
 }
 
 function SuiteGroup({ group }: { group: Group }) {
+  const [selected, setSelected] = useState<string[]>([]);
+
+  function toggle(id: string) {
+    setSelected((prev) =>
+      prev.includes(id)
+        ? prev.filter((x) => x !== id)
+        : [...prev, id].slice(-2), // keep at most the two most recent picks
+    );
+  }
+
+  const pair = comparePair(group.runs, selected);
+
   return (
     <section className="overflow-hidden rounded-xl border border-border bg-surface">
       <header className="flex items-center gap-3 border-b border-border px-4 py-2.5">
@@ -113,7 +138,33 @@ function SuiteGroup({ group }: { group: Group }) {
           </div>
           <div className="text-xs text-muted">{group.runs.length} loaded runs</div>
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-3">
+          {selected.length > 0 ? (
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted">
+                {selected.length} selected
+              </span>
+              {pair ? (
+                <Link to={`/runs/${encodeURIComponent(pair.headId)}/compare/${encodeURIComponent(pair.baseId)}`}>
+                  <Button variant="primary" size="sm">
+                    Compare 2 runs
+                  </Button>
+                </Link>
+              ) : (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled
+                  title="Select two runs to compare"
+                >
+                  Compare 2 runs
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" onClick={() => setSelected([])}>
+                Clear
+              </Button>
+            </div>
+          ) : null}
           <span className="text-[11px] text-muted">pass-rate trend</span>
           <Sparkline
             values={group.series}
@@ -126,9 +177,12 @@ function SuiteGroup({ group }: { group: Group }) {
         </div>
       </header>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[880px] text-sm">
+        <table className="w-full min-w-[940px] text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
+              <th className="w-8 px-3 py-2 font-medium">
+                <span className="sr-only">Select</span>
+              </th>
               <th className="px-4 py-2 font-medium">Run</th>
               <th className="px-3 py-2 font-medium">When</th>
               <th className="px-3 py-2 font-medium">Branch</th>
@@ -138,6 +192,7 @@ function SuiteGroup({ group }: { group: Group }) {
               <th className="px-3 py-2 text-right font-medium">Cost</th>
               <th className="px-3 py-2 text-right font-medium">Duration</th>
               <th className="px-3 py-2 font-medium">Tags</th>
+              <th className="px-3 py-2 text-right font-medium">Compare</th>
             </tr>
           </thead>
           <tbody>
@@ -146,13 +201,25 @@ function SuiteGroup({ group }: { group: Group }) {
                 key={r.id}
                 className="border-b border-border/60 last:border-0 hover:bg-surface-2"
               >
+                <td className="px-3 py-2">
+                  <input
+                    type="checkbox"
+                    aria-label={`Select run ${r.id}`}
+                    checked={selected.includes(r.id)}
+                    onChange={() => toggle(r.id)}
+                    className="size-4 accent-[var(--color-accent)]"
+                  />
+                </td>
                 <td className="px-4 py-2">
-                  <Link
-                    to={`/runs/${encodeURIComponent(r.id)}`}
-                    className="font-medium text-accent hover:underline"
-                  >
-                    {r.id}
-                  </Link>
+                  <span className="flex items-center gap-1">
+                    <Link
+                      to={`/runs/${encodeURIComponent(r.id)}`}
+                      className="font-medium text-accent hover:underline"
+                    >
+                      {r.id}
+                    </Link>
+                    <CopyButton value={r.id} label="Copy run id" iconOnly />
+                  </span>
                 </td>
                 <td className="px-3 py-2 text-muted">
                   {formatRelative(r.created_at)}
@@ -193,6 +260,15 @@ function SuiteGroup({ group }: { group: Group }) {
                       </span>
                     ))}
                   </div>
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <Link
+                    to={`/runs/${encodeURIComponent(r.id)}/compare`}
+                    className="text-xs font-medium text-accent hover:underline"
+                    title="Compare against the suite baseline"
+                  >
+                    Compare
+                  </Link>
                 </td>
               </tr>
             ))}

@@ -20,6 +20,12 @@ export interface RequestOptions {
   params?: Record<string, string | number | undefined | null>;
   body?: unknown;
   signal?: AbortSignal;
+  /**
+   * When true a 401 still throws an ApiError but does NOT emit the app-wide
+   * "prompt for token" signal. Used by the auth endpoints (login/setup/me),
+   * whose 401s are handled inline by the login flow rather than the token modal.
+   */
+  skipAuthRedirect?: boolean;
 }
 
 function buildUrl(path: string, params?: RequestOptions["params"]): string {
@@ -64,7 +70,7 @@ export async function apiRequest<T>(
     : await fetch(url, init);
 
   if (res.status === 401) {
-    emitUnauthorized();
+    if (!opts.skipAuthRedirect) emitUnauthorized();
     throw new ApiError(401, "Unauthorized", await safeBody(res));
   }
   if (!res.ok) {

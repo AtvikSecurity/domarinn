@@ -10,6 +10,11 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "e2e:build": "cross-env VITE_MOCK=1 vite build",
+    "e2e:serve": "cross-env VITE_MOCK=1 vite build && vite preview --port 4173 --strictPort",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:report": "playwright show-report",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc -b --noEmit"
   },
@@ -27,6 +32,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",
+    "@playwright/test": "1.61.1",
     "@tailwindcss/vite": "^4.0.6",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.6.3",

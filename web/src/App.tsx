@@ -1,6 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, RouterProvider } from "react-router";
 import { ApiError } from "@/api/client";
+import { AuthProvider } from "@/auth/AuthProvider";
+import { RequireAdmin } from "@/auth/guards";
 import { Layout } from "@/components/Layout";
 import { TokenModal } from "@/components/TokenModal";
 import { TooltipProvider } from "@/components/ui/Tooltip";
@@ -10,6 +12,10 @@ import { RunDetail } from "@/pages/RunDetail";
 import { ComparePage } from "@/pages/ComparePage";
 import { CacheStatsPage } from "@/pages/CacheStatsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { LoginPage } from "@/pages/LoginPage";
+import { SetupPage } from "@/pages/SetupPage";
+import { KeysPage } from "@/pages/KeysPage";
+import { AdminPage } from "@/pages/AdminPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,6 +44,17 @@ const router = createBrowserRouter([
       { path: "runs/:id/compare/:other", element: <ComparePage /> },
       { path: "cache", element: <CacheStatsPage /> },
       { path: "settings", element: <SettingsPage /> },
+      { path: "login", element: <LoginPage /> },
+      { path: "setup", element: <SetupPage /> },
+      { path: "keys", element: <KeysPage /> },
+      {
+        path: "admin",
+        element: (
+          <RequireAdmin>
+            <AdminPage />
+          </RequireAdmin>
+        ),
+      },
       { path: "*", element: <NotFound /> },
     ],
   },
@@ -47,8 +64,10 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <RouterProvider router={router} />
-        <TokenModal />
+        <AuthProvider>
+          <RouterProvider router={router} />
+          <TokenModal />
+        </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );

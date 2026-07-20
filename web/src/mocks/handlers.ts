@@ -2,8 +2,10 @@
 // network, so the whole app (and tests) runs against the fixture dataset with
 // no service worker and no backend.
 
-import type { CaseRow, RunSummaryRow } from "@/api/types";
+import type { AuthScope, CaseRow, RunSummaryRow, Role } from "@/api/types";
+import { scopeAtLeast } from "@/lib/authz";
 import * as fx from "./fixtures";
+import * as auth from "./authState";
 
 let MOCK_FORCED: boolean | null = null;
 
@@ -27,6 +29,31 @@ function json(data: unknown, status = 200): Response {
 
 function notFound(): Response {
   return json({ error: "not_found" }, 404);
+}
+
+function noContent(): Response {
+  return new Response(null, { status: 204 });
+}
+
+function forbidden(): Response {
+  return json({ error: "forbidden" }, 403);
+}
+
+/** Extract the bearer token from a request's headers, if present. */
+function bearer(init: RequestInit): string | null {
+  const headers = init.headers as Record<string, string> | undefined;
+  const value = headers?.["Authorization"] ?? headers?.["authorization"];
+  if (!value) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(value);
+  return match ? match[1] : null;
+}
+
+function readJson<T = Record<string, unknown>>(init: RequestInit): T {
+  try {
+    return init.body ? (JSON.parse(String(init.body)) as T) : ({} as T);
+  } catch {
+    return {} as T;
+  }
 }
 
 const DEFAULT_LIMIT = 100;
@@ -94,7 +121,79 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
 
   // GET /meta
   if (method === "GET" && seg[0] === "meta" && seg.length === 1) {
-    return json(fx.META);
+    return json({ ...fx.META, setup_required: auth.setupRequired() });
+  }
+
+  // /auth/... — login, setup, logout, me
+  if (seg[0] === "auth") {
+    const token = bearer(init);
+    if (method === "GET" && seg[1] === "me" && seg.length === 2) {
+      return json(auth.resolveAuth(token).me);
+    }
+    if (method === "POST" && seg[1] === "login" && seg.length === 2) {
+      const body = readJson<{ username?: string; password?: string }>(init);
+      const res = auth.login(body.username ?? "", body.password ?? "");
+      return res ? json(res) : json({ error: "invalid_credentials" }, 401);
+    }
+    if (method === "POST" && seg[1] === "setup" && seg.length === 2) {
+      if (!auth.setupRequired()) return json({ error: "already_setup" }, 409);
+      const body = readJson<{ username?: string; password?: string }>(init);
+      return json(auth.setup(body.username ?? "", body.password ?? ""));
+    }
+    if (method === "POST" && seg[1] === "logout" && seg.length === 2) {
+      auth.logout(token);
+      return noContent();
+    }
+  }
+
+  // /apikeys — write scope
+  if (seg[0] === "apikeys") {
+    const { me, userId } = auth.resolveAuth(bearer(init));
+    if (!scopeAtLeast(me.scope, "write")) return forbidden();
+    if (method === "GET" && seg.length === 1) {
+      return json(auth.listApiKeys(userId));
+    }
+    if (method === "POST" && seg.length === 1) {
+      const body = readJson<{ name?: string; scope?: AuthScope }>(init);
+      return json(
+        auth.createApiKey(userId, body.name, body.scope, me.scope),
+        201,
+      );
+    }
+    if (method === "DELETE" && seg.length === 2) {
+      return auth.revokeApiKey(userId, seg[1]) ? noContent() : notFound();
+    }
+  }
+
+  // /users — admin scope
+  if (seg[0] === "users") {
+    const { me } = auth.resolveAuth(bearer(init));
+    if (!scopeAtLeast(me.scope, "admin")) return forbidden();
+    if (method === "GET" && seg.length === 1) {
+      return json(auth.listUsers());
+    }
+    if (method === "POST" && seg.length === 1) {
+      const body = readJson<{
+        username?: string;
+        password?: string;
+        role?: Role;
+      }>(init);
+      const created = auth.createUser(body.username, body.password, body.role);
+      return created ? json(created, 201) : json({ error: "username_taken" }, 409);
+    }
+    if (method === "PATCH" && seg.length === 2) {
+      const body = readJson<auth.UserPatch>(init);
+      const res = auth.updateUser(seg[1], body);
+      if (res === "last_admin") return json({ error: "last_admin" }, 409);
+      if (res === "not_found") return notFound();
+      return json(res);
+    }
+    if (method === "DELETE" && seg.length === 2) {
+      const res = auth.deleteUser(seg[1]);
+      if (res === "last_admin") return json({ error: "last_admin" }, 409);
+      if (res === "not_found") return notFound();
+      return noContent();
+    }
   }
 
   // /runs...

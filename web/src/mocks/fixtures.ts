@@ -557,6 +557,7 @@ export const META: Meta = {
   name: "measurellm",
   version: "0.1.0-mock",
   auth_mode: "open",
+  setup_required: false,
   supported_schema_versions: [1],
 };
 

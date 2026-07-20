@@ -1,14 +1,17 @@
-import { NavLink, Outlet } from "react-router";
+import { useState } from "react";
+import { NavLink, Navigate, Outlet, useLocation } from "react-router";
 import { useMeta } from "@/api/queries";
 import { isMockEnabled } from "@/api/client";
+import { useAuth } from "@/auth/AuthProvider";
 import { cn } from "@/lib/cn";
+import { Button } from "./ui/Button";
 import { ThemeToggleButton } from "./ThemeToggle";
 
-const NAV = [
-  { to: "/", label: "Runs", end: true },
-  { to: "/cache", label: "Cache", end: false },
-  { to: "/settings", label: "Settings", end: false },
-];
+interface NavItem {
+  to: string;
+  label: string;
+  end?: boolean;
+}
 
 function Logo() {
   return (
@@ -20,8 +23,61 @@ function Logo() {
   );
 }
 
+function RoleChip({ role }: { role: string }) {
+  return (
+    <span
+      className={cn(
+        "rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset",
+        role === "admin"
+          ? "bg-accent/12 text-accent ring-accent/25"
+          : "bg-surface-2 text-muted ring-border",
+      )}
+    >
+      {role}
+    </span>
+  );
+}
+
+function LogoutButton() {
+  const { logout } = useAuth();
+  const [pending, setPending] = useState(false);
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={pending}
+      onClick={async () => {
+        setPending(true);
+        try {
+          await logout();
+        } finally {
+          setPending(false);
+        }
+      }}
+    >
+      {pending ? "…" : "Log out"}
+    </Button>
+  );
+}
+
 export function Layout() {
   const meta = useMeta();
+  const { view } = useAuth();
+  const location = useLocation();
+
+  // First-run gate: force the setup flow until an admin exists.
+  if (view.setupRequired && location.pathname !== "/setup") {
+    return <Navigate to="/setup" replace />;
+  }
+
+  const nav: NavItem[] = [
+    { to: "/", label: "Runs", end: true },
+    { to: "/cache", label: "Cache" },
+  ];
+  if (!view.needsLogin) nav.push({ to: "/keys", label: "API keys" });
+  if (view.canAdmin) nav.push({ to: "/admin", label: "Admin" });
+  nav.push({ to: "/settings", label: "Settings" });
+
   return (
     <div className="flex min-h-full flex-col">
       <header className="sticky top-0 z-30 border-b border-border bg-surface/85 backdrop-blur supports-[backdrop-filter]:bg-surface/70">
@@ -31,7 +87,7 @@ export function Layout() {
             <span className="tracking-tight">measurellm</span>
           </NavLink>
           <nav className="flex items-center gap-1" aria-label="Primary">
-            {NAV.map((item) => (
+            {nav.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
@@ -60,6 +116,33 @@ export function Layout() {
                 v{meta.data.version} · {meta.data.auth_mode}
               </span>
             ) : null}
+            {view.authenticated ? (
+              <div className="flex items-center gap-2">
+                <span className="hidden items-center gap-1.5 text-sm sm:flex">
+                  <span className="font-medium text-fg">
+                    {view.user?.username ?? "user"}
+                  </span>
+                  {view.role ? <RoleChip role={view.role} /> : null}
+                </span>
+                {view.hasRealSession ? (
+                  <LogoutButton />
+                ) : (
+                  <NavLink
+                    to="/login"
+                    className="rounded-md px-2 py-1 text-sm font-medium text-muted hover:text-fg"
+                  >
+                    Sign in
+                  </NavLink>
+                )}
+              </div>
+            ) : (
+              <NavLink
+                to="/login"
+                className="rounded-md px-3 py-1.5 text-sm font-medium text-accent hover:underline"
+              >
+                Log in
+              </NavLink>
+            )}
             <ThemeToggleButton />
           </div>
         </div>
