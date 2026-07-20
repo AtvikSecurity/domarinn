@@ -54,6 +54,35 @@ pub enum CaseStatus {
     Skip,
 }
 
+impl CaseStatus {
+    /// The wire string for this status (identical to its serde encoding).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaseStatus::Pass => "pass",
+            CaseStatus::Fail => "fail",
+            CaseStatus::Error => "error",
+            CaseStatus::Skip => "skip",
+        }
+    }
+}
+
+impl std::str::FromStr for CaseStatus {
+    type Err = String;
+
+    /// Strict parse of the same strings [`CaseStatus::as_str`] produces.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pass" => Ok(CaseStatus::Pass),
+            "fail" => Ok(CaseStatus::Fail),
+            "error" => Ok(CaseStatus::Error),
+            "skip" => Ok(CaseStatus::Skip),
+            other => Err(format!(
+                "invalid case status '{other}'; expected one of: pass, fail, error, skip"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AssertStatus {
@@ -218,5 +247,20 @@ mod tests {
             ..with.clone()
         };
         assert_ne!(with.case_key(), without.case_key());
+    }
+
+    #[test]
+    fn case_status_as_str_matches_serde_and_round_trips_via_from_str() {
+        for status in [
+            CaseStatus::Pass,
+            CaseStatus::Fail,
+            CaseStatus::Error,
+            CaseStatus::Skip,
+        ] {
+            let serde_str = serde_json::to_value(status).unwrap();
+            assert_eq!(serde_str, serde_json::json!(status.as_str()));
+            assert_eq!(status.as_str().parse::<CaseStatus>().unwrap(), status);
+        }
+        assert!("bogus".parse::<CaseStatus>().is_err());
     }
 }
