@@ -15,6 +15,10 @@ use crate::dto::runs::{CaseAssertLean, RunDetailResponse, RunListItem};
 
 impl Storage {
     /// Ingest a run in a single transaction. Idempotent by (id, content_hash).
+    #[tracing::instrument(
+        skip_all,
+        fields(run_id = %run.run_id, project = ?run.project, suite = ?run.suite)
+    )]
     pub async fn ingest_run(
         &self,
         run: RunResult,

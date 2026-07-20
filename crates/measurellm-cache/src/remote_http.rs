@@ -88,6 +88,7 @@ fn transport_err(context: &str, e: reqwest::Error) -> CacheError {
 
 #[async_trait]
 impl CacheBackend for RemoteHttpCache {
+    #[tracing::instrument(level = "debug", skip(self), fields(key = %key))]
     async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>, CacheError> {
         let url = self.endpoint(&["api", "v1", "cache", &key.0])?;
         let resp = self
@@ -114,6 +115,7 @@ impl CacheBackend for RemoteHttpCache {
         }
     }
 
+    #[tracing::instrument(level = "debug", skip(self, entry), fields(key = %key))]
     async fn put(&self, key: &CacheKey, entry: &CacheEntry) -> Result<(), CacheError> {
         let url = self.endpoint(&["api", "v1", "cache", &key.0])?;
         let body = serde_json::to_vec(entry)

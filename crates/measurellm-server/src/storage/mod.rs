@@ -176,10 +176,13 @@ pub struct Storage {
 
 impl Storage {
     /// Open (creating if needed) both databases and run migrations.
+    #[tracing::instrument(skip_all, fields(dir = %dir.display()))]
     pub async fn open(dir: PathBuf) -> anyhow::Result<Storage> {
-        tokio::task::spawn_blocking(move || Storage::open_blocking(&dir))
+        let storage = tokio::task::spawn_blocking(move || Storage::open_blocking(&dir))
             .await
-            .context("storage open task panicked")?
+            .context("storage open task panicked")??;
+        tracing::info!("storage opened");
+        Ok(storage)
     }
 
     fn open_blocking(dir: &Path) -> anyhow::Result<Storage> {

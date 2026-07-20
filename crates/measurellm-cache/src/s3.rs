@@ -113,6 +113,7 @@ fn normalize_prefix(prefix: String) -> String {
 
 #[async_trait]
 impl CacheBackend for S3Cache {
+    #[tracing::instrument(level = "debug", skip(self), fields(key = %key))]
     async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>, CacheError> {
         let loc = self.location(key);
         match self.store.get(&loc).await {
@@ -130,6 +131,7 @@ impl CacheBackend for S3Cache {
         }
     }
 
+    #[tracing::instrument(level = "debug", skip(self, entry), fields(key = %key))]
     async fn put(&self, key: &CacheKey, entry: &CacheEntry) -> Result<(), CacheError> {
         let loc = self.location(key);
         let bytes = serde_json::to_vec(entry)

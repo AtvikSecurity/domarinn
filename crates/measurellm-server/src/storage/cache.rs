@@ -95,6 +95,10 @@ impl Storage {
     }
 
     /// Prune by age and/or a total-size target (LRU eviction to reach the target).
+    #[tracing::instrument(
+        skip_all,
+        fields(max_age_days = ?older_than_days, target_bytes = ?target_bytes)
+    )]
     pub async fn cache_prune(
         &self,
         older_than_days: Option<i64>,

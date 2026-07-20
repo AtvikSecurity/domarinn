@@ -55,6 +55,7 @@ impl DefaultGrader {
 
 #[async_trait]
 impl AssertGrader for DefaultGrader {
+    #[tracing::instrument(name = "grade", skip_all, fields(kind = assert.kind.name().as_str()))]
     async fn grade(
         &self,
         assert: &Assert,
