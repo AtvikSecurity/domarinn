@@ -399,6 +399,15 @@
       },
       "type": "object"
     },
+    "ChatRole": {
+      "description": "A chat message role.",
+      "enum": [
+        "system",
+        "user",
+        "assistant"
+      ],
+      "type": "string"
+    },
     "Defaults": {
       "description": "Values merged into every test before it runs.",
       "properties": {
@@ -486,17 +495,33 @@
           ]
         },
         "verdict_mode": {
-          "description": "`forced` (default) or `auto` — how the structured verdict is obtained.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/definitions/VerdictMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`forced` (default) or `auto` — how the structured verdict is obtained."
         }
       },
       "required": [
         "provider"
       ],
       "type": "object"
+    },
+    "HttpMethod": {
+      "description": "The HTTP method for a `type: http` provider. Authors may write either case (`get` or `GET`) in YAML; the wire method (and the request/cache fingerprint) is always the uppercase form.",
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "HEAD"
+      ],
+      "type": "string"
     },
     "Message": {
       "description": "A chat message; `content` may be `file://path` to load from disk.",
@@ -505,7 +530,7 @@
           "type": "string"
         },
         "role": {
-          "type": "string"
+          "$ref": "#/definitions/ChatRole"
         }
       },
       "required": [
@@ -674,9 +699,13 @@
               "type": "object"
             },
             "method": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/HttpMethod"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "output_expr": {
@@ -890,9 +919,13 @@
               "type": "object"
             },
             "method": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/HttpMethod"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "output_expr": {
@@ -1166,7 +1199,15 @@
       ],
       "description": "An entry in the `tests:` list."
     },
-    "Val": true
+    "Val": true,
+    "VerdictMode": {
+      "description": "How an `llm-rubric` grader's structured verdict is obtained. `Forced` is the default; `Auto` is documented but currently unread by the grader.",
+      "enum": [
+        "forced",
+        "auto"
+      ],
+      "type": "string"
+    }
   },
   "description": "The top-level eval suite.",
   "properties": {
