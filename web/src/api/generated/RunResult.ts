@@ -3,10 +3,11 @@ import type { CaseResult } from "./CaseResult";
 import type { CiMeta } from "./CiMeta";
 import type { FilterSpec } from "./FilterSpec";
 import type { GitMeta } from "./GitMeta";
+import type { RunId } from "./RunId";
 import type { RunSummary } from "./RunSummary";
 import type { JsonValue } from "./serde_json/JsonValue";
 
 /**
  * The full result of a run.
  */
-export type RunResult = { schema_version: number, run_id: string, project?: string, suite?: string, started_at: string, finished_at: string, config_digest: string, config_snapshot: JsonValue, git?: GitMeta, ci?: CiMeta, filters: FilterSpec, cases: Array<CaseResult>, summary: RunSummary, };
+export type RunResult = { schema_version: number, run_id: RunId, project?: string, suite?: string, started_at: string, finished_at: string, config_digest: string, config_snapshot: JsonValue, git?: GitMeta, ci?: CiMeta, filters: FilterSpec, cases: Array<CaseResult>, summary: RunSummary, };
