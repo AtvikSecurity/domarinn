@@ -13,7 +13,7 @@
 
 [settings]
 # Maintain pinned tool versions + checksums in a lockfile. Because the config is
-# `.mise/config.toml`, the lockfile is written alongside it as `.mise/config.lock`
+# `.mise/config.toml`, the lockfile is written alongside it as `.mise/mise.lock`
 # (the lockfile is named like the config file with a `.lock` extension —
 # https://mise.jdx.dev/configuration/settings.html#lockfile).
 lockfile = true
@@ -22,7 +22,7 @@ lockfile = true
 # Versions match what CI used before this migration: Rust stable
 # (dtolnay/rust-toolchain@stable), Node 22 (actions/setup-node), pnpm 11
 # (pnpm/action-setup). Loose versions here; exact versions + checksums are
-# pinned in .mise/config.lock.
+# pinned in .mise/mise.lock.
 rust = "stable"
 node = "22"
 pnpm = "11"
