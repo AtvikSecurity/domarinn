@@ -476,6 +476,64 @@ async fn user_crud_last_admin_and_authz() {
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }
 
+/// Regression: the last-admin guard must also cover PATCH, not just DELETE.
+/// Demoting or disabling the sole admin would otherwise silently drop the
+/// instance to zero usable administrators (a permanent lockout), so both are
+/// refused with `409`; once a second admin exists the change is allowed.
+#[tokio::test]
+async fn patch_cannot_remove_the_last_admin() {
+    let (app, _dir) = test_app(protected()).await;
+    let admin = setup_admin(&app).await;
+    let root_id = get_auth(&app, "/api/v1/auth/me", Some(&admin)).await.json()["user"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Demoting the only admin to member is refused.
+    let demote = patch(
+        &app,
+        &format!("/api/v1/users/{root_id}"),
+        Some(&admin),
+        &json!({ "role": "member" }),
+    )
+    .await;
+    assert_eq!(demote.status, StatusCode::CONFLICT, "body: {:?}", demote.json());
+
+    // Disabling the only admin is refused too.
+    let disable = patch(
+        &app,
+        &format!("/api/v1/users/{root_id}"),
+        Some(&admin),
+        &json!({ "disabled": true }),
+    )
+    .await;
+    assert_eq!(disable.status, StatusCode::CONFLICT);
+
+    // The refusals were effective: root is still an enabled admin.
+    let users = get_auth(&app, "/api/v1/users", Some(&admin)).await;
+    let root = users.json()["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == json!(root_id))
+        .unwrap()
+        .clone();
+    assert_eq!(root["role"], "admin");
+    assert_eq!(root["disabled"], false);
+
+    // With a second admin present, demoting root is now allowed.
+    let _second = create_and_login(&app, &admin, "carol", "admin").await;
+    let ok = patch(
+        &app,
+        &format!("/api/v1/users/{root_id}"),
+        Some(&admin),
+        &json!({ "role": "member" }),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK, "body: {:?}", ok.json());
+    assert_eq!(ok.json()["role"], "member");
+}
+
 // ---------------------------------------------------------------------------
 // Sessions / logout
 // ---------------------------------------------------------------------------

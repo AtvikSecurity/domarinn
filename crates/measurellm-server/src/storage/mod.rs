@@ -43,7 +43,7 @@ mod projects;
 mod runs;
 mod schema;
 
-pub use auth::{ApiKeyAuth, ApiKeyInfo, DeleteUserOutcome, SessionUser, UserRow};
+pub use auth::{ApiKeyAuth, ApiKeyInfo, DeleteUserOutcome, SessionUser, UpdateUserOutcome, UserRow};
 pub use cases::CaseListFilter;
 pub use runs::{RunListFilter, RunListPage};
 

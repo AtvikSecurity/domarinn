@@ -21,7 +21,7 @@ use crate::dto::accounts::{
 };
 use crate::extract::ApiJson;
 use crate::routes::{not_found, ApiError, ApiResult};
-use crate::storage::DeleteUserOutcome;
+use crate::storage::{DeleteUserOutcome, UpdateUserOutcome};
 use crate::AppState;
 
 /// Minimum acceptable password length.
@@ -264,14 +264,24 @@ pub(crate) async fn patch_user(
     if state.storage.get_user_by_id(id.clone()).await?.is_none() {
         return Err(not_found("user"));
     }
-    if let Some(role) = body.role {
-        state.storage.set_user_role(id.clone(), role).await?;
-    }
-    if let Some(disabled) = body.disabled {
-        state
+    // Role/disabled changes go through the guarded, transactional path so a
+    // demotion or a disable can never remove the instance's last enabled admin
+    // (the same invariant `delete_user` enforces).
+    if body.role.is_some() || body.disabled.is_some() {
+        match state
             .storage
-            .set_user_disabled(id.clone(), disabled)
-            .await?;
+            .update_role_and_disabled(id.clone(), body.role, body.disabled)
+            .await?
+        {
+            UpdateUserOutcome::Updated => {}
+            UpdateUserOutcome::NotFound => return Err(not_found("user")),
+            UpdateUserOutcome::LastAdmin => {
+                return Err(ApiError::status(
+                    StatusCode::CONFLICT,
+                    "cannot remove the last admin",
+                ))
+            }
+        }
     }
     if let Some(password) = &body.password {
         validate_password(password)?;

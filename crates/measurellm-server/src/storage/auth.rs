@@ -70,6 +70,15 @@ pub enum DeleteUserOutcome {
     LastAdmin,
 }
 
+/// Outcome of [`Storage::update_role_and_disabled`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateUserOutcome {
+    Updated,
+    NotFound,
+    /// The change would leave the instance with no enabled admin; refused.
+    LastAdmin,
+}
+
 /// Mint a fresh id (a ULID) for either id newtype used in this module.
 fn new_id<T: From<String>>() -> T {
     T::from(ulid::Ulid::new().to_string())
@@ -177,6 +186,62 @@ impl Storage {
                     params![id, disabled as i64],
                 )?;
                 Ok(n > 0)
+            })
+            .await
+    }
+
+    /// Apply an optional role and/or `disabled` change atomically, refusing any
+    /// change that would leave the instance with no *enabled* admin. This mirrors
+    /// the last-admin guard on [`Self::delete_user`], but also covers demotion
+    /// (admin → member) and disabling the sole admin — either of which would
+    /// otherwise silently lock every administrator out of the instance.
+    pub async fn update_role_and_disabled(
+        &self,
+        id: UserId,
+        role: Option<Role>,
+        disabled: Option<bool>,
+    ) -> anyhow::Result<UpdateUserOutcome> {
+        // Nothing to change (and nothing to guard) when both fields are absent.
+        if role.is_none() && disabled.is_none() {
+            return Ok(UpdateUserOutcome::Updated);
+        }
+        self.runs
+            .write(move |conn| {
+                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let current: Option<(Role, bool)> = tx
+                    .query_row(
+                        "SELECT role, disabled FROM users WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get::<_, Role>(0)?, r.get::<_, i64>(1)? != 0)),
+                    )
+                    .optional()?;
+                let Some((cur_role, cur_disabled)) = current else {
+                    return Ok(UpdateUserOutcome::NotFound);
+                };
+                let new_role = role.unwrap_or(cur_role);
+                let new_disabled = disabled.unwrap_or(cur_disabled);
+                let was_enabled_admin = cur_role == Role::Admin && !cur_disabled;
+                let will_be_enabled_admin = new_role == Role::Admin && !new_disabled;
+                // Only a change that strips this user's *enabled admin* status can
+                // reduce the pool; if it does and no other enabled admin remains,
+                // refuse so the instance always keeps at least one.
+                if was_enabled_admin && !will_be_enabled_admin {
+                    let others: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM users \
+                         WHERE role = 'admin' AND disabled = 0 AND id != ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )?;
+                    if others == 0 {
+                        return Ok(UpdateUserOutcome::LastAdmin);
+                    }
+                }
+                tx.execute(
+                    "UPDATE users SET role = ?2, disabled = ?3 WHERE id = ?1",
+                    params![id, new_role, new_disabled as i64],
+                )?;
+                tx.commit()?;
+                Ok(UpdateUserOutcome::Updated)
             })
             .await
     }
