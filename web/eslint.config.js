@@ -27,6 +27,16 @@ export default tseslint.config(
         "warn",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
+      // Route all logging through src/lib/logger.ts (leveled, silent-by-default
+      // in prod); raw console.* is banned everywhere but that one module.
+      "no-console": "error",
+    },
+  },
+  {
+    // The logger is the single sanctioned home for raw console access.
+    files: ["src/lib/logger.ts"],
+    rules: {
+      "no-console": "off",
     },
   },
   {
@@ -36,6 +46,7 @@ export default tseslint.config(
     },
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
+      "no-console": "off",
     },
   },
 );

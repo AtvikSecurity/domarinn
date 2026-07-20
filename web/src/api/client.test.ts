@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiRequest, ApiError } from "./client";
 import type { CaseListResponse, RunListResponse } from "@/api";
 import { clearToken, onUnauthorized, setToken } from "@/lib/auth";
+import { log } from "@/lib/logger";
 
-afterEach(() => clearToken());
+afterEach(() => {
+  clearToken();
+  vi.restoreAllMocks();
+});
 
 describe("apiRequest against the mock", () => {
   it("fetches runs", async () => {
@@ -39,6 +43,15 @@ describe("apiRequest against the mock", () => {
       name: "ApiError",
       status: 404,
     });
+  });
+
+  it("logs an error on a failed (!ok) request before throwing", async () => {
+    const errSpy = vi.spyOn(log, "error").mockImplementation(() => {});
+    await expect(apiRequest("/nope")).rejects.toBeInstanceOf(ApiError);
+    expect(errSpy).toHaveBeenCalledWith(
+      "api request failed",
+      expect.objectContaining({ status: 404, method: "GET" }),
+    );
   });
 
   it("gates the admin prune on a token and emits the unauthorized signal", async () => {

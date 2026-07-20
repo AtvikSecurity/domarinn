@@ -1,4 +1,5 @@
 import { emitUnauthorized, getToken } from "@/lib/auth";
+import { log } from "@/lib/logger";
 import { mockFetch, isMockEnabled } from "@/mocks/handlers";
 
 export const API_BASE = "/api/v1";
@@ -51,12 +52,13 @@ export async function apiRequest<T>(
   opts: RequestOptions = {},
 ): Promise<T> {
   const url = buildUrl(path, opts.params);
+  const method = opts.method ?? "GET";
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const init: RequestInit = {
-    method: opts.method ?? "GET",
+    method,
     headers,
     signal: opts.signal,
   };
@@ -65,15 +67,25 @@ export async function apiRequest<T>(
     init.body = JSON.stringify(opts.body);
   }
 
-  const res = isMockEnabled()
-    ? await mockFetch(url, init)
-    : await fetch(url, init);
+  let res: Response;
+  try {
+    res = isMockEnabled() ? await mockFetch(url, init) : await fetch(url, init);
+  } catch (err) {
+    // Network-level failure (offline, DNS, CORS, aborted fetch): the promise
+    // rejects before we ever see a Response. Surface it in dev, then rethrow so
+    // callers still handle it exactly as before.
+    log.error("api network error", { method, url, err });
+    throw err;
+  }
 
   if (res.status === 401) {
+    // Expected in the token-modal / login flow — not an error.
+    log.debug("api 401", { method, url });
     if (!opts.skipAuthRedirect) emitUnauthorized();
     throw new ApiError(401, "Unauthorized", await safeBody(res));
   }
   if (!res.ok) {
+    log.error("api request failed", { method, url, status: res.status });
     const body = await safeBody(res);
     throw new ApiError(
       res.status,
