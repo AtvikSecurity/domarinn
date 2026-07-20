@@ -98,8 +98,13 @@ jobs:
       # Regenerate the schema on the fly and diff it against the committed copy.
       # `diff` exits nonzero (failing the job) on any drift. Keep this in sync
       # with the `schema` task in .mise/config.toml.
+      #
+      # `set -o pipefail` so a *compile* failure of the generator (left side of
+      # the pipe) fails the job instead of being masked by `diff`'s exit code
+      # (which would otherwise read as "schema out of date").
       - name: Fail on schema drift
         run: |
+          set -o pipefail
           if ! cargo run -q -p measurellm-cli -- schema config | diff -u measurellm.schema.json -; then
             echo "::error::measurellm.schema.json is out of date. Run 'mise run schema' and commit the result."
             exit 1

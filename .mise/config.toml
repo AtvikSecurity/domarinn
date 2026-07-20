@@ -29,8 +29,9 @@ compile = false
 [tools]
 # Versions match what CI used before this migration: Rust stable
 # (dtolnay/rust-toolchain@stable), Node 22 (actions/setup-node), pnpm 11
-# (pnpm/action-setup). Loose versions here; exact versions + checksums are
-# pinned in .mise/mise.lock.
+# (pnpm/action-setup). Loose versions here; Node and pnpm are pinned to exact
+# versions + checksums in .mise/mise.lock. Rust tracks the rustup stable channel
+# (not checksum-pinned; mise's core:rust backend delegates to rustup).
 rust = "stable"
 node = "22"
 pnpm = "11"
@@ -65,7 +66,7 @@ run = "pnpm -C web test:e2e"
 description = "Lint: clippy as errors + a formatting check. Mirrors CI."
 run = [
   "cargo clippy --workspace --all-targets -- -D warnings",
-  "cargo fmt --check",
+  "cargo fmt --all --check",
 ]
 
 [tasks.fmt]
