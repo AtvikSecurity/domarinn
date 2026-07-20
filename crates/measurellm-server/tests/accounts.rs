@@ -317,6 +317,25 @@ async fn invalid_scope_in_apikey_body_is_422() {
 }
 
 #[tokio::test]
+async fn unknown_field_in_body_is_422_naming_the_field() {
+    let (app, _dir) = test_app(protected()).await;
+    let admin = setup_admin(&app).await;
+
+    // An extra/typo'd key in a request body is a hard 422 (the body denies
+    // unknown fields), and the error names the offending key.
+    let bad = post_json(
+        &app,
+        "/api/v1/users",
+        Some(&admin),
+        &json!({ "username": "zoe", "password": MEMBER_PW, "role": "member", "admn": true }),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let err = bad.json()["error"].as_str().unwrap_or_default().to_string();
+    assert!(err.contains("admn"), "error should name the field: {err}");
+}
+
+#[tokio::test]
 async fn api_key_delete_requires_owner_or_admin() {
     let (app, _dir) = test_app(protected()).await;
     let admin = setup_admin(&app).await;

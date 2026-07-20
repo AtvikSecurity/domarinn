@@ -310,6 +310,7 @@ fn build_run_url(state: &AppState, headers: &HeaderMap, run_id: &RunId) -> Strin
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RunQuery {
     project: Option<String>,
     suite: Option<String>,
@@ -358,6 +359,7 @@ async fn get_run(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CaseQuery {
     status: Option<CaseStatus>,
     tag: Option<String>,
@@ -449,6 +451,7 @@ async fn list_suites(
 }
 
 #[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct BaselineBody {
     run_id: RunId,
 }
@@ -556,6 +559,7 @@ async fn cache_stats(_scope: Scoped<Read>, State(state): State<AppState>) -> Api
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PruneQuery {
     older_than_days: Option<i64>,
     target_bytes: Option<i64>,

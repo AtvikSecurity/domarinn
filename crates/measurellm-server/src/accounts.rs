@@ -32,6 +32,7 @@ const MIN_PASSWORD_LEN: usize = 8;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CredentialsBody {
     username: String,
     password: String,
@@ -136,6 +137,7 @@ pub(crate) async fn me(Extension(identity): Extension<Identity>) -> ApiResult<Js
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CreateKeyBody {
     name: Option<String>,
     scope: Option<Scope>,
@@ -209,6 +211,7 @@ pub(crate) async fn delete_apikey(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CreateUserBody {
     username: String,
     password: String,
@@ -216,6 +219,7 @@ pub(crate) struct CreateUserBody {
 }
 
 #[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PatchUserBody {
     role: Option<Role>,
     disabled: Option<bool>,

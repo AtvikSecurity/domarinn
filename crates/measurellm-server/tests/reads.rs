@@ -99,6 +99,18 @@ async fn invalid_status_query_is_400_with_json_error() {
 }
 
 #[tokio::test]
+async fn unknown_query_param_is_400() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    seed(&app).await;
+
+    // An unknown/typo'd query key is a hard 400 (RunQuery denies unknown
+    // fields), not a silently-ignored filter.
+    let bad = get(&app, "/api/v1/runs?prject=alpha").await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    assert!(bad.json()["error"].is_string(), "body: {:?}", bad.json());
+}
+
+#[tokio::test]
 async fn list_runs_paginates_by_cursor() {
     let (app, _dir) = test_app(Settings::default()).await;
     seed(&app).await;
