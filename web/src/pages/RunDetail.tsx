@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
-import { useRun, useRunCases, useSetBaseline } from "@/api/queries";
+import { useRun, useRunCases, useRuns, useSetBaseline } from "@/api/queries";
 import { mergeParams, parseCaseFilters } from "@/lib/filters";
+import { previousRun } from "@/lib/compare";
 import {
   formatCost,
   formatDate,
@@ -32,6 +33,13 @@ export function RunDetail() {
   const run = useRun(id);
   const casesQ = useRunCases(id, filters);
   const baseline = useSetBaseline(run.data?.project ?? "", run.data?.suite ?? "");
+  // Sibling runs in the same project/suite, used only to resolve a default
+  // compare target (the immediately older run) for the header's Compare
+  // button — see `previousRun`.
+  const suiteRuns = useRuns({
+    project: run.data?.project ?? undefined,
+    suite: run.data?.suite ?? undefined,
+  });
 
   const cases = useMemo(
     () => casesQ.data?.pages.flatMap((p) => p.cases) ?? [],
@@ -72,6 +80,11 @@ export function RunDetail() {
   if (run.isError) return <ErrorState error={run.error} onRetry={() => run.refetch()} />;
 
   const r = run.data;
+  const siblingRuns = suiteRuns.data?.pages.flatMap((p) => p.runs) ?? [];
+  // Older run in the suite = the default compare base for this run.
+  // Undefined when `r` is the oldest loaded run in its suite — the real
+  // server has no target-less compare route, so the button is hidden.
+  const compareTarget = previousRun(siblingRuns, r.id);
 
   return (
     <div className="space-y-5">
@@ -121,11 +134,24 @@ export function RunDetail() {
             >
               {baseline.isSuccess ? "Baseline set ✓" : "Set baseline"}
             </Button>
-            <Link to={`/runs/${encodeURIComponent(r.id)}/compare`}>
-              <Button variant="primary" size="sm">
+            {compareTarget ? (
+              <Link
+                to={`/runs/${encodeURIComponent(compareTarget.id)}/compare/${encodeURIComponent(r.id)}`}
+              >
+                <Button variant="primary" size="sm">
+                  Compare
+                </Button>
+              </Link>
+            ) : (
+              <Button
+                variant="primary"
+                size="sm"
+                disabled
+                title="No earlier run in this suite to compare against"
+              >
                 Compare
               </Button>
-            </Link>
+            )}
           </div>
         </div>
 

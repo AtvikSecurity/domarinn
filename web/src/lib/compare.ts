@@ -1,4 +1,28 @@
-import type { CaseStatus, CompareDelta } from "@/api";
+import type { CaseStatus, CompareDelta, RunListItem } from "@/api";
+import { parseTimestamp } from "./format";
+
+/**
+ * Pick the default compare target for `runId` out of a list of runs (usually
+ * the other runs already loaded for the same project/suite): the run
+ * immediately OLDER than it by `created_at`.
+ *
+ * Returns `undefined` when `runId` isn't in `runs` or is already the oldest
+ * one present — callers must treat that as "no target" and skip rendering a
+ * compare link rather than navigating to a target-less `/runs/{id}/compare`
+ * URL, which has no route on the real server (`Path((id, other))` requires
+ * both segments) and 404s.
+ */
+export function previousRun(
+  runs: RunListItem[],
+  runId: string,
+): RunListItem | undefined {
+  const byNewestFirst = [...runs].sort(
+    (a, b) => parseTimestamp(b.created_at) - parseTimestamp(a.created_at),
+  );
+  const idx = byNewestFirst.findIndex((r) => r.id === runId);
+  if (idx === -1) return undefined;
+  return byNewestFirst[idx + 1];
+}
 
 /** A status counts as "failing" for delta purposes when it is fail or error. */
 export function isFailing(status: CaseStatus | null): boolean {

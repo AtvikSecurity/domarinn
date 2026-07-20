@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router";
 import { useRuns } from "@/api/queries";
 import type { RunListItem } from "@/api";
 import { parseRunsFilters } from "@/lib/filters";
+import { previousRun } from "@/lib/compare";
 import {
   formatCost,
   formatDuration,
@@ -152,7 +153,10 @@ function SuiteGroup({ group }: { group: Group }) {
                 {selected.length} selected
               </span>
               {pair ? (
-                <Link to={`/runs/${encodeURIComponent(pair.headId)}/compare/${encodeURIComponent(pair.baseId)}`}>
+                // Server contract: first url segment = base, second = head
+                // (Path((id, other)) -> { base: id, head: other }). The
+                // older run is the base; the newer is the head.
+                <Link to={`/runs/${encodeURIComponent(pair.baseId)}/compare/${encodeURIComponent(pair.headId)}`}>
                   <Button variant="primary" size="sm">
                     Compare 2 runs
                   </Button>
@@ -203,7 +207,13 @@ function SuiteGroup({ group }: { group: Group }) {
             </tr>
           </thead>
           <tbody>
-            {group.runs.map((r) => (
+            {group.runs.map((r) => {
+              // Older run in the loaded group = the default compare base for
+              // this row. Undefined when `r` is the oldest loaded run — the
+              // real server has no route for a target-less compare, so the
+              // link is hidden rather than pointing at one.
+              const compareTarget = previousRun(group.runs, r.id);
+              return (
               <tr
                 key={r.id}
                 className="border-b border-border/60 last:border-0 hover:bg-surface-2"
@@ -269,16 +279,26 @@ function SuiteGroup({ group }: { group: Group }) {
                   </div>
                 </td>
                 <td className="px-3 py-2 text-right">
-                  <Link
-                    to={`/runs/${encodeURIComponent(r.id)}/compare`}
-                    className="text-xs font-medium text-accent hover:underline"
-                    title="Compare against the suite baseline"
-                  >
-                    Compare
-                  </Link>
+                  {compareTarget ? (
+                    <Link
+                      to={`/runs/${encodeURIComponent(compareTarget.id)}/compare/${encodeURIComponent(r.id)}`}
+                      className="text-xs font-medium text-accent hover:underline"
+                      title={`Compare against ${compareTarget.id}`}
+                    >
+                      Compare
+                    </Link>
+                  ) : (
+                    <span
+                      className="text-xs text-muted"
+                      title="No earlier run in this suite to compare against"
+                    >
+                      —
+                    </span>
+                  )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

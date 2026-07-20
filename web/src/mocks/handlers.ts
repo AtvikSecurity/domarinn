@@ -255,9 +255,16 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       }
     }
     if (seg[2] === "compare" && method === "GET") {
-      const other = seg[3] ?? fx.defaultCompareTarget(runId);
-      if (!other) return json({ error: "no_baseline" }, 404);
-      const result = fx.compareRuns(other, runId);
+      // Real server: `GET /runs/{id}/compare/{other}` only —
+      // `Path((id, other))` requires both segments, so there is no route for
+      // the target-less `/runs/{id}/compare`. Mirror that 404 rather than
+      // synthesizing a default target here.
+      if (seg.length !== 4) return notFound();
+      const other = seg[3];
+      // First segment = base, second = head — matches
+      // `storage.compare_runs(id, other)` -> `{ base: id, head: other }`
+      // (crates/measurellm-server/tests/compare.rs pins this order).
+      const result = fx.compareRuns(runId, other);
       return result ? json(result) : notFound();
     }
   }

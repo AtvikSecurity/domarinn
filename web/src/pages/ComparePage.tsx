@@ -91,8 +91,10 @@ export function ComparePage() {
             className="h-8 rounded-md border border-border bg-surface px-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
             value={base.id}
             onChange={(e) =>
+              // First url segment = base (see `id`/`other` above), so the new
+              // base value goes first and the (unchanged) head stays second.
               navigate(
-                `/runs/${encodeURIComponent(head.id)}/compare/${encodeURIComponent(e.target.value)}`,
+                `/runs/${encodeURIComponent(e.target.value)}/compare/${encodeURIComponent(head.id)}`,
               )
             }
           >
@@ -112,8 +114,10 @@ export function ComparePage() {
             className="h-8 rounded-md border border-border bg-surface px-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
             value={head.id}
             onChange={(e) =>
+              // Second url segment = head, so the (unchanged) base stays
+              // first and the new head value goes second.
               navigate(
-                `/runs/${encodeURIComponent(e.target.value)}/compare/${encodeURIComponent(base.id)}`,
+                `/runs/${encodeURIComponent(base.id)}/compare/${encodeURIComponent(e.target.value)}`,
               )
             }
           >

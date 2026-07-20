@@ -40,7 +40,11 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <RunsList /> },
       { path: "runs/:id", element: <RunDetail /> },
-      { path: "runs/:id/compare", element: <ComparePage /> },
+      // No target-less `runs/:id/compare` route: the real server route is
+      // `Path((id, other))` and requires both segments, so there is nothing
+      // useful to render without a resolved comparison target. Compare links
+      // resolve a target from already-loaded data before navigating (see
+      // RunsList/RunDetail) and 404 via the catch-all below otherwise.
       { path: "runs/:id/compare/:other", element: <ComparePage /> },
       { path: "cache", element: <CacheStatsPage /> },
       { path: "settings", element: <SettingsPage /> },

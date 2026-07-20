@@ -1,0 +1,58 @@
+import { describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
+import { RunsList } from "./RunsList";
+
+function renderRunsList() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={["/"]}>
+        <RunsList />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+// Regression pin for the compare-link bug cluster: the real server route is
+// `GET /runs/{id}/compare/{other}` -> `{ base: id, head: other }` (first url
+// segment is always base). A baseline comparison wants the OLDER run as
+// base, so any link RunsList builds must put the older selected run first.
+describe("RunsList compare-2-runs link", () => {
+  it("places the older selected run in the first (base) url segment, newer in the second (head)", async () => {
+    const user = userEvent.setup();
+    renderRunsList();
+
+    // checkout-agent/regression run ids are zero-padded and chronological
+    // (see src/mocks/fixtures.ts) — "-11" is older than "-12".
+    await screen.findByLabelText("Select run checkout-agent-regression-12");
+
+    await user.click(screen.getByLabelText("Select run checkout-agent-regression-11"));
+    await user.click(screen.getByLabelText("Select run checkout-agent-regression-12"));
+
+    const link = await screen.findByRole("link", { name: "Compare 2 runs" });
+    expect(link).toHaveAttribute(
+      "href",
+      "/runs/checkout-agent-regression-11/compare/checkout-agent-regression-12",
+    );
+  });
+
+  it("still puts the older run first regardless of click order", async () => {
+    const user = userEvent.setup();
+    renderRunsList();
+
+    await screen.findByLabelText("Select run checkout-agent-regression-12");
+
+    // Click the newer run first this time.
+    await user.click(screen.getByLabelText("Select run checkout-agent-regression-12"));
+    await user.click(screen.getByLabelText("Select run checkout-agent-regression-11"));
+
+    const link = await screen.findByRole("link", { name: "Compare 2 runs" });
+    expect(link).toHaveAttribute(
+      "href",
+      "/runs/checkout-agent-regression-11/compare/checkout-agent-regression-12",
+    );
+  });
+});

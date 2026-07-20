@@ -1,11 +1,41 @@
 import { expect, test } from "@playwright/test";
-import { MONEY_RUN, deltaParam } from "./helpers";
+import { MONEY_RUN, MONEY_RUN_BASELINE, deltaParam } from "./helpers";
 
 test.describe("Compare view", () => {
+  test("reached from the runs list, the compare page labels the older run as base", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
+
+    // Select the baseline (older) and money (newer) runs and follow the
+    // resulting "Compare 2 runs" link.
+    await page
+      .getByRole("checkbox", { name: `Select run ${MONEY_RUN_BASELINE}` })
+      .check();
+    await page.getByRole("checkbox", { name: `Select run ${MONEY_RUN}` }).check();
+    await page.getByRole("link", { name: "Compare 2 runs" }).click();
+
+    // The url puts the older run first (base), newer second (head) — the
+    // real server's `Path((id, other))` contract.
+    await expect(page).toHaveURL(
+      new RegExp(`/runs/${MONEY_RUN_BASELINE}/compare/${MONEY_RUN}$`),
+    );
+    await expect(page.getByRole("heading", { name: "Compare" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Base run" })).toHaveValue(
+      MONEY_RUN_BASELINE,
+    );
+    await expect(page.getByRole("combobox", { name: "Head run" })).toHaveValue(
+      MONEY_RUN,
+    );
+  });
+
   test("shows summary chips, filters the delta grid, and expands to a side-by-side diff", async ({
     page,
   }) => {
-    await page.goto(`/runs/${MONEY_RUN}/compare`);
+    // The real server route is `/runs/{base}/compare/{head}` with no
+    // target-less form — navigate with an explicit older-as-base pair.
+    await page.goto(`/runs/${MONEY_RUN_BASELINE}/compare/${MONEY_RUN}`);
 
     await expect(page.getByRole("heading", { name: "Compare" })).toBeVisible();
 
@@ -50,14 +80,14 @@ test.describe("Compare view", () => {
   });
 
   test("base and head selectors are populated with the suite's runs", async ({ page }) => {
-    await page.goto(`/runs/${MONEY_RUN}/compare`);
+    await page.goto(`/runs/${MONEY_RUN_BASELINE}/compare/${MONEY_RUN}`);
     await expect(page.getByRole("heading", { name: "Compare" })).toBeVisible();
 
-    // The base selector lists the 12 regression runs and defaults to the
-    // baseline (the previous regression run).
+    // The base selector lists the 12 regression runs and reflects the
+    // base run from the url (the first segment, per the server contract).
     const baseSelect = page.getByRole("combobox", { name: "Base run" });
     await expect(baseSelect).toBeVisible();
-    await expect(baseSelect).toHaveValue("checkout-agent-regression-11");
+    await expect(baseSelect).toHaveValue(MONEY_RUN_BASELINE);
     await expect(baseSelect.locator("option")).toHaveCount(12);
 
     // The head selector defaults to the run in the URL.
@@ -68,14 +98,15 @@ test.describe("Compare view", () => {
   });
 
   test("picking a different head (and base) recomputes the comparison", async ({ page }) => {
-    await page.goto(`/runs/${MONEY_RUN}/compare`);
+    await page.goto(`/runs/${MONEY_RUN_BASELINE}/compare/${MONEY_RUN}`);
     await expect(page.getByRole("heading", { name: "Compare" })).toBeVisible();
 
-    // Re-point the head run: the route + selection follow.
+    // Re-point the head run: the base (first url segment) stays put, only
+    // the head (second segment) changes.
     const headSelect = page.getByRole("combobox", { name: "Head run" });
     await headSelect.selectOption("checkout-agent-regression-10");
     await expect(page).toHaveURL(
-      /\/runs\/checkout-agent-regression-10\/compare\/checkout-agent-regression-11/,
+      /\/runs\/checkout-agent-regression-11\/compare\/checkout-agent-regression-10/,
     );
     await expect(headSelect).toHaveValue("checkout-agent-regression-10");
 
@@ -83,7 +114,7 @@ test.describe("Compare view", () => {
     const baseSelect = page.getByRole("combobox", { name: "Base run" });
     await baseSelect.selectOption("checkout-agent-regression-09");
     await expect(page).toHaveURL(
-      /\/runs\/checkout-agent-regression-10\/compare\/checkout-agent-regression-09/,
+      /\/runs\/checkout-agent-regression-09\/compare\/checkout-agent-regression-10/,
     );
     await expect(baseSelect).toHaveValue("checkout-agent-regression-09");
     await expect(headSelect).toHaveValue("checkout-agent-regression-10");
