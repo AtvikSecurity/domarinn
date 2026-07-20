@@ -73,6 +73,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --target "${TARGET}" -p measurellm-cli && \
     cp "target/${TARGET}/release/measurellm" /measurellm
 
+# Empty dir that becomes the runtime image's /data mountpoint. It has to be
+# made here: distroless has no shell, so the runtime stage can only COPY it in.
+RUN mkdir -p /data
+
 # ---------------------------------------------------------------------------
 # Stage 3: runtime. distroless/static has no shell and no libc — a static musl
 # binary runs directly, and the binary is its own healthcheck probe.
@@ -81,7 +85,12 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 COPY --from=builder /measurellm /measurellm
 
-# Persistent state (SQLite db, cache) lives under /data.
+# Persistent state (SQLite db, cache) lives under /data. The mountpoint must
+# exist in the image owned by the runtime user BEFORE the VOLUME instruction:
+# Docker seeds a fresh named volume with the mountpoint's ownership, and a
+# root-owned /data leaves the nonroot server unable to create its SQLite
+# files. Numeric uid:gid (nonroot is 65532) so no /etc/passwd lookup is needed.
+COPY --from=builder --chown=65532:65532 /data /data
 ENV MEASURELLM_DATA_DIR=/data
 VOLUME ["/data"]
 

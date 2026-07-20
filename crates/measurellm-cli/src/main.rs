@@ -275,7 +275,10 @@ fn cmd_server(port: u16, data_dir: PathBuf) -> u8 {
     match runtime.block_on(measurellm_server::serve(config)) {
         Ok(()) => exit::OK,
         Err(e) => {
-            eprintln!("server error: {e}");
+            // `{e:#}` prints the whole anyhow context chain — the root cause
+            // (e.g. a permissions error under the "opening sqlite db" context)
+            // is invisible with plain Display.
+            eprintln!("server error: {e:#}");
             exit::INFRA
         }
     }

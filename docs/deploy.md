@@ -131,6 +131,42 @@ Replace the placeholder secrets before exposing the service. Prefer injecting
 `MEASURELLM_ADMIN_PASSWORD` / `MEASURELLM_TOKENS` from a real secret store rather
 than committing them.
 
+## `/data` ownership (bind mounts, existing volumes)
+
+The container runs as the distroless `nonroot` user, **uid 65532** — never root.
+The server must be able to create and write its SQLite files in `/data`; if it
+cannot, it exits at startup with
+`server error: opening sqlite db at /data/measurellm.db: … permission denied`.
+
+- **Named volumes** (everything above) just work: Docker seeds a fresh volume
+  with the image's `/data` ownership, which the image sets to uid 65532.
+- **Bind mounts** (`-v ./data:/data`) keep the host directory's ownership, which
+  is almost never 65532. Either chown the host directory:
+
+  ```sh
+  mkdir -p ./data && sudo chown 65532:65532 ./data
+  ```
+
+  or run the container as the directory's owner — the binary is fully static
+  and uid-agnostic, so any uid works:
+
+  ```yaml
+  services:
+    measurellm:
+      user: "1000:1000"   # match the bind-mounted directory's owner
+  ```
+
+- **Volumes created by images older than the ownership fix** are root-owned,
+  but Docker re-seeds ownership from the image whenever it mounts an **empty**
+  named volume — and a volume from a failed pre-fix deployment is empty, since
+  the server could never create its files. Upgrading the image therefore fixes
+  these volumes automatically. Only a root-owned volume that already **contains
+  files** needs a one-time repair:
+
+  ```sh
+  docker run --rm -v measurellm-data:/data busybox chown -R 65532:65532 /data
+  ```
+
 ## Kubernetes
 
 Because SQLite is a single writer, deploy exactly **one replica** with a
@@ -152,6 +188,12 @@ spec:
     metadata:
       labels: { app: measurellm }
     spec:
+      # Fresh PVC filesystems are root-owned; fsGroup makes the kubelet chown
+      # the volume to the pod's group so the nonroot server (uid 65532) can
+      # create its SQLite files. Docker's volume-ownership seeding does not
+      # exist in Kubernetes, so this is required, not belt-and-suspenders.
+      securityContext:
+        fsGroup: 65532
       containers:
         - name: measurellm
           image: ghcr.io/perfectra1n/measurellm:latest
