@@ -497,7 +497,12 @@ async fn patch_cannot_remove_the_last_admin() {
         &json!({ "role": "member" }),
     )
     .await;
-    assert_eq!(demote.status, StatusCode::CONFLICT, "body: {:?}", demote.json());
+    assert_eq!(
+        demote.status,
+        StatusCode::CONFLICT,
+        "body: {:?}",
+        demote.json()
+    );
 
     // Disabling the only admin is refused too.
     let disable = patch(
