@@ -197,10 +197,10 @@ save minutes, and the workflow has read-only repo permissions.
 | **fmt**          | `cargo fmt --all --check` | Formatting. |
 | **clippy**       | `cargo clippy --workspace --all-targets -- -D warnings` | Lints as hard errors. |
 | **test**         | `cargo test --workspace` | The Rust test suite. |
-| **web**          | `pnpm -C web install --frozen-lockfile`, `pnpm -C web build`, `pnpm -C web test` | The web UI builds and its vitest suite passes. |
+| **web**          | `pnpm -C web install --frozen-lockfile`, `pnpm -C web lint`, `pnpm -C web build`, `pnpm -C web test` | The web UI lints (`--max-warnings=0`), builds, and its vitest suite passes. |
 | **schema-check** | Regenerates `measurellm schema config` and `diff`s it against the committed `measurellm.schema.json` | The checked-in JSON Schema hasn't drifted (run `mise run schema` to fix). |
-| **gen-types-check** | Regenerates the TS DTOs into `web/src/api/generated` and diffs | Generated TypeScript types are current. Hard-fails when the dir is committed; a soft warning until then (run `mise run gen-types`). |
-| **musl-build**   | Static `cargo build --release -p measurellm-cli` for `x86_64-unknown-linux-musl` (native) and `aarch64-unknown-linux-musl` (via `cross`) | The fully static binary links on both arches. The aarch64 leg is `continue-on-error` so a cross-toolchain hiccup doesn't block the x86_64 gate. |
+| **gen-types-check** | Regenerates the TS DTOs into `web/src/api/generated` and diffs | Generated TypeScript types are current. Hard-fails if the dir is missing/uncommitted or drifts (run `mise run gen-types` and commit). |
+| **musl-build**   | Static `cargo build --release -p measurellm-cli` for `x86_64-unknown-linux-musl` (native) | The fully static binary links on x86_64. aarch64 is not built here — it's verified at release time (see `release.yml`), where the cross toolchain is set up. |
 
 The `schema-check` and `gen-types-check` jobs enforce the same generators as the
 `schema` / `gen-types` mise tasks (`.mise/config.toml`) — keep those in sync when

@@ -106,8 +106,9 @@ mise run dev    # run the server; run `pnpm -C web dev` alongside for the UI
 ```
 
 Every source file is kept under 1000 lines (enforced by a ratchet test), and CI
-runs fmt, clippy `-D warnings`, the Rust and web test suites, Playwright e2e, a
-musl static build, and schema/type drift checks.
+runs fmt, clippy `-D warnings`, the Rust and web (vitest) test suites, the web
+lint, a musl static build, and schema/type drift checks. The Playwright e2e
+suite is not part of CI; run it locally with `mise run e2e`.
 
 ## License
 
