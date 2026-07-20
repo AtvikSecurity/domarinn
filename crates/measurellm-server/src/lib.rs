@@ -24,6 +24,7 @@ use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::Router;
+use ts_rs::TS;
 
 use crate::auth::{
     ApiKeyAuthenticator, Authenticator, SessionAuthenticator, StaticTokenAuthenticator,
@@ -33,6 +34,7 @@ use crate::storage::Storage;
 pub mod accounts;
 pub mod auth;
 pub mod domain;
+pub mod dto;
 pub mod extract;
 pub mod routes;
 pub mod storage;
@@ -66,7 +68,7 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum AuthMode {
     Open,
