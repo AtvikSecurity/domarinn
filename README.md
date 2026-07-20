@@ -17,44 +17,91 @@ measurellm inverts that:
 
 - **External systems under test are first class.** An `exec` command or an
   `http` endpoint is a normal provider; prompts are optional.
-- **Real Jinja** via [minijinja], with a per-field `!raw` escape hatch so a
+- **Real Jinja** via [minijinja], with a per-value `!raw` escape hatch so a
   literal `{{7*7}}` test input is never interpolated.
 - **Deterministic assertions run first** and can short-circuit the LLM grader.
 - **The grader is structured** (tool-use / JSON-schema verdicts, never
-  regex-from-prose) and **fails closed**.
+  regex-from-prose) and **fails closed** — a missing or truncated verdict is an
+  error, never a silent pass.
+- **Statistics built in** — Wilson confidence intervals, McNemar significance,
+  and pass@k, not bare pass rates.
 - **Content-addressed caching** that is safe to share between teammates over a
   server URL or an S3-compatible bucket.
-- **Upload a run to a server** with one setting and get a link, with or without
-  a token.
-
-## Status
-
-Early. The engine, CLI, cache, and server are being built in phases; see
-`crates/` and the workspace tests.
-
-## Workspace layout
-
-| Crate | Responsibility |
-|---|---|
-| `measurellm-core` | Config schema, template engine, `Provider`/`Assertion`/`CacheBackend` traits, exec protocol, `RunResult` DTOs. Pure library. |
-| `measurellm-cache` | Cache backends (local disk today; remote HTTP, S3, layered next). |
-| `measurellm-server` | axum results server + embedded web UI. |
-| `measurellm-cli` | The `measurellm` binary. |
-| `measurellm-testkit` | Fake exec-protocol programs for tests (not published). |
+- **A self-hostable server + web UI** with real accounts — local logins, an admin
+  role, and per-user API keys — plus run comparison and a shared cache.
 
 ## Quick start
 
 ```sh
-cargo build --release
+cargo build --release        # or: just build   (builds the web UI too)
 
-# Validate a suite (no provider calls)
-measurellm validate examples/render-health
+# Run a suite offline (no API key) and see it pass
+measurellm run examples/render-health
 
-# Print the config JSON Schema (editor completion / CI contract)
+# Print the config JSON Schema for editor completion
 measurellm schema config > measurellm.schema.json
 
-# Run the results server + UI
+# Run the results server + web UI
 measurellm server --port 8321
 ```
+
+A minimal suite (`measurellm.yaml`):
+
+```yaml
+version: 1
+suite: smoke
+providers:
+  - id: gpt
+    type: openai
+    model: gpt-4.1
+    api_key_env: OPENAI_API_KEY
+prompts:
+  - id: p
+    messages:
+      - { role: user, content: "{{ request }}" }
+tests:
+  - id: greet
+    vars: { request: "say hello" }
+    assert:
+      - { type: icontains, value: "hello" }
+```
+
+See **[docs/getting-started.md](docs/getting-started.md)** for a full walkthrough.
+
+## Documentation
+
+Full docs live in **[`docs/`](docs/README.md)**:
+
+- [Getting started](docs/getting-started.md) · [Configuration](docs/configuration.md) · [Assertions](docs/assertions.md) · [Providers](docs/providers.md)
+- [Grading](docs/grading.md) · [Caching](docs/caching.md) · [Statistics](docs/statistics.md) · [CLI reference](docs/cli.md)
+- [Server & accounts](docs/server.md) · [Deploy](docs/deploy.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/protocol.md)
+
+## Workspace layout
+
+| Crate | Responsibility |
+|-------|----------------|
+| `measurellm-core` | Config schema, template engine, providers, runner, grader, statistics, and the `RunResult` DTOs. Pure library. |
+| `measurellm-cache` | Cache backends: local disk, remote HTTP, S3, layered. |
+| `measurellm-server` | axum results server, SQLite storage, accounts/auth, and the embedded web UI. |
+| `measurellm-cli` | The `measurellm` binary. |
+| `measurellm-testkit` | Fake exec-protocol programs for tests (not published). |
+| `web/` | The React + Vite + TypeScript UI, embedded into the server binary. |
+
+## Development
+
+```sh
+just build      # pnpm build the web UI, then cargo build --release
+just test       # cargo test --workspace
+just lint       # clippy -D warnings + cargo fmt --check
+just dev        # run the server; run `pnpm -C web dev` alongside for the UI
+```
+
+Every source file is kept under 1000 lines (enforced by a ratchet test), and CI
+runs fmt, clippy `-D warnings`, the Rust and web test suites, Playwright e2e, a
+musl static build, and schema/type drift checks.
+
+## License
+
+MIT.
 
 [minijinja]: https://docs.rs/minijinja
