@@ -162,4 +162,14 @@ fn gen_types_writes_typescript() {
         out.join("RunResult.ts").exists(),
         "RunResult.ts should exist"
     );
+    // The server DTO layer (response + request-body TS derives) must be
+    // exported alongside core's result/diff types into the same directory.
+    assert!(
+        out.join("RunListResponse.ts").exists(),
+        "RunListResponse.ts (a server response DTO) should exist"
+    );
+    assert!(
+        out.join("CreateUserBody.ts").exists(),
+        "CreateUserBody.ts (a server request body) should exist"
+    );
 }

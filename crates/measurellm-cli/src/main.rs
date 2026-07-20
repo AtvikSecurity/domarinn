@@ -309,16 +309,19 @@ fn cmd_gen_types(dir: &Path) -> u8 {
         eprintln!("error: creating {}: {e}", dir.display());
         return exit::INFRA;
     }
-    match measurellm_core::export_types(dir) {
-        Ok(()) => {
-            println!("wrote TypeScript definitions to {}", dir.display());
-            exit::OK
-        }
-        Err(e) => {
-            eprintln!("error: exporting types: {e}");
-            exit::INFRA
-        }
+    if let Err(e) = measurellm_core::export_types(dir) {
+        eprintln!("error: exporting core types: {e}");
+        return exit::INFRA;
     }
+    if let Err(e) = measurellm_server::export_api_types(dir) {
+        eprintln!("error: exporting server API types: {e}");
+        return exit::INFRA;
+    }
+    println!(
+        "wrote TypeScript definitions (core result/diff types + server API DTOs) to {}",
+        dir.display()
+    );
+    exit::OK
 }
 
 fn cmd_healthcheck(port: u16) -> u8 {

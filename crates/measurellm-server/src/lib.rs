@@ -353,6 +353,84 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
+/// Export TypeScript type definitions for the server's DTO layer (response
+/// bodies + request bodies) to `dir`.
+///
+/// Companion to [`measurellm_core::export_types`]: the CLI calls both into
+/// the same output directory so `web/src/api/generated/` is the complete,
+/// generated TypeScript contract for both the result/diff shapes and the
+/// HTTP API. Uses the same [`ts_rs::Config`] (`with_large_int("number")`) so
+/// shared core types (e.g. [`measurellm_core::ids::RunId`],
+/// [`measurellm_core::result::CaseStatus`]) re-emit byte-identically
+/// regardless of which crate's export runs last.
+///
+/// Each call below is an *export root* — `TS::export_all` walks that type's
+/// field graph and also writes every transitive dependency (e.g.
+/// [`crate::domain::Role`], [`crate::auth::Scope`], [`AuthMode`],
+/// [`crate::auth::IdentitySource`], [`crate::dto::compare::CompareDelta`]).
+/// [`crate::domain::RunStatusFilter`] is *not* reachable from any response or
+/// request body (it is only used by a `Deserialize`-only query-string struct
+/// in `routes.rs`), so it is listed as its own explicit root even though it
+/// carries no other consumers here — the web app's run-list filter UI
+/// (a later task) is expected to import it directly.
+///
+/// [`crate::dto::cases::CaseDetailResponse`] is deliberately *not* exported:
+/// it is a `#[serde(transparent)]` newtype over `serde_json::Value` with
+/// `#[ts(type = "unknown")]` on its sole field, and ts-rs exports single-field
+/// tuple structs as a bare type alias — `export type CaseDetailResponse =
+/// unknown;`. That adds a file with strictly less information than writing
+/// `unknown` at the call site (there is no dependency graph, no shape, no
+/// doc comment beyond what is already on the struct), so it is skipped.
+pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError> {
+    use ts_rs::Config;
+
+    use crate::accounts::{CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody};
+    use crate::domain::RunStatusFilter;
+    use crate::dto::accounts::{
+        ApiKeyCreatedResponse, ApiKeyListResponse, AuthSessionResponse, MeResponse,
+        UserListResponse,
+    };
+    use crate::dto::cache::{CacheStatsResponse, PruneResponse};
+    use crate::dto::cases::CaseListResponse;
+    use crate::dto::compare::CompareResponse;
+    use crate::dto::meta::MetaResponse;
+    use crate::dto::projects::{ProjectsResponse, SuitesResponse};
+    use crate::dto::runs::{IngestResponse, RunDetailResponse, RunListResponse};
+    use crate::routes::BaselineBody;
+
+    let cfg = Config::new().with_out_dir(dir).with_large_int("number");
+
+    // Response DTOs.
+    RunListResponse::export_all(&cfg)?;
+    RunDetailResponse::export_all(&cfg)?;
+    IngestResponse::export_all(&cfg)?;
+    CaseListResponse::export_all(&cfg)?;
+    CompareResponse::export_all(&cfg)?;
+    ProjectsResponse::export_all(&cfg)?;
+    SuitesResponse::export_all(&cfg)?;
+    CacheStatsResponse::export_all(&cfg)?;
+    PruneResponse::export_all(&cfg)?;
+    MetaResponse::export_all(&cfg)?;
+    MeResponse::export_all(&cfg)?;
+    AuthSessionResponse::export_all(&cfg)?;
+    UserListResponse::export_all(&cfg)?;
+    ApiKeyListResponse::export_all(&cfg)?;
+    ApiKeyCreatedResponse::export_all(&cfg)?;
+
+    // Request bodies.
+    CredentialsBody::export_all(&cfg)?;
+    CreateUserBody::export_all(&cfg)?;
+    PatchUserBody::export_all(&cfg)?;
+    CreateKeyBody::export_all(&cfg)?;
+    BaselineBody::export_all(&cfg)?;
+
+    // Not reachable from any response/request-body root (see the module doc
+    // above) but still part of the web-facing TypeScript contract.
+    RunStatusFilter::export_all(&cfg)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

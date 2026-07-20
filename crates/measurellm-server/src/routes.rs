@@ -449,7 +449,7 @@ async fn list_suites(
 }
 
 #[derive(Debug, Deserialize, TS)]
-struct BaselineBody {
+pub(crate) struct BaselineBody {
     run_id: RunId,
 }
 

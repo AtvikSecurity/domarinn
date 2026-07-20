@@ -97,24 +97,25 @@ jobs:
       - uses: actions/checkout@v4 # pin to SHA
       - uses: dtolnay/rust-toolchain@stable # pin to SHA
       - uses: Swatinem/rust-cache@v2 # pin to SHA
-      # Regenerate the TypeScript DTOs into their committed location and fail if
-      # they differ. When the directory is not yet committed (bootstrap), soft
-      # check: generate and report, but do not block the build. Keep in sync
-      # with the `gen-types` recipe in the justfile.
+      # Regenerate the TypeScript DTOs into their committed location and fail
+      # if they differ. Keep in sync with the `gen-types` recipe in the
+      # justfile.
       - name: Generate types
         run: cargo run -q -p measurellm-cli -- gen-types web/src/api/generated
-      - name: Fail on drift (when committed)
+      - name: Fail on drift
         run: |
-          if git ls-files --error-unmatch web/src/api/generated >/dev/null 2>&1; then
-            if ! git diff --exit-code -- web/src/api/generated; then
-              echo "::error::web/src/api/generated is out of date. Run 'just gen-types' and commit the result."
-              exit 1
-            fi
-            echo "generated types are up to date"
-          else
-            echo "::warning::web/src/api/generated is not committed yet; generated types are not enforced. Run 'just gen-types' and commit the result to turn this into a hard check."
-            git --no-pager status --porcelain -- web/src/api/generated || true
+          if [ -z "$(git ls-files web/src/api/generated)" ]; then
+            echo "::error::web/src/api/generated is not committed. Run 'just gen-types' and commit the result."
+            exit 1
           fi
+          # `git status --porcelain`, not `git diff`: newly-generated files
+          # that git diff can't see (untracked) must also count as drift.
+          if [ -n "$(git status --porcelain -- web/src/api/generated)" ]; then
+            echo "::error::web/src/api/generated is out of date. Run 'just gen-types' and commit the result."
+            git --no-pager status --porcelain -- web/src/api/generated
+            exit 1
+          fi
+          echo "generated types are up to date"
 
   musl-build:
     name: static musl build (${{ matrix.target }})
