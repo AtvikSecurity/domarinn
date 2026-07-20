@@ -369,16 +369,28 @@ impl VariantKeys {
 }
 
 /// Flag unknown keys in the `flatten`ed provider and assert mappings of the raw
-/// YAML. serde silently drops such keys (a `flatten`ed, internally-tagged enum
-/// cannot use `deny_unknown_fields`), so a typo like `basurl` would otherwise
-/// go unmeasured. Key sets come entirely from the schema — no hand-maintained
-/// allowlist. Free-form bags (`params`, an exec assert's `config`, an http
-/// provider's `body`) are values, not mappings we walk, so their inner keys are
-/// never checked.
+/// YAML — plus the bare `ProviderKind` mappings nested inside graders. serde
+/// silently drops such keys (a `flatten`ed or internally-tagged enum cannot use
+/// `deny_unknown_fields`), so a typo like `basurl` would otherwise go unmeasured.
+///
+/// The `Grader` struct itself does have `deny_unknown_fields`, so its grader-LEVEL
+/// keys (`provider`/`template`/`verdict_mode`) are already rejected by serde at
+/// deserialize time — even inside a `flatten`ed `llm-rubric` assert. What serde
+/// cannot reject is the `provider:` value, which is a bare internally-tagged
+/// `ProviderKind`; that mapping is what this walk covers, at every place a grader
+/// can appear: the top-level `grader.provider` and every `llm-rubric` assert's
+/// inner `grader.provider` (both `defaults.assert[]` and inline `tests[].assert[]`).
+///
+/// Key sets come entirely from the schema — no hand-maintained allowlist.
+/// Free-form bags (`params`, an exec assert's `config`, an http provider's
+/// `body`) are values, not mappings we walk, so their inner keys are never checked.
 fn check_unknown_flatten_keys(raw: &Yaml, issues: &mut Vec<Issue>) {
     let schema = crate::config_schema();
     let provider_keys = VariantKeys::from_schema(&schema, "Provider");
     let assert_keys = VariantKeys::from_schema(&schema, "Assert");
+    // A grader's `provider:` is a bare `ProviderKind` (no wrapping `id`/`label`),
+    // so its key set has no common fields — only the per-`type` variant keys.
+    let provider_kind_keys = VariantKeys::from_schema(&schema, "ProviderKind");
 
     if let Some(providers) = raw.get("providers").and_then(Yaml::as_sequence) {
         for (i, entry) in providers.iter().enumerate() {
@@ -392,17 +404,21 @@ fn check_unknown_flatten_keys(raw: &Yaml, issues: &mut Vec<Issue>) {
         }
     }
 
+    // Top-level `grader.provider`.
+    check_grader_provider(raw.get("grader"), &provider_kind_keys, "grader", issues);
+
     if let Some(asserts) = raw
         .get("defaults")
         .and_then(|d| d.get("assert"))
         .and_then(Yaml::as_sequence)
     {
         for (j, entry) in asserts.iter().enumerate() {
-            check_flatten_entry(
-                entry,
-                &assert_keys,
-                &format!("defaults.assert[{j}]"),
-                "assert",
+            let path = format!("defaults.assert[{j}]");
+            check_flatten_entry(entry, &assert_keys, &path, "assert", issues);
+            check_grader_provider(
+                entry.get("grader"),
+                &provider_kind_keys,
+                &format!("{path}.grader"),
                 issues,
             );
         }
@@ -417,16 +433,40 @@ fn check_unknown_flatten_keys(raw: &Yaml, issues: &mut Vec<Issue>) {
             }
             if let Some(asserts) = test.get("assert").and_then(Yaml::as_sequence) {
                 for (j, entry) in asserts.iter().enumerate() {
-                    check_flatten_entry(
-                        entry,
-                        &assert_keys,
-                        &format!("tests[{i}].assert[{j}]"),
-                        "assert",
+                    let path = format!("tests[{i}].assert[{j}]");
+                    check_flatten_entry(entry, &assert_keys, &path, "assert", issues);
+                    check_grader_provider(
+                        entry.get("grader"),
+                        &provider_kind_keys,
+                        &format!("{path}.grader"),
                         issues,
                     );
                 }
             }
         }
+    }
+}
+
+/// Check the `provider:` mapping inside a grader, if present. `grader` is the raw
+/// value under a `grader:` key (top-level or on an `llm-rubric` assert);
+/// `grader_path` is that grader's dotted path (e.g. `grader`,
+/// `tests[0].assert[1].grader`). A missing grader or missing/non-mapping provider
+/// is nothing to check — serde has already rejected any grader-LEVEL typo via
+/// `Grader`'s `deny_unknown_fields`, so only the nested `provider:` needs walking.
+fn check_grader_provider(
+    grader: Option<&Yaml>,
+    keys: &VariantKeys,
+    grader_path: &str,
+    issues: &mut Vec<Issue>,
+) {
+    if let Some(provider) = grader.and_then(|g| g.get("provider")) {
+        check_flatten_entry(
+            provider,
+            keys,
+            &format!("{grader_path}.provider"),
+            "provider",
+            issues,
+        );
     }
 }
 
@@ -757,6 +797,123 @@ tests:
             hit.message.contains("weigth"),
             "message should name the key: {}",
             hit.message
+        );
+    }
+
+    #[test]
+    fn typo_grader_provider_key_is_flagged_by_validate() {
+        // The top-level `grader.provider` is a bare `ProviderKind` mapping.
+        // `basurl` (a typo of `base_url`) is silently dropped by the
+        // internally-tagged enum — the `Grader` struct's `deny_unknown_fields`
+        // only guards the grader-LEVEL keys, not the nested provider mapping.
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+grader:
+  provider: {type: anthropic, model: m, basurl: "http://localhost"}
+"#,
+        )
+        .unwrap();
+        let issues = validate(&suite, &raw);
+        let hit = issues
+            .iter()
+            .find(|i| i.path == "grader.provider")
+            .unwrap_or_else(|| panic!("expected a grader.provider issue, got {issues:?}"));
+        assert!(
+            hit.message.contains("basurl"),
+            "message should name the key: {}",
+            hit.message
+        );
+    }
+
+    #[test]
+    fn typo_llm_rubric_grader_provider_key_is_flagged_by_validate() {
+        // An `llm-rubric` assert can carry its own inner `grader`, whose
+        // `provider` is again a bare `ProviderKind`. A typo there corrupts the
+        // grading model silently, so validate must flag it and name the key.
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests:
+  - vars: {}
+    assert:
+      - type: llm-rubric
+        value: "ok"
+        grader:
+          provider: {type: anthropic, model: m, basurl: "http://localhost"}
+"#,
+        )
+        .unwrap();
+        let issues = validate(&suite, &raw);
+        let hit = issues
+            .iter()
+            .find(|i| i.path == "tests[0].assert[0].grader.provider")
+            .unwrap_or_else(|| {
+                panic!("expected a tests[0].assert[0].grader.provider issue, got {issues:?}")
+            });
+        assert!(
+            hit.message.contains("basurl"),
+            "message should name the key: {}",
+            hit.message
+        );
+    }
+
+    #[test]
+    fn typo_defaults_llm_rubric_grader_provider_key_is_flagged_by_validate() {
+        // Same nested grader.provider, but reached through `defaults.assert`.
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+defaults:
+  assert:
+    - type: llm-rubric
+      value: "ok"
+      grader:
+        provider: {type: openai, model: m, api_ky_env: K}
+"#,
+        )
+        .unwrap();
+        let issues = validate(&suite, &raw);
+        let hit = issues
+            .iter()
+            .find(|i| i.path == "defaults.assert[0].grader.provider")
+            .unwrap_or_else(|| {
+                panic!("expected a defaults.assert[0].grader.provider issue, got {issues:?}")
+            });
+        assert!(
+            hit.message.contains("api_ky_env"),
+            "message should name the key: {}",
+            hit.message
+        );
+    }
+
+    #[test]
+    fn valid_grader_provider_keys_do_not_false_positive() {
+        // A well-formed grader (top-level and inside llm-rubric) with a
+        // free-form `params` bag must pass clean.
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+grader:
+  provider: {type: anthropic, model: m, base_url: "http://x", api_key_env: K, params: {max_tokens: 4096}}
+tests:
+  - vars: {}
+    assert:
+      - type: llm-rubric
+        value: "ok"
+        grader:
+          provider: {type: openai, model: m, api_key_env: K, params: {anything: 1}}
+"#,
+        )
+        .unwrap();
+        assert!(
+            validate(&suite, &raw).is_empty(),
+            "{:?}",
+            validate(&suite, &raw)
         );
     }
 
