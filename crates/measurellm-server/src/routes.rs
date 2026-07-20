@@ -16,6 +16,9 @@ use measurellm_core::result::{CaseStatus, RunResult, RESULT_SCHEMA_VERSION};
 
 use crate::auth::{Admin, Read, Scoped, Write};
 use crate::domain::RunStatusFilter;
+use crate::dto::cache::PruneResponse;
+use crate::dto::meta::{MetaCacheLimits, MetaResponse};
+use crate::dto::runs::{IngestResponse, RunListResponse};
 use crate::extract::{ApiJson, ApiQuery};
 use crate::storage::{self, CachePutOutcome, CaseListFilter, IngestOutcome, RunListFilter};
 use crate::AppState;
@@ -133,19 +136,19 @@ async fn meta(State(state): State<AppState>) -> ApiResult<Response> {
     let min = current.saturating_sub(1);
     let supported: Vec<u32> = (min..=current).collect();
     let setup_required = state.storage.count_users().await? == 0;
-    Ok(Json(json!({
-        "name": "measurellm",
-        "version": measurellm_core::VERSION,
-        "auth_mode": state.auth_mode,
-        "setup_required": setup_required,
-        "supported_schema_versions": supported,
-        "result_schema_version": current,
-        "cache": {
-            "max_entry_bytes": state.cache_limits.max_entry_bytes,
-            "max_bytes": state.cache_limits.max_bytes,
-            "max_age_days": state.cache_limits.max_age_days,
+    Ok(Json(MetaResponse {
+        name: "measurellm".to_string(),
+        version: measurellm_core::VERSION.to_string(),
+        auth_mode: state.auth_mode,
+        setup_required,
+        supported_schema_versions: supported,
+        result_schema_version: current,
+        cache: MetaCacheLimits {
+            max_entry_bytes: state.cache_limits.max_entry_bytes,
+            max_bytes: state.cache_limits.max_bytes,
+            max_age_days: state.cache_limits.max_age_days,
         },
-    }))
+    })
     .into_response())
 }
 
@@ -267,11 +270,11 @@ async fn post_run(
     match outcome {
         IngestOutcome::Created => Ok((
             StatusCode::CREATED,
-            Json(json!({ "id": run_id, "url": url })),
+            Json(IngestResponse { id: run_id, url }),
         )
             .into_response()),
         IngestOutcome::Existing => {
-            Ok((StatusCode::OK, Json(json!({ "id": run_id, "url": url }))).into_response())
+            Ok((StatusCode::OK, Json(IngestResponse { id: run_id, url })).into_response())
         }
         IngestOutcome::Conflict => Ok((
             StatusCode::CONFLICT,
@@ -335,10 +338,10 @@ async fn list_runs(
         cursor: q.cursor.as_deref().and_then(storage::decode_cursor),
     };
     let page = state.storage.list_runs(filter).await?;
-    Ok(Json(json!({
-        "runs": page.runs,
-        "next_cursor": page.next_cursor,
-    }))
+    Ok(Json(RunListResponse {
+        runs: page.runs,
+        next_cursor: page.next_cursor,
+    })
     .into_response())
 }
 
@@ -566,7 +569,7 @@ async fn cache_prune(
         .storage
         .cache_prune(q.older_than_days, q.target_bytes)
         .await?;
-    Ok(Json(json!({ "pruned": pruned })).into_response())
+    Ok(Json(PruneResponse { pruned }).into_response())
 }
 
 // ---------------------------------------------------------------------------
