@@ -194,3 +194,46 @@ async fn cache_prune_requires_admin_in_protected_mode() {
     .await;
     assert_eq!(admin.status, StatusCode::OK);
 }
+
+/// Regression: an unparameterized `POST /cache/prune` — exactly what the UI
+/// "Prune cache" button and a plain admin POST send — must apply the server's
+/// configured retention limits (the manual equivalent of the hourly task).
+/// With a tiny `max_bytes`, a bare prune has to LRU-evict the entries that
+/// overflow the budget. Before the fix a bare prune passed no bounds and
+/// silently evicted nothing.
+#[tokio::test]
+async fn bare_prune_applies_configured_limits() {
+    let settings = Settings {
+        cache_max_bytes: Some(64),
+        ..Default::default()
+    };
+    let (app, _dir) = test_app(settings).await;
+
+    // Three 40-byte entries (~120 bytes) overflow the 64-byte budget.
+    for seed in 0..3 {
+        let key = key_for(seed);
+        let r = put_bytes(&app, &format!("/api/v1/cache/{key}"), None, vec![b'x'; 40]).await;
+        assert!(
+            matches!(r.status, StatusCode::CREATED | StatusCode::OK),
+            "put status: {:?}",
+            r.status
+        );
+    }
+
+    // A bare prune (no query params) evicts down to the configured budget.
+    let pruned = send(&app, "POST", "/api/v1/cache/prune", None, None, Vec::new()).await;
+    assert_eq!(pruned.status, StatusCode::OK);
+    assert!(
+        pruned.json()["pruned"].as_u64().unwrap() >= 1,
+        "bare prune should evict entries to reach the budget; got {:?}",
+        pruned.json()
+    );
+
+    // The cache is now within the configured budget.
+    let stats = get(&app, "/api/v1/cache/stats").await;
+    assert!(
+        stats.json()["total_bytes"].as_i64().unwrap() <= 64,
+        "cache should be within max_bytes after a bare prune; stats: {:?}",
+        stats.json()
+    );
+}

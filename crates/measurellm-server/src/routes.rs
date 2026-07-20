@@ -623,9 +623,20 @@ async fn cache_prune(
     State(state): State<AppState>,
     ApiQuery(q): ApiQuery<PruneQuery>,
 ) -> ApiResult<Response> {
+    // A bare prune with no explicit bounds — what the UI "Prune cache" button
+    // and a plain `POST /cache/prune` send — means "apply the configured
+    // retention limits", i.e. the manual equivalent of the hourly retention
+    // task. Without this, an unparameterized prune silently evicts nothing.
+    let (older_than_days, target_bytes) = match (q.older_than_days, q.target_bytes) {
+        (None, None) => (
+            Some(state.cache_limits.max_age_days as i64),
+            Some(state.cache_limits.max_bytes as i64),
+        ),
+        explicit => explicit,
+    };
     let pruned = state
         .storage
-        .cache_prune(q.older_than_days, q.target_bytes)
+        .cache_prune(older_than_days, target_bytes)
         .await?;
     Ok(Json(PruneResponse { pruned }).into_response())
 }
