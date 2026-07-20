@@ -66,7 +66,7 @@ pub struct ApiKeyInfo {
 pub enum DeleteUserOutcome {
     Deleted,
     NotFound,
-    /// The target is the only remaining admin; deletion is refused.
+    /// The target is the only *enabled* admin; deletion is refused.
     LastAdmin,
 }
 
@@ -258,26 +258,38 @@ impl Storage {
             .await
     }
 
-    /// Delete a user, refusing to remove the final admin so the instance can
-    /// never be locked out of its own administration.
+    /// Delete a user, refusing to remove the final *enabled* admin so the
+    /// instance can never be locked out of its own administration. This mirrors
+    /// the guard on [`Self::update_role_and_disabled`]: only an *enabled* admin
+    /// counts toward the usable pool, so deleting a disabled admin is always
+    /// allowed, and deleting an enabled admin is refused only when no other
+    /// enabled admin remains. Counting all admins (including disabled ones)
+    /// would let the sole enabled admin be deleted while a disabled admin
+    /// lingers — a permanent lockout.
     pub async fn delete_user(&self, id: UserId) -> anyhow::Result<DeleteUserOutcome> {
         self.runs
             .write(move |conn| {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let role: Option<Role> = tx
-                    .query_row("SELECT role FROM users WHERE id = ?1", params![id], |r| {
-                        r.get(0)
-                    })
+                let target: Option<(Role, bool)> = tx
+                    .query_row(
+                        "SELECT role, disabled FROM users WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get::<_, Role>(0)?, r.get::<_, i64>(1)? != 0)),
+                    )
                     .optional()?;
-                let Some(role) = role else {
+                let Some((role, disabled)) = target else {
                     return Ok(DeleteUserOutcome::NotFound);
                 };
-                if role == Role::Admin {
-                    let admins: i64 =
-                        tx.query_row("SELECT COUNT(*) FROM users WHERE role = 'admin'", [], |r| {
-                            r.get(0)
-                        })?;
-                    if admins <= 1 {
+                // Only deleting an *enabled* admin can shrink the usable-admin
+                // pool; if it does and no other enabled admin remains, refuse.
+                if role == Role::Admin && !disabled {
+                    let others: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM users \
+                         WHERE role = 'admin' AND disabled = 0 AND id != ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )?;
+                    if others == 0 {
                         return Ok(DeleteUserOutcome::LastAdmin);
                     }
                 }

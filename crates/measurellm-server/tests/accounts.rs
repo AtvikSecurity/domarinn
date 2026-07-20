@@ -539,6 +539,58 @@ async fn patch_cannot_remove_the_last_admin() {
     assert_eq!(ok.json()["role"], "member");
 }
 
+/// Regression: the DELETE last-admin guard must count only *enabled* admins.
+/// With one enabled admin (root) and one disabled admin (carol), a naive
+/// `COUNT(role='admin') > 1` check would let root be deleted, leaving the
+/// instance with only a disabled admin — a permanent lockout. So deleting the
+/// sole enabled admin is refused (409), while deleting the disabled admin is
+/// always allowed.
+#[tokio::test]
+async fn delete_cannot_remove_the_last_enabled_admin() {
+    let (app, _dir) = test_app(protected()).await;
+    let admin = setup_admin(&app).await;
+    let root_id = get_auth(&app, "/api/v1/auth/me", Some(&admin)).await.json()["user"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Add a second admin (carol), then disable her. Disabling is allowed
+    // because root is still an enabled admin.
+    let _carol = create_and_login(&app, &admin, "carol", "admin").await;
+    let users = get_auth(&app, "/api/v1/users", Some(&admin)).await;
+    let carol_id = users.json()["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["username"] == "carol")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let disable = patch(
+        &app,
+        &format!("/api/v1/users/{carol_id}"),
+        Some(&admin),
+        &json!({ "disabled": true }),
+    )
+    .await;
+    assert_eq!(disable.status, StatusCode::OK);
+
+    // Root is now the only *enabled* admin: deleting it is refused (only a
+    // disabled admin would remain).
+    let del_root = delete(&app, &format!("/api/v1/users/{root_id}"), Some(&admin)).await;
+    assert_eq!(
+        del_root.status,
+        StatusCode::CONFLICT,
+        "body: {:?}",
+        del_root.json()
+    );
+
+    // Deleting the *disabled* admin remains allowed.
+    let del_carol = delete(&app, &format!("/api/v1/users/{carol_id}"), Some(&admin)).await;
+    assert_eq!(del_carol.status, StatusCode::NO_CONTENT);
+}
+
 // ---------------------------------------------------------------------------
 // Sessions / logout
 // ---------------------------------------------------------------------------
