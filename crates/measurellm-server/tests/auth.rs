@@ -2,7 +2,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::*;
-use measurellm_server::Settings;
+use measurellm_server::{AuthMode, Settings};
 
 const TOKENS: &str = "read:mllm_view,write:mllm_ci,admin:mllm_ops";
 
@@ -16,7 +16,7 @@ fn protect_writes() -> Settings {
 fn closed() -> Settings {
     Settings {
         tokens: Some(TOKENS.to_string()),
-        auth_mode: Some("closed".to_string()),
+        auth_mode: Some(AuthMode::Closed),
         ..Default::default()
     }
 }

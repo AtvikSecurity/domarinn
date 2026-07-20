@@ -9,6 +9,7 @@
 //! relevant modes.
 
 use std::marker::PhantomData;
+use std::str::FromStr;
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
@@ -17,10 +18,13 @@ use axum::http::{request::Parts, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use ts_rs::TS;
 
+use crate::domain::Role;
 use crate::storage::{ApiKeyAuth, SessionUser, Storage};
 use crate::AuthMode;
 
@@ -37,7 +41,8 @@ const SESSION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Access scopes, ordered so that a higher scope subsumes lower ones
 /// (`Admin` ⊃ `Write` ⊃ `Read`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
 pub enum Scope {
     Read = 1,
     Write = 2,
@@ -46,12 +51,7 @@ pub enum Scope {
 
 impl Scope {
     pub(crate) fn parse(s: &str) -> Option<Scope> {
-        match s.trim() {
-            "read" => Some(Scope::Read),
-            "write" => Some(Scope::Write),
-            "admin" => Some(Scope::Admin),
-            _ => None,
-        }
+        s.trim().parse().ok()
     }
 
     pub(crate) fn label(self) -> &'static str {
@@ -63,10 +63,25 @@ impl Scope {
     }
 
     /// Scope granted to a user of the given role.
-    pub(crate) fn for_role(role: &str) -> Scope {
+    pub(crate) fn for_role(role: Role) -> Scope {
         match role {
-            "admin" => Scope::Admin,
-            _ => Scope::Write,
+            Role::Admin => Scope::Admin,
+            Role::Member => Scope::Write,
+        }
+    }
+}
+
+impl FromStr for Scope {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "read" => Ok(Scope::Read),
+            "write" => Ok(Scope::Write),
+            "admin" => Ok(Scope::Admin),
+            other => Err(format!(
+                "invalid scope '{other}'; expected one of: read, write, admin"
+            )),
         }
     }
 }
@@ -180,7 +195,7 @@ pub struct Identity {
     /// The backing username, when known.
     pub username: Option<String>,
     /// The account role (`admin` | `member`), when known.
-    pub role: Option<String>,
+    pub role: Option<Role>,
     /// Which authenticator resolved the request.
     pub source: IdentitySource,
     /// The presenting session's token hash, so `logout` can revoke it.
@@ -306,8 +321,7 @@ pub async fn authenticate(
     // 2. Account API keys.
     if token.starts_with(API_KEY_PREFIX) {
         if let Some(key) = api_keys.resolve(&token).await {
-            let scope = Scope::parse(&key.scope).unwrap_or(Scope::Read);
-            identity.scope = Some(scope);
+            identity.scope = Some(key.scope);
             identity.label = Some(key.username.clone());
             identity.user_id = Some(key.user_id);
             identity.username = Some(key.username);
@@ -320,7 +334,7 @@ pub async fn authenticate(
     // 3. Account sessions.
     if token.starts_with(SESSION_PREFIX) {
         if let Some(user) = sessions.resolve(&token).await {
-            identity.scope = Some(Scope::for_role(&user.role));
+            identity.scope = Some(Scope::for_role(user.role));
             identity.label = Some(user.username.clone());
             identity.user_id = Some(user.user_id);
             identity.username = Some(user.username);
@@ -505,10 +519,19 @@ mod tests {
     }
 
     #[test]
+    fn scope_serde_matches_label() {
+        for scope in [Scope::Read, Scope::Write, Scope::Admin] {
+            let serde_value = serde_json::to_value(scope).unwrap();
+            assert_eq!(serde_value, serde_json::json!(scope.label()));
+            assert_eq!(scope.label().parse::<Scope>().unwrap(), scope);
+        }
+        assert!("bogus".parse::<Scope>().is_err());
+    }
+
+    #[test]
     fn role_scope_mapping() {
-        assert_eq!(Scope::for_role("admin"), Scope::Admin);
-        assert_eq!(Scope::for_role("member"), Scope::Write);
-        assert_eq!(Scope::for_role("anything-else"), Scope::Write);
+        assert_eq!(Scope::for_role(Role::Admin), Scope::Admin);
+        assert_eq!(Scope::for_role(Role::Member), Scope::Write);
     }
 
     #[test]

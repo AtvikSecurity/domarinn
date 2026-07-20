@@ -11,6 +11,8 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::{now_ms, Storage};
+use crate::auth::Scope;
+use crate::domain::Role;
 
 // ---------------------------------------------------------------------------
 // Row / view types
@@ -23,7 +25,7 @@ pub struct UserRow {
     pub id: String,
     pub username: String,
     pub password_hash: String,
-    pub role: String,
+    pub role: Role,
     pub disabled: bool,
     pub created_at: i64,
 }
@@ -33,7 +35,7 @@ pub struct UserRow {
 pub struct SessionUser {
     pub user_id: String,
     pub username: String,
-    pub role: String,
+    pub role: Role,
 }
 
 /// The resolved principal behind a valid API key.
@@ -42,8 +44,8 @@ pub struct ApiKeyAuth {
     pub id: String,
     pub user_id: String,
     pub username: String,
-    pub role: String,
-    pub scope: String,
+    pub role: Role,
+    pub scope: Scope,
 }
 
 /// API-key metadata for listing (never includes the secret or its hash).
@@ -53,7 +55,7 @@ pub struct ApiKeyInfo {
     pub user_id: String,
     pub name: Option<String>,
     pub prefix: String,
-    pub scope: String,
+    pub scope: Scope,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
     pub revoked: bool,
@@ -83,7 +85,7 @@ impl Storage {
         &self,
         username: String,
         password_hash: String,
-        role: String,
+        role: Role,
     ) -> anyhow::Result<Option<UserRow>> {
         self.runs
             .write(move |conn| {
@@ -154,7 +156,7 @@ impl Storage {
             .await
     }
 
-    pub async fn set_user_role(&self, id: String, role: String) -> anyhow::Result<bool> {
+    pub async fn set_user_role(&self, id: String, role: Role) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
                 let n = conn.execute(
@@ -196,7 +198,7 @@ impl Storage {
         self.runs
             .write(move |conn| {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let role: Option<String> = tx
+                let role: Option<Role> = tx
                     .query_row("SELECT role FROM users WHERE id = ?1", params![id], |r| {
                         r.get(0)
                     })
@@ -204,7 +206,7 @@ impl Storage {
                 let Some(role) = role else {
                     return Ok(DeleteUserOutcome::NotFound);
                 };
-                if role == "admin" {
+                if role == Role::Admin {
                     let admins: i64 =
                         tx.query_row("SELECT COUNT(*) FROM users WHERE role = 'admin'", [], |r| {
                             r.get(0)
@@ -316,7 +318,7 @@ impl Storage {
         name: Option<String>,
         prefix: String,
         key_hash: String,
-        scope: String,
+        scope: Scope,
     ) -> anyhow::Result<ApiKeyInfo> {
         self.runs
             .write(move |conn| {

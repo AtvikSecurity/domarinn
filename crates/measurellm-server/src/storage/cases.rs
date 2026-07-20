@@ -2,6 +2,8 @@
 
 use rusqlite::{params, Connection};
 
+use measurellm_core::result::CaseStatus;
+
 use super::{decompress, from_microusd, Storage};
 
 impl Storage {
@@ -24,7 +26,7 @@ impl Storage {
 #[derive(Debug, Clone, Default)]
 pub struct CaseListFilter {
     pub run_id: String,
-    pub status: Option<String>,
+    pub status: Option<CaseStatus>,
     pub tag: Option<String>,
     pub q: Option<String>,
     pub limit: i64,
@@ -39,8 +41,8 @@ impl CaseListFilter {
              FROM cases WHERE run_id = ?1",
         );
         let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.clone().into()];
-        if let Some(status) = &self.status {
-            args.push(status.clone().into());
+        if let Some(status) = self.status {
+            args.push(status.as_str().to_string().into());
             sql.push_str(&format!(" AND status = ?{}", args.len()));
         }
         if let Some(tag) = &self.tag {

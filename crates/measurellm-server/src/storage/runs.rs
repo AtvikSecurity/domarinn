@@ -9,6 +9,7 @@ use super::{
     compress, content_hash, decompress, encode_cursor, from_microusd, ms_to_rfc3339, now_ms,
     sha256_hex, to_microusd, IngestOutcome, Storage,
 };
+use crate::domain::RunStatusFilter;
 
 impl Storage {
     /// Ingest a run in a single transaction. Idempotent by (id, content_hash).
@@ -144,7 +145,7 @@ impl PreparedRun {
                 case_key: case.case_key.clone(),
                 idx: idx as i64,
                 name: case.name.clone(),
-                status: status_str(case.status).to_string(),
+                status: case.status.as_str().to_string(),
                 output_preview: preview,
                 output_text: text,
                 output_hash: hash,
@@ -291,16 +292,6 @@ impl PreparedRun {
     }
 }
 
-fn status_str(status: measurellm_core::result::CaseStatus) -> &'static str {
-    use measurellm_core::result::CaseStatus::*;
-    match status {
-        Pass => "pass",
-        Fail => "fail",
-        Error => "error",
-        Skip => "skip",
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Run listing
 // ---------------------------------------------------------------------------
@@ -314,7 +305,7 @@ pub struct RunListFilter {
     pub branch: Option<String>,
     pub since_ms: Option<i64>,
     pub until_ms: Option<i64>,
-    pub status: Option<String>,
+    pub status: Option<RunStatusFilter>,
     pub limit: i64,
     pub cursor: Option<(i64, String)>,
 }
@@ -363,11 +354,13 @@ impl RunListFilter {
             ));
             args.push(tag.clone().into());
         }
-        match self.status.as_deref() {
-            Some("fail") => clauses.push("fail_count > 0".into()),
-            Some("error") => clauses.push("error_count > 0".into()),
-            Some("pass") => clauses.push("fail_count = 0 AND error_count = 0".into()),
-            _ => {}
+        match self.status {
+            Some(RunStatusFilter::Fail) => clauses.push("fail_count > 0".into()),
+            Some(RunStatusFilter::Error) => clauses.push("error_count > 0".into()),
+            Some(RunStatusFilter::Pass) => {
+                clauses.push("fail_count = 0 AND error_count = 0".into())
+            }
+            None => {}
         }
         if let Some((c_created, c_id)) = &self.cursor {
             clauses.push(format!(

@@ -1382,6 +1382,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "ts-rs",
  "ulid",
  "zstd",
 ]

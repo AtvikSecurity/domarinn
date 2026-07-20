@@ -32,6 +32,8 @@ use crate::storage::Storage;
 
 pub mod accounts;
 pub mod auth;
+pub mod domain;
+pub mod extract;
 pub mod routes;
 pub mod storage;
 
@@ -64,7 +66,8 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum AuthMode {
     Open,
     ProtectWrites,
@@ -77,6 +80,24 @@ impl AuthMode {
             AuthMode::Open => "open",
             AuthMode::ProtectWrites => "protect-writes",
             AuthMode::Closed => "closed",
+        }
+    }
+}
+
+impl std::str::FromStr for AuthMode {
+    type Err = String;
+
+    /// Accepts the canonical `protect-writes` spelling plus the
+    /// underscore-separated `protect_writes` alias (handy for shells that
+    /// dislike hyphens in env values).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(AuthMode::Open),
+            "protect-writes" | "protect_writes" => Ok(AuthMode::ProtectWrites),
+            "closed" => Ok(AuthMode::Closed),
+            other => Err(format!(
+                "invalid MEASURELLM_AUTH_MODE '{other}'; expected one of: open, protect-writes, closed"
+            )),
         }
     }
 }
@@ -107,7 +128,7 @@ pub struct Settings {
     /// Raw `MEASURELLM_TOKENS` value (`scope:token,...`).
     pub tokens: Option<String>,
     /// Explicit `MEASURELLM_AUTH_MODE` override (`open|protect-writes|closed`).
-    pub auth_mode: Option<String>,
+    pub auth_mode: Option<AuthMode>,
     /// Public base URL used to build run links (`MEASURELLM_PUBLIC_URL`).
     pub public_url: Option<String>,
     pub cache_max_entry_bytes: Option<usize>,
@@ -120,11 +141,15 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn from_env() -> Self {
+    /// Read settings from the process environment. Hard-errors if
+    /// `MEASURELLM_AUTH_MODE` is set to something unrecognized — falling
+    /// through to open mode on a typo would be a silent security downgrade.
+    pub fn from_env() -> anyhow::Result<Self> {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        Settings {
+        let auth_mode = parse_auth_mode_env(env("MEASURELLM_AUTH_MODE"))?;
+        Ok(Settings {
             tokens: env("MEASURELLM_TOKENS"),
-            auth_mode: env("MEASURELLM_AUTH_MODE"),
+            auth_mode,
             public_url: env("MEASURELLM_PUBLIC_URL"),
             cache_max_entry_bytes: env("MEASURELLM_CACHE_MAX_ENTRY_BYTES")
                 .and_then(|v| v.parse().ok()),
@@ -132,8 +157,16 @@ impl Settings {
             cache_max_age_days: env("MEASURELLM_CACHE_MAX_AGE_DAYS").and_then(|v| v.parse().ok()),
             admin_user: env("MEASURELLM_ADMIN_USER"),
             admin_password: env("MEASURELLM_ADMIN_PASSWORD"),
-        }
+        })
     }
+}
+
+/// Parse the raw `MEASURELLM_AUTH_MODE` env value into an [`AuthMode`].
+/// Factored out of [`Settings::from_env`] so the hard-error path is
+/// unit-testable without mutating the process environment.
+fn parse_auth_mode_env(raw: Option<String>) -> anyhow::Result<Option<AuthMode>> {
+    raw.map(|v| v.parse::<AuthMode>().map_err(|e| anyhow::anyhow!(e)))
+        .transpose()
 }
 
 /// Shared application state (cheap to clone: all fields are `Arc`-backed or `Copy`).
@@ -164,7 +197,7 @@ impl AppState {
 
         let auth_mode = resolve_mode(
             config.auth_mode,
-            settings.auth_mode.as_deref(),
+            settings.auth_mode,
             has_tokens || has_accounts,
         );
         let cache_limits = CacheLimits {
@@ -203,13 +236,13 @@ async fn bootstrap_admin(storage: &Storage, settings: &Settings) -> anyhow::Resu
         None => {
             let hash = auth::hash_password(password)?;
             storage
-                .create_user(username.to_string(), hash, "admin".to_string())
+                .create_user(username.to_string(), hash, crate::domain::Role::Admin)
                 .await?;
         }
         Some(existing) => {
-            if existing.role != "admin" {
+            if existing.role != crate::domain::Role::Admin {
                 storage
-                    .set_user_role(existing.id.clone(), "admin".to_string())
+                    .set_user_role(existing.id.clone(), crate::domain::Role::Admin)
                     .await?;
             }
             if existing.disabled {
@@ -226,14 +259,13 @@ async fn bootstrap_admin(storage: &Storage, settings: &Settings) -> anyhow::Resu
     Ok(())
 }
 
-fn resolve_mode(config_mode: AuthMode, env_mode: Option<&str>, has_credentials: bool) -> AuthMode {
+fn resolve_mode(
+    config_mode: AuthMode,
+    env_mode: Option<AuthMode>,
+    has_credentials: bool,
+) -> AuthMode {
     if let Some(mode) = env_mode {
-        match mode {
-            "open" => return AuthMode::Open,
-            "protect-writes" | "protect_writes" => return AuthMode::ProtectWrites,
-            "closed" => return AuthMode::Closed,
-            _ => {}
-        }
+        return mode;
     }
     if config_mode != AuthMode::Open {
         return config_mode;
@@ -277,7 +309,7 @@ pub async fn build_app(
 
 /// Bind and serve until shutdown (Ctrl-C).
 pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
-    let settings = Settings::from_env();
+    let settings = Settings::from_env()?;
     let (app, state) = build_app(&config, settings).await?;
     spawn_cache_retention(state);
 
@@ -338,11 +370,11 @@ mod tests {
             AuthMode::ProtectWrites
         );
         assert_eq!(
-            resolve_mode(AuthMode::Open, Some("closed"), true),
+            resolve_mode(AuthMode::Open, Some(AuthMode::Closed), true),
             AuthMode::Closed
         );
         assert_eq!(
-            resolve_mode(AuthMode::Open, Some("open"), true),
+            resolve_mode(AuthMode::Open, Some(AuthMode::Open), true),
             AuthMode::Open
         );
         // An explicit config mode wins over token-derivation.
@@ -350,6 +382,51 @@ mod tests {
             resolve_mode(AuthMode::Closed, None, false),
             AuthMode::Closed
         );
+    }
+
+    #[test]
+    fn auth_mode_serializes_to_kebab_case() {
+        assert_eq!(
+            serde_json::to_value(AuthMode::Open).unwrap(),
+            serde_json::json!("open")
+        );
+        assert_eq!(
+            serde_json::to_value(AuthMode::ProtectWrites).unwrap(),
+            serde_json::json!("protect-writes")
+        );
+        assert_eq!(
+            serde_json::to_value(AuthMode::Closed).unwrap(),
+            serde_json::json!("closed")
+        );
+    }
+
+    #[test]
+    fn auth_mode_from_str_accepts_underscore_alias() {
+        assert_eq!("open".parse::<AuthMode>().unwrap(), AuthMode::Open);
+        assert_eq!(
+            "protect-writes".parse::<AuthMode>().unwrap(),
+            AuthMode::ProtectWrites
+        );
+        assert_eq!(
+            "protect_writes".parse::<AuthMode>().unwrap(),
+            AuthMode::ProtectWrites
+        );
+        assert_eq!("closed".parse::<AuthMode>().unwrap(), AuthMode::Closed);
+    }
+
+    #[test]
+    fn auth_mode_env_hard_errors_on_unrecognized_value() {
+        let err = parse_auth_mode_env(Some("bogus".to_string())).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bogus"), "message was: {msg}");
+        assert!(msg.contains("open"), "message was: {msg}");
+        assert!(msg.contains("protect-writes"), "message was: {msg}");
+        assert!(msg.contains("closed"), "message was: {msg}");
+    }
+
+    #[test]
+    fn auth_mode_env_none_when_unset() {
+        assert_eq!(parse_auth_mode_env(None).unwrap(), None);
     }
 
     #[test]

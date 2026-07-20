@@ -88,6 +88,16 @@ async fn list_runs_orders_newest_first_and_filters_by_project() {
 }
 
 #[tokio::test]
+async fn invalid_status_query_is_400_with_json_error() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    seed(&app).await;
+
+    let bad = get(&app, "/api/v1/runs?status=bogus").await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    assert!(bad.json()["error"].is_string(), "body: {:?}", bad.json());
+}
+
+#[tokio::test]
 async fn list_runs_paginates_by_cursor() {
     let (app, _dir) = test_app(Settings::default()).await;
     seed(&app).await;
@@ -184,6 +194,11 @@ async fn cases_filter_by_status() {
 
     let failing = get(&app, "/api/v1/runs/r-mix/cases?status=fail").await;
     assert_eq!(failing.json()["cases"].as_array().unwrap().len(), 2);
+
+    // An invalid status value is a 400, not a silently-ignored filter.
+    let bad = get(&app, "/api/v1/runs/r-mix/cases?status=bogus").await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    assert!(bad.json()["error"].is_string(), "body: {:?}", bad.json());
 }
 
 #[tokio::test]

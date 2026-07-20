@@ -3,8 +3,11 @@
 //! loads).
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use rusqlite::{params, Connection};
+
+use measurellm_core::result::CaseStatus;
 
 use super::Storage;
 
@@ -22,7 +25,7 @@ impl Storage {
 
 struct CmpCase {
     name: Option<String>,
-    status: String,
+    status: CaseStatus,
     output_hash: Option<String>,
 }
 
@@ -33,11 +36,15 @@ fn load_compare_cases(
     let mut stmt =
         conn.prepare("SELECT case_key, name, status, output_hash FROM cases WHERE run_id = ?1")?;
     let rows = stmt.query_map(params![run_id], |row| {
+        let status_raw: String = row.get(2)?;
+        let status = CaseStatus::from_str(&status_raw).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, e.into())
+        })?;
         Ok((
             row.get::<_, String>(0)?,
             CmpCase {
                 name: row.get(1)?,
-                status: row.get(2)?,
+                status,
                 output_hash: row.get(3)?,
             },
         ))
@@ -50,8 +57,8 @@ fn load_compare_cases(
     Ok(map)
 }
 
-fn is_failing(status: &str) -> bool {
-    status == "fail" || status == "error"
+fn is_failing(status: CaseStatus) -> bool {
+    matches!(status, CaseStatus::Fail | CaseStatus::Error)
 }
 
 fn compare_runs(
@@ -105,16 +112,16 @@ fn compare_runs(
                 if out_changed {
                     output_changed += 1;
                 }
-                let delta = if b.status == "pass" && is_failing(&h.status) {
+                let delta = if b.status == CaseStatus::Pass && is_failing(h.status) {
                     newly_failing += 1;
                     "newly_failing"
-                } else if is_failing(&b.status) && h.status == "pass" {
+                } else if is_failing(b.status) && h.status == CaseStatus::Pass {
                     newly_passing += 1;
                     "newly_passing"
-                } else if is_failing(&b.status) && is_failing(&h.status) {
+                } else if is_failing(b.status) && is_failing(h.status) {
                     still_failing += 1;
                     "still_failing"
-                } else if b.status == "pass" && h.status == "pass" {
+                } else if b.status == CaseStatus::Pass && h.status == CaseStatus::Pass {
                     "still_passing"
                 } else {
                     "unchanged"
@@ -137,8 +144,8 @@ fn compare_runs(
         cases.push(serde_json::json!({
             "case_key": key,
             "name": name,
-            "base_status": b.map(|c| c.status.clone()),
-            "head_status": h.map(|c| c.status.clone()),
+            "base_status": b.map(|c| c.status.as_str()),
+            "head_status": h.map(|c| c.status.as_str()),
             "delta": delta,
             "output_changed": out_changed,
         }));

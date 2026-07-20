@@ -17,7 +17,7 @@ const MEMBER_PW: &str = "memberpass1";
 /// A protect-writes app with no static tokens: writes/admin need accounts.
 fn protected() -> Settings {
     Settings {
-        auth_mode: Some("protect-writes".to_string()),
+        auth_mode: Some(AuthMode::ProtectWrites),
         ..Default::default()
     }
 }
@@ -298,6 +298,25 @@ async fn api_key_lifecycle_and_scope_ceiling() {
 }
 
 #[tokio::test]
+async fn invalid_scope_in_apikey_body_is_422() {
+    let (app, _dir) = test_app(protected()).await;
+    let admin = setup_admin(&app).await;
+
+    // The body is syntactically valid JSON but "scope" doesn't match the
+    // Scope enum, so this is a serde *data* error -> 422 (previously this
+    // reached the handler and became a hand-rolled 400).
+    let bad = post_json(
+        &app,
+        "/api/v1/apikeys",
+        Some(&admin),
+        &json!({ "name": "ci", "scope": "superuser" }),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(bad.json()["error"].is_string(), "body: {:?}", bad.json());
+}
+
+#[tokio::test]
 async fn api_key_delete_requires_owner_or_admin() {
     let (app, _dir) = test_app(protected()).await;
     let admin = setup_admin(&app).await;
@@ -320,6 +339,51 @@ async fn api_key_delete_requires_owner_or_admin() {
 // ---------------------------------------------------------------------------
 // User administration
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn invalid_role_in_user_bodies_is_422() {
+    let (app, _dir) = test_app(protected()).await;
+    let admin = setup_admin(&app).await;
+
+    // POST /users: "role" is syntactically valid JSON but not a Role variant
+    // -> a serde data error, which ApiJson maps to 422 (previously a
+    // hand-rolled 400 from `validate_role`).
+    let create = post_json(
+        &app,
+        "/api/v1/users",
+        Some(&admin),
+        &json!({ "username": "mallory", "password": MEMBER_PW, "role": "superadmin" }),
+    )
+    .await;
+    assert_eq!(create.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        create.json()["error"].is_string(),
+        "body: {:?}",
+        create.json()
+    );
+
+    // PATCH /users/{id}: same for an invalid role in a partial update.
+    let member = create_and_login(&app, &admin, "frank", "member").await;
+    let frank_id = get_auth(&app, "/api/v1/auth/me", Some(&member))
+        .await
+        .json()["user"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let patched = patch(
+        &app,
+        &format!("/api/v1/users/{frank_id}"),
+        Some(&admin),
+        &json!({ "role": "superadmin" }),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        patched.json()["error"].is_string(),
+        "body: {:?}",
+        patched.json()
+    );
+}
 
 #[tokio::test]
 async fn user_crud_last_admin_and_authz() {

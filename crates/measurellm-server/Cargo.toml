@@ -21,6 +21,7 @@ tower-http = { version = "0.6", features = [
 ] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ts-rs = { version = "12", features = [] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }

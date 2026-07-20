@@ -1,7 +1,7 @@
 //! HTTP handlers and the API router.
 
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
@@ -11,9 +11,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use measurellm_core::cache::CacheKey;
-use measurellm_core::result::{RunResult, RESULT_SCHEMA_VERSION};
+use measurellm_core::result::{CaseStatus, RunResult, RESULT_SCHEMA_VERSION};
 
 use crate::auth::{Admin, Read, Scoped, Write};
+use crate::domain::RunStatusFilter;
+use crate::extract::{ApiJson, ApiQuery};
 use crate::storage::{self, CachePutOutcome, CaseListFilter, IngestOutcome, RunListFilter};
 use crate::AppState;
 
@@ -133,7 +135,7 @@ async fn meta(State(state): State<AppState>) -> ApiResult<Response> {
     Ok(Json(json!({
         "name": "measurellm",
         "version": measurellm_core::VERSION,
-        "auth_mode": state.auth_mode.as_str(),
+        "auth_mode": state.auth_mode,
         "setup_required": setup_required,
         "supported_schema_versions": supported,
         "result_schema_version": current,
@@ -310,7 +312,7 @@ struct RunQuery {
     branch: Option<String>,
     since: Option<String>,
     until: Option<String>,
-    status: Option<String>,
+    status: Option<RunStatusFilter>,
     limit: Option<i64>,
     cursor: Option<String>,
 }
@@ -318,7 +320,7 @@ struct RunQuery {
 async fn list_runs(
     _scope: Scoped<Read>,
     State(state): State<AppState>,
-    Query(q): Query<RunQuery>,
+    ApiQuery(q): ApiQuery<RunQuery>,
 ) -> ApiResult<Response> {
     let filter = RunListFilter {
         project: q.project,
@@ -352,7 +354,7 @@ async fn get_run(
 
 #[derive(Debug, Deserialize)]
 struct CaseQuery {
-    status: Option<String>,
+    status: Option<CaseStatus>,
     tag: Option<String>,
     q: Option<String>,
     limit: Option<i64>,
@@ -363,7 +365,7 @@ async fn list_cases(
     _scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(q): Query<CaseQuery>,
+    ApiQuery(q): ApiQuery<CaseQuery>,
 ) -> ApiResult<Response> {
     if !state.storage.run_exists(id.clone()).await? {
         return Err(not_found("run"));
@@ -450,7 +452,7 @@ async fn put_baseline(
     _scope: Scoped<Write>,
     State(state): State<AppState>,
     Path((project, suite)): Path<(String, String)>,
-    Json(body): Json<BaselineBody>,
+    ApiJson(body): ApiJson<BaselineBody>,
 ) -> ApiResult<Response> {
     if state
         .storage
@@ -557,7 +559,7 @@ struct PruneQuery {
 async fn cache_prune(
     _scope: Scoped<Admin>,
     State(state): State<AppState>,
-    Query(q): Query<PruneQuery>,
+    ApiQuery(q): ApiQuery<PruneQuery>,
 ) -> ApiResult<Response> {
     let pruned = state
         .storage

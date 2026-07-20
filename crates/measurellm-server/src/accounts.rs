@@ -14,6 +14,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::auth::{self, Admin, Identity, Scope, Scoped, Write};
+use crate::domain::Role;
+use crate::extract::ApiJson;
 use crate::routes::{not_found, ApiError, ApiResult};
 use crate::storage::{ApiKeyInfo, DeleteUserOutcome, UserRow};
 use crate::AppState;
@@ -35,7 +37,7 @@ pub(crate) struct CredentialsBody {
 /// exist; afterwards it is a 409.
 pub(crate) async fn setup(
     State(state): State<AppState>,
-    Json(body): Json<CredentialsBody>,
+    ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
     if state.storage.count_users().await? > 0 {
         return Err(ApiError::status(
@@ -48,7 +50,7 @@ pub(crate) async fn setup(
     let hash = auth::hash_password(&body.password)?;
     let user = state
         .storage
-        .create_user(username, hash, "admin".to_string())
+        .create_user(username, hash, Role::Admin)
         .await?
         .ok_or_else(|| ApiError::status(StatusCode::CONFLICT, "username already exists"))?;
     let token = issue_session(&state, &user.id).await?;
@@ -62,7 +64,7 @@ pub(crate) async fn setup(
 /// `POST /auth/login` — exchange username + password for a session token.
 pub(crate) async fn login(
     State(state): State<AppState>,
-    Json(body): Json<CredentialsBody>,
+    ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
     let invalid = || ApiError::status(StatusCode::UNAUTHORIZED, "invalid credentials");
     let Some(user) = state
@@ -127,7 +129,7 @@ pub(crate) async fn me(Extension(identity): Extension<Identity>) -> ApiResult<Re
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreateKeyBody {
     name: Option<String>,
-    scope: Option<String>,
+    scope: Option<Scope>,
 }
 
 /// `GET /apikeys` — the caller's own keys (never the secret).
@@ -146,15 +148,11 @@ pub(crate) async fn list_apikeys(
 pub(crate) async fn create_apikey(
     scope: Scoped<Write>,
     State(state): State<AppState>,
-    Json(body): Json<CreateKeyBody>,
+    ApiJson(body): ApiJson<CreateKeyBody>,
 ) -> ApiResult<Response> {
     let user_id = require_user(&scope.identity)?;
     let ceiling = scope.identity.scope.unwrap_or(Scope::Read);
-    let requested = match body.scope.as_deref() {
-        Some(raw) => Scope::parse(raw)
-            .ok_or_else(|| ApiError::status(StatusCode::BAD_REQUEST, "invalid scope"))?,
-        None => ceiling,
-    };
+    let requested = body.scope.unwrap_or(ceiling);
     if requested > ceiling {
         return Err(ApiError::status(
             StatusCode::FORBIDDEN,
@@ -167,13 +165,7 @@ pub(crate) async fn create_apikey(
     let hash = auth::token_hash(&secret);
     let info = state
         .storage
-        .create_api_key(
-            user_id,
-            body.name.clone(),
-            prefix,
-            hash,
-            requested.label().to_string(),
-        )
+        .create_api_key(user_id, body.name.clone(), prefix, hash, requested)
         .await?;
 
     let mut view = apikey_json(&info);
@@ -190,7 +182,7 @@ pub(crate) async fn delete_apikey(
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
     let requester = require_user(&scope.identity)?;
-    let is_admin = scope.identity.role.as_deref() == Some("admin");
+    let is_admin = scope.identity.role == Some(Role::Admin);
     let key = state
         .storage
         .get_api_key(id.clone())
@@ -211,12 +203,12 @@ pub(crate) async fn delete_apikey(
 pub(crate) struct CreateUserBody {
     username: String,
     password: String,
-    role: String,
+    role: Role,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PatchUserBody {
-    role: Option<String>,
+    role: Option<Role>,
     disabled: Option<bool>,
     password: Option<String>,
 }
@@ -235,15 +227,14 @@ pub(crate) async fn list_users(
 pub(crate) async fn create_user(
     _scope: Scoped<Admin>,
     State(state): State<AppState>,
-    Json(body): Json<CreateUserBody>,
+    ApiJson(body): ApiJson<CreateUserBody>,
 ) -> ApiResult<Response> {
-    let role = validate_role(&body.role)?;
     let username = validate_username(&body.username)?;
     validate_password(&body.password)?;
     let hash = auth::hash_password(&body.password)?;
     let user = state
         .storage
-        .create_user(username, hash, role)
+        .create_user(username, hash, body.role)
         .await?
         .ok_or_else(|| ApiError::status(StatusCode::CONFLICT, "username already exists"))?;
     Ok((StatusCode::CREATED, Json(user_json(&user))).into_response())
@@ -254,14 +245,13 @@ pub(crate) async fn patch_user(
     _scope: Scoped<Admin>,
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(body): Json<PatchUserBody>,
+    ApiJson(body): ApiJson<PatchUserBody>,
 ) -> ApiResult<Response> {
     // Confirm the target exists before applying any partial update.
     if state.storage.get_user_by_id(id.clone()).await?.is_none() {
         return Err(not_found("user"));
     }
-    if let Some(role) = &body.role {
-        let role = validate_role(role)?;
+    if let Some(role) = body.role {
         state.storage.set_user_role(id.clone(), role).await?;
     }
     if let Some(disabled) = body.disabled {
@@ -345,16 +335,6 @@ fn validate_password(password: &str) -> ApiResult<()> {
         ));
     }
     Ok(())
-}
-
-fn validate_role(role: &str) -> ApiResult<String> {
-    match role {
-        "admin" | "member" => Ok(role.to_string()),
-        _ => Err(ApiError::status(
-            StatusCode::BAD_REQUEST,
-            "role must be 'admin' or 'member'",
-        )),
-    }
 }
 
 fn user_json(user: &UserRow) -> Value {
