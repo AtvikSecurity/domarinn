@@ -6,13 +6,14 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use ts_rs::TS;
 
 use crate::types::{Output, TokenUsage};
 
 pub const RESULT_SCHEMA_VERSION: u32 = 1;
 
 /// Identity of one cell in the provider × prompt × test × repeat matrix.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CellKey {
     pub provider_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,7 +41,7 @@ impl CellKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CaseStatus {
     Pass,
@@ -52,7 +53,7 @@ pub enum CaseStatus {
     Skip,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AssertStatus {
     Pass,
@@ -63,7 +64,7 @@ pub enum AssertStatus {
 }
 
 /// The result of a single assertion.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AssertResult {
     pub kind: String,
     pub status: AssertStatus,
@@ -78,7 +79,7 @@ pub struct AssertResult {
 }
 
 /// The result of one matrix cell.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CaseResult {
     pub cell: CellKey,
     pub case_key: String,
@@ -105,7 +106,7 @@ pub struct CaseResult {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 pub struct RunSummary {
     pub total: u64,
     pub passed: u64,
@@ -124,7 +125,7 @@ pub struct RunSummary {
     pub cache_misses: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 pub struct GitMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -134,7 +135,7 @@ pub struct GitMeta {
     pub dirty: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CiMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -143,7 +144,7 @@ pub struct CiMeta {
 }
 
 /// Which filters produced this run (for reproducibility and the UI).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FilterSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -156,7 +157,7 @@ pub struct FilterSpec {
 }
 
 /// The full result of a run.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 pub struct RunResult {
     pub schema_version: u32,
     pub run_id: String,

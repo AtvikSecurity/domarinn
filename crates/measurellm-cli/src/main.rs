@@ -9,6 +9,11 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod cachecfg;
+mod cachecmd;
+mod diffcmd;
+mod import;
+mod loadrun;
 mod output;
 mod run;
 mod share;
@@ -42,6 +47,26 @@ enum Command {
     Run(run::RunArgs),
     /// Upload a completed run to a results server and print its URL.
     Share(share::ShareArgs),
+    /// Diff two runs (regressions, fixes, output changes, significance).
+    Diff(diffcmd::DiffArgs),
+    /// Render a stored run in the terminal.
+    View(diffcmd::ViewArgs),
+    /// Manage the local response cache.
+    Cache {
+        #[command(subcommand)]
+        cmd: cachecmd::CacheCmd,
+    },
+    /// Import a config from another tool into a measurellm suite.
+    Import {
+        #[arg(value_enum)]
+        format: ImportFormat,
+        path: PathBuf,
+    },
+    /// Generate TypeScript type definitions for the result/diff DTOs.
+    GenTypes {
+        #[arg(default_value = "web/src/api/generated")]
+        dir: PathBuf,
+    },
     /// Parse and structurally validate a suite (no provider calls).
     Validate {
         /// Path to a suite file or a directory containing measurellm.yaml.
@@ -90,13 +115,25 @@ enum ListKind {
     Prompts,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum ImportFormat {
+    Promptfoo,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
 
     let code = match cli.command {
-        Command::Run(args) => run::execute(args),
+        Command::Run(args) => run::execute(args, cli.server_url),
         Command::Share(args) => share::execute(args, cli.server_url),
+        Command::Diff(args) => diffcmd::execute_diff(args),
+        Command::View(args) => diffcmd::execute_view(args),
+        Command::Cache { cmd } => cachecmd::execute(cmd),
+        Command::Import { format, path } => match format {
+            ImportFormat::Promptfoo => import::execute(path),
+        },
+        Command::GenTypes { dir } => cmd_gen_types(&dir),
         Command::Validate { path } => cmd_validate(&path),
         Command::Schema { which } => cmd_schema(which),
         Command::List { what, path, json } => cmd_list(what, &path, json),
@@ -239,6 +276,23 @@ fn cmd_server(port: u16, data_dir: PathBuf) -> u8 {
         Ok(()) => exit::OK,
         Err(e) => {
             eprintln!("server error: {e}");
+            exit::INFRA
+        }
+    }
+}
+
+fn cmd_gen_types(dir: &Path) -> u8 {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("error: creating {}: {e}", dir.display());
+        return exit::INFRA;
+    }
+    match measurellm_core::export_types(dir) {
+        Ok(()) => {
+            println!("wrote TypeScript definitions to {}", dir.display());
+            exit::OK
+        }
+        Err(e) => {
+            eprintln!("error: exporting types: {e}");
             exit::INFRA
         }
     }

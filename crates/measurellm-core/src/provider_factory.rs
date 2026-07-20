@@ -4,7 +4,8 @@
 //! are used by the `similar` assertion and are constructed by the grader path.
 
 use crate::anthropic::AnthropicProvider;
-use crate::config::{Provider as ProviderCfg, ProviderKind};
+use crate::config::{Provider as ProviderCfg, ProviderKind, Suite};
+use crate::embeddings::EmbeddingsProvider;
 use crate::exec_provider::ExecProvider;
 use crate::http_provider::HttpProvider;
 use crate::openai::OpenAiProvider;
@@ -74,6 +75,25 @@ pub fn build_provider(cfg: &ProviderCfg) -> Result<Box<dyn Provider>, FactoryErr
             kind: "embeddings",
         }),
     }
+}
+
+/// Build the embeddings provider (for `similar` assertions) from the first
+/// `type: embeddings` provider in the suite, if any.
+pub fn build_embeddings(suite: &Suite) -> Option<EmbeddingsProvider> {
+    suite.providers.iter().find_map(|p| match &p.kind {
+        ProviderKind::Embeddings {
+            model,
+            base_url,
+            api_key_env,
+            params,
+        } => Some(EmbeddingsProvider::new(
+            model.clone(),
+            base_url.clone(),
+            api_key_env.clone(),
+            params.clone(),
+        )),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

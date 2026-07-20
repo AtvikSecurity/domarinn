@@ -31,15 +31,25 @@ rubric asks; do not reward effort.";
 /// The default grader.
 pub struct DefaultGrader {
     default_grader: Option<Grader>,
+    embeddings: Option<crate::embeddings::EmbeddingsProvider>,
     client: reqwest::Client,
 }
 
 impl DefaultGrader {
+    /// Construct with an optional default grader and an optional embeddings
+    /// provider (required for `similar` assertions).
     pub fn new(default_grader: Option<Grader>) -> Self {
         DefaultGrader {
             default_grader,
+            embeddings: None,
             client: http_client(GRADER_TIMEOUT),
         }
+    }
+
+    /// Attach an embeddings provider (enables `similar` assertions).
+    pub fn with_embeddings(mut self, embeddings: crate::embeddings::EmbeddingsProvider) -> Self {
+        self.embeddings = Some(embeddings);
+        self
     }
 }
 
@@ -52,7 +62,7 @@ impl AssertGrader for DefaultGrader {
         vars: &Json,
         engine: &TemplateEngine,
         working_dir: Option<&std::path::Path>,
-    ) -> AssertOutcome {
+    ) -> Result<AssertOutcome, String> {
         let outcome = match &assert.kind {
             AssertKind::Exec { command, config } => {
                 self.grade_exec(command, config.as_ref(), output, vars, working_dir)
@@ -67,12 +77,13 @@ impl AssertGrader for DefaultGrader {
                 self.grade_llm_rubric(value, grader.as_ref(), *threshold, output, vars, engine)
                     .await
             }
-            AssertKind::Similar { .. } => AssertOutcome::fail(
-                "similar assertions require a configured embeddings provider (not yet wired)",
-            ),
-            _ => AssertOutcome::fail("internal: local assert routed to grader"),
+            AssertKind::Similar { value, threshold } => {
+                self.grade_similar(value, *threshold, output, vars, engine)
+                    .await
+            }
+            _ => Err("internal: local assert routed to grader".to_string()),
         };
-        outcome.negated(assert.negate)
+        outcome.map(|o| o.negated(assert.negate))
     }
 }
 
@@ -84,7 +95,7 @@ impl DefaultGrader {
         output: &Output,
         vars: &Json,
         working_dir: Option<&std::path::Path>,
-    ) -> AssertOutcome {
+    ) -> Result<AssertOutcome, String> {
         let request = AssertReq {
             envelope: Envelope::new(Kind::Assert),
             output: output_to_json(output),
@@ -97,11 +108,9 @@ impl DefaultGrader {
             config: config.cloned().unwrap_or(Json::Null),
         };
         let _ = vars;
-        let request = match serde_json::to_value(&request) {
-            Ok(v) => v,
-            Err(e) => return AssertOutcome::fail(format!("serializing assert request: {e}")),
-        };
-        match run_exec_json(
+        let request = serde_json::to_value(&request)
+            .map_err(|e| format!("serializing assert request: {e}"))?;
+        let value = run_exec_json(
             command,
             &BTreeMap::new(),
             working_dir,
@@ -109,21 +118,52 @@ impl DefaultGrader {
             &request,
         )
         .await
-        {
-            Ok(value) => match serde_json::from_value::<AssertResp>(value) {
-                Ok(resp) => {
-                    let score = resp.score.unwrap_or(if resp.pass { 1.0 } else { 0.0 });
-                    AssertOutcome {
-                        score,
-                        passed: resp.pass,
-                        reason: resp.reason.unwrap_or_default(),
-                        details: resp.details,
-                    }
-                }
-                Err(e) => AssertOutcome::fail(format!("bad assert response: {e}")),
+        .map_err(|e| format!("exec assert failed: {e}"))?;
+        let resp: AssertResp =
+            serde_json::from_value(value).map_err(|e| format!("bad assert response: {e}"))?;
+        let score = resp.score.unwrap_or(if resp.pass { 1.0 } else { 0.0 });
+        Ok(AssertOutcome {
+            score,
+            passed: resp.pass,
+            reason: resp.reason.unwrap_or_default(),
+            details: resp.details,
+        })
+    }
+
+    async fn grade_similar(
+        &self,
+        reference: &crate::val::Val,
+        threshold: Option<f64>,
+        output: &Output,
+        vars: &Json,
+        engine: &TemplateEngine,
+    ) -> Result<AssertOutcome, String> {
+        let embeddings = self.embeddings.as_ref().ok_or_else(|| {
+            "similar assertion needs an `embeddings` provider in the suite".to_string()
+        })?;
+        let reference = engine
+            .render_val(reference, vars)
+            .map_err(|e| format!("rendering reference: {e}"))?;
+        let reference = reference
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| reference.to_string());
+        let output_text = output.as_text();
+        let (a, b) = tokio::try_join!(embeddings.embed(&output_text), embeddings.embed(&reference))
+            .map_err(|e| format!("embedding error: {e}"))?;
+        let sim = crate::embeddings::cosine(&a, &b);
+        let threshold = threshold.unwrap_or(0.8);
+        let score = ((sim + 1.0) / 2.0).clamp(0.0, 1.0);
+        Ok(AssertOutcome {
+            score,
+            passed: sim >= threshold,
+            reason: if sim >= threshold {
+                format!("cosine similarity {sim:.3} >= {threshold:.3}")
+            } else {
+                format!("cosine similarity {sim:.3} < {threshold:.3}")
             },
-            Err(e) => AssertOutcome::fail(format!("exec assert failed: {e}")),
-        }
+            details: None,
+        })
     }
 
     async fn grade_llm_rubric(
@@ -134,19 +174,14 @@ impl DefaultGrader {
         output: &Output,
         vars: &Json,
         engine: &TemplateEngine,
-    ) -> AssertOutcome {
-        let grader = match assert_grader.or(self.default_grader.as_ref()) {
-            Some(g) => g,
-            None => {
-                return AssertOutcome::fail(
-                    "llm-rubric assertion has no grader configured (set suite `grader` or per-assert `grader`)",
-                )
-            }
-        };
-        let rubric = match engine.render_str(rubric_template, vars) {
-            Ok(r) => r,
-            Err(e) => return AssertOutcome::fail(format!("rendering rubric: {e}")),
-        };
+    ) -> Result<AssertOutcome, String> {
+        let grader = assert_grader.or(self.default_grader.as_ref()).ok_or_else(|| {
+            "llm-rubric assertion has no grader configured (set suite `grader` or per-assert `grader`)"
+                .to_string()
+        })?;
+        let rubric = engine
+            .render_str(rubric_template, vars)
+            .map_err(|e| format!("rendering rubric: {e}"))?;
         let output_text = output.as_text();
         let user = format!("RUBRIC:\n{rubric}\n\nASSISTANT OUTPUT:\n{output_text}");
 
@@ -186,22 +221,18 @@ impl DefaultGrader {
             )),
         };
 
-        match verdict {
-            Ok(v) => {
-                let passed = match threshold {
-                    Some(t) => v.score >= t,
-                    None => v.pass,
-                };
-                AssertOutcome {
-                    score: v.score,
-                    passed,
-                    reason: v.reasoning,
-                    details: None,
-                }
-            }
-            // Fail closed: any grader problem is a failure, not a pass.
-            Err(e) => AssertOutcome::fail(format!("grader error: {e}")),
-        }
+        // Fail closed: any grader problem is an error, surfaced to the runner.
+        let v = verdict.map_err(|e| format!("grader error: {e}"))?;
+        let passed = match threshold {
+            Some(t) => v.score >= t,
+            None => v.pass,
+        };
+        Ok(AssertOutcome {
+            score: v.score,
+            passed,
+            reason: v.reasoning,
+            details: None,
+        })
     }
 
     async fn anthropic_verdict(
@@ -476,7 +507,8 @@ mod tests {
                 &TemplateEngine::new(),
                 None,
             )
-            .await;
+            .await
+            .unwrap();
         assert!(outcome.passed);
         assert!((outcome.score - 0.9).abs() < 1e-9);
     }
@@ -502,8 +534,11 @@ mod tests {
                 None,
             )
             .await;
-        assert!(!outcome.passed, "truncated verdict must fail closed");
-        assert!(outcome.reason.contains("truncated"));
+        let err = outcome.unwrap_err();
+        assert!(
+            err.contains("truncated"),
+            "truncated verdict must fail closed: {err}"
+        );
     }
 
     #[tokio::test]
@@ -518,8 +553,7 @@ mod tests {
                 None,
             )
             .await;
-        assert!(!outcome.passed);
-        assert!(outcome.reason.contains("no grader"));
+        assert!(outcome.unwrap_err().contains("no grader"));
     }
 
     #[tokio::test]
@@ -547,8 +581,7 @@ mod tests {
                 None,
             )
             .await;
-        assert!(!outcome.passed);
-        assert!(outcome.reason.contains("thinking"));
+        assert!(outcome.unwrap_err().contains("thinking"));
     }
 
     #[tokio::test]
@@ -574,7 +607,8 @@ mod tests {
                 &TemplateEngine::new(),
                 None,
             )
-            .await;
+            .await
+            .unwrap();
         assert!(outcome.passed);
     }
 }

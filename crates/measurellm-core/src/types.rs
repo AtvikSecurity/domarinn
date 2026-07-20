@@ -3,13 +3,14 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use ts_rs::TS;
 
 /// A provider's output — either free text or a structured JSON value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(untagged)]
 pub enum Output {
     Text(String),
-    Json(Json),
+    Json(#[ts(type = "unknown")] Json),
 }
 
 impl Output {
@@ -31,7 +32,7 @@ impl Output {
 }
 
 /// Token accounting for a single provider call.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct TokenUsage {
     #[serde(default)]
     pub input_tokens: u64,
@@ -48,14 +49,14 @@ impl TokenUsage {
 }
 
 /// A chat message in a rendered prompt.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
 }
 
 /// A prompt after rendering, ready to hand to a provider.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RenderedPrompt {
     Text(String),

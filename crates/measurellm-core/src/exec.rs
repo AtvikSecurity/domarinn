@@ -107,13 +107,19 @@ pub async fn run_exec_raw(
 
     // Write the request, then let the child produce its response.
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(&request_bytes)
-            .await
-            .map_err(|source| ExecError::Io {
-                command: command.to_vec(),
-                source,
-            })?;
+        match stdin.write_all(&request_bytes).await {
+            Ok(()) => {}
+            // A child that does not read its stdin (and may have already exited)
+            // closes the pipe; that is legitimate, so proceed to read its output
+            // rather than failing the whole call.
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(source) => {
+                return Err(ExecError::Io {
+                    command: command.to_vec(),
+                    source,
+                })
+            }
+        }
         // Drop closes stdin, signaling EOF to the child.
         drop(stdin);
     }

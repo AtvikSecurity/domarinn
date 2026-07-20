@@ -108,7 +108,12 @@ impl RetryConfig {
 }
 
 /// A grader for the non-local assert kinds (`exec`, `llm-rubric`, `similar`).
-/// Provided from a later phase; when absent, those asserts fail closed.
+///
+/// `Ok(outcome)` is a real verdict (pass or fail). `Err(reason)` is a grader
+/// problem — a missing/unconfigured grader, a transport error, or a truncated
+/// verdict — which the runner records as an `Error` (fail closed), distinct from
+/// a graded-and-failed assertion. When no grader is provided at all, deferred
+/// asserts likewise fail closed as errors.
 #[async_trait]
 pub trait AssertGrader: Send + Sync {
     async fn grade(
@@ -118,7 +123,7 @@ pub trait AssertGrader: Send + Sync {
         vars: &Json,
         engine: &TemplateEngine,
         working_dir: Option<&Path>,
-    ) -> AssertOutcome;
+    ) -> Result<AssertOutcome, String>;
 }
 
 /// Run a suite and produce a [`RunResult`].
@@ -138,10 +143,11 @@ pub async fn run(
         })
     })?;
 
-    // Providers.
+    // Providers (embeddings providers are grader helpers, not systems under test).
     let providers: Vec<Box<dyn Provider>> = suite
         .providers
         .iter()
+        .filter(|p| !matches!(p.kind, crate::config::ProviderKind::Embeddings { .. }))
         .filter(|p| opts.filter.providers.is_empty() || opts.filter.providers.contains(&p.id))
         .map(build_provider)
         .collect::<Result<_, _>>()?;
@@ -498,29 +504,29 @@ async fn evaluate_asserts(
             continue;
         }
         match grader {
-            Some(g) => {
-                let outcome = g.grade(assert, output, vars, engine, Some(base_dir)).await;
-                scored.push(scored_of(assert, &outcome));
-                results[i] = Some(assert_result(
-                    assert,
-                    &outcome,
-                    AssertStatus::from_pass(outcome.passed),
-                ));
-            }
+            Some(g) => match g.grade(assert, output, vars, engine, Some(base_dir)).await {
+                Ok(outcome) => {
+                    scored.push(scored_of(assert, &outcome));
+                    results[i] = Some(assert_result(
+                        assert,
+                        &outcome,
+                        AssertStatus::from_pass(outcome.passed),
+                    ));
+                }
+                // Fail closed: a grader problem is an error, not a plain fail.
+                Err(reason) => {
+                    results[i] = Some(error_assert(assert, reason));
+                }
+            },
             None => {
                 // Fail closed: a deferred assert with no grader is an error.
-                results[i] = Some(AssertResult {
-                    kind: kind_name(&assert.kind).to_string(),
-                    status: AssertStatus::Error,
-                    score: 0.0,
-                    weight: assert.weight,
-                    reason: format!(
+                results[i] = Some(error_assert(
+                    assert,
+                    format!(
                         "no grader available for '{}' assertions in this run",
                         kind_name(&assert.kind)
                     ),
-                    details: None,
-                    cached: false,
-                });
+                ));
             }
         }
     }
@@ -544,6 +550,18 @@ fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus)
         weight: assert.weight,
         reason: outcome.reason.clone(),
         details: outcome.details.clone(),
+        cached: false,
+    }
+}
+
+fn error_assert(assert: &Assert, reason: String) -> AssertResult {
+    AssertResult {
+        kind: kind_name(&assert.kind).to_string(),
+        status: AssertStatus::Error,
+        score: 0.0,
+        weight: assert.weight,
+        reason,
+        details: None,
         cached: false,
     }
 }

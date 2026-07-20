@@ -3,13 +3,13 @@
 use std::path::{Path, PathBuf};
 
 use clap::Args;
-use measurellm_cache::LocalDiskCache;
 use measurellm_core::cache::CacheMode;
 use measurellm_core::filter::FilterOpts;
 use measurellm_core::runner::RunOptions;
 
 use crate::exit;
 use crate::output::{self, Format};
+use crate::{cachecfg, diffcmd};
 
 #[derive(Args)]
 pub struct RunArgs {
@@ -56,9 +56,21 @@ pub struct RunArgs {
     /// Write the primary output to a file instead of stdout.
     #[arg(long)]
     pub out: Option<PathBuf>,
+
+    /// Compare against a baseline run (id, path, or `latest`); regressions fail.
+    #[arg(long)]
+    pub against: Option<String>,
+
+    /// Write a markdown summary (for CI / PR comments) to this path.
+    #[arg(long)]
+    pub summary_md: Option<PathBuf>,
+
+    /// Upload the run to the server after it completes.
+    #[arg(long)]
+    pub share: bool,
 }
 
-pub fn execute(args: RunArgs) -> u8 {
+pub fn execute(args: RunArgs, server_url: Option<String>) -> u8 {
     let suite = match measurellm_core::load_file(&args.path) {
         Ok(s) => s,
         Err(e) => {
@@ -101,7 +113,7 @@ pub fn execute(args: RunArgs) -> u8 {
         concurrency: args.concurrency,
     };
 
-    let cache = LocalDiskCache::default_project();
+    let cache = cachecfg::build_cache(&suite, server_url.as_deref());
 
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -111,11 +123,16 @@ pub fn execute(args: RunArgs) -> u8 {
         }
     };
 
-    let grader = measurellm_core::DefaultGrader::new(suite.grader.clone());
+    // Grader, with an embeddings provider for `similar` assertions if configured.
+    let mut grader = measurellm_core::DefaultGrader::new(suite.grader.clone());
+    if let Some(embeddings) = measurellm_core::provider_factory::build_embeddings(&suite) {
+        grader = grader.with_embeddings(embeddings);
+    }
+
     let result = match runtime.block_on(measurellm_core::run(
         &suite,
         &base_dir,
-        &cache,
+        cache.as_ref(),
         Some(&grader),
         &opts,
     )) {
@@ -142,10 +159,37 @@ pub fn execute(args: RunArgs) -> u8 {
         }
     }
 
-    // Exit code: infra errors win over assertion failures.
+    // Baseline comparison.
+    let mut regressed = false;
+    let mut comparison = None;
+    if let Some(reference) = &args.against {
+        match crate::loadrun::load_run(reference) {
+            Ok(base) => {
+                let d = measurellm_core::diff_runs(&base, &result);
+                eprintln!("{}", diffcmd::render_markdown(&d));
+                regressed = d.has_regression();
+                comparison = Some(d);
+            }
+            Err(e) => eprintln!("warning: --against baseline unavailable: {e}"),
+        }
+    }
+
+    if let Some(path) = &args.summary_md {
+        if let Err(e) = diffcmd::write_summary_md(path, &result, comparison.as_ref()) {
+            eprintln!("warning: could not write summary: {e}");
+        }
+    }
+
+    if args.share {
+        if let Err(e) = crate::share::upload_run(&result, server_url.as_deref(), false) {
+            eprintln!("warning: share failed: {e}");
+        }
+    }
+
+    // Exit code: infra errors win over assertion failures/regressions.
     if result.summary.errored > 0 {
         exit::INFRA
-    } else if result.summary.failed > 0 {
+    } else if result.summary.failed > 0 || regressed {
         exit::ASSERT_FAIL
     } else {
         exit::OK

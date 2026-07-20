@@ -23,14 +23,6 @@ pub struct ShareArgs {
 }
 
 pub fn execute(args: ShareArgs, server_url: Option<String>) -> u8 {
-    let server = match server_url.or_else(|| std::env::var("MEASURELLM_SERVER_URL").ok()) {
-        Some(s) => s,
-        None => {
-            eprintln!("error: set --server-url or MEASURELLM_SERVER_URL");
-            return exit::USAGE;
-        }
-    };
-
     let path = match resolve_result_path(args.path) {
         Ok(p) => p,
         Err(e) => {
@@ -38,7 +30,6 @@ pub fn execute(args: ShareArgs, server_url: Option<String>) -> u8 {
             return exit::USAGE;
         }
     };
-
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
@@ -46,36 +37,49 @@ pub fn execute(args: ShareArgs, server_url: Option<String>) -> u8 {
             return exit::USAGE;
         }
     };
-    let mut result: RunResult = match serde_json::from_str(&text) {
+    let result: RunResult = match serde_json::from_str(&text) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: parsing {}: {e}", path.display());
             return exit::USAGE;
         }
     };
-    enrich(&mut result);
-
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
+    match upload_run(&result, server_url.as_deref(), args.strict) {
+        Ok(()) => exit::OK,
         Err(e) => {
-            eprintln!("error: {e}");
-            return exit::INFRA;
-        }
-    };
-    match runtime.block_on(upload(&server, &result)) {
-        Ok(url) => {
-            println!("View run: {url}");
-            exit::OK
-        }
-        Err(e) => {
-            eprintln!("warning: share failed: {e}");
             if args.strict {
+                eprintln!("error: {e}");
                 exit::INFRA
             } else {
+                eprintln!("warning: share failed: {e}");
                 exit::OK
             }
         }
     }
+}
+
+/// Enrich and upload a run to the server, printing the resulting view URL.
+///
+/// Returns an error if no server is configured or the upload fails; callers
+/// decide whether that is fatal (`--strict`) or best-effort.
+pub fn upload_run(
+    result: &RunResult,
+    server_url: Option<&str>,
+    _strict: bool,
+) -> Result<(), String> {
+    let server = server_url
+        .map(String::from)
+        .or_else(|| std::env::var("MEASURELLM_SERVER_URL").ok())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "no server URL (set --server-url or MEASURELLM_SERVER_URL)".to_string())?;
+
+    let mut enriched = result.clone();
+    enrich(&mut enriched);
+
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    let url = runtime.block_on(upload(&server, &enriched))?;
+    println!("View run: {url}");
+    Ok(())
 }
 
 /// Resolve the result.json to upload.

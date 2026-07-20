@@ -10,6 +10,8 @@ pub mod asserts;
 pub mod cache;
 pub mod cache_key;
 pub mod config;
+pub mod diff;
+pub mod embeddings;
 pub mod exec;
 pub mod exec_protocol;
 pub mod exec_provider;
@@ -27,11 +29,13 @@ pub mod resolve;
 pub mod result;
 pub mod runner;
 pub mod scoring;
+pub mod stats;
 pub mod template;
 pub mod types;
 pub mod val;
 
 pub use config::Suite;
+pub use diff::{diff_runs, RunDiff};
 pub use filter::{Filter, FilterOpts};
 pub use grader::DefaultGrader;
 pub use loader::{load_file, load_str, validate, Issue};
@@ -54,4 +58,14 @@ pub fn config_schema() -> serde_json::Value {
 pub fn result_schema() -> serde_json::Value {
     let schema = schemars::schema_for!(result::RunResult);
     serde_json::to_value(schema).expect("schema serializes")
+}
+
+/// Export TypeScript type definitions for the result and diff DTOs to `dir`.
+///
+/// This is the single source of truth for the web client's types.
+pub fn export_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError> {
+    use ts_rs::TS;
+    result::RunResult::export_all_to(dir)?;
+    diff::RunDiff::export_all_to(dir)?;
+    Ok(())
 }
