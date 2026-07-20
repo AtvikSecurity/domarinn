@@ -15,10 +15,12 @@ concurrency:
   cancel-in-progress: true
 
 # --- Action pinning policy -------------------------------------------------
-# Third-party actions below use major-version tags for readability. For a
-# hardened setup, pin each to a full commit SHA (e.g.
-# `actions/checkout@b4ffde6...  # v4.2.2`) and let Renovate/Dependabot bump
-# them. The `# vX` comments mark the intended version to pin to.
+# The toolchain (Rust, Node, pnpm) is installed by mise from the pinned
+# versions in .mise/config.toml + .mise/mise.lock, via `jdx/mise-action`, which
+# is pinned to a full commit SHA. The remaining third-party actions use
+# major-version tags for readability; for a hardened setup, pin each to a full
+# commit SHA (e.g. `actions/checkout@b4ffde6...  # v4.2.2`) and let
+# Renovate/Dependabot bump them. The `# vX` comments mark the intended pin.
 # ---------------------------------------------------------------------------
 
 env:
@@ -31,9 +33,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # pin to SHA
-      - uses: dtolnay/rust-toolchain@stable # pin to SHA
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
-          components: rustfmt
+          install_args: rust
       - run: cargo fmt --all --check
 
   clippy:
@@ -41,9 +43,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # pin to SHA
-      - uses: dtolnay/rust-toolchain@stable # pin to SHA
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
-          components: clippy
+          install_args: rust
       - uses: Swatinem/rust-cache@v2 # pin to SHA
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -52,23 +54,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # pin to SHA
-      - uses: dtolnay/rust-toolchain@stable # pin to SHA
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          install_args: rust
       - uses: Swatinem/rust-cache@v2 # pin to SHA
-      - run: cargo test --workspace
+      # `mise run test` == `cargo test --workspace` (see .mise/config.toml).
+      - run: mise run test
 
   web:
     name: web (lint + build + vitest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # pin to SHA
-      - uses: pnpm/action-setup@v4 # pin to SHA
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
-          version: 11
-      - uses: actions/setup-node@v4 # pin to SHA
+          install_args: node pnpm
+      # Cache pnpm's content-addressable store (mise provides pnpm; this
+      # replaces the store cache that actions/setup-node used to give us).
+      - name: Locate pnpm store
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4 # pin to SHA
         with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+          path: ${{ env.STORE_PATH }}
+          key: pnpm-store-${{ hashFiles('web/pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-
       - run: pnpm -C web install --frozen-lockfile
       # Type-checked lint (--max-warnings=0). The `build` step below runs
       # `tsc -b`, which already fails the job on any type error, so no separate
@@ -82,15 +91,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # pin to SHA
-      - uses: dtolnay/rust-toolchain@stable # pin to SHA
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          install_args: rust
       - uses: Swatinem/rust-cache@v2 # pin to SHA
       # Regenerate the schema on the fly and diff it against the committed copy.
       # `diff` exits nonzero (failing the job) on any drift. Keep this in sync
-      # with the `schema` recipe in the justfile.
+      # with the `schema` task in .mise/config.toml.
       - name: Fail on schema drift
         run: |
           if ! cargo run -q -p measurellm-cli -- schema config | diff -u measurellm.schema.json -; then
-            echo "::error::measurellm.schema.json is out of date. Run 'just schema' and commit the result."
+            echo "::error::measurellm.schema.json is out of date. Run 'mise run schema' and commit the result."
             exit 1
           fi
 
@@ -99,23 +110,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # pin to SHA
-      - uses: dtolnay/rust-toolchain@stable # pin to SHA
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          install_args: rust
       - uses: Swatinem/rust-cache@v2 # pin to SHA
       # Regenerate the TypeScript DTOs into their committed location and fail
-      # if they differ. Keep in sync with the `gen-types` recipe in the
-      # justfile.
+      # if they differ. Keep in sync with the `gen-types` task in
+      # .mise/config.toml.
       - name: Generate types
         run: cargo run -q -p measurellm-cli -- gen-types web/src/api/generated
       - name: Fail on drift
         run: |
           if [ -z "$(git ls-files web/src/api/generated)" ]; then
-            echo "::error::web/src/api/generated is not committed. Run 'just gen-types' and commit the result."
+            echo "::error::web/src/api/generated is not committed. Run 'mise run gen-types' and commit the result."
             exit 1
           fi
           # `git status --porcelain`, not `git diff`: newly-generated files
           # that git diff can't see (untracked) must also count as drift.
           if [ -n "$(git status --porcelain -- web/src/api/generated)" ]; then
-            echo "::error::web/src/api/generated is out of date. Run 'just gen-types' and commit the result."
+            echo "::error::web/src/api/generated is out of date. Run 'mise run gen-types' and commit the result."
             git --no-pager status --porcelain -- web/src/api/generated
             exit 1
           fi
@@ -132,9 +145,13 @@ jobs:
         target: [x86_64-unknown-linux-musl]
     steps:
       - uses: actions/checkout@v4 # pin to SHA
-      - uses: dtolnay/rust-toolchain@stable # pin to SHA
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
-          targets: ${{ matrix.target }}
+          install_args: rust
+      # mise's rust delegates to rustup, so the cross target is added the usual
+      # way (mise pins the toolchain; rustup adds the target to it).
+      - name: Add musl target
+        run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2 # pin to SHA
         with:
           key: ${{ matrix.target }}

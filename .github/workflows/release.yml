@@ -39,21 +39,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4 # pin to SHA
 
+      # mise installs the pinned Rust/Node/pnpm from .mise/config.toml +
+      # .mise/mise.lock, the single source of toolchain versions for both CI
+      # and releases.
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          install_args: node pnpm rust
+
       # The release binary embeds the web UI, so build web/dist first.
-      - uses: pnpm/action-setup@v4 # pin to SHA
-        with:
-          version: 11
-      - uses: actions/setup-node@v4 # pin to SHA
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm -C web install --frozen-lockfile
       - run: pnpm -C web build
 
-      - uses: dtolnay/rust-toolchain@stable # pin to SHA
-        with:
-          targets: ${{ matrix.target }}
+      # mise's rust delegates to rustup, so the native leg adds its cross target
+      # the usual way. The cross leg (aarch64) uses `cross`, which supplies the
+      # target toolchain inside its own container.
+      - name: Add target
+        if: ${{ !matrix.cross }}
+        run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2 # pin to SHA
         with:
           key: ${{ matrix.target }}
