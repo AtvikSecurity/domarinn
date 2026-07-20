@@ -387,7 +387,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     use crate::accounts::{CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody};
     use crate::domain::RunStatusFilter;
     use crate::dto::accounts::{
-        ApiKeyCreatedResponse, ApiKeyListResponse, AuthSessionResponse, MeResponse,
+        ApiKeyCreatedResponse, ApiKeyListResponse, AuthSessionResponse, MeResponse, OkResponse,
         UserListResponse,
     };
     use crate::dto::cache::{CacheStatsResponse, PruneResponse};
@@ -416,6 +416,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     UserListResponse::export_all(&cfg)?;
     ApiKeyListResponse::export_all(&cfg)?;
     ApiKeyCreatedResponse::export_all(&cfg)?;
+    OkResponse::export_all(&cfg)?;
 
     // Request bodies.
     CredentialsBody::export_all(&cfg)?;

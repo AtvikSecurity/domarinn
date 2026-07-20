@@ -5,8 +5,10 @@
 //! this module existed — the wire format is frozen; see the integration tests
 //! under `tests/` and the wire-shape pin tests in each submodule. `TS` makes
 //! each struct/field definition the source of truth for the generated
-//! TypeScript types the web app imports (wired up in a later task; this crate
-//! does not call `TS::export` anywhere itself).
+//! TypeScript types the web app imports: [`crate::export_api_types`] calls
+//! `TS::export_all` for every response DTO and request body reachable from
+//! the API, and `measurellm-cli gen-types` invokes it to regenerate
+//! `web/src/api/generated/`.
 //!
 //! Split by the storage submodule each DTO family serves:
 //! * [`accounts`] — local accounts, sessions, and API keys (`/auth/*`,
