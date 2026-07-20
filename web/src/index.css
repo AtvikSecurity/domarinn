@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+/* Class-strategy dark mode: `.dark` on <html> wins over the OS preference. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --fg: #171a1f;
+  --fg-muted: #5b6472;
+  --border: #e2e6ec;
+  --border-strong: #cfd5de;
+  --accent: #4f46e5;
+  --accent-fg: #ffffff;
+  --pass: #15a34a;
+  --fail: #dc2626;
+  --error: #ea580c;
+  --skip: #64748b;
+  --amber: #d97706;
+  --ring: #6366f1;
+}
+
+.dark {
+  --bg: #0b0d11;
+  --surface: #14171d;
+  --surface-2: #1c2027;
+  --fg: #e7e9ee;
+  --fg-muted: #949dab;
+  --border: #262b33;
+  --border-strong: #333a45;
+  --accent: #6366f1;
+  --accent-fg: #ffffff;
+  --pass: #22c55e;
+  --fail: #f05252;
+  --error: #f59e0b;
+  --skip: #7c8798;
+  --amber: #f59e0b;
+  --ring: #818cf8;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-fg: var(--fg);
+  --color-muted: var(--fg-muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-pass: var(--pass);
+  --color-fail: var(--fail);
+  --color-error: var(--error);
+  --color-skip: var(--skip);
+  --color-amber: var(--amber);
+  --color-ring: var(--ring);
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas,
+    monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Thin, theme-aware scrollbars for the virtualized grids. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* Radix overlay/content animation primitives. */
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+}

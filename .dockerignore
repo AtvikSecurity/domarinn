@@ -1,0 +1,34 @@
+# Keep the Docker build context small and hermetic. Everything the image needs
+# is produced *inside* the build (web/dist from the node stage, target/ from the
+# cargo stage), so host build artifacts are excluded here.
+
+# Rust build output
+target/
+**/target/
+
+# Node / web build output and deps (web/dist is rebuilt in the image)
+node_modules/
+**/node_modules/
+web/dist/
+web/.vite/
+
+# Local eval cache / run state
+.measurellm/
+data/
+
+# VCS + CI + docs (not needed to compile)
+.git/
+.gitignore
+.github/
+docs/
+
+# Docker + tooling (avoid cache-busting the build on unrelated edits)
+Dockerfile
+.dockerignore
+docker-compose.yml
+justfile
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.rs.bk

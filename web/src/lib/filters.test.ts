@@ -1,0 +1,82 @@
+import { describe, expect, it } from "vitest";
+import {
+  activeRunsFilterCount,
+  mergeParams,
+  mergeParamsResetting,
+  parseCaseFilters,
+  parseRunsFilters,
+  pickParams,
+  toggleValue,
+} from "./filters";
+
+const sp = (init: string) => new URLSearchParams(init);
+
+describe("pickParams / parseRunsFilters", () => {
+  it("picks known keys and ignores blanks + unknown keys", () => {
+    const params = sp("project=alpha&suite=&tag=nightly&nope=1&status=fail");
+    expect(parseRunsFilters(params)).toEqual({
+      project: "alpha",
+      tag: "nightly",
+      status: "fail",
+    });
+  });
+
+  it("treats whitespace-only values as absent", () => {
+    expect(pickParams(sp("q=%20%20"), ["q"])).toEqual({});
+  });
+
+  it("parses case filters including the client-only case key", () => {
+    expect(parseCaseFilters(sp("status=pass&case=case-0007&q=foo"))).toEqual({
+      status: "pass",
+      case: "case-0007",
+      q: "foo",
+    });
+  });
+});
+
+describe("mergeParams", () => {
+  it("sets, deletes on blank, and preserves untouched keys", () => {
+    const next = mergeParams(sp("project=alpha&cursor=20"), {
+      project: "beta",
+      suite: "smoke",
+      cursor: undefined,
+    });
+    expect(next.get("project")).toBe("beta");
+    expect(next.get("suite")).toBe("smoke");
+    expect(next.has("cursor")).toBe(false);
+  });
+
+  it("does not mutate the input", () => {
+    const input = sp("project=alpha");
+    const next = mergeParams(input, { project: "beta" });
+    expect(input.get("project")).toBe("alpha");
+    expect(next).not.toBe(input);
+  });
+
+  it("mergeParamsResetting clears reset keys before applying the patch", () => {
+    const next = mergeParamsResetting(
+      sp("project=alpha&cursor=40&suite=old"),
+      { project: "beta" },
+      ["cursor", "suite"],
+    );
+    expect(next.get("project")).toBe("beta");
+    expect(next.has("cursor")).toBe(false);
+    expect(next.has("suite")).toBe(false);
+  });
+});
+
+describe("toggleValue", () => {
+  it("sets a value when different and clears it when equal", () => {
+    const set = toggleValue(sp(""), "status", "fail");
+    expect(set.get("status")).toBe("fail");
+    const cleared = toggleValue(set, "status", "fail");
+    expect(cleared.has("status")).toBe(false);
+  });
+});
+
+describe("activeRunsFilterCount", () => {
+  it("counts only active filter keys", () => {
+    expect(activeRunsFilterCount(sp("project=a&tag=b&cursor=20&case=x"))).toBe(2);
+    expect(activeRunsFilterCount(sp(""))).toBe(0);
+  });
+});

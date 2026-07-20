@@ -1,0 +1,180 @@
+# measurellm-eval — run a measurellm suite in CI and gate the PR on the result.
+#
+# SKELETON: coherent and documented, but the run/regression-summary wiring
+# assumes CLI subcommands (`run`, `diff`) that land in later phases. The
+# contract (inputs, outputs, exit-code semantics, PR comment) is stable.
+#
+# Usage:
+#   - uses: perfectra1n/measurellm/.github/actions/measurellm-eval@v1
+#     with:
+#       config: eval/measurellm.yaml
+#       server-url: https://measurellm.example.com
+#       token: ${{ secrets.MEASURELLM_TOKEN }}
+#       against: latest        # baseline run to diff against (optional)
+#       fail-on-regression: "true"
+#
+# Exit-code contract (from the CLI): 0 = all pass; 1 = assertion failure or
+# regression; 2 = config/usage error; 3 = infrastructure error. This action
+# maps 1 to a failed check only when `fail-on-regression` is true; 2 and 3
+# always fail the job.
+
+name: measurellm eval
+description: Run a measurellm eval suite, gate on regressions, and comment the result on the PR.
+
+inputs:
+  config:
+    description: Path to the suite file or a directory containing measurellm.yaml.
+    required: false
+    default: "measurellm.yaml"
+  version:
+    description: measurellm version to download (a release tag like v0.1.0, or "latest").
+    required: false
+    default: "latest"
+  binary:
+    description: Path to a prebuilt measurellm binary. If set, skips the download.
+    required: false
+    default: ""
+  server-url:
+    description: Results server to upload the run to (enables share links / baselines). Optional.
+    required: false
+    default: ""
+  token:
+    description: Bearer token for the results server. Pass a secret, never a literal.
+    required: false
+    default: ""
+  against:
+    description: Baseline to diff this run against (e.g. "latest", a run id, or a git ref). Empty disables the diff.
+    required: false
+    default: ""
+  threshold:
+    description: Minimum overall pass rate (0.0-1.0) required to pass. Empty disables the threshold gate.
+    required: false
+    default: ""
+  fail-on-regression:
+    description: If "true", a regression vs the baseline (CLI exit 1) fails the check.
+    required: false
+    default: "true"
+  comment:
+    description: If "true", post/update a summary comment on the PR.
+    required: false
+    default: "true"
+
+outputs:
+  pass-rate:
+    description: Overall pass rate of the run (0.0-1.0).
+    value: ${{ steps.eval.outputs.pass-rate }}
+  regressions:
+    description: Number of tests that regressed vs the baseline.
+    value: ${{ steps.eval.outputs.regressions }}
+  summary-path:
+    description: Path to the Markdown summary written by the run.
+    value: ${{ steps.eval.outputs.summary-path }}
+
+runs:
+  using: composite
+  steps:
+    # -- Obtain the binary: use a provided path, else download the release. ----
+    - name: Resolve measurellm binary
+      id: bin
+      shell: bash
+      env:
+        INPUT_BINARY: ${{ inputs.binary }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        if [ -n "${INPUT_BINARY}" ]; then
+          echo "path=${INPUT_BINARY}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # Download the static musl binary from the GitHub Release.
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64)  target="x86_64-unknown-linux-musl" ;;
+          aarch64) target="aarch64-unknown-linux-musl" ;;
+          *) echo "::error::unsupported arch $arch"; exit 3 ;;
+        esac
+        ver="${INPUT_VERSION}"
+        base="https://github.com/perfectra1n/measurellm/releases"
+        if [ "$ver" = "latest" ]; then
+          url="${base}/latest/download/measurellm-${target}"
+        else
+          url="${base}/download/${ver}/measurellm-${target}"
+        fi
+        echo "Downloading $url"
+        curl -fsSL "$url" -o measurellm
+        chmod +x measurellm
+        echo "path=$(pwd)/measurellm" >> "$GITHUB_OUTPUT"
+
+    # -- Run the suite. Uploads to the server when configured. -----------------
+    - name: Run eval
+      id: eval
+      shell: bash
+      env:
+        MEASURELLM_BIN: ${{ steps.bin.outputs.path }}
+        MEASURELLM_SERVER_URL: ${{ inputs.server-url }}
+        MEASURELLM_TOKEN: ${{ inputs.token }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_AGAINST: ${{ inputs.against }}
+        INPUT_THRESHOLD: ${{ inputs.threshold }}
+        INPUT_FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+      run: |
+        set -uo pipefail
+        summary="measurellm-summary.md"
+
+        args=(run "${INPUT_CONFIG}" --summary-md "${summary}")
+        [ -n "${INPUT_AGAINST}" ]   && args+=(--against "${INPUT_AGAINST}")
+        [ -n "${INPUT_THRESHOLD}" ] && args+=(--threshold "${INPUT_THRESHOLD}")
+        [ -n "${MEASURELLM_SERVER_URL}" ] && args+=(--server-url "${MEASURELLM_SERVER_URL}" --share)
+
+        echo "Running: measurellm ${args[*]}"
+        "${MEASURELLM_BIN}" "${args[@]}"
+        code=$?
+
+        # Best-effort extraction of headline numbers for outputs (the CLI is the
+        # source of truth; parse its machine-readable summary once available).
+        echo "summary-path=${summary}" >> "$GITHUB_OUTPUT"
+        echo "pass-rate=" >> "$GITHUB_OUTPUT"
+        echo "regressions=" >> "$GITHUB_OUTPUT"
+
+        # Map CLI exit codes to a check result.
+        #   0 pass; 1 assertion/regression; 2 usage; 3 infra.
+        if [ "$code" -eq 0 ]; then
+          echo "eval passed"
+        elif [ "$code" -eq 1 ]; then
+          if [ "${INPUT_FAIL_ON_REGRESSION}" = "true" ]; then
+            echo "::error::measurellm reported failures/regressions"
+            echo "exit-code=1" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            echo "::warning::measurellm reported failures/regressions (not gated)"
+          fi
+        else
+          echo "::error::measurellm errored (exit $code: 2=config/usage, 3=infra)"
+          exit "$code"
+        fi
+
+    # -- Comment the summary on the PR (create-or-update a single comment). -----
+    - name: Comment on PR
+      if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      uses: actions/github-script@v7 # pin to SHA
+      with:
+        script: |
+          const fs = require('fs');
+          const path = '${{ steps.eval.outputs.summary-path }}';
+          let body = '### measurellm eval\n\n_No summary was produced._';
+          try {
+            body = '### measurellm eval\n\n' + fs.readFileSync(path, 'utf8');
+          } catch (e) {
+            core.warning(`no summary at ${path}: ${e}`);
+          }
+          const marker = '<!-- measurellm-eval -->';
+          body = `${marker}\n${body}`;
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+          const existing = comments.find(c => c.body && c.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }

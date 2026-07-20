@@ -1,0 +1,47 @@
+# measurellm — single-service self-host.
+#
+# SQLite is a single writer, so this is intentionally ONE replica with a
+# persistent volume. Do not scale this service to >1; see docs/deploy.md.
+#
+#   docker compose up -d
+#   # UI + API on http://localhost:8321
+
+services:
+  measurellm:
+    # Pull the published image...
+    image: ghcr.io/perfectra1n/measurellm:latest
+    # ...or build locally instead by uncommenting this and commenting `image`:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: measurellm
+    restart: unless-stopped
+    ports:
+      - "8321:8321"
+    environment:
+      # Where the SQLite db + cache live inside the container (mapped to the
+      # named volume below). Matches the image default; shown for clarity.
+      MEASURELLM_DATA_DIR: /data
+
+      # Auth tokens. Comma-separated "name:secret" pairs. When set, writes
+      # (run uploads) require a bearer token; reads stay public unless you run
+      # in a stricter mode. REPLACE these placeholder secrets before exposing
+      # the service — treat them like passwords and inject via a real secret
+      # store, not this file, in production.
+      MEASURELLM_TOKENS: "ci:CHANGE_ME_ci_token,dev:CHANGE_ME_dev_token"
+
+      # Public base URL the server prints in share links and uses to build
+      # absolute URLs behind a reverse proxy. No trailing slash, no path prefix.
+      MEASURELLM_PUBLIC_URL: "https://measurellm.example.com"
+    volumes:
+      - measurellm-data:/data
+    healthcheck:
+      # The binary is its own probe (distroless has no shell/curl).
+      test: ["CMD", "/measurellm", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  measurellm-data:

@@ -1,0 +1,97 @@
+import { useEffect, useState, type ReactNode } from "react";
+import { useMeta } from "@/api/queries";
+import { clearToken, getToken, onAuthChange, setToken } from "@/lib/auth";
+import { isMockEnabled } from "@/api/client";
+import { Button } from "@/components/ui/Button";
+import { ThemeSegmented } from "@/components/ThemeToggle";
+
+export function SettingsPage() {
+  const meta = useMeta();
+  const [token, setTokenValue] = useState("");
+  const [hasToken, setHasToken] = useState(!!getToken());
+
+  useEffect(() => onAuthChange(() => setHasToken(!!getToken())), []);
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div>
+        <h1 className="text-lg font-semibold tracking-tight">Settings</h1>
+        <p className="text-sm text-muted">Token, appearance, and server info.</p>
+      </div>
+
+      <Card title="Appearance">
+        <div className="flex items-center justify-between gap-4">
+          <div className="text-sm text-muted">
+            Theme follows your system by default; override it here.
+          </div>
+          <ThemeSegmented />
+        </div>
+      </Card>
+
+      <Card title="Access token">
+        <p className="text-sm text-muted">
+          Stored locally as{" "}
+          <code className="font-mono text-xs">measurellm.token</code> and sent as a
+          bearer header. {hasToken ? "A token is currently set." : "No token is set."}
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setTokenValue(e.target.value)}
+            placeholder={hasToken ? "•••••••• (set)" : "paste token"}
+            className="h-9 flex-1 rounded-md border border-border bg-bg px-3 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+          />
+          <Button
+            variant="primary"
+            onClick={() => {
+              if (token.trim()) {
+                setToken(token.trim());
+                setTokenValue("");
+              }
+            }}
+            disabled={!token.trim()}
+          >
+            Save
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              clearToken();
+              setTokenValue("");
+            }}
+            disabled={!hasToken}
+          >
+            Clear
+          </Button>
+        </div>
+      </Card>
+
+      <Card title="Server">
+        <dl className="grid grid-cols-2 gap-y-2 text-sm">
+          <dt className="text-muted">Name</dt>
+          <dd className="font-mono">{meta.data?.name ?? "—"}</dd>
+          <dt className="text-muted">Version</dt>
+          <dd className="font-mono">{meta.data?.version ?? "—"}</dd>
+          <dt className="text-muted">Auth mode</dt>
+          <dd className="font-mono">{meta.data?.auth_mode ?? "—"}</dd>
+          <dt className="text-muted">Schema versions</dt>
+          <dd className="font-mono">
+            {meta.data?.supported_schema_versions.join(", ") ?? "—"}
+          </dd>
+          <dt className="text-muted">Data source</dt>
+          <dd className="font-mono">{isMockEnabled() ? "mock fixture" : "live API"}</dd>
+        </dl>
+      </Card>
+    </div>
+  );
+}
+
+function Card({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-xl border border-border bg-surface p-4">
+      <h2 className="mb-3 text-sm font-semibold">{title}</h2>
+      {children}
+    </section>
+  );
+}

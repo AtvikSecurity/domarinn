@@ -1,23 +1,53 @@
 //! measurellm-server — the self-hostable results server + embedded web UI.
 //!
-//! Phase 0 stands up the app shell: liveness, the `/api/v1/meta` capability
-//! endpoint the UI reads on boot, and an SPA fallback. Storage, run ingest,
-//! auth, cache endpoints, and the real UI land in later phases.
+//! The server ingests [`RunResult`](measurellm_core::result::RunResult)
+//! documents, stores them in a hybrid SQLite layout (see [`storage`]), and
+//! exposes a read/compare/export API plus a shared content-addressed cache.
+//!
+//! ## Auth
+//! The active [`AuthMode`] is derived at startup from configuration and the
+//! environment:
+//! * no tokens configured → [`AuthMode::Open`] (everything open),
+//! * tokens configured → [`AuthMode::ProtectWrites`] by default (reads/UI open,
+//!   writes + admin require a token),
+//! * `MEASURELLM_AUTH_MODE=closed` → [`AuthMode::Closed`] (every `/api` call
+//!   requires a token).
+//!
+//! Tokens come from `MEASURELLM_TOKENS="write:mllm_ci,admin:mllm_ops,read:mllm_view"`.
+//! Extra settings (`MEASURELLM_PUBLIC_URL`, cache limits) are read from the
+//! environment inside [`serve`], never as new [`ServerConfig`] fields.
 
-use axum::{
-    http::StatusCode,
-    response::{Html, IntoResponse},
-    routing::get,
-    Json, Router,
-};
-use serde_json::json;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::extract::{Request, State};
+use axum::middleware::Next;
+use axum::response::Response;
+use axum::Router;
+
+use crate::auth::{Authenticator, StaticTokenAuthenticator};
+use crate::storage::Storage;
+
+pub mod auth;
+pub mod routes;
+pub mod storage;
+
+/// Default cache limits when the environment does not override them.
+const DEFAULT_MAX_ENTRY_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
+const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
+const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 
 /// Server configuration.
+///
+/// Constructed verbatim by the CLI; the public field set is a stable contract
+/// (exactly `port`, `data_dir`, `auth_mode`). Any additional settings are read
+/// from the environment inside [`serve`].
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub port: u16,
     pub data_dir: std::path::PathBuf,
-    /// Auth mode reported to the UI. Phase 0 is always open.
+    /// Requested auth mode. When left at [`AuthMode::Open`], the effective mode
+    /// is derived from whether tokens are configured.
     pub auth_mode: AuthMode,
 }
 
@@ -48,46 +78,139 @@ impl AuthMode {
     }
 }
 
-/// Build the axum application. Separated from [`serve`] so integration tests can
-/// drive it via `oneshot` without binding a socket.
-pub fn app(config: ServerConfig) -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .route("/api/v1/health", get(health))
-        .route("/api/v1/meta", get(meta))
-        .fallback(spa_fallback)
-        .with_state(config)
+/// Cache retention/size limits.
+#[derive(Debug, Clone, Copy)]
+pub struct CacheLimits {
+    pub max_entry_bytes: usize,
+    pub max_bytes: u64,
+    pub max_age_days: u64,
 }
 
-async fn health() -> impl IntoResponse {
-    (StatusCode::OK, Json(json!({"status": "ok"})))
+impl Default for CacheLimits {
+    fn default() -> Self {
+        CacheLimits {
+            max_entry_bytes: DEFAULT_MAX_ENTRY_BYTES,
+            max_bytes: DEFAULT_MAX_BYTES,
+            max_age_days: DEFAULT_MAX_AGE_DAYS,
+        }
+    }
 }
 
-async fn meta(
-    axum::extract::State(config): axum::extract::State<ServerConfig>,
-) -> impl IntoResponse {
-    Json(json!({
-        "name": "measurellm",
-        "version": measurellm_core::VERSION,
-        "auth_mode": config.auth_mode.as_str(),
-        "supported_schema_versions": [measurellm_core::RESULT_SCHEMA_VERSION],
-    }))
+/// Environment-sourced settings that are not part of the [`ServerConfig`]
+/// contract. Populated by [`Settings::from_env`] in production; constructed
+/// directly by tests.
+#[derive(Debug, Clone, Default)]
+pub struct Settings {
+    /// Raw `MEASURELLM_TOKENS` value (`scope:token,...`).
+    pub tokens: Option<String>,
+    /// Explicit `MEASURELLM_AUTH_MODE` override (`open|protect-writes|closed`).
+    pub auth_mode: Option<String>,
+    /// Public base URL used to build run links (`MEASURELLM_PUBLIC_URL`).
+    pub public_url: Option<String>,
+    pub cache_max_entry_bytes: Option<usize>,
+    pub cache_max_bytes: Option<u64>,
+    pub cache_max_age_days: Option<u64>,
 }
 
-async fn spa_fallback() -> impl IntoResponse {
-    // Placeholder until the embedded UI ships. The real build embeds web/dist.
-    Html(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>measurellm</title></head>\
-         <body style=\"font-family:system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem\">\
-         <h1>measurellm</h1><p>The results UI is not built into this binary yet. \
-         The JSON API is available under <code>/api/v1</code>.</p></body></html>",
-    )
+impl Settings {
+    pub fn from_env() -> Self {
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        Settings {
+            tokens: env("MEASURELLM_TOKENS"),
+            auth_mode: env("MEASURELLM_AUTH_MODE"),
+            public_url: env("MEASURELLM_PUBLIC_URL"),
+            cache_max_entry_bytes: env("MEASURELLM_CACHE_MAX_ENTRY_BYTES")
+                .and_then(|v| v.parse().ok()),
+            cache_max_bytes: env("MEASURELLM_CACHE_MAX_BYTES").and_then(|v| v.parse().ok()),
+            cache_max_age_days: env("MEASURELLM_CACHE_MAX_AGE_DAYS").and_then(|v| v.parse().ok()),
+        }
+    }
+}
+
+/// Shared application state (cheap to clone: all fields are `Arc`-backed or `Copy`).
+#[derive(Clone)]
+pub struct AppState {
+    pub(crate) storage: Storage,
+    pub(crate) auth: Arc<dyn Authenticator>,
+    pub(crate) auth_mode: AuthMode,
+    pub(crate) public_url: Option<String>,
+    pub(crate) cache_limits: CacheLimits,
+}
+
+impl AppState {
+    /// Open storage and derive the effective auth mode.
+    pub async fn new(config: &ServerConfig, settings: Settings) -> anyhow::Result<AppState> {
+        let storage = Storage::open(config.data_dir.clone()).await?;
+        let authenticator =
+            StaticTokenAuthenticator::from_env_value(settings.tokens.as_deref().unwrap_or(""));
+        let has_tokens = authenticator.has_tokens();
+        let auth_mode = resolve_mode(config.auth_mode, settings.auth_mode.as_deref(), has_tokens);
+        let cache_limits = CacheLimits {
+            max_entry_bytes: settings
+                .cache_max_entry_bytes
+                .unwrap_or(DEFAULT_MAX_ENTRY_BYTES),
+            max_bytes: settings.cache_max_bytes.unwrap_or(DEFAULT_MAX_BYTES),
+            max_age_days: settings.cache_max_age_days.unwrap_or(DEFAULT_MAX_AGE_DAYS),
+        };
+        Ok(AppState {
+            storage,
+            auth: Arc::new(authenticator),
+            auth_mode,
+            public_url: settings.public_url,
+            cache_limits,
+        })
+    }
+}
+
+fn resolve_mode(config_mode: AuthMode, env_mode: Option<&str>, has_tokens: bool) -> AuthMode {
+    if let Some(mode) = env_mode {
+        match mode {
+            "open" => return AuthMode::Open,
+            "protect-writes" | "protect_writes" => return AuthMode::ProtectWrites,
+            "closed" => return AuthMode::Closed,
+            _ => {}
+        }
+    }
+    if config_mode != AuthMode::Open {
+        return config_mode;
+    }
+    if has_tokens {
+        AuthMode::ProtectWrites
+    } else {
+        AuthMode::Open
+    }
+}
+
+/// Middleware that attaches an [`auth::Identity`] to every request. It never
+/// rejects — scope enforcement lives in the [`auth::Scoped`] extractor.
+pub(crate) async fn auth_middleware(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let identity = auth::authenticate(state.auth.as_ref(), state.auth_mode, req.headers());
+    req.extensions_mut().insert(identity);
+    next.run(req).await
+}
+
+/// Build the axum application and its state. Exposed so integration tests can
+/// drive the router via `oneshot` without binding a socket.
+pub async fn build_app(
+    config: &ServerConfig,
+    settings: Settings,
+) -> anyhow::Result<(Router, AppState)> {
+    let state = AppState::new(config, settings).await?;
+    let router = routes::router(state.clone());
+    Ok((router, state))
 }
 
 /// Bind and serve until shutdown (Ctrl-C).
 pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
+    let settings = Settings::from_env();
+    let (app, state) = build_app(&config, settings).await?;
+    spawn_cache_retention(state);
+
     let port = config.port;
-    let app = app(config);
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("measurellm server listening on http://{addr}");
@@ -95,6 +218,29 @@ pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+/// Hourly LRU/age retention against the configured cache limits.
+fn spawn_cache_retention(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            let max_age_days = state.cache_limits.max_age_days as i64;
+            let target_bytes = state.cache_limits.max_bytes as i64;
+            match state
+                .storage
+                .cache_prune(Some(max_age_days), Some(target_bytes))
+                .await
+            {
+                Ok(pruned) if pruned > 0 => {
+                    tracing::info!(pruned, "cache retention evicted entries")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "cache retention failed"),
+            }
+        }
+    });
 }
 
 async fn shutdown_signal() {
@@ -105,48 +251,40 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
 
-    async fn body_json(router: Router, uri: &str) -> (StatusCode, serde_json::Value) {
-        let resp = router
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let status = resp.status();
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-        (status, value)
+    #[test]
+    fn auth_mode_str() {
+        assert_eq!(AuthMode::Open.as_str(), "open");
+        assert_eq!(AuthMode::ProtectWrites.as_str(), "protect-writes");
+        assert_eq!(AuthMode::Closed.as_str(), "closed");
     }
 
-    #[tokio::test]
-    async fn health_is_ok() {
-        let (status, body) = body_json(app(ServerConfig::default()), "/api/v1/health").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["status"], "ok");
+    #[test]
+    fn mode_derivation() {
+        assert_eq!(resolve_mode(AuthMode::Open, None, false), AuthMode::Open);
+        assert_eq!(
+            resolve_mode(AuthMode::Open, None, true),
+            AuthMode::ProtectWrites
+        );
+        assert_eq!(
+            resolve_mode(AuthMode::Open, Some("closed"), true),
+            AuthMode::Closed
+        );
+        assert_eq!(
+            resolve_mode(AuthMode::Open, Some("open"), true),
+            AuthMode::Open
+        );
+        // An explicit config mode wins over token-derivation.
+        assert_eq!(
+            resolve_mode(AuthMode::Closed, None, false),
+            AuthMode::Closed
+        );
     }
 
-    #[tokio::test]
-    async fn meta_reports_version_and_mode() {
-        let (status, body) = body_json(app(ServerConfig::default()), "/api/v1/meta").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["auth_mode"], "open");
-        assert_eq!(body["supported_schema_versions"][0], 1);
-    }
-
-    #[tokio::test]
-    async fn unknown_path_serves_spa() {
-        let resp = app(ServerConfig::default())
-            .oneshot(
-                Request::builder()
-                    .uri("/runs/whatever")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+    #[test]
+    fn config_default_is_open() {
+        let config = ServerConfig::default();
+        assert_eq!(config.auth_mode, AuthMode::Open);
+        assert_eq!(config.port, 8321);
     }
 }

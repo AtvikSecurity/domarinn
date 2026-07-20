@@ -13,12 +13,27 @@ measurellm-core = { workspace = true }
 axum = "0.8"
 tokio = { workspace = true }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "compression-gzip"] }
+tower-http = { version = "0.6", features = [
+    "trace",
+    "compression-gzip",
+    "decompression-gzip",
+    "limit",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite_migration = "2"
+zstd = "0.13"
+sha2 = { workspace = true }
+hex = "0.4"
+subtle = "2"
+bytes = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+tempfile = "3"
+flate2 = "1"
