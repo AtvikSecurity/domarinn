@@ -14,7 +14,7 @@ const PLACEHOLDER: &str = "<!doctype html><html><head><meta charset=\"utf-8\">\
 <title>measurellm</title></head>\
 <body style=\"font-family:system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem\">\
 <h1>measurellm</h1><p>The web UI was not built into this binary. \
-Run <code>just build</code> (or <code>pnpm -C web build</code>) before building the \
+Run <code>mise run build</code> (or <code>pnpm -C web build</code>) before building the \
 server to embed it. The JSON API is available under <code>/api/v1</code>.</p>\
 </body></html>";
 

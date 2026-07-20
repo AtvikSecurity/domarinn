@@ -22,11 +22,13 @@ data/
 .github/
 docs/
 
-# Docker + tooling (avoid cache-busting the build on unrelated edits)
+# Docker + tooling (avoid cache-busting the build on unrelated edits). The image
+# builds its own toolchain (corepack pnpm + the cargo base image), so the mise
+# config/lockfile are not needed in the build context.
 Dockerfile
 .dockerignore
 docker-compose.yml
-justfile
+.mise/
 
 # Editor / OS noise
 .DS_Store

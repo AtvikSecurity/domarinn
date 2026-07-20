@@ -1,0 +1,82 @@
+# mise configuration for measurellm.
+#
+# mise (https://mise.jdx.dev) pins the toolchain this repo needs and defines the
+# task orchestration that previously lived in the justfile. This file lives at
+# `.mise/config.toml`, a config location mise resolves natively (see
+# https://mise.jdx.dev/configuration.html — "Paths which start with `mise` can
+# be dotfiles, e.g.: `.mise.toml` or `.mise/config.toml`").
+#
+# Common commands:
+#   mise install          # provision the pinned toolchain
+#   mise tasks            # list the available tasks (replaces `just --list`)
+#   mise run <task>       # run a task (replaces `just <task>`)
+
+[settings]
+# Maintain pinned tool versions + checksums in a lockfile. Because the config is
+# `.mise/config.toml`, the lockfile is written alongside it as `.mise/config.lock`
+# (the lockfile is named like the config file with a `.lock` extension —
+# https://mise.jdx.dev/configuration/settings.html#lockfile).
+lockfile = true
+
+[tools]
+# Versions match what CI used before this migration: Rust stable
+# (dtolnay/rust-toolchain@stable), Node 22 (actions/setup-node), pnpm 11
+# (pnpm/action-setup). Loose versions here; exact versions + checksums are
+# pinned in .mise/config.lock.
+rust = "stable"
+node = "22"
+pnpm = "11"
+
+# --- Tasks (ported 1:1 from the former justfile) ---------------------------
+
+[tasks.build]
+description = "Full release build: compile the web UI, then the Rust workspace in release mode (the server crate embeds web/dist, so the UI must build first)."
+run = [
+  "pnpm -C web build",
+  "cargo build --release",
+]
+
+[tasks.dev]
+description = "Run the results server + API on :8321 for local development (serves the embedded UI; run `pnpm -C web dev` alongside for live UI work)."
+run = "cargo run -p measurellm-cli -- server"
+
+[tasks.test]
+description = "Run the Rust test suite."
+run = "cargo test --workspace"
+
+[tasks.test-all]
+description = "Run every test: Rust workspace tests + the web unit tests (vitest)."
+depends = ["test"]
+run = "pnpm -C web test"
+
+[tasks.e2e]
+description = "Run the web end-to-end tests (Playwright). Builds the mock UI and previews it via the config's webServer, so no Rust backend is required."
+run = "pnpm -C web test:e2e"
+
+[tasks.lint]
+description = "Lint: clippy as errors + a formatting check. Mirrors CI."
+run = [
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo fmt --check",
+]
+
+[tasks.fmt]
+description = "Auto-format the workspace."
+run = "cargo fmt"
+
+[tasks.schema]
+description = "Regenerate the config JSON Schema that editors and CI consume. Keep the result committed; CI fails if it drifts."
+run = "cargo run -q -p measurellm-cli -- schema config > measurellm.schema.json"
+
+[tasks.gen-types]
+description = "Export TypeScript DTOs for the web UI from the Rust result/diff types. This directory is the web type source of truth; keep it committed. CI regenerates it and fails on drift."
+run = "cargo run -q -p measurellm-cli -- gen-types web/src/api/generated"
+
+[tasks.docker-build]
+description = "Build the container image locally (multi-stage; produces the distroless image). Override the tag with MEASURELLM_IMAGE / MEASURELLM_TAG."
+run = 'docker build -t "${MEASURELLM_IMAGE:-ghcr.io/perfectra1n/measurellm}:${MEASURELLM_TAG:-dev}" .'
+
+[tasks.docker-push]
+description = "Push the locally built image (requires `docker login ghcr.io`)."
+depends = ["docker-build"]
+run = 'docker push "${MEASURELLM_IMAGE:-ghcr.io/perfectra1n/measurellm}:${MEASURELLM_TAG:-dev}"'
