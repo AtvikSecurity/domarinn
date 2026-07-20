@@ -111,14 +111,20 @@ pub fn execute(args: RunArgs) -> u8 {
         }
     };
 
-    let result =
-        match runtime.block_on(measurellm_core::run(&suite, &base_dir, &cache, None, &opts)) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("run error: {e}");
-                return exit::INFRA;
-            }
-        };
+    let grader = measurellm_core::DefaultGrader::new(suite.grader.clone());
+    let result = match runtime.block_on(measurellm_core::run(
+        &suite,
+        &base_dir,
+        &cache,
+        Some(&grader),
+        &opts,
+    )) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("run error: {e}");
+            return exit::INFRA;
+        }
+    };
 
     if let Err(e) = output::persist(&result) {
         eprintln!("warning: could not persist run: {e}");

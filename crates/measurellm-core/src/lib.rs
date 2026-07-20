@@ -15,6 +15,7 @@ pub mod exec_protocol;
 pub mod exec_provider;
 pub mod filter;
 pub mod generate;
+pub mod grader;
 pub mod http_provider;
 pub mod loader;
 pub mod net;
@@ -32,6 +33,7 @@ pub mod val;
 
 pub use config::Suite;
 pub use filter::{Filter, FilterOpts};
+pub use grader::DefaultGrader;
 pub use loader::{load_file, load_str, validate, Issue};
 pub use resolve::{expand_tests, Expanded};
 pub use result::{RunResult, RESULT_SCHEMA_VERSION};

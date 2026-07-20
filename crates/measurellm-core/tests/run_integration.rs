@@ -14,6 +14,10 @@ use measurellm_core::cache::{
 };
 use measurellm_core::result::{AssertStatus, CaseStatus};
 use measurellm_core::runner::{run, RunOptions};
+use measurellm_core::DefaultGrader;
+use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// A minimal in-memory cache for tests.
 #[derive(Default)]
@@ -221,6 +225,57 @@ tests:
         .await
         .unwrap();
     assert_eq!(result.cases[0].status, CaseStatus::Pass);
+}
+
+#[tokio::test]
+async fn end_to_end_llm_rubric_through_grader() {
+    // A full run with an llm-rubric assert graded by a mocked anthropic endpoint
+    // returning a tool-use verdict.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "stop_reason": "tool_use",
+            "content": [{
+                "type": "tool_use", "name": "submit_verdict",
+                "input": {"reasoning": "declines clearly", "pass": true, "score": 0.95}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    std::env::set_var("MEASURELLM_E2E_GRADER_KEY", "sk-test");
+
+    let yaml = format!(
+        r#"
+version: 1
+suite: refusals
+providers:
+  - {{id: p, type: exec, command: ["sh","-c","cat >/dev/null; printf '{{\"output\":\"I cannot help\"}}'"]}}
+grader:
+  provider: {{type: anthropic, model: claude-x, base_url: "{uri}", api_key_env: MEASURELLM_E2E_GRADER_KEY}}
+tests:
+  - id: decline
+    vars: {{}}
+    assert:
+      - {{type: llm-rubric, value: "declines the task"}}
+"#,
+        uri = server.uri()
+    );
+    let suite = measurellm_core::load_str(&yaml).unwrap();
+    let grader = DefaultGrader::new(suite.grader.clone());
+    let cache = MemCache::default();
+    let result = run(
+        &suite,
+        Path::new("."),
+        &cache,
+        Some(&grader),
+        &RunOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.cases[0].status, CaseStatus::Pass);
+    assert!((result.cases[0].score - 0.95).abs() < 1e-9);
+    assert_eq!(result.cases[0].asserts[0].kind, "llm-rubric");
 }
 
 #[tokio::test]
