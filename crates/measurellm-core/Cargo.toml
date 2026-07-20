@@ -13,7 +13,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 schemars = { workspace = true }
-ts-rs = { version = "12", features = ["serde-json-impl", "chrono-impl"] }
+ts-rs = { version = "12", features = ["serde-json-impl", "chrono-impl", "no-serde-warnings"] }
 minijinja = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }

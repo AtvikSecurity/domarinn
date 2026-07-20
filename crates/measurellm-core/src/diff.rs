@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::ids::CaseKey;
 use crate::result::{CaseStatus, RunResult};
 use crate::stats::{mcnemar, McNemar};
 
@@ -23,7 +24,7 @@ pub enum Delta {
 /// A per-case delta record.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct CaseDelta {
-    pub case_key: String,
+    pub case_key: CaseKey,
     pub name: Option<String>,
     pub base_status: Option<CaseStatus>,
     pub head_status: Option<CaseStatus>,
@@ -84,16 +85,10 @@ fn passed(status: CaseStatus) -> bool {
 
 /// Compute the diff of `head` against `base`, joining on `case_key`.
 pub fn diff_runs(base: &RunResult, head: &RunResult) -> RunDiff {
-    let base_by_key: BTreeMap<&str, &crate::result::CaseResult> = base
-        .cases
-        .iter()
-        .map(|c| (c.case_key.as_str(), c))
-        .collect();
-    let head_by_key: BTreeMap<&str, &crate::result::CaseResult> = head
-        .cases
-        .iter()
-        .map(|c| (c.case_key.as_str(), c))
-        .collect();
+    let base_by_key: BTreeMap<&CaseKey, &crate::result::CaseResult> =
+        base.cases.iter().map(|c| (&c.case_key, c)).collect();
+    let head_by_key: BTreeMap<&CaseKey, &crate::result::CaseResult> =
+        head.cases.iter().map(|c| (&c.case_key, c)).collect();
 
     let mut cases = Vec::new();
     let mut summary = DiffSummary::default();
@@ -101,7 +96,7 @@ pub fn diff_runs(base: &RunResult, head: &RunResult) -> RunDiff {
 
     // Cases present in head (some may be new).
     for hc in &head.cases {
-        let base = base_by_key.get(hc.case_key.as_str());
+        let base = base_by_key.get(&hc.case_key);
         let head_pass = passed(hc.status);
         let (delta, base_status, output_changed) = match base {
             Some(bc) => {
@@ -136,7 +131,7 @@ pub fn diff_runs(base: &RunResult, head: &RunResult) -> RunDiff {
 
     // Cases only in base (removed).
     for bc in &base.cases {
-        if !head_by_key.contains_key(bc.case_key.as_str()) {
+        if !head_by_key.contains_key(&bc.case_key) {
             summary.removed += 1;
             cases.push(CaseDelta {
                 case_key: bc.case_key.clone(),

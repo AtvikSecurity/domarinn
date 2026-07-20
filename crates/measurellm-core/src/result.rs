@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
 use crate::asserts::AssertName;
+use crate::ids::{CaseKey, RunId};
 use crate::types::{Output, TokenUsage};
 
 pub const RESULT_SCHEMA_VERSION: u32 = 1;
@@ -29,7 +30,7 @@ impl CellKey {
     /// The stable cross-run identity string (16 hex chars) used for diffing and
     /// as the server's per-run primary key. Includes `repeat` so trials are
     /// distinct.
-    pub fn case_key(&self) -> String {
+    pub fn case_key(&self) -> CaseKey {
         let mut hasher = Sha256::new();
         hasher.update(self.provider_id.as_bytes());
         hasher.update([0]);
@@ -39,7 +40,8 @@ impl CellKey {
         hasher.update([0]);
         hasher.update(self.repeat.to_le_bytes());
         let digest = hasher.finalize();
-        digest[..8].iter().map(|b| format!("{b:02x}")).collect()
+        let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+        CaseKey::new(hex)
     }
 }
 
@@ -115,7 +117,7 @@ pub struct AssertResult {
 #[ts(optional_fields)]
 pub struct CaseResult {
     pub cell: CellKey,
-    pub case_key: String,
+    pub case_key: CaseKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -197,7 +199,7 @@ pub struct FilterSpec {
 #[ts(optional_fields)]
 pub struct RunResult {
     pub schema_version: u32,
-    pub run_id: String,
+    pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -232,7 +234,7 @@ mod tests {
         r1.repeat = 1;
         assert_eq!(base.case_key(), base.case_key());
         assert_ne!(base.case_key(), r1.case_key());
-        assert_eq!(base.case_key().len(), 16);
+        assert_eq!(base.case_key().as_str().len(), 16);
     }
 
     #[test]

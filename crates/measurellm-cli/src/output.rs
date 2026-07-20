@@ -16,13 +16,15 @@ pub enum Format {
 /// Persist a run under `.measurellm/runs/<run_id>/result.json` and update the
 /// `latest` pointer.
 pub fn persist(result: &RunResult) -> std::io::Result<()> {
-    let dir = Path::new(".measurellm").join("runs").join(&result.run_id);
+    let dir = Path::new(".measurellm")
+        .join("runs")
+        .join(result.run_id.as_str());
     std::fs::create_dir_all(&dir)?;
     let json = serde_json::to_vec_pretty(result).map_err(std::io::Error::other)?;
     std::fs::write(dir.join("result.json"), json)?;
     std::fs::write(
         Path::new(".measurellm").join("runs").join("latest"),
-        &result.run_id,
+        result.run_id.as_str(),
     )?;
     Ok(())
 }

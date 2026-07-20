@@ -97,7 +97,9 @@ fn render_table(diff: &RunDiff) -> String {
         };
         out.push_str(&format!(
             "  {marker}  {}\n",
-            case.name.clone().unwrap_or_else(|| case.case_key.clone())
+            case.name
+                .clone()
+                .unwrap_or_else(|| case.case_key.to_string())
         ));
     }
     out.push_str(&format!(

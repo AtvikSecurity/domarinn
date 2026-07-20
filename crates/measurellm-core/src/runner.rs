@@ -20,6 +20,7 @@ use crate::cache_key::provider_cache_key;
 use crate::config::{Assert, AssertKind, Suite, TestCase};
 use crate::filter::{Filter, FilterOpts};
 use crate::generate::resolve_generators;
+use crate::ids::{CaseKey, RunId};
 use crate::provider::{
     CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse, TestMeta,
 };
@@ -251,7 +252,7 @@ pub async fn run(
 
     Ok(RunResult {
         schema_version: RESULT_SCHEMA_VERSION,
-        run_id: ulid::Ulid::new().to_string(),
+        run_id: RunId::generate(),
         project: suite.project.clone(),
         suite: suite.suite.clone(),
         started_at,
@@ -599,7 +600,7 @@ fn has_latency_assert(asserts: &[Assert]) -> bool {
 
 fn error_case(
     cell: CellKey,
-    case_key: String,
+    case_key: CaseKey,
     name: Option<String>,
     test: &TestCase,
     error: String,
