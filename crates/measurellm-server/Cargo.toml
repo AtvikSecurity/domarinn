@@ -1,0 +1,24 @@
+[package]
+name = "measurellm-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Self-hostable results server and web UI for measurellm"
+
+[dependencies]
+measurellm-core = { workspace = true }
+axum = "0.8"
+tokio = { workspace = true }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "compression-gzip"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

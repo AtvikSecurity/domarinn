@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/measurellm-core",
+    "crates/measurellm-cache",
+    "crates/measurellm-server",
+    "crates/measurellm-cli",
+    "crates/measurellm-testkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "MIT"
+repository = "https://github.com/perfectra1n/measurellm"
+authors = ["perfectra1n"]
+
+[workspace.dependencies]
+measurellm-core = { path = "crates/measurellm-core" }
+measurellm-cache = { path = "crates/measurellm-cache" }
+measurellm-server = { path = "crates/measurellm-server" }
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+schemars = { version = "0.8", features = ["preserve_order", "chrono"] }
+
+# templating
+minijinja = { version = "2", features = ["loader", "json", "builtins"] }
+
+# async / http
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "fs", "io-util", "signal"] }
+async-trait = "0.1"
+
+# hashing / ids
+sha2 = "0.10"
+blake3 = "1"
+ulid = { version = "1", features = ["serde"] }
+
+# errors / logging
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# misc
+globset = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+strip = true
+lto = "thin"

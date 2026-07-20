@@ -1,0 +1,28 @@
+[package]
+name = "measurellm-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Core eval engine, config schema, and traits for measurellm"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+schemars = { workspace = true }
+minijinja = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+ulid = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+globset = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

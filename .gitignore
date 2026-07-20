@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+.measurellm/
+# Node / web build artifacts (added when the UI lands)
+node_modules/
+web/dist/
+!web/dist/index.html
+# Local editor / OS noise
+.DS_Store
