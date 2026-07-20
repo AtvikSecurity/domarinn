@@ -3,4 +3,4 @@
 /**
  * Aggregate counts for a run diff.
  */
-export type DiffSummary = { newly_failing: bigint, newly_passing: bigint, still_failing: bigint, unchanged: bigint, output_changed: bigint, added: bigint, removed: bigint, };
+export type DiffSummary = { newly_failing: number, newly_passing: number, still_failing: number, unchanged: number, output_changed: number, added: number, removed: number, };

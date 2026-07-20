@@ -3,4 +3,4 @@
 /**
  * Which filters produced this run (for reproducibility and the UI).
  */
-export type FilterSpec = { tags: Array<string>, filters: Array<string>, providers: Array<string>, prompts: Array<string>, };
+export type FilterSpec = { tags?: Array<string>, filters?: Array<string>, providers?: Array<string>, prompts?: Array<string>, };

@@ -3,4 +3,4 @@
 /**
  * A serializable view of the McNemar result.
  */
-export type McNemarView = { regressions: bigint, fixes: bigint, statistic: number, significant: boolean, };
+export type McNemarView = { regressions: number, fixes: number, statistic: number, significant: boolean, };

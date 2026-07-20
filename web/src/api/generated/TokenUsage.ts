@@ -3,4 +3,4 @@
 /**
  * Token accounting for a single provider call.
  */
-export type TokenUsage = { input_tokens: bigint, output_tokens: bigint, cache_read_tokens: bigint | null, };
+export type TokenUsage = { input_tokens: number, output_tokens: number, cache_read_tokens?: number, };

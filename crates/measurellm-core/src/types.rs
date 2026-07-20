@@ -33,6 +33,7 @@ impl Output {
 
 /// Token accounting for a single provider call.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
 pub struct TokenUsage {
     #[serde(default)]
     pub input_tokens: u64,

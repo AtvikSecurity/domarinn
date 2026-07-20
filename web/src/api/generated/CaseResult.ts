@@ -8,4 +8,4 @@ import type { TokenUsage } from "./TokenUsage";
 /**
  * The result of one matrix cell.
  */
-export type CaseResult = { cell: CellKey, case_key: string, name: string | null, tags: Array<string>, status: CaseStatus, score: number, output: Output | null, asserts: Array<AssertResult>, usage: TokenUsage | null, cost_usd: number | null, latency_ms: bigint, cached: boolean, attempts: number, error: string | null, };
+export type CaseResult = { cell: CellKey, case_key: string, name?: string, tags: Array<string>, status: CaseStatus, score: number, output?: Output, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };

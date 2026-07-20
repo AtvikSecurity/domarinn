@@ -5,4 +5,4 @@ import type { JsonValue } from "./serde_json/JsonValue";
 /**
  * The result of a single assertion.
  */
-export type AssertResult = { kind: string, status: AssertStatus, score: number, weight: number, reason: string, details: JsonValue | null, cached: boolean, };
+export type AssertResult = { kind: string, status: AssertStatus, score: number, weight: number, reason: string, details?: JsonValue, cached: boolean, };

@@ -14,6 +14,7 @@ pub const RESULT_SCHEMA_VERSION: u32 = 1;
 
 /// Identity of one cell in the provider × prompt × test × repeat matrix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
 pub struct CellKey {
     pub provider_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,6 +66,7 @@ pub enum AssertStatus {
 
 /// The result of a single assertion.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
 pub struct AssertResult {
     pub kind: String,
     pub status: AssertStatus,
@@ -80,6 +82,7 @@ pub struct AssertResult {
 
 /// The result of one matrix cell.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
 pub struct CaseResult {
     pub cell: CellKey,
     pub case_key: String,
@@ -107,6 +110,7 @@ pub struct CaseResult {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
 pub struct RunSummary {
     pub total: u64,
     pub passed: u64,
@@ -126,6 +130,7 @@ pub struct RunSummary {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
 pub struct GitMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -136,6 +141,7 @@ pub struct GitMeta {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
 pub struct CiMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -158,6 +164,7 @@ pub struct FilterSpec {
 
 /// The full result of a run.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
 pub struct RunResult {
     pub schema_version: u32,
     pub run_id: String,

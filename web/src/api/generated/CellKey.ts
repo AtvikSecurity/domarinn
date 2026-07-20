@@ -3,4 +3,4 @@
 /**
  * Identity of one cell in the provider × prompt × test × repeat matrix.
  */
-export type CellKey = { provider_id: string, prompt_id: string | null, test_id: string, repeat: number, };
+export type CellKey = { provider_id: string, prompt_id?: string, test_id: string, repeat: number, };

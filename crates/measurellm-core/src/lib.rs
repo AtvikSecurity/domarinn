@@ -64,8 +64,11 @@ pub fn result_schema() -> serde_json::Value {
 ///
 /// This is the single source of truth for the web client's types.
 pub fn export_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError> {
-    use ts_rs::TS;
-    result::RunResult::export_all_to(dir)?;
-    diff::RunDiff::export_all_to(dir)?;
+    use ts_rs::{Config, TS};
+    // u64/i64 export as `number`: token counts / latency will not exceed 2^53 in
+    // practice, and `bigint` is unusable against `JSON.parse` output on the wire.
+    let cfg = Config::new().with_out_dir(dir).with_large_int("number");
+    result::RunResult::export_all(&cfg)?;
+    diff::RunDiff::export_all(&cfg)?;
     Ok(())
 }
