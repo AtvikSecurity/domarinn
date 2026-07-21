@@ -186,4 +186,6 @@ run = 'docker push "${MEASURELLM_IMAGE:-ghcr.io/atviksecurity/measurellm}:${MEAS
 [hooks]
 # Install the lefthook git hooks (see .lefthook.toml) whenever the toolchain
 # is provisioned, so every clone gets the pre-commit formatters for free.
-postinstall = "lefthook install"
+# Guarded: CI provisions subsets of the toolchain (mise-action install_args),
+# where lefthook may be absent and hooks are pointless anyway.
+postinstall = "command -v lefthook >/dev/null 2>&1 && lefthook install || true"

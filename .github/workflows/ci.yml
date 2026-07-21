@@ -26,6 +26,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # WORKAROUND for the self-hosted runner: its persistent /home/runner/.rustup has
+  # toolchains/ and tmp/ on different filesystems, so every rustup
+  # install/update dies with EXDEV ("Invalid cross-device link"). Keeping
+  # RUSTUP_HOME on the per-job temp filesystem sidesteps that at the cost of a
+  # fresh toolchain download per job. Drop this once the runner image mounts
+  # all of .rustup on one filesystem.
+  RUSTUP_HOME: ${{ runner.temp }}/rustup
 
 jobs:
   fmt:
@@ -72,6 +79,10 @@ jobs:
   web:
     name: web (lint + build + vitest)
     runs-on: ubuntu-24.04
+    env:
+      # `mise run` auto-installs every tool in .mise/config.toml, which would
+      # pull in the Rust toolchain this job never uses — skip it.
+      MISE_DISABLE_TOOLS: rust
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:

@@ -17,6 +17,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Same self-hosted runner rustup EXDEV workaround as ci.yml; drop when the runner
+  # image mounts all of .rustup on one filesystem.
+  RUSTUP_HOME: ${{ runner.temp }}/rustup
 
 jobs:
   # ---------------------------------------------------------------------------
