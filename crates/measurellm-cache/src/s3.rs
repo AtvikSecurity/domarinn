@@ -27,7 +27,7 @@ use bytes::Bytes;
 use measurellm_core::cache::{
     CacheBackend, CacheEntry, CacheError, CacheKey, CacheStats, PurgeFilter,
 };
-use object_store::{aws::AmazonS3Builder, path::Path as ObjectPath, ObjectStore};
+use object_store::{aws::AmazonS3Builder, path::Path as ObjectPath, ObjectStore, ObjectStoreExt};
 
 /// Non-secret configuration for an S3-compatible bucket.
 ///
