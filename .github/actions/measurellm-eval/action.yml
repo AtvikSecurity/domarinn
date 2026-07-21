@@ -221,7 +221,7 @@ runs:
     # -- Comment the summary on the PR (create-or-update a single comment). -----
     - name: Comment on PR
       if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7 # pin to SHA
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0 # pin to SHA
       with:
         script: |
           const fs = require('fs');
