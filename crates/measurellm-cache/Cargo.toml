@@ -19,7 +19,7 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 
 # remote HTTP backend
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip"] }
 
 # S3 (and any S3-compatible endpoint) backend
 object_store = { version = "0.14", features = ["aws"] }
