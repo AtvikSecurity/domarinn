@@ -131,7 +131,7 @@ struct MakeUlidRequestId;
 
 impl MakeRequestId for MakeUlidRequestId {
     fn make_request_id<B>(&mut self, _: &Request<B>) -> Option<RequestId> {
-        HeaderValue::from_str(&ulid::Ulid::new().to_string())
+        HeaderValue::from_str(&ulid::Ulid::generate().to_string())
             .ok()
             .map(RequestId::new)
     }

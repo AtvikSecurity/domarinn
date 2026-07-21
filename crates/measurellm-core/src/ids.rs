@@ -90,7 +90,7 @@ string_id!(
 impl RunId {
     /// Mint a fresh run id: a ULID, lexicographically sortable by mint time.
     pub fn generate() -> Self {
-        RunId::new(ulid::Ulid::new().to_string())
+        RunId::new(ulid::Ulid::generate().to_string())
     }
 }
 

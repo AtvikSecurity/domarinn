@@ -81,7 +81,7 @@ pub enum UpdateUserOutcome {
 
 /// Mint a fresh id (a ULID) for either id newtype used in this module.
 fn new_id<T: From<String>>() -> T {
-    T::from(ulid::Ulid::new().to_string())
+    T::from(ulid::Ulid::generate().to_string())
 }
 
 // ---------------------------------------------------------------------------

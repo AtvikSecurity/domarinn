@@ -40,7 +40,7 @@ async-trait = "0.1"
 # hashing / ids
 sha2 = "0.11"
 blake3 = "1"
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 
 # errors / logging
 thiserror = "2"
