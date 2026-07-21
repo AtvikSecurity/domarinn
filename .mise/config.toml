@@ -83,9 +83,9 @@ run = "cargo run -q -p measurellm-cli -- gen-types web/src/api/generated"
 
 [tasks.docker-build]
 description = "Build the container image locally (multi-stage; produces the distroless image). Override the tag with MEASURELLM_IMAGE / MEASURELLM_TAG."
-run = 'docker build -t "${MEASURELLM_IMAGE:-ghcr.io/perfectra1n/measurellm}:${MEASURELLM_TAG:-dev}" .'
+run = 'docker build -t "${MEASURELLM_IMAGE:-ghcr.io/atviksecurity/measurellm}:${MEASURELLM_TAG:-dev}" .'
 
 [tasks.docker-push]
 description = "Push the locally built image (requires `docker login ghcr.io`)."
 depends = ["docker-build"]
-run = 'docker push "${MEASURELLM_IMAGE:-ghcr.io/perfectra1n/measurellm}:${MEASURELLM_TAG:-dev}"'
+run = 'docker push "${MEASURELLM_IMAGE:-ghcr.io/atviksecurity/measurellm}:${MEASURELLM_TAG:-dev}"'

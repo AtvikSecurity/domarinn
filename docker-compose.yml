@@ -9,11 +9,11 @@
 services:
   measurellm:
     # Pull the published image...
-    image: ghcr.io/perfectra1n/measurellm:latest
+    #image: ghcr.io/atviksecurity/measurellm:rolling
     # ...or build locally instead by uncommenting this and commenting `image`:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: measurellm
     restart: unless-stopped
     ports:

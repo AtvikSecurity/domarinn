@@ -76,7 +76,7 @@ docker run -d --name measurellm \
   -e MEASURELLM_ADMIN_PASSWORD='CHANGE_ME' \
   -e MEASURELLM_TOKENS="write:CHANGE_ME_ci,admin:CHANGE_ME_ops" \
   -e MEASURELLM_PUBLIC_URL="https://measurellm.example.com" \
-  ghcr.io/perfectra1n/measurellm:latest
+  ghcr.io/atviksecurity/measurellm:rolling
 ```
 
 State persists in the `measurellm-data` volume mounted at `/data`. Replace the
@@ -98,7 +98,7 @@ URL:
 ```yaml
 services:
   measurellm:
-    image: ghcr.io/perfectra1n/measurellm:latest
+    image: ghcr.io/atviksecurity/measurellm:rolling
     container_name: measurellm
     restart: unless-stopped
     ports:
@@ -196,7 +196,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: measurellm
-          image: ghcr.io/perfectra1n/measurellm:latest
+          image: ghcr.io/atviksecurity/measurellm:rolling
           ports:
             - containerPort: 8321
           env:

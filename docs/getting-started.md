@@ -18,7 +18,7 @@ mise run build                   # builds web/dist, then the release binary
 **Docker** (the server + embedded UI):
 
 ```sh
-docker run -p 8321:8321 -v measurellm-data:/data ghcr.io/perfectra1n/measurellm
+docker run -p 8321:8321 -v measurellm-data:/data ghcr.io/atviksecurity/measurellm:rolling
 ```
 
 Put `target/release/measurellm` on your `PATH`, or invoke it directly.

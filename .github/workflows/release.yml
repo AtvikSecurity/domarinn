@@ -5,18 +5,17 @@ on:
     tags:
       - "v*"
 
-# contents: write to create the Release + upload assets.
-# packages: write to push the image to GHCR.
+# contents: write to create the Release + upload assets. The container image
+# is built and pushed to the Gitea registry by .github/workflows/docker.yml,
+# which also triggers on v* tags.
 permissions:
   contents: write
-  packages: write
 
 # --- Action pinning policy: see .github/workflows/ci.yml. `# vX` comments
 # mark the version to pin each action to a full commit SHA for hardening. ---
 
 env:
   CARGO_TERM_COLOR: always
-  IMAGE: ghcr.io/perfectra1n/measurellm
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -24,7 +23,7 @@ jobs:
   # ---------------------------------------------------------------------------
   binaries:
     name: build ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +96,7 @@ jobs:
   release:
     name: github release
     needs: binaries
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4 # pin to SHA
         with:

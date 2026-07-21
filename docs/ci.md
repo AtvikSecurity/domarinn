@@ -12,6 +12,7 @@ and uploading CI runs to a shared server.
 - [Uploading CI runs to a shared server](#uploading-ci-runs-to-a-shared-server)
 - [This repo's CI (`ci.yml`)](#this-repos-ci-ciyml)
 - [Releases (`release.yml`)](#releases-releaseyml)
+- [Container image (`docker.yml`)](#container-image-dockeryml)
 
 ---
 
@@ -217,21 +218,42 @@ so local and CI builds share one pinned toolchain. Rust compile caching stays on
 ## Releases (`release.yml`)
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on tags
-matching `v*` and produces both binaries and a container image.
+matching `v*` and produces the release binaries. (The container image is built
+separately — see [`docker.yml`](#container-image-dockeryml) below.)
 
 | Job          | What it does |
 |--------------|--------------|
 | **binaries** | Builds the web UI, then the static musl binary for `x86_64` (native) and `aarch64` (via `cross`); stages each as `measurellm-<target>` with a `.sha256`. aarch64 is `continue-on-error`. |
 | **release**  | Downloads the staged binaries and publishes a GitHub Release with auto-generated notes and the `measurellm-*` assets attached. |
-| **docker**   | Uses buildx + QEMU to build and push a **multi-arch** image (`linux/amd64,linux/arm64`) to `ghcr.io/perfectra1n/measurellm`. The Dockerfile is self-contained (it builds the UI + binary internally). |
 
-Image tags come from `docker/metadata-action`: `{{version}}` (e.g. `1.2.3`),
-`{{major}}.{{minor}}` (e.g. `1.2`), and `latest` — the latter only for
-non-prerelease tags (a tag containing `-`, like `v1.2.3-rc.1`, does not move
-`latest`).
+---
+
+## Container image (`docker.yml`)
+
+[`.github/workflows/docker.yml`](../.github/workflows/docker.yml) builds the
+container image and pushes it to the Gitea registry as
+`ghcr.io/atviksecurity/measurellm`, mirroring the
+bake/digest/merge pipeline from the AtvikSecurity/containers repo. The build
+itself is described by [`docker-bake.hcl`](../docker-bake.hcl); the Dockerfile
+is self-contained (it builds the UI + binary internally).
+
+| Job       | What it does |
+|-----------|--------------|
+| **plan**  | Derives tags/labels once with `docker/metadata-action` and stages the resulting bake file as an artifact. |
+| **build** | One leg per platform (currently `linux/amd64`): `docker/bake-action` builds the `image` target and pushes it **by digest** (untagged), with a registry-backed build cache at `ghcr.io/atviksecurity/build_cache:measurellm-<arch>`. |
+| **merge** | Stitches the per-platform digests into one tagged manifest list with `docker buildx imagetools create`. |
+
+It runs on pushes to `main`, on `v*` tags, and via `workflow_dispatch`.
+Registry auth uses the `GITEA_USERNAME` / `GITEA_TOKEN` repo secrets, so the
+workflow token stays read-only.
+
+Image tags come from `docker/metadata-action`: `rolling` tracks `main`, and a
+`v*` tag produces `{{version}}` (e.g. `1.2.3`), `{{major}}.{{minor}}` (e.g.
+`1.2`), and `{{major}}` (e.g. `1`). There is **no `latest` tag** — track
+`rolling` for the tip of main or a semver tag for releases.
 
 Consume the image as described in [`./deploy.md`](./deploy.md):
 
 ```
-ghcr.io/perfectra1n/measurellm:latest
+ghcr.io/atviksecurity/measurellm:rolling
 ```
