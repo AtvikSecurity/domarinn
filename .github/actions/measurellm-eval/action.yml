@@ -210,7 +210,7 @@ runs:
     # -- Upload the JUnit report + summary as an artifact (always). -------------
     - name: Upload results
       if: ${{ always() && steps.eval.outputs.results-path != '' }}
-      uses: actions/upload-artifact@v4 # pin to SHA
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 # pin to SHA
       with:
         name: ${{ inputs.artifact-name }}
         path: |
@@ -221,7 +221,7 @@ runs:
     # -- Comment the summary on the PR (create-or-update a single comment). -----
     - name: Comment on PR
       if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
-      uses: actions/github-script@v7 # pin to SHA
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7 # pin to SHA
       with:
         script: |
           const fs = require('fs');
