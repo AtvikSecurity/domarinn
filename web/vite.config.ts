@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath, URL } from "node:url";
 
 // Build output goes to web/dist so the Rust server can embed it via rust-embed.
-// The dev server proxies /api to the local measurellm server (default port 8321).
+// The dev server proxies /api to the local domarinn server (default port 8321).
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {

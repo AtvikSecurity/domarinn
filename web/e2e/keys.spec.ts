@@ -17,7 +17,7 @@ test.describe("API keys", () => {
       page.getByRole("heading", { name: "API key created" }),
     ).toBeVisible();
     const secret = page.getByTestId("api-key-secret");
-    await expect(secret).toHaveText(/^mllm_/);
+    await expect(secret).toHaveText(/^domarinn_/);
     await expect(page.getByText(/only time the full key is displayed/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Copy key" })).toBeVisible();
 

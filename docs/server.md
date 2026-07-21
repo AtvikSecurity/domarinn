@@ -1,18 +1,18 @@
-# The measurellm server & accounts
+# The domarinn server & accounts
 
-`measurellm server` runs the results server: a JSON API under `/api/v1` **and**
+`domarinn server` runs the results server: a JSON API under `/api/v1` **and**
 the embedded React web UI, served from the **same binary**. There is no separate
 frontend to deploy, no sidecar database, and no runtime dependency — the binary
 is the eval engine, the CLI, the server, and its own container healthcheck.
 
 ```sh
-measurellm server [--port 8321] [--data-dir /data]
+domarinn server [--port 8321] [--data-dir /data]
 ```
 
 | Flag         | Default | Effect |
 |--------------|---------|--------|
 | `--port`     | `8321`  | Listen port. The server always binds `0.0.0.0`. |
-| `--data-dir` | `/data` | State directory (also `MEASURELLM_DATA_DIR`). Holds the SQLite databases. |
+| `--data-dir` | `/data` | State directory (also `DOMARINN_DATA_DIR`). Holds the SQLite databases. |
 
 The server runs until Ctrl-C (graceful shutdown). Health is exposed at both
 `/health` and `/api/v1/health`. See [`./cli.md`](./cli.md) for the rest of the
@@ -36,7 +36,7 @@ hosting.
 
 ```sh
 # Open mode — anyone can read and write. Good for a laptop or a trusted network.
-measurellm server --data-dir ./data
+domarinn server --data-dir ./data
 # UI + API on http://localhost:8321
 ```
 
@@ -45,17 +45,17 @@ The moment you add credentials the server locks writes down automatically — se
 
 ```sh
 # Bootstrap an admin and require a token for writes, in one shot.
-MEASURELLM_ADMIN_USER=admin \
-MEASURELLM_ADMIN_PASSWORD='correct horse battery staple' \
-MEASURELLM_TOKENS='write:mllm_ci,admin:mllm_ops' \
-measurellm server --data-dir ./data
+DOMARINN_ADMIN_USER=admin \
+DOMARINN_ADMIN_PASSWORD='correct horse battery staple' \
+DOMARINN_TOKENS='write:domarinn_ci,admin:domarinn_ops' \
+domarinn server --data-dir ./data
 ```
 
 ---
 
 ## Accounts & auth model
 
-measurellm has **three auth modes**. You rarely set one explicitly: the
+domarinn has **three auth modes**. You rarely set one explicitly: the
 effective mode is *derived* from whether any credentials exist.
 
 | Mode             | Reads / UI | Writes (ingest, baseline, cache PUT) | Admin (delete, prune, users) |
@@ -66,7 +66,7 @@ effective mode is *derived* from whether any credentials exist.
 
 **How the mode is chosen (at startup):**
 
-1. If `MEASURELLM_AUTH_MODE` is set (`open` \| `protect-writes` \| `closed`), it
+1. If `DOMARINN_AUTH_MODE` is set (`open` \| `protect-writes` \| `closed`), it
    wins outright. (`protect_writes` with an underscore is also accepted.)
 2. Otherwise, if **any** static token *or* **any** local user account exists, the
    mode defaults to **`protect-writes`**.
@@ -76,7 +76,7 @@ So a fresh, credential-less instance is fully open; the first token you configur
 or the first account you create flips it to `protect-writes`. The active mode is
 reported by `GET /api/v1/meta` as `auth_mode`.
 
-> **`MEASURELLM_AUTH_MODE` is validated at startup.** An unrecognized value (a
+> **`DOMARINN_AUTH_MODE` is validated at startup.** An unrecognized value (a
 > typo like `protectwrites`) **aborts the launch with an error** rather than
 > silently falling back to `open` — a silent downgrade to a wide-open server
 > would be a security hole. The accepted values are `open`, `protect-writes` (the
@@ -96,11 +96,11 @@ header (see [The auth header](#the-auth-header)).
 no user. Ideal for CI and bootstrapping.
 
 ```
-MEASURELLM_TOKENS="read:mllm_view,write:mllm_ci,admin:mllm_ops"
+DOMARINN_TOKENS="read:domarinn_view,write:domarinn_ci,admin:domarinn_ops"
 ```
 
 Each comma-separated entry is `scope:secret`, where scope is `read`, `write`, or
-`admin`. The secret string is whatever you choose (the `mllm_` names above are
+`admin`. The secret string is whatever you choose (the `domarinn_` names above are
 illustrative). Static tokens are matched in constant time and are **not** tied to
 a user account — so they cannot create API keys or appear in the users list.
 
@@ -111,7 +111,7 @@ a user account — so they cannot create API keys or appear in the users list.
   `admin → admin`, `member → write`.
 - Logging in mints a **session** (token prefix `mses_`, 30-day lifetime). The
   browser UI uses sessions; `POST /auth/logout` revokes the presenting one.
-- Each account can mint **API keys** (prefix `mllm_`, 256 bits of entropy). The
+- Each account can mint **API keys** (prefix `domarinn_`, 256 bits of entropy). The
   secret is shown **exactly once** on creation, is revocable, and carries a
   **scope ceiling** — a key may be created at or below the creator's own scope,
   never above it.
@@ -120,7 +120,7 @@ a user account — so they cannot create API keys or appear in the users list.
 |--------------|----------|-----------|---------------------------|-------------|
 | Static token | (any)    | env var   | no                        | CI, bootstrap |
 | Session      | `mses_`  | account   | yes (as the user)         | Web UI login |
-| API key      | `mllm_`  | account   | yes (as the user)         | Scripts, CI tied to a user |
+| API key      | `domarinn_`  | account   | yes (as the user)         | Scripts, CI tied to a user |
 
 The authenticator chain resolves a presented token in order — **static token →
 API key → session** — dispatching account lookups by prefix so at most one DB
@@ -129,7 +129,7 @@ hit occurs per request.
 ### The auth header
 
 ```
-Authorization: Bearer <static-token | mllm_apikey | mses_session>
+Authorization: Bearer <static-token | domarinn_apikey | mses_session>
 ```
 
 The `Bearer ` prefix is recommended; a bare token value in the header is also
@@ -155,8 +155,8 @@ curl -sX POST http://localhost:8321/api/v1/auth/setup \
 # 201 { "token": "mses_...", "user": { "id": "...", "username": "admin", "role": "admin", ... } }
 ```
 
-**B. Bootstrap from the environment.** Set `MEASURELLM_ADMIN_USER` and
-`MEASURELLM_ADMIN_PASSWORD`. On every startup the server **idempotently** ensures
+**B. Bootstrap from the environment.** Set `DOMARINN_ADMIN_USER` and
+`DOMARINN_ADMIN_PASSWORD`. On every startup the server **idempotently** ensures
 that account exists as an enabled admin, creating it if missing and updating the
 password if it changed. This is the right choice for containers and Kubernetes —
 declare the admin in your secret store and the instance self-seeds.
@@ -189,7 +189,7 @@ compressed (the server decompresses transparently).
 
 ```json
 {
-  "name": "measurellm",
+  "name": "domarinn",
   "version": "0.1.0",
   "auth_mode": "protect-writes",
   "setup_required": false,
@@ -242,7 +242,7 @@ token has no owning user and gets a `403` here.
 | DELETE | `/api/v1/runs/{id}`                      | `admin` | Delete a run. `204` on success. |
 
 <a id="run-ingest"></a>**Ingest** (`POST /api/v1/runs`) accepts a `RunResult`
-JSON document (see [`./protocol.md`](./protocol.md) and `measurellm schema
+JSON document (see [`./protocol.md`](./protocol.md) and `domarinn schema
 result`). The body must carry a `schema_version` within the supported window
 (`result_schema_version - 1 ..= result_schema_version`), else `422`. Ingest is
 **idempotent by content**:
@@ -254,7 +254,7 @@ result`). The body must carry a `schema_version` within the supported window
 | `409 Conflict`| Same run id, **different** content. |
 
 The `url` in the response is a browser link to the run. It is built from
-`MEASURELLM_PUBLIC_URL` when set; otherwise from the request's `Host` header and
+`DOMARINN_PUBLIC_URL` when set; otherwise from the request's `Host` header and
 `X-Forwarded-Proto` (see [`./deploy.md`](./deploy.md#reverse-proxies)).
 
 **List filters** (`GET /api/v1/runs`, all optional query params): `project`,
@@ -290,7 +290,7 @@ for the client side.
 | POST   | `/api/v1/cache/prune`      | `admin` | Prune by `older_than_days` and/or `target_bytes` (LRU eviction). Returns `{ "pruned": N }`. |
 
 > The server also runs an **hourly retention** task that prunes the cache to
-> `MEASURELLM_CACHE_MAX_AGE_DAYS` and `MEASURELLM_CACHE_MAX_BYTES` automatically;
+> `DOMARINN_CACHE_MAX_AGE_DAYS` and `DOMARINN_CACHE_MAX_BYTES` automatically;
 > `POST /cache/prune` is the manual equivalent.
 
 ---
@@ -325,29 +325,29 @@ being silently ignored and masking the mistake.
 
 ## Environment variables
 
-**Read by the server** (`measurellm server`):
+**Read by the server** (`domarinn server`):
 
 | Variable                        | Default        | Purpose |
 |---------------------------------|----------------|---------|
-| `MEASURELLM_DATA_DIR`           | `/data`        | State directory. Holds `measurellm.db` and `cache.db`. Also settable with `--data-dir`. |
-| `MEASURELLM_TOKENS`             | (unset)        | Static bearer tokens as `scope:secret` pairs, comma-separated. Configuring any flips the default mode to `protect-writes`. |
-| `MEASURELLM_AUTH_MODE`          | (derived)      | Force the mode: `open` \| `protect-writes` \| `closed`. Overrides the derivation. |
-| `MEASURELLM_ADMIN_USER`         | (unset)        | Bootstrap admin username. Requires the password too. |
-| `MEASURELLM_ADMIN_PASSWORD`     | (unset)        | Bootstrap admin password. The account is (re)ensured on every startup. |
-| `MEASURELLM_PUBLIC_URL`         | (unset)        | Public base URL for share links / absolute URLs. No trailing slash, no path prefix. |
-| `MEASURELLM_CACHE_MAX_ENTRY_BYTES` | `4194304` (4 MiB)   | Max size of a single cache entry. |
-| `MEASURELLM_CACHE_MAX_BYTES`    | `1073741824` (1 GiB) | Total cache size target for retention. |
-| `MEASURELLM_CACHE_MAX_AGE_DAYS` | `30`           | Cache entry max age for retention. |
-| `MEASURELLM_LOG_FORMAT`         | (auto)         | Log rendering: `pretty` \| `compact` \| `json`. Auto-selected from the terminal when unset — see [Logging & observability](#logging--observability). |
-| `RUST_LOG`                      | (unset)        | Overrides the default log filter wholesale, e.g. `RUST_LOG=measurellm=debug,tower_http=off`. When unset the server logs at `info`. Logs go to stderr. |
+| `DOMARINN_DATA_DIR`           | `/data`        | State directory. Holds `domarinn.db` and `cache.db`. Also settable with `--data-dir`. |
+| `DOMARINN_TOKENS`             | (unset)        | Static bearer tokens as `scope:secret` pairs, comma-separated. Configuring any flips the default mode to `protect-writes`. |
+| `DOMARINN_AUTH_MODE`          | (derived)      | Force the mode: `open` \| `protect-writes` \| `closed`. Overrides the derivation. |
+| `DOMARINN_ADMIN_USER`         | (unset)        | Bootstrap admin username. Requires the password too. |
+| `DOMARINN_ADMIN_PASSWORD`     | (unset)        | Bootstrap admin password. The account is (re)ensured on every startup. |
+| `DOMARINN_PUBLIC_URL`         | (unset)        | Public base URL for share links / absolute URLs. No trailing slash, no path prefix. |
+| `DOMARINN_CACHE_MAX_ENTRY_BYTES` | `4194304` (4 MiB)   | Max size of a single cache entry. |
+| `DOMARINN_CACHE_MAX_BYTES`    | `1073741824` (1 GiB) | Total cache size target for retention. |
+| `DOMARINN_CACHE_MAX_AGE_DAYS` | `30`           | Cache entry max age for retention. |
+| `DOMARINN_LOG_FORMAT`         | (auto)         | Log rendering: `pretty` \| `compact` \| `json`. Auto-selected from the terminal when unset — see [Logging & observability](#logging--observability). |
+| `RUST_LOG`                      | (unset)        | Overrides the default log filter wholesale, e.g. `RUST_LOG=domarinn=debug,tower_http=off`. When unset the server logs at `info`. Logs go to stderr. |
 
 **Read by the CLI** (when uploading runs / using an HTTP cache — *not* the
 server):
 
 | Variable                | Purpose |
 |-------------------------|---------|
-| `MEASURELLM_SERVER_URL` | Target server base URL for `measurellm run --share` / `share` (or the `--server-url` flag). |
-| `MEASURELLM_TOKEN`      | A single bearer token the CLI sends when uploading a run or using the HTTP cache backend. |
+| `DOMARINN_SERVER_URL` | Target server base URL for `domarinn run --share` / `share` (or the `--server-url` flag). |
+| `DOMARINN_TOKEN`      | A single bearer token the CLI sends when uploading a run or using the HTTP cache backend. |
 
 See [`./cli.md`](./cli.md) and [`./caching.md`](./caching.md) for the client
 side.
@@ -375,13 +375,13 @@ client or a proxy can correlate a single call end to end.
 **Format.** As on the CLI, rendering is auto-selected: **pretty** when stderr is
 a terminal, and **JSON** (one object per line) when it is not — which is the usual
 case under Docker/Kubernetes, so container logs are structured out of the box.
-Force a format with `MEASURELLM_LOG_FORMAT=pretty|compact|json`.
+Force a format with `DOMARINN_LOG_FORMAT=pretty|compact|json`.
 
 **Turning the volume down.** `RUST_LOG` replaces the default filter entirely. To
 keep warnings and errors but silence the per-request `info` lines:
 
 ```sh
-RUST_LOG=measurellm=warn,tower_http=off measurellm server
+RUST_LOG=domarinn=warn,tower_http=off domarinn server
 ```
 
 > Known consideration: the container healthcheck probes `/health` on an interval,
@@ -397,7 +397,7 @@ State lives in the data directory as **two SQLite files** (WAL mode):
 
 | File            | Contents | Back up? |
 |-----------------|----------|----------|
-| `measurellm.db` | Durable run history. Each run is stored both as a compressed lossless blob (for export) and as normalized rows for indexed filtering. Also holds users, sessions, API keys, and baselines. | **Yes — this is the backup target.** |
+| `domarinn.db` | Durable run history. Each run is stored both as a compressed lossless blob (for export) and as normalized rows for indexed filtering. Also holds users, sessions, API keys, and baselines. | **Yes — this is the backup target.** |
 | `cache.db`      | The content-addressed provider cache. Regenerable. | No — disposable. |
 
 SQLite is a **single writer**: run exactly one instance against a given data
@@ -450,11 +450,11 @@ curl -sX POST "$BASE/api/v1/apikeys" \
   -H "authorization: Bearer $SESSION" \
   -H 'content-type: application/json' \
   -d '{"name":"ci","scope":"write"}'
-# -> { "id": "...", "prefix": "mllm_xxxxxx", "scope": "write", "key": "mllm_<64 hex>", ... }
+# -> { "id": "...", "prefix": "domarinn_xxxxxx", "scope": "write", "key": "domarinn_<64 hex>", ... }
 
-# 4) Upload a run with a token (a static token or an mllm_ API key).
+# 4) Upload a run with a token (a static token or an domarinn_ API key).
 curl -sX POST "$BASE/api/v1/runs" \
-  -H "authorization: Bearer mllm_ci" \
+  -H "authorization: Bearer domarinn_ci" \
   -H 'content-type: application/json' \
   --data-binary @result.json
 # -> 201 { "id": "<run_id>", "url": "http://localhost:8321/runs/<run_id>" }

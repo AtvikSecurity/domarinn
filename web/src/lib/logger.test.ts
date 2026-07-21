@@ -34,7 +34,7 @@ describe("log emit gating", () => {
     log.warn("heads up", { a: 1 });
 
     expect(debugSpy).not.toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalledWith("[measurellm]", "heads up", { a: 1 });
+    expect(warnSpy).toHaveBeenCalledWith("[domarinn]", "heads up", { a: 1 });
   });
 
   it("setLevel lowers the threshold so debug is emitted again", () => {
@@ -46,6 +46,6 @@ describe("log emit gating", () => {
 
     log.setLevel("debug");
     log.debug("now visible");
-    expect(debugSpy).toHaveBeenCalledWith("[measurellm]", "now visible");
+    expect(debugSpy).toHaveBeenCalledWith("[domarinn]", "now visible");
   });
 });

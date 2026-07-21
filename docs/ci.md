@@ -1,6 +1,6 @@
 # CI integration
 
-measurellm is built to gate pull requests: it runs an eval suite, compares
+domarinn is built to gate pull requests: it runs an eval suite, compares
 against a baseline, writes machine-readable reports, and — crucially — returns an
 **exit code that distinguishes "the model regressed" from "the harness broke".**
 This page covers gating a PR, the reusable GitHub Action, this repo's own CI/CD,
@@ -18,7 +18,7 @@ and uploading CI runs to a shared server.
 
 ## The exit-code contract
 
-Every measurellm run exits with a code your CI can branch on. **`3` (infra) wins
+Every domarinn run exits with a code your CI can branch on. **`3` (infra) wins
 over `1` (assertion)** when both happen in one run — a broken harness must never
 masquerade as a passing eval, nor should it be blamed on the PR author.
 
@@ -38,7 +38,7 @@ This is the same contract the CLI documents in [`./cli.md`](./cli.md#exit-codes)
 The minimal gate is a single `run` invocation whose exit code you read:
 
 ```sh
-measurellm run \
+domarinn run \
   --against latest \
   --format junit --out results.xml \
   --summary-md summary.md
@@ -55,7 +55,7 @@ measurellm run \
 Then gate on the code:
 
 ```sh
-measurellm run --against latest --format junit --out results.xml --summary-md summary.md
+domarinn run --against latest --format junit --out results.xml --summary-md summary.md
 code=$?
 case "$code" in
   0) echo "all passed" ;;
@@ -73,8 +73,8 @@ report upload and PR comment, so you usually don't hand-roll it.
 ## The reusable action
 
 A composite action lives at
-[`.github/actions/measurellm-eval/action.yml`](../.github/actions/measurellm-eval/action.yml).
-It resolves a `measurellm` binary, runs your suite, uploads the JUnit report +
+[`.github/actions/domarinn-eval/action.yml`](../.github/actions/domarinn-eval/action.yml).
+It resolves a `domarinn` binary, runs your suite, uploads the JUnit report +
 Markdown summary, posts (or updates) a single PR comment, and gates the job on
 the CLI's exit code.
 
@@ -93,9 +93,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: perfectra1n/measurellm/.github/actions/measurellm-eval@v1
+      - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@v1
         with:
-          config: eval/measurellm.yaml
+          config: eval/domarinn.yaml
           against: latest
 ```
 
@@ -103,15 +103,15 @@ jobs:
 
 | Input                | Default             | Purpose |
 |----------------------|---------------------|---------|
-| `config`             | `measurellm.yaml`   | Suite file, or a directory containing `measurellm.yaml`. |
-| `binary-path`        | `""`                | Path to a prebuilt `measurellm`. When set, binary resolution stops here (no download, no build). |
+| `config`             | `domarinn.yaml`   | Suite file, or a directory containing `domarinn.yaml`. |
+| `binary-path`        | `""`                | Path to a prebuilt `domarinn`. When set, binary resolution stops here (no download, no build). |
 | `version`            | `latest`            | Release tag to download the binary from (e.g. `v0.1.0`), or `latest`. Used only when `binary-path` is empty. |
-| `server-url`         | `""`                | Results server base URL. When set, the run is uploaded with `--share` (exported as `MEASURELLM_SERVER_URL`). |
-| `token`              | `""`                | Bearer token for the results server (exported as `MEASURELLM_TOKEN`). Pass a **secret**, never a literal. |
+| `server-url`         | `""`                | Results server base URL. When set, the run is uploaded with `--share` (exported as `DOMARINN_SERVER_URL`). |
+| `token`              | `""`                | Bearer token for the results server (exported as `DOMARINN_TOKEN`). Pass a **secret**, never a literal. |
 | `against`            | `""`                | Baseline to diff against (`latest`, a run id, or a `result.json` path). Empty disables the diff. A regression makes the CLI exit 1. |
 | `fail-on-regression` | `"true"`            | If `true`, exit 1 (assertion/regression) fails the check. If `false`, exit 1 is a warning only. Exit 2 and 3 **always** fail. |
 | `comment`            | `"true"`            | Post/update the summary comment on the PR. |
-| `artifact-name`      | `"measurellm-results"` | Name of the uploaded artifact holding `results.xml` + `summary.md`. |
+| `artifact-name`      | `"domarinn-results"` | Name of the uploaded artifact holding `results.xml` + `summary.md`. |
 
 ### Outputs
 
@@ -127,13 +127,13 @@ jobs:
 ### What it does, step by step
 
 1. **Resolve the binary.** Provided `binary-path` → download
-   `measurellm-<target>` from the repo's GitHub Releases (`version` or `latest`,
+   `domarinn-<target>` from the repo's GitHub Releases (`version` or `latest`,
    arch auto-detected) → **fallback** to building from source with `cargo`
-   (`cargo install --path crates/measurellm-cli` if this repo is checked out,
+   (`cargo install --path crates/domarinn-cli` if this repo is checked out,
    else `cargo install --git …`). The cargo fallback requires a Rust toolchain on
    the runner — add `dtolnay/rust-toolchain` before this action if you rely on it.
 2. **Run the suite:**
-   `measurellm run <config> --format junit --out results.xml --summary-md
+   `domarinn run <config> --format junit --out results.xml --summary-md
    summary.md`, appending `--against <against>` and `--share` when those inputs
    are set. It captures the exit code without aborting so the later steps still
    run.
@@ -143,7 +143,7 @@ jobs:
 4. **Upload** `results.xml` + `summary.md` as an artifact (**always**, even on
    failure), and append the summary to the job's step summary.
 5. **Comment on the PR** — creates or updates one comment (matched by a hidden
-   `<!-- measurellm-eval -->` marker) so repeated pushes don't spam the thread.
+   `<!-- domarinn-eval -->` marker) so repeated pushes don't spam the thread.
    Skipped unless `comment: true` and the event is a `pull_request`.
 6. **Gate** on the exit code: `0` passes; `1` fails **only when
    `fail-on-regression` is true** (otherwise a warning); `2` and `3` always fail.
@@ -151,13 +151,13 @@ jobs:
 ### Advanced usage
 
 ```yaml
-- uses: perfectra1n/measurellm/.github/actions/measurellm-eval@v1
+- uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@v1
   with:
     config: eval/
     against: latest
     fail-on-regression: "true"
-    server-url: https://measurellm.example.com   # enables --share
-    token: ${{ secrets.MEASURELLM_TOKEN }}        # write-scoped token
+    server-url: https://domarinn.example.com   # enables --share
+    token: ${{ secrets.DOMARINN_TOKEN }}        # write-scoped token
 ```
 
 ---
@@ -167,14 +167,14 @@ jobs:
 Point CI at a shared [server](./server.md) so every eval is browsable and each PR
 gets a durable link, and so runs can share a provider cache.
 
-- **`server-url` / `MEASURELLM_SERVER_URL`** — the server base URL. Setting it
+- **`server-url` / `DOMARINN_SERVER_URL`** — the server base URL. Setting it
   makes the run upload with **`--share`**.
-- **`MEASURELLM_TOKEN`** (the action's `token` input) — a bearer token sent on
+- **`DOMARINN_TOKEN`** (the action's `token` input) — a bearer token sent on
   upload. If the server runs in `protect-writes` or `closed` mode, this needs
-  **`write`** scope (a static `write:` token or an `mllm_` API key). Always pass
+  **`write`** scope (a static `write:` token or an `domarinn_` API key). Always pass
   it from a secret.
 - **`--share`** uploads the completed run and prints `View run: <url>`; the URL
-  uses the server's `MEASURELLM_PUBLIC_URL`.
+  uses the server's `DOMARINN_PUBLIC_URL`.
 
 On GitHub Actions the CLI automatically enriches the uploaded run with git
 (branch, commit, dirty flag) and CI (provider + run URL) metadata, so shared runs
@@ -182,7 +182,7 @@ are traceable back to the workflow.
 
 **Shared cache for CI.** Multiple CI jobs can share provider outputs through the
 server's content-addressed cache (`/api/v1/cache/*`), which cuts cost and time on
-reruns. The client side — the `http` cache backend, `MEASURELLM_SERVER_URL`, and
+reruns. The client side — the `http` cache backend, `DOMARINN_SERVER_URL`, and
 `cache_salt` — is documented in [`./caching.md`](./caching.md).
 
 ---
@@ -223,8 +223,8 @@ separately — see [`docker.yml`](#container-image-dockeryml) below.)
 
 | Job          | What it does |
 |--------------|--------------|
-| **binaries** | Builds the web UI, then the static musl binary for `x86_64` (native) and `aarch64` (via `cross`); stages each as `measurellm-<target>` with a `.sha256`. aarch64 is `continue-on-error`. |
-| **release**  | Downloads the staged binaries and publishes a GitHub Release with auto-generated notes and the `measurellm-*` assets attached. |
+| **binaries** | Builds the web UI, then the static musl binary for `x86_64` (native) and `aarch64` (via `cross`); stages each as `domarinn-<target>` with a `.sha256`. aarch64 is `continue-on-error`. |
+| **release**  | Downloads the staged binaries and publishes a GitHub Release with auto-generated notes and the `domarinn-*` assets attached. |
 
 ---
 
@@ -232,7 +232,7 @@ separately — see [`docker.yml`](#container-image-dockeryml) below.)
 
 [`.github/workflows/docker.yml`](../.github/workflows/docker.yml) builds the
 container image and pushes it to the Gitea registry as
-`ghcr.io/atviksecurity/measurellm`, mirroring the
+`ghcr.io/atviksecurity/domarinn`, mirroring the
 bake/digest/merge pipeline from the AtvikSecurity/containers repo. The build
 itself is described by [`docker-bake.hcl`](../docker-bake.hcl); the Dockerfile
 is self-contained (it builds the UI + binary internally).
@@ -240,7 +240,7 @@ is self-contained (it builds the UI + binary internally).
 | Job       | What it does |
 |-----------|--------------|
 | **plan**  | Derives tags/labels once with `docker/metadata-action` and stages the resulting bake file as an artifact. |
-| **build** | One leg per platform (currently `linux/amd64`): `docker/bake-action` builds the `image` target and pushes it **by digest** (untagged), with a registry-backed build cache at `ghcr.io/atviksecurity/build_cache:measurellm-<arch>`. |
+| **build** | One leg per platform (currently `linux/amd64`): `docker/bake-action` builds the `image` target and pushes it **by digest** (untagged), with a registry-backed build cache at `ghcr.io/atviksecurity/build_cache:domarinn-<arch>`. |
 | **merge** | Stitches the per-platform digests into one tagged manifest list with `docker buildx imagetools create`. |
 
 It runs on pushes to `main`, on `v*` tags, and via `workflow_dispatch`.
@@ -255,5 +255,5 @@ Image tags come from `docker/metadata-action`: `rolling` tracks `main`, and a
 Consume the image as described in [`./deploy.md`](./deploy.md):
 
 ```
-ghcr.io/atviksecurity/measurellm:rolling
+ghcr.io/atviksecurity/domarinn:rolling
 ```

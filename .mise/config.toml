@@ -1,4 +1,4 @@
-# mise configuration for measurellm.
+# mise configuration for domarinn.
 #
 # mise (https://mise.jdx.dev) pins the toolchain this repo needs and defines the
 # task orchestration that previously lived in the justfile. This file lives at
@@ -58,7 +58,7 @@ run = ["pnpm -C web build", "cargo build --release"]
 
 [tasks.dev]
 description = "Run the results server + API on :8321 for local development (serves the embedded UI; run `pnpm -C web dev` alongside for live UI work)."
-run = "cargo run -p measurellm-cli -- server"
+run = "cargo run -p domarinn-cli -- server"
 
 [tasks.test]
 description = "Run the Rust test suite."
@@ -91,25 +91,25 @@ run = "cargo fmt"
 
 [tasks.schema]
 description = "Regenerate the config JSON Schema that editors and CI consume. Keep the result committed; CI fails if it drifts."
-run = "cargo run -q -p measurellm-cli -- schema config > measurellm.schema.json"
+run = "cargo run -q -p domarinn-cli -- schema config > domarinn.schema.json"
 
 [tasks.gen-types]
 description = "Export TypeScript DTOs for the web UI from the Rust result/diff types. This directory is the web type source of truth; keep it committed. CI regenerates it and fails on drift."
-run = "cargo run -q -p measurellm-cli -- gen-types web/src/api/generated"
+run = "cargo run -q -p domarinn-cli -- gen-types web/src/api/generated"
 
 # --- CI gates -----------------------------------------------------------------
 # One task per CI job, so `mise run <task>` locally is byte-for-byte what CI
 # runs (ci.yml invokes these same tasks). `mise run ci` runs the whole matrix.
 
 [tasks.schema-check]
-description = "Fail if the committed measurellm.schema.json has drifted from the generator (the CI schema-check job). Run `mise run schema` and commit to fix."
+description = "Fail if the committed domarinn.schema.json has drifted from the generator (the CI schema-check job). Run `mise run schema` and commit to fix."
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 # pipefail so a *compile* failure of the generator fails the task instead of
 # being masked by diff's exit code (which would read as "schema out of date").
-if ! cargo run -q -p measurellm-cli -- schema config | diff -u measurellm.schema.json -; then
-  echo "measurellm.schema.json is out of date. Run 'mise run schema' and commit the result." >&2
+if ! cargo run -q -p domarinn-cli -- schema config | diff -u domarinn.schema.json -; then
+  echo "domarinn.schema.json is out of date. Run 'mise run schema' and commit the result." >&2
   exit 1
 fi
 '''
@@ -119,7 +119,7 @@ description = "Fail if web/src/api/generated has drifted from the Rust types (th
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-cargo run -q -p measurellm-cli -- gen-types web/src/api/generated
+cargo run -q -p domarinn-cli -- gen-types web/src/api/generated
 if [ -z "$(git ls-files web/src/api/generated)" ]; then
   echo "web/src/api/generated is not committed. Run 'mise run gen-types' and commit the result." >&2
   exit 1
@@ -157,7 +157,7 @@ run = "pnpm -C web test"
 description = "Static x86_64 musl release build of the CLI (the CI musl-build job). Needs a musl C toolchain on the host (musl-gcc, e.g. Debian musl-tools) for rusqlite's bundled SQLite."
 run = [
   "rustup target add x86_64-unknown-linux-musl",
-  "cargo build --release --target x86_64-unknown-linux-musl -p measurellm-cli",
+  "cargo build --release --target x86_64-unknown-linux-musl -p domarinn-cli",
 ]
 
 [tasks.ci]
@@ -175,13 +175,13 @@ depends = [
 ]
 
 [tasks.docker-build]
-description = "Build the container image locally (multi-stage; produces the distroless image). Override the tag with MEASURELLM_IMAGE / MEASURELLM_TAG."
-run = 'docker build -t "${MEASURELLM_IMAGE:-ghcr.io/atviksecurity/measurellm}:${MEASURELLM_TAG:-dev}" .'
+description = "Build the container image locally (multi-stage; produces the distroless image). Override the tag with DOMARINN_IMAGE / DOMARINN_TAG."
+run = 'docker build -t "${DOMARINN_IMAGE:-ghcr.io/atviksecurity/domarinn}:${DOMARINN_TAG:-dev}" .'
 
 [tasks.docker-push]
 description = "Push the locally built image (requires `docker login ghcr.io`)."
 depends = ["docker-build"]
-run = 'docker push "${MEASURELLM_IMAGE:-ghcr.io/atviksecurity/measurellm}:${MEASURELLM_TAG:-dev}"'
+run = 'docker push "${DOMARINN_IMAGE:-ghcr.io/atviksecurity/domarinn}:${DOMARINN_TAG:-dev}"'
 
 [hooks]
 # Install the lefthook git hooks (see .lefthook.toml) whenever the toolchain

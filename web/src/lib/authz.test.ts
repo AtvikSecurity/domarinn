@@ -11,7 +11,7 @@ import type { AuthMode, MetaResponse, MeResponse } from "@/api";
 
 function meta(auth_mode: AuthMode, setup_required = false): MetaResponse {
   return {
-    name: "measurellm",
+    name: "domarinn",
     version: "test",
     auth_mode,
     setup_required,

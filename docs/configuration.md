@@ -1,22 +1,22 @@
-# Suite configuration (`measurellm.yaml`)
+# Suite configuration (`domarinn.yaml`)
 
-A measurellm suite is a single declarative YAML file (conventionally
-`measurellm.yaml`) that describes **what to test**, **which systems to test it
+A domarinn suite is a single declarative YAML file (conventionally
+`domarinn.yaml`) that describes **what to test**, **which systems to test it
 against**, and **how to judge the answers**. You point the CLI at it —
-`measurellm run .` uses `measurellm.yaml` in the current directory, or pass an
+`domarinn run .` uses `domarinn.yaml` in the current directory, or pass an
 explicit file. This page documents every field of that file, verified against
-the schema in `measurellm-core`.
+the schema in `domarinn-core`.
 
 The config is deserialized straight from these structs, so the shapes here are
 the source of truth. A machine-readable JSON Schema is generated from the same
 types (see [Editor completion](#editor-completion-and-validation)), and
-`measurellm validate` checks a suite structurally without making any provider
+`domarinn validate` checks a suite structurally without making any provider
 calls.
 
 ## A minimal complete suite
 
 ```yaml
-# yaml-language-server: $schema=./measurellm.schema.json
+# yaml-language-server: $schema=./domarinn.schema.json
 version: 1
 project: my-team          # optional: namespaces runs on the results server
 suite: smoke              # optional: names this suite
@@ -51,17 +51,17 @@ suite for autocomplete and inline validation in editors that speak the YAML
 Language Server:
 
 ```sh
-measurellm schema config > measurellm.schema.json
+domarinn schema config > domarinn.schema.json
 ```
 
 ```yaml
-# yaml-language-server: $schema=./measurellm.schema.json
+# yaml-language-server: $schema=./domarinn.schema.json
 version: 1
 # ...
 ```
 
 The schema is regenerated from the config structs, so it never drifts from what
-the loader accepts. See [`cli.md`](./cli.md) for `measurellm validate`, which
+the loader accepts. See [`cli.md`](./cli.md) for `domarinn validate`, which
 reports structural issues (unknown version, empty providers, duplicate ids, a
 prompt that sets both `template` and `messages`, and so on).
 
@@ -508,7 +508,7 @@ AWS credential chain):
 cache:
   backend: s3
   s3:
-    bucket: measurellm-cache
+    bucket: domarinn-cache
     endpoint: https://s3.example.com
     region: us-east-1
     prefix: runs/
@@ -629,7 +629,7 @@ defaults:
 ```
 
 ```yaml
-# measurellm.yaml
+# domarinn.yaml
 version: 1
 extends: "file://base.yaml"
 suite: child
@@ -653,13 +653,13 @@ child appended.
 ## Strict validation
 
 A suite is validated structurally before any provider is contacted — both by
-`measurellm validate` and at the start of `measurellm run`. Validation is strict
+`domarinn validate` and at the start of `domarinn run`. Validation is strict
 on purpose: a typo is an error you can fix, not a field that is silently ignored
 while the setting it was meant to change quietly does nothing.
 
 - **Unknown or misspelled keys are a hard error that names the file, the dotted
   path, and the key.** A stray `maxx:` under `runner.retries`, for instance,
-  fails with a message like ``examples/x/measurellm.yaml: runner.retries: unknown
+  fails with a message like ``examples/x/domarinn.yaml: runner.retries: unknown
   field `maxx` `` — so you can jump straight to the offending line.
 - **The check reaches inside provider, assertion, and grader mappings.** A typo'd
   provider field (`basurl:` for `base_url:`) or assertion option is flagged,

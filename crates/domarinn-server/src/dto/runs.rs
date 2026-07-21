@@ -1,0 +1,277 @@
+//! DTOs for `GET /runs`, `GET /runs/{id}`, `POST /runs`, and the lean
+//! per-case assert record stored in the `cases.asserts` DB column.
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use domarinn_core::asserts::AssertName;
+use domarinn_core::ids::RunId;
+
+/// A lean per-assert record: no reason/details/weight, just enough to render
+/// a pass/fail chip. Serialized as a JSON array into the `cases.asserts` DB
+/// column at ingest time and deserialized back out for `GET /runs/{id}/cases`.
+/// `label` and `kind` are always equal today (both are the assert's
+/// [`AssertName`]) but kept as two fields to match the wire shape the UI
+/// already consumes.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct CaseAssertLean {
+    pub label: AssertName,
+    pub kind: AssertName,
+    pub passed: bool,
+    pub score: f64,
+}
+
+/// One row of `GET /runs` — everything needed to render a run in a list,
+/// without the case-level detail.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RunListItem {
+    pub id: RunId,
+    pub project: Option<String>,
+    pub suite: Option<String>,
+    /// RFC3339.
+    pub created_at: String,
+    pub git_branch: Option<String>,
+    pub git_commit: Option<String>,
+    pub git_dirty: Option<bool>,
+    pub case_count: i64,
+    pub pass_count: i64,
+    pub fail_count: i64,
+    pub error_count: i64,
+    pub pass_rate: f64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: i64,
+    pub tags: Vec<String>,
+}
+
+/// `GET /runs` response.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RunListResponse {
+    pub runs: Vec<RunListItem>,
+    pub next_cursor: Option<String>,
+}
+
+/// `GET /runs/{id}` response: run metadata plus the tags and the distinct
+/// set of assert labels seen across its cases (used to populate filter UIs
+/// without a second round trip).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RunDetailResponse {
+    pub id: RunId,
+    pub project: Option<String>,
+    pub suite: Option<String>,
+    /// RFC3339.
+    pub created_at: String,
+    /// RFC3339.
+    pub uploaded_at: String,
+    pub schema_version: i64,
+    pub git_branch: Option<String>,
+    pub git_commit: Option<String>,
+    pub git_dirty: Option<bool>,
+    pub ci_provider: Option<String>,
+    pub ci_run_url: Option<String>,
+    pub case_count: i64,
+    pub pass_count: i64,
+    pub fail_count: i64,
+    pub error_count: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: i64,
+    pub content_hash: String,
+    pub uploaded_by: Option<String>,
+    pub tags: Vec<String>,
+    pub assert_labels: Vec<String>,
+}
+
+/// `POST /runs` success response body (201 Created, or 200 OK when identical
+/// content already existed). The 409 conflict body is a distinct, ad-hoc
+/// shape (`{"error": ..., "id": ...}`) and is not this type.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct IngestResponse {
+    pub id: RunId,
+    pub url: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn case_assert_lean_matches_todays_wire_shape() {
+        let dto = CaseAssertLean {
+            label: AssertName::Contains,
+            kind: AssertName::Contains,
+            passed: true,
+            score: 1.0,
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({
+                "label": "contains",
+                "kind": "contains",
+                "passed": true,
+                "score": 1.0,
+            })
+        );
+    }
+
+    #[test]
+    fn run_list_item_matches_todays_wire_shape() {
+        let dto = RunListItem {
+            id: RunId::new("r-1"),
+            project: Some("proj".to_string()),
+            suite: Some("suite".to_string()),
+            created_at: "2026-01-01T00:00:00+00:00".to_string(),
+            git_branch: Some("main".to_string()),
+            git_commit: Some("abc123".to_string()),
+            git_dirty: Some(false),
+            case_count: 2,
+            pass_count: 1,
+            fail_count: 1,
+            error_count: 0,
+            pass_rate: 0.5,
+            prompt_tokens: 10,
+            completion_tokens: 20,
+            cost_usd: Some(0.0025),
+            duration_ms: 30000,
+            tags: vec!["nightly".to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({
+                "id": "r-1",
+                "project": "proj",
+                "suite": "suite",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "git_branch": "main",
+                "git_commit": "abc123",
+                "git_dirty": false,
+                "case_count": 2,
+                "pass_count": 1,
+                "fail_count": 1,
+                "error_count": 0,
+                "pass_rate": 0.5,
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "cost_usd": 0.0025,
+                "duration_ms": 30000,
+                "tags": ["nightly"],
+            })
+        );
+    }
+
+    #[test]
+    fn run_list_item_nulls_absent_optionals() {
+        // A run with no project/suite/git/cost must serialize those as
+        // explicit JSON null, not omit the keys (json! never omitted them).
+        let dto = RunListItem {
+            id: RunId::new("r-2"),
+            project: None,
+            suite: None,
+            created_at: "2026-01-01T00:00:00+00:00".to_string(),
+            git_branch: None,
+            git_commit: None,
+            git_dirty: None,
+            case_count: 0,
+            pass_count: 0,
+            fail_count: 0,
+            error_count: 0,
+            pass_rate: 0.0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cost_usd: None,
+            duration_ms: 0,
+            tags: vec![],
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        for key in [
+            "project",
+            "suite",
+            "git_branch",
+            "git_commit",
+            "git_dirty",
+            "cost_usd",
+        ] {
+            assert!(v.get(key).is_some(), "missing key {key}");
+            assert!(
+                v[key].is_null(),
+                "expected {key} to be null, got {:?}",
+                v[key]
+            );
+        }
+    }
+
+    #[test]
+    fn run_detail_response_matches_todays_wire_shape() {
+        let dto = RunDetailResponse {
+            id: RunId::new("r-1"),
+            project: Some("proj".to_string()),
+            suite: Some("suite".to_string()),
+            created_at: "2026-01-01T00:00:00+00:00".to_string(),
+            uploaded_at: "2026-01-01T00:00:01+00:00".to_string(),
+            schema_version: 1,
+            git_branch: Some("main".to_string()),
+            git_commit: Some("abc123".to_string()),
+            git_dirty: Some(false),
+            ci_provider: Some("ci".to_string()),
+            ci_run_url: Some("https://ci.example/run/1".to_string()),
+            case_count: 1,
+            pass_count: 1,
+            fail_count: 0,
+            error_count: 0,
+            prompt_tokens: 10,
+            completion_tokens: 20,
+            cost_usd: Some(0.0025),
+            duration_ms: 30000,
+            content_hash: "sha256:deadbeef".to_string(),
+            uploaded_by: Some("alice".to_string()),
+            tags: vec!["nightly".to_string()],
+            assert_labels: vec!["contains".to_string(), "regex".to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({
+                "id": "r-1",
+                "project": "proj",
+                "suite": "suite",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "uploaded_at": "2026-01-01T00:00:01+00:00",
+                "schema_version": 1,
+                "git_branch": "main",
+                "git_commit": "abc123",
+                "git_dirty": false,
+                "ci_provider": "ci",
+                "ci_run_url": "https://ci.example/run/1",
+                "case_count": 1,
+                "pass_count": 1,
+                "fail_count": 0,
+                "error_count": 0,
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "cost_usd": 0.0025,
+                "duration_ms": 30000,
+                "content_hash": "sha256:deadbeef",
+                "uploaded_by": "alice",
+                "tags": ["nightly"],
+                "assert_labels": ["contains", "regex"],
+            })
+        );
+    }
+
+    #[test]
+    fn ingest_response_matches_todays_wire_shape() {
+        let dto = IngestResponse {
+            id: RunId::new("run-1"),
+            url: "http://localhost/runs/run-1".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            json!({
+                "id": "run-1",
+                "url": "http://localhost/runs/run-1",
+            })
+        );
+    }
+}

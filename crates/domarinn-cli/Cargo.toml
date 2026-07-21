@@ -1,0 +1,33 @@
+[package]
+name = "domarinn-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "domarinn command-line interface"
+
+[[bin]]
+name = "domarinn"
+path = "src/main.rs"
+
+[dependencies]
+domarinn-core = { workspace = true }
+domarinn-cache = { workspace = true }
+domarinn-server = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+chrono = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip"] }
+domarinn-logging = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"

@@ -1,6 +1,6 @@
 # Providers
 
-A **provider** is a system under test: the thing measurellm sends inputs to and
+A **provider** is a system under test: the thing domarinn sends inputs to and
 grades the output of. Every suite lists at least one under `providers:`, and the
 run matrix is `providers × prompts × tests × repeats`.
 
@@ -17,7 +17,7 @@ A provider is selected by its `type`. Five types exist:
 Every provider has an `id` (used in results and cache keys) and an optional
 `label`. The remaining fields depend on `type`.
 
-> Source of truth: `crates/measurellm-core/src/exec_provider.rs`,
+> Source of truth: `crates/domarinn-core/src/exec_provider.rs`,
 > `anthropic.rs`, `openai.rs`, `http_provider.rs`, `embeddings.rs`, the shared
 > networking in `net.rs`, and the `ProviderKind` schema in `config.rs`.
 
@@ -41,25 +41,25 @@ it is a provider — no Rust, no SDK.
 For each call the provider writes one `provider` request to the child's stdin
 and closes it, then reads one JSON response from stdout:
 
-- **Request** (measurellm → child stdin):
-  `{ "measurellm": {"protocol": 1, "kind": "provider"}, "prompt"?, "vars", "params", "test": {"id", "tags"} }`.
+- **Request** (domarinn → child stdin):
+  `{ "domarinn": {"protocol": 1, "kind": "provider"}, "prompt"?, "vars", "params", "test": {"id", "tags"} }`.
   `prompt` is **null / omitted** when the suite has no prompts (the "self-input"
   case) — the provider works from `vars` alone. A text prompt is sent as
   `{ "text": "…" }`; a chat prompt as `{ "messages": [...] }`.
-- **Response** (child stdout → measurellm):
+- **Response** (child stdout → domarinn):
   `{ "output" (required), "usage"?, "cost_usd"?, "error"?, "metadata"? }`.
   A string `output` becomes text; any other JSON becomes a structured output.
   `usage` fills token counts, `cost_usd` feeds the [`cost`](./assertions.md#budget-assertions-cost-latency-tokens)
   assertion, and `metadata` is retained as the raw payload.
 
-The child **always** receives `MEASURELLM_PROTOCOL=1` in its environment, plus
+The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus
 your `env`. The full wire contract, exit-code rules, and minimal Bash/Python
 examples live in **[protocol.md](./protocol.md)**.
 
 ### Caching requires `cache_salt`
 
 `exec` providers are **not cacheable** unless `cache_salt` is set. Because
-measurellm cannot see inside your binary, it will not risk serving stale output
+domarinn cannot see inside your binary, it will not risk serving stale output
 from a rebuilt program: with no salt every call runs fresh. Set `cache_salt` to
 a value that changes whenever your program's behavior changes — a git SHA, a
 binary hash, a version string. See [caching.md](./caching.md#cache_salt).

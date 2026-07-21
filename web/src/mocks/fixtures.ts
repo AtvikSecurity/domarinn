@@ -65,7 +65,7 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 /** Epoch millis -> RFC3339, matching the server's wire format for every
- *  timestamp field (see `crates/measurellm-server/src/dto/accounts.rs::rfc3339`
+ *  timestamp field (see `crates/domarinn-server/src/dto/accounts.rs::rfc3339`
  *  for the server-side equivalent). */
 function toIso(ms: number): string {
   return new Date(ms).toISOString();
@@ -714,7 +714,7 @@ export function suiteSummaries(project: string): SuiteSummary[] {
 }
 
 export const META: MetaResponse = {
-  name: "measurellm",
+  name: "domarinn",
   version: "0.1.0-mock",
   auth_mode: "open",
   setup_required: false,

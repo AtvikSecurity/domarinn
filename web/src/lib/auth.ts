@@ -1,7 +1,7 @@
 // Token storage + a tiny event bus so the 401 handler in the api client can
 // prompt the app to open a token modal from outside React.
 
-const TOKEN_KEY = "measurellm.token";
+const TOKEN_KEY = "domarinn.token";
 
 export function getToken(): string | null {
   try {

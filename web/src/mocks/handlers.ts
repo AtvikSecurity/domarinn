@@ -281,7 +281,7 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       if (other === undefined) return notFound();
       // First segment = base, second = head — matches
       // `storage.compare_runs(id, other)` -> `{ base: id, head: other }`
-      // (crates/measurellm-server/tests/compare.rs pins this order).
+      // (crates/domarinn-server/tests/compare.rs pins this order).
       const result = fx.compareRuns(runId, other);
       return result ? json(result) : notFound();
     }

@@ -73,7 +73,7 @@ export function SettingsPage() {
       <Card title="Access token">
         <p className="text-sm text-muted">
           Stored locally as{" "}
-          <code className="font-mono text-xs">measurellm.token</code> and sent as a
+          <code className="font-mono text-xs">domarinn.token</code> and sent as a
           bearer header. {hasToken ? "A token is currently set." : "No token is set."}
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">

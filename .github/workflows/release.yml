@@ -74,7 +74,7 @@ jobs:
 
       - name: Build (native)
         if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p measurellm-cli
+        run: cargo build --release --target ${{ matrix.target }} -p domarinn-cli
 
       - name: Install cross
         if: ${{ matrix.cross }}
@@ -82,19 +82,19 @@ jobs:
 
       - name: Build (cross)
         if: ${{ matrix.cross }}
-        run: cross build --release --target ${{ matrix.target }} -p measurellm-cli
+        run: cross build --release --target ${{ matrix.target }} -p domarinn-cli
 
       - name: Stage artifact
         run: |
           mkdir -p dist
-          bin="target/${{ matrix.target }}/release/measurellm"
-          out="dist/measurellm-${{ matrix.target }}"
+          bin="target/${{ matrix.target }}/release/domarinn"
+          out="dist/domarinn-${{ matrix.target }}"
           cp "$bin" "$out"
           sha256sum "$out" > "$out.sha256"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 # pin to SHA
         with:
-          name: measurellm-${{ matrix.target }}
+          name: domarinn-${{ matrix.target }}
           path: dist/*
 
   # ---------------------------------------------------------------------------
@@ -118,4 +118,4 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            dist/measurellm-*
+            dist/domarinn-*

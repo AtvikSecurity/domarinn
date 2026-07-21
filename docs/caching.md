@@ -1,6 +1,6 @@
 # Caching
 
-measurellm caches provider responses and grader verdicts so re-running a suite
+domarinn caches provider responses and grader verdicts so re-running a suite
 is fast, cheap, and deterministic — and so a team can share that work.
 
 ## How the cache works
@@ -53,7 +53,7 @@ come from flags/environment, so no secrets live in the checked-in YAML.
 cache:
   backend: disk | http | s3 | layered
   s3:                         # only for s3 / layered-with-s3
-    bucket: measurellm-cache
+    bucket: domarinn-cache
     endpoint: https://s3.example      # optional, for MinIO/Garage/etc.
     region: us-east-1
     prefix: team-a
@@ -62,13 +62,13 @@ cache:
 
 | Backend | What it is |
 |---------|-----------|
-| `disk` (default) | A local content-addressed store at `.measurellm/cache`, one file per entry (written to a temp file then atomically renamed, so it is safe under concurrent runs and `rsync`/`s3 sync`). |
-| `http` | The measurellm server acts as a shared read-through cache. Needs a server URL (`--server-url` / `MEASURELLM_SERVER_URL`) and, if the server requires auth, `MEASURELLM_TOKEN`. Zero extra setup — the same URL you share runs to. |
+| `disk` (default) | A local content-addressed store at `.domarinn/cache`, one file per entry (written to a temp file then atomically renamed, so it is safe under concurrent runs and `rsync`/`s3 sync`). |
+| `http` | The domarinn server acts as a shared read-through cache. Needs a server URL (`--server-url` / `DOMARINN_SERVER_URL`) and, if the server requires auth, `DOMARINN_TOKEN`. Zero extra setup — the same URL you share runs to. |
 | `s3` | Any S3-compatible bucket via the standard AWS credential chain. Writes are additive-only (never delete or overwrite); retention is the bucket's lifecycle rules. Works with AWS, MinIO, Garage, SeaweedFS. |
 | `layered` | A read-through pairing of the fast local disk cache and a shared remote (S3 if `cache.s3` is set, else the HTTP server). Reads try local, then remote (populating local on a hit); writes go to local synchronously and to the remote best-effort. |
 
 If a remote backend is selected but its server URL or credentials are missing
-(for example a fresh clone with no environment), measurellm **falls back to
+(for example a fresh clone with no environment), domarinn **falls back to
 local disk with a warning** rather than failing the run.
 
 ## Sharing cache between teammates
@@ -77,7 +77,7 @@ Point everyone at the same shared backend and the whole team reuses each other's
 LLM responses and grader verdicts:
 
 - **Via the server** — set `cache.backend: layered` in the suite and
-  `MEASURELLM_SERVER_URL` (+ `MEASURELLM_TOKEN`) in each environment. The first
+  `DOMARINN_SERVER_URL` (+ `DOMARINN_TOKEN`) in each environment. The first
   person to run a case pays for it; everyone else gets a hit.
 - **Via S3** — set `cache.backend: s3` (or `layered`) with a `cache.s3` block and
   provide bucket credentials through the AWS chain.
@@ -89,10 +89,10 @@ same verdict key. See [grading.md](./grading.md).
 ## Managing the local cache
 
 ```sh
-measurellm cache stats                 # entry count and total size
-measurellm cache path                  # print the cache directory
-measurellm cache gc --older-than 30d   # remove entries older than 30 days
-measurellm cache clear                 # remove everything
+domarinn cache stats                 # entry count and total size
+domarinn cache path                  # print the cache directory
+domarinn cache gc --older-than 30d   # remove entries older than 30 days
+domarinn cache clear                 # remove everything
 ```
 
 Durations accept `d`, `h`, `m`, `s` (e.g. `12h`, `90s`).

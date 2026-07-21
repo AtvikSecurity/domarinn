@@ -6,7 +6,7 @@ test.describe("Token-gated action", () => {
 
     // No token is stored in this fresh context.
     expect(
-      await page.evaluate(() => localStorage.getItem("measurellm.token")),
+      await page.evaluate(() => localStorage.getItem("domarinn.token")),
     ).toBeNull();
 
     // Kick off the admin-only prune (mock returns 401 without a bearer token).

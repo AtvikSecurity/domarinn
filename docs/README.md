@@ -1,6 +1,6 @@
-# measurellm documentation
+# domarinn documentation
 
-measurellm is a declarative LLM prompt/eval harness: one static Rust binary that
+domarinn is a declarative LLM prompt/eval harness: one static Rust binary that
 is a CLI, an evaluation engine, and a self-hostable results server with an
 embedded web UI. It treats your own system — a command, an HTTP endpoint, or a
 model — as the thing under test.
@@ -14,7 +14,7 @@ model — as the thing under test.
 
 | Guide | What it covers |
 |-------|----------------|
-| [Configuration](./configuration.md) | The complete `measurellm.yaml` reference: providers, prompts, tests, defaults, grader, runner, cache, composition, and the `!raw` templating escape hatch. |
+| [Configuration](./configuration.md) | The complete `domarinn.yaml` reference: providers, prompts, tests, defaults, grader, runner, cache, composition, and the `!raw` templating escape hatch. |
 | [Assertions](./assertions.md) | Every assertion type, weights and thresholds, short-circuiting, and fail-closed semantics. |
 | [Providers](./providers.md) | `exec`, `http`, `anthropic`, `openai`, and `embeddings` providers, plus the exec protocol. |
 | [Grading](./grading.md) | The LLM-rubric grader: structured tool-use / json-schema verdicts, fail-closed, grader selection. |
@@ -31,7 +31,7 @@ model — as the thing under test.
 | [CI integration](./ci.md) | Gating pull requests, the reusable GitHub Action, PR comments, and shared cache in CI. |
 | [Exec protocol](./protocol.md) | The JSON protocol for writing providers, assertions, and test generators in any language. |
 
-## Why measurellm
+## Why domarinn
 
 - **Your system is the system under test.** An external command or HTTP endpoint
   is a first-class provider; prompts are optional.

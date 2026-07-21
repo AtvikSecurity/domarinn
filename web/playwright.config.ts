@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 
 /**
- * E2E config for the measurellm web UI.
+ * E2E config for the domarinn web UI.
  *
  * How mock mode is served
  * -----------------------

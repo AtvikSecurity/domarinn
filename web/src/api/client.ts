@@ -97,7 +97,7 @@ export async function apiRequest<T>(
   // No runtime validation of the parsed body against `T` here: `T` is always
   // one of the generated types in `@/api/generated/`, produced directly from
   // the server's own serializing structs (ts-rs, CI drift-checked — see
-  // `crates/measurellm-server/src/export_api_types`), and the UI ships in the
+  // `crates/domarinn-server/src/export_api_types`), and the UI ships in the
   // same binary as the server that serves it. The residual risk is a
   // deployed-server/cached-UI version skew (e.g. a stale service worker or
   // browser tab outliving a redeploy); that's accepted rather than paying for

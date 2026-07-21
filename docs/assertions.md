@@ -14,7 +14,7 @@ Assertions come in two families:
   an embeddings API). They run **after** the deterministic ones, and only if
   they can still change the case outcome.
 
-> Source of truth: `crates/measurellm-core/src/asserts.rs` (deterministic
+> Source of truth: `crates/domarinn-core/src/asserts.rs` (deterministic
 > logic), `scoring.rs` (score + short-circuit), `grader.rs` (graded logic),
 > `config.rs` (the `AssertKind` schema), `runner.rs` (orchestration).
 

@@ -5,7 +5,7 @@ import type { CompareResponse } from "@/api";
 // Pins the mock's `GET /runs/{id}/compare/{other}` response shape against the
 // real server's contract: `Path((id, other))` -> `storage.compare_runs(id,
 // other)` -> `{ base: id, head: other }` (see
-// crates/measurellm-server/tests/compare.rs: `GET /runs/base/compare/head`
+// crates/domarinn-server/tests/compare.rs: `GET /runs/base/compare/head`
 // asserts `body["base"] == "base"`). The FIRST url segment is always base,
 // the SECOND is always head — the mock must not reverse them.
 describe("mockFetch: GET /runs/:id/compare/:other", () => {

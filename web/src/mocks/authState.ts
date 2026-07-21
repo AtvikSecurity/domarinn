@@ -53,7 +53,7 @@ interface MockAuthState {
 
 /** Fixed timestamps so seeded rows are deterministic across reloads/tests. */
 const SEED_TIME = Date.UTC(2026, 5, 1, 12, 0, 0);
-const SETUP_FLAG = "measurellm.mock.setup";
+const SETUP_FLAG = "domarinn.mock.setup";
 const STATIC_ADMIN_ID = "u_admin";
 
 function toIso(ms: number): string {
@@ -278,7 +278,7 @@ export function createApiKey(
     ? wanted
     : callerScope;
   const id = nextId("key");
-  const secret = randomToken("mllm");
+  const secret = randomToken("domarinn");
   const prefix = secret.slice(0, 12);
   const rec: ApiKeyRecord = {
     id,

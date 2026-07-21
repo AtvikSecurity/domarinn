@@ -66,7 +66,7 @@ describe("setup", () => {
 describe("api keys", () => {
   it("returns the secret once, lists without it, and clamps scope to the caller", () => {
     const created = createApiKey("u_admin", "CI", "write", "admin");
-    expect(created.key.startsWith("mllm_")).toBe(true);
+    expect(created.key.startsWith("domarinn_")).toBe(true);
     expect(created.scope).toBe("write");
 
     const listed = listApiKeys("u_admin");

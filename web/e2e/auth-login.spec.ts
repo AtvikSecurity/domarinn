@@ -34,7 +34,7 @@ test.describe("Login", () => {
 
     // A real session token is now stored, and the nav offers "Log out".
     const token = await page.evaluate(() =>
-      localStorage.getItem("measurellm.token"),
+      localStorage.getItem("domarinn.token"),
     );
     expect(token).toMatch(/^sess_/);
     await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -48,7 +48,7 @@ test.describe("First-run setup", () => {
     // Flip the mock into "needs setup" mode before the app boots.
     await page.addInitScript(() => {
       try {
-        localStorage.setItem("measurellm.mock.setup", "1");
+        localStorage.setItem("domarinn.mock.setup", "1");
       } catch {
         /* ignore */
       }

@@ -1,6 +1,6 @@
 # Getting started
 
-measurellm evaluates prompts and the systems that render them. This guide takes
+domarinn evaluates prompts and the systems that render them. This guide takes
 you from install to a graded, shareable run in a few minutes.
 
 ## Install
@@ -8,9 +8,9 @@ you from install to a graded, shareable run in a few minutes.
 **From source** (needs a recent Rust toolchain):
 
 ```sh
-git clone https://github.com/perfectra1n/measurellm
-cd measurellm
-cargo build --release            # binary at target/release/measurellm
+git clone https://github.com/AtvikSecurity/domarinn
+cd domarinn
+cargo build --release            # binary at target/release/domarinn
 # with the web UI embedded (via mise — https://mise.jdx.dev):
 mise run build                   # builds web/dist, then the release binary
 ```
@@ -18,18 +18,18 @@ mise run build                   # builds web/dist, then the release binary
 **Docker** (the server + embedded UI):
 
 ```sh
-docker run -p 8321:8321 -v measurellm-data:/data ghcr.io/atviksecurity/measurellm:rolling
+docker run -p 8321:8321 -v domarinn-data:/data ghcr.io/atviksecurity/domarinn:rolling
 ```
 
-Put `target/release/measurellm` on your `PATH`, or invoke it directly.
+Put `target/release/domarinn` on your `PATH`, or invoke it directly.
 
 ## Your first suite (offline, no API key)
 
-A suite is a `measurellm.yaml`. This one grades a tiny external program with
-deterministic assertions — no model calls, no key. Create `smoke/measurellm.yaml`:
+A suite is a `domarinn.yaml`. This one grades a tiny external program with
+deterministic assertions — no model calls, no key. Create `smoke/domarinn.yaml`:
 
 ```yaml
-# yaml-language-server: $schema=../measurellm.schema.json
+# yaml-language-server: $schema=../domarinn.schema.json
 version: 1
 suite: smoke
 providers:
@@ -46,15 +46,15 @@ tests:
         max: 100
 ```
 
-`exec` providers speak a tiny [JSON protocol](./protocol.md): measurellm writes a
+`exec` providers speak a tiny [JSON protocol](./protocol.md): domarinn writes a
 request to the program's stdin and reads its output from stdout. Here `sh`
 ignores the input and prints a fixed result.
 
 Validate, then run:
 
 ```sh
-measurellm validate smoke
-measurellm run smoke
+domarinn validate smoke
+domarinn run smoke
 ```
 
 ```
@@ -63,7 +63,7 @@ PASS  echo  greeting  1.00
 smoke total: 1 passed, 0 failed, 0 errored (0 cache hits)
 ```
 
-Exit code `0`. The run is saved under `smoke/.measurellm/runs/<id>/result.json`.
+Exit code `0`. The run is saved under `smoke/.domarinn/runs/<id>/result.json`.
 
 ## The `!raw` escape hatch
 
@@ -124,7 +124,7 @@ tests:
 
 ```sh
 export ANTHROPIC_API_KEY=sk-...
-measurellm run --repeat 5            # 5 trials per cell for variance
+domarinn run --repeat 5            # 5 trials per cell for variance
 ```
 
 Responses and grader verdicts are cached, so re-running is free and
@@ -133,16 +133,16 @@ deterministic. See [caching.md](./caching.md) and [statistics.md](./statistics.m
 ## View, compare, and share
 
 ```sh
-measurellm view latest                       # terminal render of the last run
-measurellm run --against latest              # gate on regressions vs the last run
-measurellm diff run-A run-B --format md      # a Markdown diff for a PR comment
+domarinn view latest                       # terminal render of the last run
+domarinn run --against latest              # gate on regressions vs the last run
+domarinn diff run-A run-B --format md      # a Markdown diff for a PR comment
 ```
 
 Stand up the results server (SQLite + web UI, same binary) and upload runs:
 
 ```sh
-measurellm server --data-dir ./data &        # UI + API on :8321
-MEASURELLM_SERVER_URL=http://localhost:8321 measurellm run --share
+domarinn server --data-dir ./data &        # UI + API on :8321
+DOMARINN_SERVER_URL=http://localhost:8321 domarinn run --share
 ```
 
 Open `http://localhost:8321` for the runs list, the run-detail grid, and

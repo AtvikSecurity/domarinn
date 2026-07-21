@@ -175,4 +175,4 @@ jobs:
         run: mise run musl-build
 
       - name: Confirm the binary is static
-        run: file target/${{ matrix.target }}/release/measurellm || true
+        run: file target/${{ matrix.target }}/release/domarinn || true

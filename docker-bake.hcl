@@ -3,16 +3,16 @@
 // `image` target and injects tags/labels via docker/metadata-action; the
 // `docker-metadata-action` target below is the empty hook it overrides.
 //
-// Local build: `docker buildx bake` (defaults to image-local -> measurellm:local).
+// Local build: `docker buildx bake` (defaults to image-local -> domarinn:local).
 
 target "docker-metadata-action" {}
 
 variable "APP" {
-  default = "measurellm"
+  default = "domarinn"
 }
 
 variable "SOURCE" {
-  default = "https://github.com/AtvikSecurity/measurellm"
+  default = "https://github.com/AtvikSecurity/domarinn"
 }
 
 group "default" {

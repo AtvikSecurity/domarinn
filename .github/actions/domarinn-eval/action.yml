@@ -1,0 +1,281 @@
+# domarinn-eval — run a domarinn suite in CI and gate the PR on the result.
+#
+# Fully functional: resolves a `domarinn` binary, runs a suite, parses the
+# result, uploads the JUnit report, comments the Markdown summary on the PR, and
+# gates the job on the CLI's exit code.
+#
+# Usage:
+#   - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@v1
+#     with:
+#       config: eval/domarinn.yaml
+#       server-url: https://domarinn.example.com   # optional (enables --share)
+#       token: ${{ secrets.DOMARINN_TOKEN }}        # optional bearer token
+#       against: latest                               # optional baseline to diff
+#       fail-on-regression: "true"
+#
+# Exit-code contract (from the CLI): 0 = all pass; 1 = assertion failure or
+# regression; 2 = config/usage error; 3 = infrastructure error. This action maps
+# 1 to a failed check only when `fail-on-regression` is true; 2 and 3 always fail
+# the job. The artifact upload and the PR comment run regardless of the result.
+
+name: domarinn eval
+description: Run a domarinn eval suite, gate on regressions, and comment the result on the PR.
+
+inputs:
+  config:
+    description: Path to the suite file or a directory containing domarinn.yaml.
+    required: false
+    default: "domarinn.yaml"
+  binary-path:
+    description: >-
+      Path to a prebuilt `domarinn` binary. When set, resolution stops here
+      (no download, no build).
+    required: false
+    default: ""
+  version:
+    description: >-
+      Release tag to download the binary from (e.g. "v0.1.0"), or "latest".
+      Used only when `binary-path` is empty. If the download fails, the action
+      falls back to building/installing from source with cargo.
+    required: false
+    default: "latest"
+  server-url:
+    description: >-
+      Results server base URL. When set, the run is uploaded with `--share`
+      (exported as DOMARINN_SERVER_URL). Optional.
+    required: false
+    default: ""
+  token:
+    description: >-
+      Bearer token for the results server (exported as DOMARINN_TOKEN). Pass a
+      secret, never a literal. Optional.
+    required: false
+    default: ""
+  against:
+    description: >-
+      Baseline to diff this run against (e.g. "latest", a run id, or a
+      result.json path). Empty disables the diff. A regression against the
+      baseline makes the CLI exit 1.
+    required: false
+    default: ""
+  fail-on-regression:
+    description: >-
+      If "true" (default), an assertion failure or regression (CLI exit 1) fails
+      the check. If "false", exit 1 is reported as a warning and does not fail
+      the job. Exit 2 (config/usage) and exit 3 (infra) always fail the job.
+    required: false
+    default: "true"
+  comment:
+    description: If "true" (default), post/update a summary comment on the PR.
+    required: false
+    default: "true"
+  artifact-name:
+    description: Name of the uploaded artifact holding results.xml and summary.md.
+    required: false
+    default: "domarinn-results"
+
+outputs:
+  exit-code:
+    description: The CLI's raw exit code (0 pass, 1 fail/regression, 2 usage, 3 infra).
+    value: ${{ steps.eval.outputs.exit-code }}
+  passed:
+    description: Number of test cases that passed.
+    value: ${{ steps.eval.outputs.passed }}
+  failed:
+    description: Number of test cases that failed or errored.
+    value: ${{ steps.eval.outputs.failed }}
+  regressed:
+    description: Number of tests that newly regressed vs the baseline (0 without `against`).
+    value: ${{ steps.eval.outputs.regressed }}
+  summary-path:
+    description: Path to the Markdown summary written by the run.
+    value: ${{ steps.eval.outputs.summary-path }}
+  results-path:
+    description: Path to the JUnit XML report written by the run.
+    value: ${{ steps.eval.outputs.results-path }}
+
+runs:
+  using: composite
+  steps:
+    # -- Resolve the binary: provided path -> release download -> build. -------
+    - name: Resolve domarinn binary
+      id: bin
+      shell: bash
+      env:
+        INPUT_BINARY_PATH: ${{ inputs.binary-path }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -uo pipefail
+
+        if [ -n "${INPUT_BINARY_PATH}" ]; then
+          echo "Using provided binary: ${INPUT_BINARY_PATH}"
+          echo "path=${INPUT_BINARY_PATH}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64)  target="x86_64-unknown-linux-musl" ;;
+          aarch64|arm64) target="aarch64-unknown-linux-musl" ;;
+          *) echo "::error::unsupported arch $arch"; exit 3 ;;
+        esac
+
+        ver="${INPUT_VERSION}"
+        base="https://github.com/AtvikSecurity/domarinn/releases"
+        if [ "$ver" = "latest" ]; then
+          url="${base}/latest/download/domarinn-${target}"
+        else
+          url="${base}/download/${ver}/domarinn-${target}"
+        fi
+
+        echo "Downloading $url"
+        if curl -fsSL "$url" -o domarinn; then
+          chmod +x domarinn
+          echo "path=$(pwd)/domarinn" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Fallback: build from source. Prefer a local checkout of this repo;
+        # otherwise install straight from git. Requires a Rust toolchain.
+        echo "::warning::release download failed for $url; building domarinn from source"
+        if ! command -v cargo >/dev/null 2>&1; then
+          echo "::error::no prebuilt binary available and cargo is not installed (add dtolnay/rust-toolchain before this action)"
+          exit 3
+        fi
+        root="${RUNNER_TEMP}/domarinn-install"
+        if [ -f "${GITHUB_WORKSPACE}/crates/domarinn-cli/Cargo.toml" ]; then
+          cargo install --path "${GITHUB_WORKSPACE}/crates/domarinn-cli" --locked --root "$root"
+        else
+          cargo install --git https://github.com/AtvikSecurity/domarinn --locked --root "$root" domarinn-cli
+        fi
+        echo "path=${root}/bin/domarinn" >> "$GITHUB_OUTPUT"
+
+    # -- Run the suite: JUnit report + Markdown summary, optional baseline. -----
+    - name: Run eval
+      id: eval
+      shell: bash
+      env:
+        DOMARINN_BIN: ${{ steps.bin.outputs.path }}
+        DOMARINN_SERVER_URL: ${{ inputs.server-url }}
+        DOMARINN_TOKEN: ${{ inputs.token }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_AGAINST: ${{ inputs.against }}
+      run: |
+        # No `set -e`: we must capture the CLI exit code and keep going so the
+        # artifact upload, PR comment, and gate step still run.
+        set -uo pipefail
+
+        results="results.xml"
+        summary="summary.md"
+
+        args=(run "${INPUT_CONFIG}" --format junit --out "${results}" --summary-md "${summary}")
+        [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
+        # Upload the run when a server is configured (token via DOMARINN_TOKEN).
+        [ -n "${DOMARINN_SERVER_URL}" ] && args+=(--share)
+
+        echo "Running: domarinn ${args[*]}"
+        "${DOMARINN_BIN}" "${args[@]}"
+        code=$?
+        echo "domarinn exited with $code"
+
+        # Parse headline numbers from the JUnit report:
+        #   <testsuite ... tests="T" failures="F" errors="E">
+        attr() { grep -oE "$1=\"[0-9]+\"" "$results" 2>/dev/null | head -1 | grep -oE '[0-9]+'; }
+        tests="$(attr tests)";     tests="${tests:-0}"
+        failures="$(attr failures)"; failures="${failures:-0}"
+        errors="$(attr errors)";   errors="${errors:-0}"
+        passed=$(( tests - failures - errors ))
+        [ "$passed" -lt 0 ] && passed=0
+        failed=$(( failures + errors ))
+
+        # Regressions come from the baseline comparison table in the summary:
+        #   | Newly failing | N |
+        regressed="$(grep -oE '^\| Newly failing \| [0-9]+ \|' "$summary" 2>/dev/null | grep -oE '[0-9]+' | head -1)"
+        regressed="${regressed:-0}"
+
+        {
+          echo "exit-code=$code"
+          echo "passed=$passed"
+          echo "failed=$failed"
+          echo "regressed=$regressed"
+          echo "summary-path=${summary}"
+          echo "results-path=${results}"
+        } >> "$GITHUB_OUTPUT"
+
+        # Surface the summary in the job's step summary too.
+        if [ -f "$summary" ]; then
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    # -- Upload the JUnit report + summary as an artifact (always). -------------
+    - name: Upload results
+      if: ${{ always() && steps.eval.outputs.results-path != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 # pin to SHA
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ steps.eval.outputs.results-path }}
+          ${{ steps.eval.outputs.summary-path }}
+        if-no-files-found: warn
+
+    # -- Comment the summary on the PR (create-or-update a single comment). -----
+    - name: Comment on PR
+      if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0 # pin to SHA
+      env:
+        SUMMARY_PATH: ${{ steps.eval.outputs.summary-path }}
+      with:
+        script: |
+          const fs = require('fs');
+          const path = process.env.SUMMARY_PATH;
+          const marker = '<!-- domarinn-eval -->';
+          let body = `${marker}\n### domarinn eval\n\n_No summary was produced._`;
+          try {
+            body = `${marker}\n` + fs.readFileSync(path, 'utf8');
+          } catch (e) {
+            core.warning(`no summary at ${path}: ${e}`);
+          }
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+          const existing = comments.find(c => c.body && c.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }
+
+    # -- Gate the job on the CLI exit code (runs after upload + comment). -------
+    - name: Gate on result
+      if: ${{ always() }}
+      shell: bash
+      env:
+        CODE: ${{ steps.eval.outputs.exit-code }}
+        FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+      run: |
+        set -uo pipefail
+        code="${CODE:-3}"
+        case "$code" in
+          0)
+            echo "domarinn: all checks passed"
+            ;;
+          1)
+            if [ "${FAIL_ON_REGRESSION}" = "true" ]; then
+              echo "::error::domarinn reported assertion failures or regressions (exit 1)"
+              exit 1
+            fi
+            echo "::warning::domarinn reported failures/regressions (exit 1, not gated)"
+            ;;
+          2)
+            echo "::error::domarinn config/usage error (exit 2)"
+            exit 2
+            ;;
+          3)
+            echo "::error::domarinn infrastructure error (exit 3)"
+            exit 3
+            ;;
+          *)
+            echo "::error::domarinn exited with $code"
+            exit "$code"
+            ;;
+        esac

@@ -33,7 +33,7 @@ const SINKS: Record<Level, (...args: unknown[]) => void> = {
 
 function emit(level: Level, ...args: unknown[]): void {
   if (ORDER[level] < threshold) return;
-  SINKS[level]("[measurellm]", ...args);
+  SINKS[level]("[domarinn]", ...args);
 }
 
 export const log = {

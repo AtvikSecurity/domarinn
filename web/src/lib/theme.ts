@@ -4,7 +4,7 @@
 
 export type ThemePref = "light" | "dark" | "system";
 
-const THEME_KEY = "measurellm.theme";
+const THEME_KEY = "domarinn.theme";
 
 export function getStoredTheme(): ThemePref {
   try {

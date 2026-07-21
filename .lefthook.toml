@@ -3,7 +3,7 @@ git_url = "https://github.com/home-operations/.github"
 ref = "main"
 configs = ["lefthook.common.toml"]
 
-# measurellm's workflows use the .yml extension; the shared zizmor hook only
+# domarinn's workflows use the .yml extension; the shared zizmor hook only
 # globs *.yaml, and remote config values win over same-key local overrides,
 # so a separately-named command covers the .yml spelling.
 [pre-commit.commands.zizmor-yml]
@@ -15,7 +15,7 @@ run = "zizmor --offline {staged_files}"
 # also .prettierignore'd; excluding them here as well keeps oxfmt from being
 # handed an all-ignored file set (it exits non-zero on "no target files").
 [pre-commit.commands.format-json]
-exclude = ["measurellm.schema.json"]
+exclude = ["domarinn.schema.json"]
 
 [pre-commit.commands.format-yaml]
 exclude = ["web/pnpm-lock.yaml", "web/pnpm-workspace.yaml"]

@@ -13,7 +13,7 @@ web/dist/
 web/.vite/
 
 # Local eval cache / run state
-.measurellm/
+.domarinn/
 data/
 
 # VCS + CI + docs (not needed to compile)

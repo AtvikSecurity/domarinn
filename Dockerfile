@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# measurellm — multi-stage build producing a tiny, fully static image.
+# domarinn — multi-stage build producing a tiny, fully static image.
 #
 #   stage 1 (web)     build the React/Vite UI  -> web/dist
 #   stage 2 (builder) compile the static musl binary, embedding web/dist
@@ -37,8 +37,8 @@ RUN pnpm -C web build
 #     toolchain (musl-dev + gcc) even for a "pure Rust" project.
 #   * cmake + pkgconfig are here as a hedge: some crypto backends (aws-lc-rs)
 #     shell out to cmake. We DO NOT want that — the rustls crypto provider must
-#     be pinned to `ring` in the crate config (measurellm-server /
-#     measurellm-cli Cargo features) to avoid aws-lc-rs' cmake + arm64 pain.
+#     be pinned to `ring` in the crate config (domarinn-server /
+#     domarinn-cli Cargo features) to avoid aws-lc-rs' cmake + arm64 pain.
 #     The pin lives with the crate; this comment documents the dependency.
 #   * perl is required by ring's build for some targets.
 # ---------------------------------------------------------------------------
@@ -70,8 +70,8 @@ COPY --from=web /app/web/dist ./web/dist
 # keep the registry and target dir warm across builds.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --target "${TARGET}" -p measurellm-cli && \
-    cp "target/${TARGET}/release/measurellm" /measurellm
+    cargo build --release --target "${TARGET}" -p domarinn-cli && \
+    cp "target/${TARGET}/release/domarinn" /domarinn
 
 # Empty dir that becomes the runtime image's /data mountpoint. It has to be
 # made here: distroless has no shell, so the runtime stage can only COPY it in.
@@ -83,7 +83,7 @@ RUN mkdir -p /data
 # ---------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
-COPY --from=builder /measurellm /measurellm
+COPY --from=builder /domarinn /domarinn
 
 # Persistent state (SQLite db, cache) lives under /data. The mountpoint must
 # exist in the image owned by the runtime user BEFORE the VOLUME instruction:
@@ -91,15 +91,15 @@ COPY --from=builder /measurellm /measurellm
 # root-owned /data leaves the nonroot server unable to create its SQLite
 # files. Numeric uid:gid (nonroot is 65532) so no /etc/passwd lookup is needed.
 COPY --from=builder --chown=65532:65532 /data /data
-ENV MEASURELLM_DATA_DIR=/data
+ENV DOMARINN_DATA_DIR=/data
 VOLUME ["/data"]
 
 EXPOSE 8321
 USER nonroot
 
 # The binary probes its own /api/v1/health — distroless has no curl/wget/shell,
-# so measurellm is the only thing that can healthcheck measurellm.
+# so domarinn is the only thing that can healthcheck domarinn.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["/measurellm", "healthcheck"]
+    CMD ["/domarinn", "healthcheck"]
 
-ENTRYPOINT ["/measurellm", "server"]
+ENTRYPOINT ["/domarinn", "server"]

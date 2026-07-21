@@ -1,0 +1,13 @@
+[package]
+name = "domarinn-logging"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Shared tracing-subscriber setup for domarinn binaries"
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

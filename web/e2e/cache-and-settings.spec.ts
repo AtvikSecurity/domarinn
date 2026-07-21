@@ -30,7 +30,7 @@ test.describe("Settings page", () => {
     const serverCard = page
       .locator("section")
       .filter({ has: page.getByRole("heading", { name: "Server" }) });
-    await expect(serverCard.getByText("measurellm")).toBeVisible();
+    await expect(serverCard.getByText("domarinn")).toBeVisible();
     await expect(serverCard.getByText("0.1.0-mock")).toBeVisible();
     await expect(serverCard.getByText("open")).toBeVisible();
     await expect(serverCard.getByText("mock fixture")).toBeVisible();
@@ -38,7 +38,7 @@ test.describe("Settings page", () => {
     // No token initially.
     await expect(page.getByText("No token is set.")).toBeVisible();
     expect(
-      await page.evaluate(() => localStorage.getItem("measurellm.token")),
+      await page.evaluate(() => localStorage.getItem("domarinn.token")),
     ).toBeNull();
 
     // Set a token via the Access token card.
@@ -47,7 +47,7 @@ test.describe("Settings page", () => {
 
     await expect(page.getByText("A token is currently set.")).toBeVisible();
     expect(
-      await page.evaluate(() => localStorage.getItem("measurellm.token")),
+      await page.evaluate(() => localStorage.getItem("domarinn.token")),
     ).toBe("e2e-secret-token");
   });
 });

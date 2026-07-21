@@ -84,7 +84,7 @@ export function Layout() {
         <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-4 px-4 sm:px-6">
           <NavLink to="/" className="flex items-center gap-2 font-semibold">
             <Logo />
-            <span className="tracking-tight">measurellm</span>
+            <span className="tracking-tight">domarinn</span>
           </NavLink>
           <nav className="flex items-center gap-1" aria-label="Primary">
             {nav.map((item) => (

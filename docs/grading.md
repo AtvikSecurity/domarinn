@@ -2,11 +2,11 @@
 
 The `llm-rubric` assertion grades a provider's output against a
 natural-language **rubric** using an LLM as the judge. Unlike ad-hoc "ask the
-model and read the answer" grading, measurellm's grader **never parses a
+model and read the answer" grading, domarinn's grader **never parses a
 verdict out of prose**: it forces the model to return a *structured* verdict
 and treats anything less as an error.
 
-> Source of truth: `crates/measurellm-core/src/grader.rs` and the `Grader` /
+> Source of truth: `crates/domarinn-core/src/grader.rs` and the `Grader` /
 > `AssertKind::LlmRubric` types in `config.rs`. This assertion is introduced in
 > [assertions.md](./assertions.md#llm-rubric).
 
@@ -182,7 +182,7 @@ The grader calls chat completions
 
 Whatever you put in the grader provider's `params` is merged into the request
 body **verbatim** — `top_p`, `top_k`, `max_tokens`, and so on. **No temperature
-is forced** by measurellm. The only rejected params are the thinking-enabling
+is forced** by domarinn. The only rejected params are the thinking-enabling
 ones on Anthropic, as above.
 
 ---

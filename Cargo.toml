@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/measurellm-core",
-    "crates/measurellm-cache",
-    "crates/measurellm-server",
-    "crates/measurellm-cli",
-    "crates/measurellm-logging",
-    "crates/measurellm-testkit",
+    "crates/domarinn-core",
+    "crates/domarinn-cache",
+    "crates/domarinn-server",
+    "crates/domarinn-cli",
+    "crates/domarinn-logging",
+    "crates/domarinn-testkit",
 ]
 
 [workspace.package]
@@ -14,14 +14,14 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT"
-repository = "https://github.com/perfectra1n/measurellm"
+repository = "https://github.com/AtvikSecurity/domarinn"
 authors = ["perfectra1n"]
 
 [workspace.dependencies]
-measurellm-core = { path = "crates/measurellm-core" }
-measurellm-cache = { path = "crates/measurellm-cache" }
-measurellm-server = { path = "crates/measurellm-server" }
-measurellm-logging = { path = "crates/measurellm-logging" }
+domarinn-core = { path = "crates/domarinn-core" }
+domarinn-cache = { path = "crates/domarinn-cache" }
+domarinn-server = { path = "crates/domarinn-server" }
+domarinn-logging = { path = "crates/domarinn-logging" }
 
 # serialization
 serde = { version = "1", features = ["derive"] }

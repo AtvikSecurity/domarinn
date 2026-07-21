@@ -2,7 +2,7 @@
 
 A single run's pass rate is a point estimate. With LLM-graded evals that vary
 run to run, "94% passed" without an error bar is not enough to decide whether a
-change helped. measurellm builds the rigor in.
+change helped. domarinn builds the rigor in.
 
 ## Repeat trials for variance
 
@@ -11,7 +11,7 @@ change helped. measurellm builds the rigor in.
 distribution, not a coin flip.
 
 ```sh
-measurellm run --repeat 5
+domarinn run --repeat 5
 ```
 
 Because responses are cached, repeats of a deterministic provider are cheap; for
@@ -34,7 +34,7 @@ result is defensibly above it.
 
 ## Comparing two runs: the diff and `--against`
 
-`measurellm diff <BASE> <HEAD>` (and `run --against <BASE>`) pair the two runs by
+`domarinn diff <BASE> <HEAD>` (and `run --against <BASE>`) pair the two runs by
 their stable `case_key` and classify every case:
 
 | Transition | Meaning |
@@ -51,7 +51,7 @@ Markdown table suitable for a PR comment.
 
 ## Is the change significant? McNemar's test
 
-Over the cases the two runs share, measurellm runs **McNemar's paired test** with
+Over the cases the two runs share, domarinn runs **McNemar's paired test** with
 continuity correction. It looks only at the discordant pairs — cases that
 regressed (`b`) versus cases that were fixed (`c`) — and reports whether the
 difference is significant at the 95% level (statistic > 3.841, 1 df):
@@ -65,7 +65,7 @@ This distinguishes "20 regressions and 2 fixes" (a real shift) from "5 and 4"
 
 ## pass@k
 
-For repeated trials, measurellm computes the unbiased **pass@k** estimator — the
+For repeated trials, domarinn computes the unbiased **pass@k** estimator — the
 probability that at least one of `k` sampled trials passes — the standard metric
 for "does it work if we retry." Use `--repeat N` to gather the trials it is
 computed over.
@@ -79,7 +79,7 @@ CI runs without threading run ids by hand. See [server.md](./server.md).
 ## A CI-ready pattern
 
 ```sh
-measurellm run \
+domarinn run \
   --repeat 5 \
   --against latest \
   --format junit --out results.xml \

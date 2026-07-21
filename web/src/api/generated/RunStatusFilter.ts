@@ -2,7 +2,7 @@
 
 /**
  * Status filter for `GET /runs?status=`. A narrower set than
- * [`measurellm_core::result::CaseStatus`]: `skip`ped cases never move a
+ * [`domarinn_core::result::CaseStatus`]: `skip`ped cases never move a
  * run's pass/fail/error counters, so a run-level filter for `skip` would
  * never match anything.
  */

@@ -1,7 +1,7 @@
 ---
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 #
-# Build the measurellm container and push it to the Gitea registry at
+# Build the domarinn container and push it to the Gitea registry at
 # ghcr.io, following the bake/digest/merge pipeline from
 # AtvikSecurity/containers (.github/workflows/app-builder.yaml there):
 #
@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  IMAGE: ghcr.io/atviksecurity/measurellm
+  IMAGE: ghcr.io/atviksecurity/domarinn
   BUILD_CACHE: ghcr.io/atviksecurity/build_cache
 
 jobs:
@@ -58,7 +58,7 @@ jobs:
       - name: Upload Bake Metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: measurellm-bake-metadata
+          name: domarinn-bake-metadata
           path: ${{ steps.meta.outputs.bake-file }}
           if-no-files-found: error
           retention-days: 1
@@ -97,7 +97,7 @@ jobs:
       - name: Download Bake Metadata
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: measurellm-bake-metadata
+          name: domarinn-bake-metadata
           path: ${{ runner.temp }}
 
       - name: Setup Docker Buildx
@@ -112,8 +112,8 @@ jobs:
             ./docker-bake.hcl
             cwd://${{ runner.temp }}/docker-metadata-action-bake.json
           set: |
-            *.cache-from=type=registry,ref=${{ env.BUILD_CACHE }}:measurellm-${{ steps.target.outputs.arch }}
-            *.cache-to=type=registry,ref=${{ env.BUILD_CACHE }}:measurellm-${{ steps.target.outputs.arch }},mode=max,compression=zstd,force-compression=true
+            *.cache-from=type=registry,ref=${{ env.BUILD_CACHE }}:domarinn-${{ steps.target.outputs.arch }}
+            *.cache-to=type=registry,ref=${{ env.BUILD_CACHE }}:domarinn-${{ steps.target.outputs.arch }},mode=max,compression=zstd,force-compression=true
             *.labels.org.opencontainers.image.vendor=atviksecurity
             *.labels.org.opencontainers.image.revision=${{ github.sha }}
             *.output=type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true,compression=zstd,force-compression=true
@@ -131,7 +131,7 @@ jobs:
       - name: Upload Digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: measurellm-digests-${{ steps.target.outputs.arch }}
+          name: domarinn-digests-${{ steps.target.outputs.arch }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -145,14 +145,14 @@ jobs:
       - name: Download Bake Metadata
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: measurellm-bake-metadata
+          name: domarinn-bake-metadata
           path: ${{ runner.temp }}
 
       - name: Download Digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: ${{ runner.temp }}/digests
-          pattern: measurellm-digests-*
+          pattern: domarinn-digests-*
           merge-multiple: true
 
       - name: Login to Gitea Container Registry

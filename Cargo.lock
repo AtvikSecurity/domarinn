@@ -617,6 +617,129 @@ dependencies = [
 ]
 
 [[package]]
+name = "domarinn-cache"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "domarinn-core",
+ "object_store",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "domarinn-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "domarinn-cache",
+ "domarinn-core",
+ "domarinn-logging",
+ "domarinn-server",
+ "predicates",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "domarinn-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "chrono",
+ "csv",
+ "futures",
+ "glob",
+ "globset",
+ "minijinja",
+ "regex",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_yaml_ng",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ts-rs",
+ "ulid",
+ "wiremock",
+]
+
+[[package]]
+name = "domarinn-logging"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "domarinn-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "bytes",
+ "chrono",
+ "domarinn-core",
+ "flate2",
+ "hex",
+ "http-body-util",
+ "mime_guess",
+ "rand",
+ "rusqlite",
+ "rusqlite_migration",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http 0.7.0",
+ "tracing",
+ "ts-rs",
+ "ulid",
+ "zstd",
+]
+
+[[package]]
+name = "domarinn-testkit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "domarinn-core",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1361,129 +1484,6 @@ checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
 dependencies = [
  "cfg-if",
  "digest 0.11.3",
-]
-
-[[package]]
-name = "measurellm-cache"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "measurellm-core",
- "object_store",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "measurellm-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "chrono",
- "clap",
- "measurellm-cache",
- "measurellm-core",
- "measurellm-logging",
- "measurellm-server",
- "predicates",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "measurellm-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "blake3",
- "chrono",
- "csv",
- "futures",
- "glob",
- "globset",
- "minijinja",
- "regex",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "serde_yaml_ng",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "ts-rs",
- "ulid",
- "wiremock",
-]
-
-[[package]]
-name = "measurellm-logging"
-version = "0.1.0"
-dependencies = [
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "measurellm-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "axum",
- "bytes",
- "chrono",
- "flate2",
- "hex",
- "http-body-util",
- "measurellm-core",
- "mime_guess",
- "rand",
- "rusqlite",
- "rusqlite_migration",
- "rust-embed",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "tokio",
- "tower",
- "tower-http 0.7.0",
- "tracing",
- "ts-rs",
- "ulid",
- "zstd",
-]
-
-[[package]]
-name = "measurellm-testkit"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "measurellm-core",
- "serde_json",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
