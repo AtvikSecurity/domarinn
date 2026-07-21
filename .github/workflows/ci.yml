@@ -29,10 +29,11 @@ env:
   # WORKAROUND for the self-hosted runner: its persistent /home/runner/.rustup has
   # toolchains/ and tmp/ on different filesystems, so every rustup
   # install/update dies with EXDEV ("Invalid cross-device link"). Keeping
-  # RUSTUP_HOME on the per-job temp filesystem sidesteps that at the cost of a
+  # RUSTUP_HOME beside the checkout (one filesystem, and `runner.temp` is not
+  # a valid context in workflow-level env) sidesteps that at the cost of a
   # fresh toolchain download per job. Drop this once the runner image mounts
   # all of .rustup on one filesystem.
-  RUSTUP_HOME: ${{ runner.temp }}/rustup
+  RUSTUP_HOME: ${{ github.workspace }}/../rustup
 
 jobs:
   fmt:
