@@ -13,7 +13,7 @@
 # Stage 1: build the web UI. Vite emits static assets into web/dist, which the
 # server crate embeds into the binary via rust-embed in stage 2.
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS web
+FROM node:24-alpine AS web
 WORKDIR /app
 
 # corepack ships pnpm with the node image; enable it and pin via packageManager.

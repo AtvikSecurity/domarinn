@@ -33,7 +33,7 @@ compile = false
 # versions + checksums in .mise/mise.lock. Rust tracks the rustup stable channel
 # (not checksum-pinned; mise's core:rust backend delegates to rustup).
 rust = "stable"
-node = "22"
+node = "24"
 pnpm = "11"
 
 # --- Tasks (ported 1:1 from the former justfile) ---------------------------
