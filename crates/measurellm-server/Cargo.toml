@@ -33,7 +33,7 @@ sha2 = { workspace = true }
 hex = "0.4"
 subtle = "2"
 argon2 = "0.5"
-rand = "0.9"
+rand = "0.10"
 ulid = { workspace = true }
 bytes = "1"
 rust-embed = "8"
