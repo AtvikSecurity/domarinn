@@ -189,7 +189,7 @@ reruns. The client side — the `http` cache backend, `MEASURELLM_SERVER_URL`, a
 ## This repo's CI (`ci.yml`)
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to
-`master`/`main` and on every PR. Superseded runs on the same ref are cancelled to
+`main` and on every PR. Superseded runs on the same ref are cancelled to
 save minutes, and the workflow has read-only repo permissions.
 
 | Job              | What it runs | What it guards |
