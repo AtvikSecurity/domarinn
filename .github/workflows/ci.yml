@@ -33,27 +33,35 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: rust
-      - run: cargo fmt --all --check
+      # Every gate below is a mise task, so `mise run <task>` locally runs the
+      # exact same command as CI (`mise run ci` runs the whole matrix).
+      - run: mise run fmt-check
 
   clippy:
     name: clippy
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: rust
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: mise run clippy
 
   test:
     name: test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: rust
@@ -66,6 +74,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: node pnpm
@@ -78,66 +88,47 @@ jobs:
           path: ${{ env.STORE_PATH }}
           key: pnpm-store-${{ hashFiles('web/pnpm-lock.yaml') }}
           restore-keys: pnpm-store-
-      - run: pnpm -C web install --frozen-lockfile
-      # Type-checked lint (--max-warnings=0). The `build` step below runs
+      - run: mise run web-install
+      # Type-checked lint (--max-warnings=0). The `web-build` task runs
       # `tsc -b`, which already fails the job on any type error, so no separate
       # typecheck step is needed.
-      - run: pnpm -C web lint
-      - run: pnpm -C web build
-      - run: pnpm -C web test
+      - run: mise run web-lint
+      - run: mise run web-build
+      - run: mise run web-test
 
   schema-check:
     name: schema is up to date
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: rust
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
-      # Regenerate the schema on the fly and diff it against the committed copy.
-      # `diff` exits nonzero (failing the job) on any drift. Keep this in sync
-      # with the `schema` task in .mise/config.toml.
-      #
-      # `set -o pipefail` so a *compile* failure of the generator (left side of
-      # the pipe) fails the job instead of being masked by `diff`'s exit code
-      # (which would otherwise read as "schema out of date").
+      # Regenerates the schema and diffs it against the committed copy; the
+      # full logic lives in the `schema-check` task (.mise/config.toml) so the
+      # local run and CI can never drift apart.
       - name: Fail on schema drift
-        run: |
-          set -o pipefail
-          if ! cargo run -q -p measurellm-cli -- schema config | diff -u measurellm.schema.json -; then
-            echo "::error::measurellm.schema.json is out of date. Run 'mise run schema' and commit the result."
-            exit 1
-          fi
+        run: mise run schema-check
 
   gen-types-check:
     name: generated TS types are up to date
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: rust
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
-      # Regenerate the TypeScript DTOs into their committed location and fail
-      # if they differ. Keep in sync with the `gen-types` task in
-      # .mise/config.toml.
-      - name: Generate types
-        run: cargo run -q -p measurellm-cli -- gen-types web/src/api/generated
-      - name: Fail on drift
-        run: |
-          if [ -z "$(git ls-files web/src/api/generated)" ]; then
-            echo "::error::web/src/api/generated is not committed. Run 'mise run gen-types' and commit the result."
-            exit 1
-          fi
-          # `git status --porcelain`, not `git diff`: newly-generated files
-          # that git diff can't see (untracked) must also count as drift.
-          if [ -n "$(git status --porcelain -- web/src/api/generated)" ]; then
-            echo "::error::web/src/api/generated is out of date. Run 'mise run gen-types' and commit the result."
-            git --no-pager status --porcelain -- web/src/api/generated
-            exit 1
-          fi
-          echo "generated types are up to date"
+      # Regenerates the TypeScript DTOs and fails on any drift (including
+      # untracked new files); the full logic lives in the `gen-types-check`
+      # task (.mise/config.toml) so the local run and CI can never drift apart.
+      - name: Fail on generated-type drift
+        run: mise run gen-types-check
 
   musl-build:
     name: static musl build (${{ matrix.target }})
@@ -150,13 +141,11 @@ jobs:
         target: [x86_64-unknown-linux-musl]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           install_args: rust
-      # mise's rust delegates to rustup, so the cross target is added the usual
-      # way (mise pins the toolchain; rustup adds the target to it).
-      - name: Add musl target
-        run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
         with:
           key: ${{ matrix.target }}
@@ -168,8 +157,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools cmake
 
+      # The `musl-build` task adds the rustup target itself (mise's rust
+      # delegates to rustup) and then builds; same command locally and in CI.
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p measurellm-cli
+        run: mise run musl-build
 
       - name: Confirm the binary is static
         run: file target/${{ matrix.target }}/release/measurellm || true

@@ -193,19 +193,19 @@ reruns. The client side — the `http` cache backend, `MEASURELLM_SERVER_URL`, a
 `main` and on every PR. Superseded runs on the same ref are cancelled to
 save minutes, and the workflow has read-only repo permissions.
 
-| Job              | What it runs | What it guards |
-|------------------|--------------|----------------|
-| **fmt**          | `cargo fmt --all --check` | Formatting. |
-| **clippy**       | `cargo clippy --workspace --all-targets -- -D warnings` | Lints as hard errors. |
-| **test**         | `cargo test --workspace` | The Rust test suite. |
-| **web**          | `pnpm -C web install --frozen-lockfile`, `pnpm -C web lint`, `pnpm -C web build`, `pnpm -C web test` | The web UI lints (`--max-warnings=0`), builds, and its vitest suite passes. |
-| **schema-check** | Regenerates `measurellm schema config` and `diff`s it against the committed `measurellm.schema.json` | The checked-in JSON Schema hasn't drifted (run `mise run schema` to fix). |
-| **gen-types-check** | Regenerates the TS DTOs into `web/src/api/generated` and diffs | Generated TypeScript types are current. Hard-fails if the dir is missing/uncommitted or drifts (run `mise run gen-types` and commit). |
-| **musl-build**   | Static `cargo build --release -p measurellm-cli` for `x86_64-unknown-linux-musl` (native) | The fully static binary links on x86_64. aarch64 is not built here — it's verified at release time (see `release.yml`), where the cross toolchain is set up. |
+Every CI gate is a [mise task](../.mise/config.toml), and the workflow invokes
+those tasks — so `mise run <task>` locally runs byte-for-byte what CI runs, and
+**`mise run ci` runs the entire matrix in one go**.
 
-The `schema-check` and `gen-types-check` jobs enforce the same generators as the
-`schema` / `gen-types` mise tasks (`.mise/config.toml`) — keep those in sync when
-you change them.
+| Job              | Task it runs | What it guards |
+|------------------|--------------|----------------|
+| **fmt**          | `mise run fmt-check` (`cargo fmt --all --check`) | Formatting. |
+| **clippy**       | `mise run clippy` (`cargo clippy --workspace --all-targets -- -D warnings`) | Lints as hard errors. |
+| **test**         | `mise run test` (`cargo test --workspace`) | The Rust test suite. |
+| **web**          | `mise run web-install`, `web-lint`, `web-build`, `web-test` | The web UI installs from the frozen lockfile, lints (`--max-warnings=0`), builds, and its vitest suite passes. |
+| **schema-check** | `mise run schema-check` | The checked-in JSON Schema hasn't drifted (run `mise run schema` to fix). |
+| **gen-types-check** | `mise run gen-types-check` | Generated TypeScript types are current. Hard-fails if the dir is missing/uncommitted or drifts (run `mise run gen-types` and commit). |
+| **musl-build**   | `mise run musl-build` | The fully static binary links on x86_64 (needs a musl C toolchain on the host). aarch64 is not built here — it's verified at release time (see `release.yml`), where the cross toolchain is set up. |
 
 Every job installs its toolchain with [mise](https://mise.jdx.dev) via
 [`jdx/mise-action`](https://github.com/jdx/mise-action) (pinned to a commit SHA),

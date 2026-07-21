@@ -36,14 +36,25 @@ rust = "stable"
 node = "24"
 pnpm = "11"
 
+# Git hooks + shared formatters (same setup as home-operations/kopiur): the
+# hooks come from home-operations/.github's lefthook.common.toml (see
+# .lefthook.toml) and are installed automatically by the postinstall hook at
+# the bottom of this file whenever `mise install` runs.
+lefthook = "2.1.10"
+# `oxfmt` is distributed only via the npm backend (`mise registry oxfmt` →
+# `npm:oxfmt`); node is pinned above, so the npm backend always uses mise's
+# own node+npm rather than whatever is on PATH.
+oxfmt = "0.59.0"
+# The shared pre-commit hooks run zizmor on staged workflow files and
+# shellcheck on staged *.sh files; pin both so the hooks resolve binaries.
+zizmor = "1.27.0"
+shellcheck = "0.11.0"
+
 # --- Tasks (ported 1:1 from the former justfile) ---------------------------
 
 [tasks.build]
 description = "Full release build: compile the web UI, then the Rust workspace in release mode (the server crate embeds web/dist, so the UI must build first)."
-run = [
-  "pnpm -C web build",
-  "cargo build --release",
-]
+run = ["pnpm -C web build", "cargo build --release"]
 
 [tasks.dev]
 description = "Run the results server + API on :8321 for local development (serves the embedded UI; run `pnpm -C web dev` alongside for live UI work)."
@@ -62,12 +73,17 @@ run = "pnpm -C web test"
 description = "Run the web end-to-end tests (Playwright). Builds the mock UI and previews it via the config's webServer, so no Rust backend is required."
 run = "pnpm -C web test:e2e"
 
+[tasks.clippy]
+description = "Clippy with warnings as errors. This is exactly what the CI clippy job runs."
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.fmt-check]
+description = "Check formatting without modifying anything. This is exactly what the CI fmt job runs."
+run = "cargo fmt --all --check"
+
 [tasks.lint]
 description = "Lint: clippy as errors + a formatting check. Mirrors CI."
-run = [
-  "cargo clippy --workspace --all-targets -- -D warnings",
-  "cargo fmt --all --check",
-]
+depends = ["clippy", "fmt-check"]
 
 [tasks.fmt]
 description = "Auto-format the workspace."
@@ -81,6 +97,83 @@ run = "cargo run -q -p measurellm-cli -- schema config > measurellm.schema.json"
 description = "Export TypeScript DTOs for the web UI from the Rust result/diff types. This directory is the web type source of truth; keep it committed. CI regenerates it and fails on drift."
 run = "cargo run -q -p measurellm-cli -- gen-types web/src/api/generated"
 
+# --- CI gates -----------------------------------------------------------------
+# One task per CI job, so `mise run <task>` locally is byte-for-byte what CI
+# runs (ci.yml invokes these same tasks). `mise run ci` runs the whole matrix.
+
+[tasks.schema-check]
+description = "Fail if the committed measurellm.schema.json has drifted from the generator (the CI schema-check job). Run `mise run schema` and commit to fix."
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+# pipefail so a *compile* failure of the generator fails the task instead of
+# being masked by diff's exit code (which would read as "schema out of date").
+if ! cargo run -q -p measurellm-cli -- schema config | diff -u measurellm.schema.json -; then
+  echo "measurellm.schema.json is out of date. Run 'mise run schema' and commit the result." >&2
+  exit 1
+fi
+'''
+
+[tasks.gen-types-check]
+description = "Fail if web/src/api/generated has drifted from the Rust types (the CI gen-types-check job). Run `mise run gen-types` and commit to fix."
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cargo run -q -p measurellm-cli -- gen-types web/src/api/generated
+if [ -z "$(git ls-files web/src/api/generated)" ]; then
+  echo "web/src/api/generated is not committed. Run 'mise run gen-types' and commit the result." >&2
+  exit 1
+fi
+# `git status --porcelain`, not `git diff`: newly-generated files that git diff
+# can't see (untracked) must also count as drift.
+if [ -n "$(git status --porcelain -- web/src/api/generated)" ]; then
+  echo "web/src/api/generated is out of date. Run 'mise run gen-types' and commit the result." >&2
+  git --no-pager status --porcelain -- web/src/api/generated >&2
+  exit 1
+fi
+echo "generated types are up to date"
+'''
+
+[tasks.web-install]
+description = "Install web dependencies exactly as CI does (frozen lockfile)."
+run = "pnpm -C web install --frozen-lockfile"
+
+[tasks.web-lint]
+description = "Type-checked eslint over the web UI, warnings as errors (the CI web job's lint step)."
+depends = ["web-install"]
+run = "pnpm -C web lint"
+
+[tasks.web-build]
+description = "Type-check (tsc -b) and build the web UI (the CI web job's build step)."
+depends = ["web-install"]
+run = "pnpm -C web build"
+
+[tasks.web-test]
+description = "Run the web unit tests with vitest (the CI web job's test step)."
+depends = ["web-install"]
+run = "pnpm -C web test"
+
+[tasks.musl-build]
+description = "Static x86_64 musl release build of the CLI (the CI musl-build job). Needs a musl C toolchain on the host (musl-gcc, e.g. Debian musl-tools) for rusqlite's bundled SQLite."
+run = [
+  "rustup target add x86_64-unknown-linux-musl",
+  "cargo build --release --target x86_64-unknown-linux-musl -p measurellm-cli",
+]
+
+[tasks.ci]
+description = "Run every CI gate locally: clippy, fmt-check, tests, schema/type drift checks, the web pipeline, and the static musl build."
+depends = [
+  "clippy",
+  "fmt-check",
+  "test",
+  "schema-check",
+  "gen-types-check",
+  "web-lint",
+  "web-build",
+  "web-test",
+  "musl-build",
+]
+
 [tasks.docker-build]
 description = "Build the container image locally (multi-stage; produces the distroless image). Override the tag with MEASURELLM_IMAGE / MEASURELLM_TAG."
 run = 'docker build -t "${MEASURELLM_IMAGE:-ghcr.io/atviksecurity/measurellm}:${MEASURELLM_TAG:-dev}" .'
@@ -89,3 +182,8 @@ run = 'docker build -t "${MEASURELLM_IMAGE:-ghcr.io/atviksecurity/measurellm}:${
 description = "Push the locally built image (requires `docker login ghcr.io`)."
 depends = ["docker-build"]
 run = 'docker push "${MEASURELLM_IMAGE:-ghcr.io/atviksecurity/measurellm}:${MEASURELLM_TAG:-dev}"'
+
+[hooks]
+# Install the lefthook git hooks (see .lefthook.toml) whenever the toolchain
+# is provisioned, so every clone gets the pre-commit formatters for free.
+postinstall = "lefthook install"

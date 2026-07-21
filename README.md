@@ -80,14 +80,14 @@ Full docs live in **[`docs/`](docs/README.md)**:
 
 ## Workspace layout
 
-| Crate | Responsibility |
-|-------|----------------|
-| `measurellm-core` | Config schema, template engine, providers, runner, grader, statistics, and the `RunResult` DTOs. Pure library. |
-| `measurellm-cache` | Cache backends: local disk, remote HTTP, S3, layered. |
-| `measurellm-server` | axum results server, SQLite storage, accounts/auth, and the embedded web UI. |
-| `measurellm-cli` | The `measurellm` binary. |
-| `measurellm-testkit` | Fake exec-protocol programs for tests (not published). |
-| `web/` | The React + Vite + TypeScript UI, embedded into the server binary. |
+| Crate                | Responsibility                                                                                                 |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `measurellm-core`    | Config schema, template engine, providers, runner, grader, statistics, and the `RunResult` DTOs. Pure library. |
+| `measurellm-cache`   | Cache backends: local disk, remote HTTP, S3, layered.                                                          |
+| `measurellm-server`  | axum results server, SQLite storage, accounts/auth, and the embedded web UI.                                   |
+| `measurellm-cli`     | The `measurellm` binary.                                                                                       |
+| `measurellm-testkit` | Fake exec-protocol programs for tests (not published).                                                         |
+| `web/`               | The React + Vite + TypeScript UI, embedded into the server binary.                                             |
 
 ## Development
 
@@ -96,19 +96,30 @@ once (see the [getting-started guide](https://mise.jdx.dev/getting-started.html)
 then let it provision the pinned Rust, Node, and pnpm from `.mise/config.toml`:
 
 ```sh
-mise install    # install the pinned toolchain (Rust, Node, pnpm)
+mise install    # install the pinned toolchain (Rust, Node, pnpm) + git hooks
 mise tasks      # list every available task
 
 mise run build  # pnpm build the web UI, then cargo build --release
 mise run test   # cargo test --workspace
 mise run lint   # clippy -D warnings + cargo fmt --check
 mise run dev    # run the server; run `pnpm -C web dev` alongside for the UI
+mise run ci     # every CI gate locally (lint, tests, drift checks, web, musl)
 ```
+
+`mise install` also installs the [lefthook](https://lefthook.dev) pre-commit
+hooks (`.lefthook.toml`), which pull the shared
+[home-operations](https://github.com/home-operations/.github) config: staged
+files are auto-formatted (`cargo fmt`, `oxfmt` for JSON/YAML/Markdown), shell
+scripts get `shellcheck`, and workflow changes get a `zizmor` security lint.
+Generated files (`measurellm.schema.json`, `web/src/api/generated/`) are
+excluded — CI verifies them byte-for-byte against their generators.
 
 Every source file is kept under 1000 lines (enforced by a ratchet test), and CI
 runs fmt, clippy `-D warnings`, the Rust and web (vitest) test suites, the web
-lint, a musl static build, and schema/type drift checks. The Playwright e2e
-suite is not part of CI; run it locally with `mise run e2e`.
+lint, a musl static build, and schema/type drift checks — each gate is a mise
+task invoked by name in `ci.yml`, so `mise run ci` reproduces the whole matrix
+locally. The Playwright e2e suite is not part of CI; run it locally with
+`mise run e2e`.
 
 ## License
 
