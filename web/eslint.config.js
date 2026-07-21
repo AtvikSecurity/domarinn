@@ -29,6 +29,9 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      // Advisory for React Compiler adoption ("this library skips memoization
+      // compilation"); we don't use the compiler, so it's pure noise here.
+      "react-hooks/incompatible-library": "off",
       // HMR-only nicety; not worth splitting hook/component files for.
       "react-refresh/only-export-components": "off",
       "@typescript-eslint/no-unused-vars": [

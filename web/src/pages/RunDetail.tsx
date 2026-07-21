@@ -48,10 +48,14 @@ export function RunDetail() {
 
   // Debounced output search -> ?q=
   const [search, setSearch] = useState(filters.q ?? "");
-  useEffect(() => {
+  // Reset the search box when navigating to a different run. Done during
+  // render (the "adjusting state when props change" pattern) instead of in an
+  // effect, so no stale-search frame is committed.
+  const [prevId, setPrevId] = useState(id);
+  if (prevId !== id) {
+    setPrevId(id);
     setSearch(filters.q ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }
   useEffect(() => {
     const handle = setTimeout(() => {
       if ((filters.q ?? "") !== search) {

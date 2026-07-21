@@ -11,10 +11,18 @@ export function TokenModal() {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState("");
 
-  useEffect(() => onUnauthorized(() => setOpen(true)), []);
-  useEffect(() => {
-    if (open) setValue(getToken() ?? "");
-  }, [open]);
+  // Load the current token when the dialog opens (from either path) rather
+  // than reacting to `open` in an effect, which would set state synchronously.
+  function openWithCurrentToken() {
+    setValue(getToken() ?? "");
+    setOpen(true);
+  }
+  useEffect(() => onUnauthorized(openWithCurrentToken), []);
+
+  function handleOpenChange(next: boolean) {
+    if (next) openWithCurrentToken();
+    else setOpen(false);
+  }
 
   function save() {
     const trimmed = value.trim();
@@ -24,7 +32,7 @@ export function TokenModal() {
   }
 
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
+    <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] data-[state=open]:animate-[overlay-in_120ms_ease-out]" />
         <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-surface p-5 shadow-2xl focus:outline-none">

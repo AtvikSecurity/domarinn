@@ -13,9 +13,17 @@ interface Part {
 export function DiffView({ base, head }: { base: string; head: string }) {
   const [parts, setParts] = useState<Part[] | null>(null);
 
+  // Show the loading state for new inputs by resetting during render (the
+  // "adjusting state when props change" pattern) rather than synchronously
+  // inside the effect below.
+  const [prevInputs, setPrevInputs] = useState({ base, head });
+  if (prevInputs.base !== base || prevInputs.head !== head) {
+    setPrevInputs({ base, head });
+    setParts(null);
+  }
+
   useEffect(() => {
     let alive = true;
-    setParts(null);
     import("diff")
       .then((mod) => {
         if (alive) setParts(mod.diffWords(base ?? "", head ?? ""));
