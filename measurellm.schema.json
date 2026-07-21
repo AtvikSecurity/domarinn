@@ -1,1249 +1,28 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "additionalProperties": false,
-  "definitions": {
-    "Assert": {
-      "description": "A single assertion with its common controls.",
-      "oneOf": [
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "contains"
-              ],
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "icontains"
-              ],
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "icontains-any"
-              ],
-              "type": "string"
-            },
-            "values": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "type",
-            "values"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "regex"
-              ],
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "equals"
-              ],
-              "type": "string"
-            },
-            "value": {
-              "$ref": "#/definitions/Val"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "starts-with"
-              ],
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "is-json"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "schema": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/Val"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "type": {
-              "enum": [
-                "contains-json"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "max": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "min": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "length"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "jinja"
-              ],
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "command": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "config": true,
-            "type": {
-              "enum": [
-                "exec"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "command",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "grader": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/Grader"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "params": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "threshold": {
-              "format": "double",
-              "type": [
-                "number",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "llm-rubric"
-              ],
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Total cost in USD must be <= max. Bypasses the cache.",
-          "properties": {
-            "max": {
-              "format": "double",
-              "type": "number"
-            },
-            "type": {
-              "enum": [
-                "cost"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "max",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Latency in ms must be <= max. Bypasses the cache.",
-          "properties": {
-            "max": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": "integer"
-            },
-            "type": {
-              "enum": [
-                "latency"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "max",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Total tokens must be <= max.",
-          "properties": {
-            "max": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": "integer"
-            },
-            "type": {
-              "enum": [
-                "tokens"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "max",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Embedding cosine similarity to a reference must be >= threshold.",
-          "properties": {
-            "threshold": {
-              "format": "double",
-              "type": [
-                "number",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "similar"
-              ],
-              "type": "string"
-            },
-            "value": {
-              "$ref": "#/definitions/Val"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        }
-      ],
-      "properties": {
-        "negate": {
-          "default": false,
-          "type": "boolean"
-        },
-        "weight": {
-          "default": 1.0,
-          "format": "double",
-          "type": "number"
-        }
-      },
-      "type": "object"
-    },
-    "CacheBackendKind": {
-      "enum": [
-        "disk",
-        "layered",
-        "http",
-        "s3"
-      ],
-      "type": "string"
-    },
-    "CacheCfg": {
-      "additionalProperties": false,
-      "properties": {
-        "backend": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/CacheBackendKind"
-            }
-          ],
-          "default": "disk"
-        },
-        "s3": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/S3Cfg"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "ChatRole": {
-      "description": "A chat message role.",
-      "enum": [
-        "system",
-        "user",
-        "assistant"
-      ],
-      "type": "string"
-    },
-    "Defaults": {
-      "additionalProperties": false,
-      "description": "Values merged into every test before it runs.",
-      "properties": {
-        "assert": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/Assert"
-          },
-          "type": "array"
-        },
-        "tags": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "threshold": {
-          "format": "double",
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "vars": {
-          "additionalProperties": {
-            "$ref": "#/definitions/Val"
-          },
-          "default": {},
-          "type": "object"
-        }
-      },
-      "type": "object"
-    },
-    "GeneratorSpec": {
-      "additionalProperties": false,
-      "properties": {
-        "command": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "config": true,
-        "timeout_ms": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "type": "object"
-    },
-    "GeneratorWrap": {
-      "additionalProperties": false,
-      "properties": {
-        "generator": {
-          "$ref": "#/definitions/GeneratorSpec"
-        }
-      },
-      "required": [
-        "generator"
-      ],
-      "type": "object"
-    },
-    "Grader": {
-      "additionalProperties": false,
-      "description": "The LLM grader for `llm-rubric`.",
-      "properties": {
-        "provider": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ProviderKind"
-            }
-          ],
-          "description": "The grading model. Should be a different model family than the SUT."
-        },
-        "template": {
-          "description": "Optional override of the built-in grading-prompt template (`file://`).",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "verdict_mode": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/VerdictMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "`forced` (default) or `auto` — how the structured verdict is obtained."
-        }
-      },
-      "required": [
-        "provider"
-      ],
-      "type": "object"
-    },
-    "HttpMethod": {
-      "description": "The HTTP method for a `type: http` provider. Authors may write either case (`get` or `GET`) in YAML; the wire method (and the request/cache fingerprint) is always the uppercase form.",
-      "enum": [
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "HEAD"
-      ],
-      "type": "string"
-    },
-    "Message": {
-      "additionalProperties": false,
-      "description": "A chat message; `content` may be `file://path` to load from disk.",
-      "properties": {
-        "content": {
-          "type": "string"
-        },
-        "role": {
-          "$ref": "#/definitions/ChatRole"
-        }
-      },
-      "required": [
-        "content",
-        "role"
-      ],
-      "type": "object"
-    },
-    "Prompt": {
-      "additionalProperties": false,
-      "description": "A prompt template. Exactly one of `template` / `messages` must be set.",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "messages": {
-          "items": {
-            "$ref": "#/definitions/Message"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "template": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "id"
-      ],
-      "type": "object"
-    },
-    "Provider": {
-      "description": "A system under test.",
-      "oneOf": [
-        {
-          "description": "Spawn an external command speaking the exec JSON protocol.",
-          "properties": {
-            "cache_salt": {
-              "description": "Cache-busting token (e.g. a git SHA or binary hash). Without it, exec providers default to no-cache so a rebuilt binary is never stale.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "command": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "env": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "timeout_ms": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "exec"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "command",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Native Anthropic Messages API client.",
-          "properties": {
-            "api_key_env": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "base_url": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "model": {
-              "type": "string"
-            },
-            "params": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "anthropic"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "model",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "OpenAI-compatible chat-completions client.",
-          "properties": {
-            "api_key_env": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "base_url": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "model": {
-              "type": "string"
-            },
-            "params": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "openai"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "model",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Arbitrary HTTP endpoint.",
-          "properties": {
-            "body": true,
-            "headers": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "method": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/HttpMethod"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "output_expr": {
-              "description": "minijinja expression selecting the output from the response.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "http"
-              ],
-              "type": "string"
-            },
-            "url": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "url"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Embeddings endpoint used by the `similar` assertion.",
-          "properties": {
-            "api_key_env": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "base_url": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "model": {
-              "type": "string"
-            },
-            "params": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "embeddings"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "model",
-            "type"
-          ],
-          "type": "object"
-        }
-      ],
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "label": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "id"
-      ],
-      "type": "object"
-    },
-    "ProviderKind": {
-      "description": "The behavior of a provider, selected by `type`.",
-      "oneOf": [
-        {
-          "description": "Spawn an external command speaking the exec JSON protocol.",
-          "properties": {
-            "cache_salt": {
-              "description": "Cache-busting token (e.g. a git SHA or binary hash). Without it, exec providers default to no-cache so a rebuilt binary is never stale.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "command": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "env": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "timeout_ms": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "exec"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "command",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Native Anthropic Messages API client.",
-          "properties": {
-            "api_key_env": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "base_url": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "model": {
-              "type": "string"
-            },
-            "params": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "anthropic"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "model",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "OpenAI-compatible chat-completions client.",
-          "properties": {
-            "api_key_env": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "base_url": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "model": {
-              "type": "string"
-            },
-            "params": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "openai"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "model",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Arbitrary HTTP endpoint.",
-          "properties": {
-            "body": true,
-            "headers": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "method": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/HttpMethod"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "output_expr": {
-              "description": "minijinja expression selecting the output from the response.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "http"
-              ],
-              "type": "string"
-            },
-            "url": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "url"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Embeddings endpoint used by the `similar` assertion.",
-          "properties": {
-            "api_key_env": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "base_url": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "model": {
-              "type": "string"
-            },
-            "params": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "embeddings"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "model",
-            "type"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "RateLimit": {
-      "additionalProperties": false,
-      "properties": {
-        "rps": {
-          "format": "double",
-          "type": "number"
-        }
-      },
-      "required": [
-        "rps"
-      ],
-      "type": "object"
-    },
-    "RetryCfg": {
-      "additionalProperties": false,
-      "properties": {
-        "initial_ms": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "jitter": {
-          "default": false,
-          "type": "boolean"
-        },
-        "max": {
-          "format": "uint32",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "max_ms": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "max"
-      ],
-      "type": "object"
-    },
-    "Runner": {
-      "additionalProperties": false,
-      "properties": {
-        "concurrency": {
-          "format": "uint",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "rate_limit": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/RateLimit"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "retries": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/RetryCfg"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "short_circuit": {
-          "description": "Whether deterministic asserts short-circuit the grader. Default true.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "timeout_ms": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "S3Cfg": {
-      "additionalProperties": false,
-      "description": "Non-secret S3 settings; credentials come from the environment / AWS chain.",
-      "properties": {
-        "bucket": {
-          "type": "string"
-        },
-        "endpoint": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "force_path_style": {
-          "default": false,
-          "type": "boolean"
-        },
-        "prefix": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "region": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "bucket"
-      ],
-      "type": "object"
-    },
-    "TestCase": {
-      "additionalProperties": false,
-      "description": "A single test case.",
-      "properties": {
-        "assert": {
-          "items": {
-            "$ref": "#/definitions/Assert"
-          },
-          "type": "array"
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "only_providers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "skip_providers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "tags": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "threshold": {
-          "description": "If set, the case passes when its weighted-mean score >= threshold; otherwise it passes only if every assert passes.",
-          "format": "double",
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "vars": {
-          "additionalProperties": {
-            "$ref": "#/definitions/Val"
-          },
-          "type": "object"
-        }
-      },
-      "type": "object"
-    },
-    "TestSource": {
-      "anyOf": [
-        {
-          "description": "A `file://glob` reference to YAML/JSON/CSV/JSONL test files.",
-          "type": "string"
-        },
-        {
-          "allOf": [
-            {
-              "$ref": "#/definitions/GeneratorWrap"
-            }
-          ],
-          "description": "A generator command that emits test cases as JSON."
-        },
-        {
-          "allOf": [
-            {
-              "$ref": "#/definitions/TestCase"
-            }
-          ],
-          "description": "An inline test case."
-        }
-      ],
-      "description": "An entry in the `tests:` list.\n\n`Deserialize` is hand-written (rather than derived as `#[serde(untagged)]`) so a typo inside an inline test case surfaces the precise unknown-field error from [`TestCase`]'s `deny_unknown_fields` instead of the opaque \"data did not match any variant of untagged enum\" an untagged derive emits. `Serialize`/`JsonSchema` keep the untagged shape (a glob string, a `{generator: ...}` mapping, or an inline case mapping)."
-    },
-    "Val": true,
-    "VerdictMode": {
-      "description": "How an `llm-rubric` grader's structured verdict is obtained. `Forced` is the default; `Auto` is documented but currently unread by the grader.",
-      "enum": [
-        "forced",
-        "auto"
-      ],
-      "type": "string"
-    }
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Suite",
   "description": "The top-level eval suite.",
+  "type": "object",
   "properties": {
-    "cache": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/CacheCfg"
-        },
-        {
-          "type": "null"
-        }
+    "version": {
+      "description": "Config schema version. Currently always `1`.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "project": {
+      "description": "Project namespace (groups runs on the server).",
+      "type": [
+        "string",
+        "null"
       ]
     },
-    "defaults": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/Defaults"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "Values merged into every test."
+    "suite": {
+      "description": "Suite name (names the run's suite).",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "description": {
       "type": [
@@ -1258,81 +37,1234 @@
         "null"
       ]
     },
-    "grader": {
+    "imports": {
+      "description": "Reusable fragments (named assert-sets, shared providers) to import.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "providers": {
+      "description": "The systems under test. At least one is required.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Provider"
+      }
+    },
+    "prompts": {
+      "description": "Optional prompts. Omit when a provider constructs its own input.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Prompt"
+      }
+    },
+    "tests": {
+      "description": "Test sources: inline cases, `file://` globs, or generator commands.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TestSource"
+      },
+      "default": []
+    },
+    "defaults": {
+      "description": "Values merged into every test.",
       "anyOf": [
         {
-          "$ref": "#/definitions/Grader"
+          "$ref": "#/$defs/Defaults"
         },
         {
           "type": "null"
         }
-      ],
-      "description": "Default grader for `llm-rubric` assertions."
-    },
-    "imports": {
-      "description": "Reusable fragments (named assert-sets, shared providers) to import.",
-      "items": {
-        "type": "string"
-      },
-      "type": "array"
-    },
-    "project": {
-      "description": "Project namespace (groups runs on the server).",
-      "type": [
-        "string",
-        "null"
       ]
     },
-    "prompts": {
-      "description": "Optional prompts. Omit when a provider constructs its own input.",
-      "items": {
-        "$ref": "#/definitions/Prompt"
-      },
-      "type": "array"
-    },
-    "providers": {
-      "description": "The systems under test. At least one is required.",
-      "items": {
-        "$ref": "#/definitions/Provider"
-      },
-      "type": "array"
+    "grader": {
+      "description": "Default grader for `llm-rubric` assertions.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Grader"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "runner": {
       "anyOf": [
         {
-          "$ref": "#/definitions/Runner"
+          "$ref": "#/$defs/Runner"
         },
         {
           "type": "null"
         }
       ]
     },
-    "suite": {
-      "description": "Suite name (names the run's suite).",
-      "type": [
-        "string",
-        "null"
+    "cache": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CacheCfg"
+        },
+        {
+          "type": "null"
+        }
       ]
-    },
-    "tests": {
-      "default": [],
-      "description": "Test sources: inline cases, `file://` globs, or generator commands.",
-      "items": {
-        "$ref": "#/definitions/TestSource"
-      },
-      "type": "array"
-    },
-    "version": {
-      "description": "Config schema version. Currently always `1`.",
-      "format": "uint32",
-      "minimum": 0.0,
-      "type": "integer"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "providers",
-    "version"
+    "version",
+    "providers"
   ],
-  "title": "Suite",
-  "type": "object"
+  "$defs": {
+    "Provider": {
+      "description": "A system under test.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "oneOf": [
+        {
+          "description": "Spawn an external command speaking the exec JSON protocol.",
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "timeout_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "cache_salt": {
+              "description": "Cache-busting token (e.g. a git SHA or binary hash). Without it, exec\nproviders default to no-cache so a rebuilt binary is never stale.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "exec"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ]
+        },
+        {
+          "description": "Native Anthropic Messages API client.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "api_key_env": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "params": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "anthropic"
+            }
+          },
+          "required": [
+            "type",
+            "model"
+          ]
+        },
+        {
+          "description": "OpenAI-compatible chat-completions client.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "api_key_env": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "params": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "openai"
+            }
+          },
+          "required": [
+            "type",
+            "model"
+          ]
+        },
+        {
+          "description": "Arbitrary HTTP endpoint.",
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "method": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HttpMethod"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "body": true,
+            "output_expr": {
+              "description": "minijinja expression selecting the output from the response.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "http"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        {
+          "description": "Embeddings endpoint used by the `similar` assertion.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "api_key_env": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "params": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "embeddings"
+            }
+          },
+          "required": [
+            "type",
+            "model"
+          ]
+        }
+      ]
+    },
+    "HttpMethod": {
+      "description": "The HTTP method for a `type: http` provider. Authors may write either case\n(`get` or `GET`) in YAML; the wire method (and the request/cache\nfingerprint) is always the uppercase form.",
+      "type": "string",
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "HEAD"
+      ]
+    },
+    "Prompt": {
+      "description": "A prompt template. Exactly one of `template` / `messages` must be set.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "template": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messages": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Message"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "Message": {
+      "description": "A chat message; `content` may be `file://path` to load from disk.",
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/ChatRole"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "content"
+      ]
+    },
+    "ChatRole": {
+      "description": "A chat message role.",
+      "type": "string",
+      "enum": [
+        "system",
+        "user",
+        "assistant"
+      ]
+    },
+    "TestSource": {
+      "description": "An entry in the `tests:` list.\n\n`Deserialize` is hand-written (rather than derived as `#[serde(untagged)]`)\nso a typo inside an inline test case surfaces the precise unknown-field\nerror from [`TestCase`]'s `deny_unknown_fields` instead of the opaque\n\"data did not match any variant of untagged enum\" an untagged derive emits.\n`Serialize`/`JsonSchema` keep the untagged shape (a glob string, a\n`{generator: ...}` mapping, or an inline case mapping).",
+      "anyOf": [
+        {
+          "description": "A `file://glob` reference to YAML/JSON/CSV/JSONL test files.",
+          "type": "string"
+        },
+        {
+          "description": "A generator command that emits test cases as JSON.",
+          "$ref": "#/$defs/GeneratorWrap"
+        },
+        {
+          "description": "An inline test case.",
+          "$ref": "#/$defs/TestCase"
+        }
+      ]
+    },
+    "GeneratorWrap": {
+      "type": "object",
+      "properties": {
+        "generator": {
+          "$ref": "#/$defs/GeneratorSpec"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "generator"
+      ]
+    },
+    "GeneratorSpec": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "config": true,
+        "timeout_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ]
+    },
+    "TestCase": {
+      "description": "A single test case.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vars": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Val"
+          }
+        },
+        "assert": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Assert"
+          }
+        },
+        "threshold": {
+          "description": "If set, the case passes when its weighted-mean score >= threshold;\notherwise it passes only if every assert passes.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "only_providers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skip_providers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Val": true,
+    "Assert": {
+      "description": "A single assertion with its common controls.",
+      "type": "object",
+      "properties": {
+        "weight": {
+          "type": "number",
+          "format": "double",
+          "default": 1.0
+        },
+        "negate": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "contains"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "icontains"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "values": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "icontains-any"
+            }
+          },
+          "required": [
+            "type",
+            "values"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "regex"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/Val"
+            },
+            "type": {
+              "type": "string",
+              "const": "equals"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "starts-with"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "is-json"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Val"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "contains-json"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "max": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "length"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "jinja"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "config": true,
+            "type": {
+              "type": "string",
+              "const": "exec"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "grader": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Grader"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "threshold": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "params": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "llm-rubric"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "description": "Total cost in USD must be <= max. Bypasses the cache.",
+          "type": "object",
+          "properties": {
+            "max": {
+              "type": "number",
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "cost"
+            }
+          },
+          "required": [
+            "type",
+            "max"
+          ]
+        },
+        {
+          "description": "Latency in ms must be <= max. Bypasses the cache.",
+          "type": "object",
+          "properties": {
+            "max": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "latency"
+            }
+          },
+          "required": [
+            "type",
+            "max"
+          ]
+        },
+        {
+          "description": "Total tokens must be <= max.",
+          "type": "object",
+          "properties": {
+            "max": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "tokens"
+            }
+          },
+          "required": [
+            "type",
+            "max"
+          ]
+        },
+        {
+          "description": "Embedding cosine similarity to a reference must be >= threshold.",
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/Val"
+            },
+            "threshold": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "type": {
+              "type": "string",
+              "const": "similar"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        }
+      ]
+    },
+    "Grader": {
+      "description": "The LLM grader for `llm-rubric`.",
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "The grading model. Should be a different model family than the SUT.",
+          "$ref": "#/$defs/ProviderKind"
+        },
+        "template": {
+          "description": "Optional override of the built-in grading-prompt template (`file://`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verdict_mode": {
+          "description": "`forced` (default) or `auto` — how the structured verdict is obtained.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VerdictMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider"
+      ]
+    },
+    "ProviderKind": {
+      "description": "The behavior of a provider, selected by `type`.",
+      "oneOf": [
+        {
+          "description": "Spawn an external command speaking the exec JSON protocol.",
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "timeout_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "cache_salt": {
+              "description": "Cache-busting token (e.g. a git SHA or binary hash). Without it, exec\nproviders default to no-cache so a rebuilt binary is never stale.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "exec"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ]
+        },
+        {
+          "description": "Native Anthropic Messages API client.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "api_key_env": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "params": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "anthropic"
+            }
+          },
+          "required": [
+            "type",
+            "model"
+          ]
+        },
+        {
+          "description": "OpenAI-compatible chat-completions client.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "api_key_env": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "params": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "openai"
+            }
+          },
+          "required": [
+            "type",
+            "model"
+          ]
+        },
+        {
+          "description": "Arbitrary HTTP endpoint.",
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "method": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HttpMethod"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "body": true,
+            "output_expr": {
+              "description": "minijinja expression selecting the output from the response.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "http"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        {
+          "description": "Embeddings endpoint used by the `similar` assertion.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "api_key_env": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "params": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true
+            },
+            "type": {
+              "type": "string",
+              "const": "embeddings"
+            }
+          },
+          "required": [
+            "type",
+            "model"
+          ]
+        }
+      ]
+    },
+    "VerdictMode": {
+      "description": "How an `llm-rubric` grader's structured verdict is obtained. `Forced` is\nthe default; `Auto` is documented but currently unread by the grader.",
+      "type": "string",
+      "enum": [
+        "forced",
+        "auto"
+      ]
+    },
+    "Defaults": {
+      "description": "Values merged into every test before it runs.",
+      "type": "object",
+      "properties": {
+        "vars": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Val"
+          },
+          "default": {}
+        },
+        "assert": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Assert"
+          },
+          "default": []
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "threshold": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Runner": {
+      "type": "object",
+      "properties": {
+        "concurrency": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "retries": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryCfg"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate_limit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "short_circuit": {
+          "description": "Whether deterministic asserts short-circuit the grader. Default true.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "RetryCfg": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "initial_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "jitter": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "max"
+      ]
+    },
+    "RateLimit": {
+      "type": "object",
+      "properties": {
+        "rps": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rps"
+      ]
+    },
+    "CacheCfg": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/CacheBackendKind",
+          "default": "disk"
+        },
+        "s3": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/S3Cfg"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "CacheBackendKind": {
+      "type": "string",
+      "enum": [
+        "disk",
+        "layered",
+        "http",
+        "s3"
+      ]
+    },
+    "S3Cfg": {
+      "description": "Non-secret S3 settings; credentials come from the environment / AWS chain.",
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force_path_style": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bucket"
+      ]
+    }
+  }
 }

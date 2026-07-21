@@ -326,10 +326,10 @@ struct VariantKeys {
 impl VariantKeys {
     /// Read the key sets for `def` (`"Provider"` or `"Assert"`) out of the
     /// `config_schema()` output. Each variant lives under `oneOf`, keyed by the
-    /// single value of its `type` enum.
+    /// `const` value of its `type` property.
     fn from_schema(schema: &serde_json::Value, def: &str) -> VariantKeys {
         use std::collections::{BTreeMap, BTreeSet};
-        let node = &schema["definitions"][def];
+        let node = &schema["$defs"][def];
         let common = node
             .get("properties")
             .and_then(|p| p.as_object())
@@ -343,9 +343,7 @@ impl VariantKeys {
                 };
                 let ty = props
                     .get("type")
-                    .and_then(|t| t.get("enum"))
-                    .and_then(|e| e.as_array())
-                    .and_then(|a| a.first())
+                    .and_then(|t| t.get("const"))
                     .and_then(|s| s.as_str());
                 if let Some(ty) = ty {
                     let keys: BTreeSet<String> = props.keys().cloned().collect();

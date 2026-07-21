@@ -84,14 +84,14 @@ impl serde::Serialize for Val {
 }
 
 impl schemars::JsonSchema for Val {
-    fn schema_name() -> String {
-        "Val".to_string()
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("Val")
     }
 
-    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
         // A `Val` may be any JSON value, or the `{$raw: <any>}` opt-out wrapper.
         // Accept anything; the distinction is semantic, not structural.
-        schemars::schema::Schema::Bool(true)
+        schemars::json_schema!(true)
     }
 }
 
