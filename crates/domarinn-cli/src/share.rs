@@ -4,18 +4,19 @@
 //! upload failure fail the command. Git and CI metadata are attached
 //! automatically when available.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 use clap::Args;
 use domarinn_core::result::{CiMeta, GitMeta, RunResult};
 
 use crate::exit;
+use crate::loadrun::load_run;
 
 #[derive(Args)]
 pub struct ShareArgs {
-    /// A result.json, a run directory, or nothing for the latest run.
-    pub path: Option<PathBuf>,
+    /// Run to upload: an id, `latest`, a result.json, or a run directory
+    /// (default: the latest run).
+    pub run: Option<String>,
 
     /// Fail the command (nonzero exit) if the upload fails.
     #[arg(long)]
@@ -23,24 +24,10 @@ pub struct ShareArgs {
 }
 
 pub fn execute(args: ShareArgs, server_url: Option<String>) -> u8 {
-    let path = match resolve_result_path(args.path) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return exit::USAGE;
-        }
-    };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("error: reading {}: {e}", path.display());
-            return exit::USAGE;
-        }
-    };
-    let result: RunResult = match serde_json::from_str(&text) {
+    let result = match load_run(args.run.as_deref().unwrap_or("latest")) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("error: parsing {}: {e}", path.display());
+            eprintln!("error: {e}");
             return exit::USAGE;
         }
     };
@@ -80,23 +67,6 @@ pub fn upload_run(
     let url = runtime.block_on(upload(&server, &enriched))?;
     println!("View run: {url}");
     Ok(())
-}
-
-/// Resolve the result.json to upload.
-fn resolve_result_path(path: Option<PathBuf>) -> Result<PathBuf, String> {
-    match path {
-        Some(p) if p.is_dir() => Ok(p.join("result.json")),
-        Some(p) => Ok(p),
-        None => {
-            let latest = PathBuf::from(".domarinn").join("runs").join("latest");
-            let id = std::fs::read_to_string(&latest)
-                .map_err(|_| "no latest run found; run a suite first or pass a path".to_string())?;
-            Ok(PathBuf::from(".domarinn")
-                .join("runs")
-                .join(id.trim())
-                .join("result.json"))
-        }
-    }
 }
 
 /// Attach git and CI metadata to the run if not already present.

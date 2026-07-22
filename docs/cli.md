@@ -173,18 +173,21 @@ domarinn runs --suite refusals --json
 domarinn runs --remote
 ```
 
-## `domarinn share [PATH] [--strict]`
+## `domarinn share [RUN] [--strict]`
 
 Upload a completed run to a server and print its view URL. Enriches the run with
 git and CI metadata automatically. Best-effort by default (a failed upload warns
 and exits `0`); `--strict` makes upload failure fail the command (exit `3`).
 
-- `PATH` — a `result.json`, a run directory, or omitted for the latest run.
+- `RUN` — a run id from `domarinn runs`, `latest`, a `result.json`, a run
+  directory, or omitted for the latest run (same references as `view` and
+  `diff`).
 - Server from `--server-url` / `DOMARINN_SERVER_URL`; token from
   `DOMARINN_TOKEN`.
 
 ```sh
 DOMARINN_SERVER_URL=https://evals.example domarinn share --strict
+DOMARINN_SERVER_URL=https://evals.example domarinn share 01JD3V9GQ8 --strict
 ```
 
 ## `domarinn cache <stats|path|gc|clear>`

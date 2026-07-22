@@ -688,6 +688,68 @@ fn runs_json_reports_path_and_latest_flag() {
     assert!(arr[0]["summary"]["total"].is_number());
 }
 
+/// `share` accepts a bare run id from `.domarinn/runs`, like `view` and `diff`.
+/// With no server configured, resolution still succeeds and the missing server
+/// surfaces as the best-effort upload warning (exit 0) — proving the id
+/// resolved to the stored run rather than being read as a file path.
+#[test]
+fn share_accepts_bare_run_id() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+    bin().arg("run").current_dir(dir.path()).assert().success();
+    let id = latest_id(dir.path());
+    bin()
+        .args(["share", &id])
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("no server URL"));
+}
+
+/// An unresolvable reference reports the reference itself, not a file error.
+#[test]
+fn share_unresolvable_reference_exits_two() {
+    let dir = tempfile::tempdir().unwrap();
+    bin()
+        .args(["share", "nosuchrun"])
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "could not resolve run reference 'nosuchrun'",
+        ));
+}
+
+/// With no argument, `share` still targets the latest stored run.
+#[test]
+fn share_no_args_shares_the_latest_run() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+    bin().arg("run").current_dir(dir.path()).assert().success();
+    bin()
+        .arg("share")
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("no server URL"));
+}
+
+/// An explicit result.json path is still accepted (the pre-run-id contract).
+#[test]
+fn share_result_json_path_still_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    run_to(dir.path(), "out.json", &suite("hello", "hello"));
+    bin()
+        .args(["share", "out.json"])
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("no server URL"));
+}
+
 #[test]
 fn runs_limit_one_shows_a_single_row() {
     let dir = tempfile::tempdir().unwrap();
