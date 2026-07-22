@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, RouterProvider } from "react-router";
 import { ApiError } from "@/api/client";
 import { AuthProvider } from "@/auth/AuthProvider";
-import { RequireAdmin } from "@/auth/guards";
+import { RequireAdmin, RequireAuth } from "@/auth/guards";
 import { Layout } from "@/components/Layout";
 import { TokenModal } from "@/components/TokenModal";
 import { TooltipProvider } from "@/components/ui/Tooltip";
@@ -38,28 +38,40 @@ const router = createBrowserRouter([
     path: "/",
     element: <Layout />,
     children: [
-      { index: true, element: <RunsList /> },
-      { path: "runs/:id", element: <RunDetail /> },
-      // No target-less `runs/:id/compare` route: the real server route is
-      // `Path((id, other))` and requires both segments, so there is nothing
-      // useful to render without a resolved comparison target. Compare links
-      // resolve a target from already-loaded data before navigating (see
-      // RunsList/RunDetail) and 404 via the catch-all below otherwise.
-      { path: "runs/:id/compare/:other", element: <ComparePage /> },
-      { path: "cache", element: <CacheStatsPage /> },
-      { path: "settings", element: <SettingsPage /> },
+      // Public: the only pages an unauthenticated visitor may reach in
+      // closed mode. Both keep their own setup/session redirects.
       { path: "login", element: <LoginPage /> },
       { path: "setup", element: <SetupPage /> },
-      { path: "keys", element: <KeysPage /> },
+      // Everything else is behind RequireAuth (a pathless layout route). The
+      // catch-all lives inside it too, so an unknown path redirects an
+      // anonymous visitor to /login rather than leaking that the route does
+      // not exist.
       {
-        path: "admin",
-        element: (
-          <RequireAdmin>
-            <AdminPage />
-          </RequireAdmin>
-        ),
+        element: <RequireAuth />,
+        children: [
+          { index: true, element: <RunsList /> },
+          { path: "runs/:id", element: <RunDetail /> },
+          // No target-less `runs/:id/compare` route: the real server route is
+          // `Path((id, other))` and requires both segments, so there is
+          // nothing useful to render without a resolved comparison target.
+          // Compare links resolve a target from already-loaded data before
+          // navigating (see RunsList/RunDetail) and 404 via the catch-all
+          // below otherwise.
+          { path: "runs/:id/compare/:other", element: <ComparePage /> },
+          { path: "cache", element: <CacheStatsPage /> },
+          { path: "settings", element: <SettingsPage /> },
+          { path: "keys", element: <KeysPage /> },
+          {
+            path: "admin",
+            element: (
+              <RequireAdmin>
+                <AdminPage />
+              </RequireAdmin>
+            ),
+          },
+          { path: "*", element: <NotFound /> },
+        ],
       },
-      { path: "*", element: <NotFound /> },
     ],
   },
 ]);

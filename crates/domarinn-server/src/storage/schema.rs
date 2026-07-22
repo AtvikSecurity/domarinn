@@ -145,6 +145,51 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         CREATE INDEX idx_runs_digest ON runs(project, suite, config_digest);
         "#,
         ),
+        // Migration 4: SSO. `user_identities` links a user to an IdP identity
+        // (matched strictly on provider+subject — never by email);
+        // `login_transactions` holds in-flight OIDC state/PKCE and SAML
+        // request ids (single-use, short TTL); `saml_consumed_assertions` is
+        // the assertion-replay cache. SSO-only users store `''` as their
+        // `password_hash` (login rejects it; avoids a table rebuild to drop
+        // NOT NULL). `users.email` stays NULL for local accounts.
+        M::up(
+            r#"
+        ALTER TABLE users ADD COLUMN email TEXT;
+
+        CREATE TABLE user_identities (
+            id            TEXT PRIMARY KEY,
+            user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            provider      TEXT NOT NULL,
+            kind          TEXT NOT NULL CHECK (kind IN ('oidc','saml')),
+            subject       TEXT NOT NULL,
+            email         TEXT,
+            display_name  TEXT,
+            created_at    INTEGER NOT NULL,
+            last_login_at INTEGER,
+            UNIQUE (provider, subject)
+        );
+        CREATE INDEX idx_user_identities_user ON user_identities(user_id);
+
+        CREATE TABLE login_transactions (
+            id_hash       TEXT PRIMARY KEY,
+            kind          TEXT NOT NULL CHECK (kind IN ('oidc','saml')),
+            provider      TEXT NOT NULL,
+            nonce         TEXT,
+            pkce_verifier TEXT,
+            request_id    TEXT,
+            return_to     TEXT,
+            created_at    INTEGER NOT NULL,
+            expires_at    INTEGER NOT NULL
+        );
+        CREATE INDEX idx_login_txn_expires ON login_transactions(expires_at);
+
+        CREATE TABLE saml_consumed_assertions (
+            assertion_id    TEXT PRIMARY KEY,
+            provider        TEXT NOT NULL,
+            not_on_or_after INTEGER NOT NULL
+        );
+        "#,
+        ),
     ])
 }
 

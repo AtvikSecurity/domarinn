@@ -14,6 +14,7 @@ import { Modal, ModalActions } from "@/components/ui/Modal";
 import { TextField } from "@/components/ui/TextField";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { EmptyState, ErrorState } from "@/components/States";
+import { ProviderBadge } from "@/components/ProviderBadge";
 import { cn } from "@/lib/cn";
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -121,13 +122,30 @@ export function AdminPage() {
                     data-testid={`user-row-${u.username}`}
                     className="border-b border-border/60 last:border-0"
                   >
-                    <td className="px-4 py-2 font-medium">{u.username}</td>
+                    <td className="px-4 py-2 font-medium">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span>{u.username}</span>
+                        {u.identities.map((identity) => (
+                          <ProviderBadge
+                            key={`${identity.provider}:${identity.subject}`}
+                            identity={identity}
+                          />
+                        ))}
+                      </div>
+                    </td>
                     <td className="px-3 py-2">
                       <select
                         aria-label={`Role for ${u.username}`}
-                        className="h-8 rounded-md border border-border bg-bg px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                        className="h-8 rounded-md border border-border bg-bg px-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                         value={u.role}
-                        disabled={updateUser.isPending}
+                        disabled={
+                          updateUser.isPending || u.role_managed_by !== null
+                        }
+                        title={
+                          u.role_managed_by !== null
+                            ? "Role is managed by the identity provider and re-synced on each SSO login."
+                            : undefined
+                        }
                         onChange={(e) =>
                           changeRole(u, e.target.value as Role)
                         }
@@ -164,6 +182,12 @@ export function AdminPage() {
                         <Button
                           variant="secondary"
                           size="sm"
+                          disabled={!u.has_password}
+                          title={
+                            u.has_password
+                              ? undefined
+                              : "SSO-only account — no local password to reset."
+                          }
                           onClick={() => setResetting(u)}
                         >
                           Reset password

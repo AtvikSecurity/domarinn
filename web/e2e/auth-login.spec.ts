@@ -32,11 +32,12 @@ test.describe("Login", () => {
     await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
     await expect(page).toHaveURL(/\/$/);
 
-    // A real session token is now stored, and the nav offers "Log out".
-    const token = await page.evaluate(() =>
-      localStorage.getItem("domarinn.token"),
+    // The session now rides the mock "cookie" (localStorage stand-in), not a
+    // stored bearer token, and the nav offers "Log out".
+    const session = await page.evaluate(() =>
+      localStorage.getItem("domarinn.mock.session"),
     );
-    expect(token).toMatch(/^sess_/);
+    expect(session).toBeTruthy();
     await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
   });
 });

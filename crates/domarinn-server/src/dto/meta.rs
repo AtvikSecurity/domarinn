@@ -3,6 +3,7 @@
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::domain::SsoKind;
 use crate::AuthMode;
 
 /// The effective cache retention/size limits, as reported to clients (mirrors
@@ -15,15 +16,28 @@ pub struct MetaCacheLimits {
     pub max_age_days: u64,
 }
 
+/// A configured SSO provider, as advertised to the login page: enough to
+/// render a "Continue with {label}" button that navigates to `login_url`.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct SsoProviderMeta {
+    pub name: String,
+    pub kind: SsoKind,
+    pub label: String,
+    /// Same-origin path starting the flow, e.g.
+    /// `/api/v1/auth/oidc/google/start`. Accepts `?return_to=/path`.
+    pub login_url: String,
+}
+
 /// `GET /meta` response: server identity, the active auth mode, whether
-/// first-run account setup is still required, and the schema-version /
-/// cache-limit contract clients should honor.
+/// first-run account setup is still required, the configured SSO providers,
+/// and the schema-version / cache-limit contract clients should honor.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct MetaResponse {
     pub name: String,
     pub version: String,
     pub auth_mode: AuthMode,
     pub setup_required: bool,
+    pub sso_providers: Vec<SsoProviderMeta>,
     pub supported_schema_versions: Vec<u32>,
     pub result_schema_version: u32,
     pub cache: MetaCacheLimits,
@@ -41,6 +55,12 @@ mod tests {
             version: "0.1.0".to_string(),
             auth_mode: AuthMode::ProtectWrites,
             setup_required: true,
+            sso_providers: vec![SsoProviderMeta {
+                name: "google".to_string(),
+                kind: SsoKind::Oidc,
+                label: "Google".to_string(),
+                login_url: "/api/v1/auth/oidc/google/start".to_string(),
+            }],
             supported_schema_versions: vec![0, 1],
             result_schema_version: 1,
             cache: MetaCacheLimits {
@@ -56,6 +76,12 @@ mod tests {
                 "version": "0.1.0",
                 "auth_mode": "protect-writes",
                 "setup_required": true,
+                "sso_providers": [{
+                    "name": "google",
+                    "kind": "oidc",
+                    "label": "Google",
+                    "login_url": "/api/v1/auth/oidc/google/start",
+                }],
                 "supported_schema_versions": [0, 1],
                 "result_schema_version": 1,
                 "cache": {

@@ -15,6 +15,7 @@ function meta(auth_mode: AuthMode, setup_required = false): MetaResponse {
     version: "test",
     auth_mode,
     setup_required,
+    sso_providers: [],
     supported_schema_versions: [1],
     result_schema_version: 1,
     cache: { max_entry_bytes: 1_048_576, max_bytes: 1_073_741_824, max_age_days: 30 },
@@ -23,14 +24,26 @@ function meta(auth_mode: AuthMode, setup_required = false): MetaResponse {
 
 const staticAdmin: MeResponse = {
   authenticated: true,
-  user: { id: "u_admin", username: "admin", role: "admin" },
+  user: {
+    id: "u_admin",
+    username: "admin",
+    role: "admin",
+    identities: [],
+    role_managed_by: null,
+  },
   source: "static",
   scope: "admin",
 };
 
 const sessionMember: MeResponse = {
   authenticated: true,
-  user: { id: "u_member", username: "member", role: "member" },
+  user: {
+    id: "u_member",
+    username: "member",
+    role: "member",
+    identities: [],
+    role_managed_by: null,
+  },
   source: "session",
   scope: "write",
 };
@@ -95,17 +108,46 @@ describe("deriveAuthView", () => {
     expect(view.canWrite).toBe(true);
     expect(view.canAdmin).toBe(true);
     expect(view.needsLogin).toBe(false);
+    expect(view.promptLogin).toBe(false);
     expect(view.hasRealSession).toBe(false); // "static" source is not a real login
     expect(view.role).toBe("admin");
   });
 
-  it("protect-writes anonymous needs login and cannot write", () => {
+  it("open-mode anonymous never prompts or needs login", () => {
+    const view = deriveAuthView(meta("open"), anonymous);
+    expect(view.needsLogin).toBe(false);
+    expect(view.promptLogin).toBe(false);
+  });
+
+  it("protect-writes anonymous prompts login but can still read (no hard redirect)", () => {
     const view = deriveAuthView(meta("protect-writes"), anonymous);
     expect(view.authenticated).toBe(false);
     expect(view.canWrite).toBe(false);
     expect(view.canAdmin).toBe(false);
-    expect(view.needsLogin).toBe(true);
+    // Reads are open in protect-writes, so no hard redirect...
+    expect(view.needsLogin).toBe(false);
+    // ...but signing in would grant more, so the soft prompt is on.
+    expect(view.promptLogin).toBe(true);
     expect(view.hasRealSession).toBe(false);
+  });
+
+  it("closed-mode anonymous needs login (hard redirect)", () => {
+    const view = deriveAuthView(meta("closed"), anonymous);
+    expect(view.needsLogin).toBe(true);
+    expect(view.promptLogin).toBe(true);
+  });
+
+  it("closed-mode session member neither needs nor is prompted to log in", () => {
+    const view = deriveAuthView(meta("closed"), sessionMember);
+    expect(view.needsLogin).toBe(false);
+    expect(view.promptLogin).toBe(false);
+    expect(view.hasRealSession).toBe(true);
+  });
+
+  it("both flags stay false while meta is still loading", () => {
+    const view = deriveAuthView(undefined, undefined);
+    expect(view.needsLogin).toBe(false);
+    expect(view.promptLogin).toBe(false);
   });
 
   it("a session login is a real session", () => {
@@ -114,6 +156,7 @@ describe("deriveAuthView", () => {
     expect(view.canWrite).toBe(true);
     expect(view.canAdmin).toBe(false);
     expect(view.needsLogin).toBe(false);
+    expect(view.promptLogin).toBe(false);
   });
 
   it("surfaces setup_required and defaults scope to read when me is absent", () => {
@@ -144,7 +187,10 @@ describe("deriveAuthView", () => {
     expect(view.source).toBe("anonymous");
     expect(view.canWrite).toBe(false);
     expect(view.canAdmin).toBe(false);
-    expect(view.needsLogin).toBe(true);
+    // protect-writes: reads open, so a hard redirect is not required...
+    expect(view.needsLogin).toBe(false);
+    // ...but the soft login prompt is on.
+    expect(view.promptLogin).toBe(true);
     expect(view.hasRealSession).toBe(false);
   });
 });

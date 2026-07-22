@@ -6,6 +6,7 @@ import { isMockEnabled } from "@/api/client";
 import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
 import { ThemeSegmented } from "@/components/ThemeToggle";
+import { ProviderBadge } from "@/components/ProviderBadge";
 
 export function SettingsPage() {
   const meta = useMeta();
@@ -30,11 +31,32 @@ export function SettingsPage() {
               <dt className="text-muted">Username</dt>
               <dd className="font-medium">{view.user?.username ?? "—"}</dd>
               <dt className="text-muted">Role</dt>
-              <dd className="font-mono">{view.role ?? "—"}</dd>
+              <dd className="font-mono">
+                {view.role ?? "—"}
+                {view.user?.role_managed_by ? (
+                  <span className="ml-1 font-sans text-xs text-muted">
+                    (managed by{" "}
+                    {view.user.role_managed_by.replace(/^.*:/, "")})
+                  </span>
+                ) : null}
+              </dd>
               <dt className="text-muted">Source</dt>
               <dd className="font-mono">{view.source ?? "—"}</dd>
               <dt className="text-muted">Scope</dt>
               <dd className="font-mono">{view.scope}</dd>
+              <dt className="text-muted">Sign-in methods</dt>
+              <dd className="flex flex-wrap items-center gap-1.5">
+                {(view.user?.identities?.length ?? 0) === 0 ? (
+                  <span className="text-xs text-muted">password</span>
+                ) : (
+                  view.user?.identities.map((identity) => (
+                    <ProviderBadge
+                      key={`${identity.provider}:${identity.subject}`}
+                      identity={identity}
+                    />
+                  ))
+                )}
+              </dd>
             </dl>
             <Button
               variant="secondary"
@@ -72,7 +94,8 @@ export function SettingsPage() {
 
       <Card title="Access token">
         <p className="text-sm text-muted">
-          Stored locally as{" "}
+          Browser sign-ins now use a secure session cookie — this field is a
+          fallback for a static token or an API key, stored locally as{" "}
           <code className="font-mono text-xs">domarinn.token</code> and sent as a
           bearer header. {hasToken ? "A token is currently set." : "No token is set."}
         </p>

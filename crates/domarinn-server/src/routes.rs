@@ -55,6 +55,30 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(accounts::login))
         .route("/api/v1/auth/logout", post(accounts::logout))
         .route("/api/v1/auth/me", get(accounts::me))
+        // SSO login flows (unauthenticated by design — they are the way in).
+        .route(
+            "/api/v1/auth/oidc/{provider}/start",
+            get(crate::sso::handlers::oidc_start),
+        )
+        .route(
+            "/api/v1/auth/oidc/{provider}/callback",
+            get(crate::sso::handlers::oidc_callback),
+        );
+    #[cfg(feature = "saml")]
+    let api = api
+        .route(
+            "/api/v1/auth/saml/{provider}/start",
+            get(crate::sso::handlers::saml_start),
+        )
+        .route(
+            "/api/v1/auth/saml/{provider}/acs",
+            post(crate::sso::handlers::saml_acs),
+        )
+        .route(
+            "/api/v1/auth/saml/{provider}/metadata",
+            get(crate::sso::handlers::saml_metadata),
+        );
+    let api = api
         .route(
             "/api/v1/apikeys",
             get(accounts::list_apikeys).post(accounts::create_apikey),
@@ -128,7 +152,13 @@ pub fn router(state: AppState) -> Router {
         )
         .on_failure(DefaultOnFailure::new().level(Level::WARN));
 
+    // The CSRF layer is added first (= innermost) so it runs after the auth
+    // middleware has attached the Identity it inspects.
     api.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::csrf_middleware,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
         state.clone(),
         crate::auth_middleware,
     ))
@@ -211,6 +241,7 @@ async fn meta(State(state): State<AppState>) -> ApiResult<Response> {
         version: domarinn_core::VERSION.to_string(),
         auth_mode: state.auth_mode,
         setup_required,
+        sso_providers: state.sso.descriptors(),
         supported_schema_versions: supported,
         result_schema_version: current,
         cache: MetaCacheLimits {

@@ -28,6 +28,8 @@ pub struct UserRow {
     pub role: Role,
     pub disabled: bool,
     pub created_at: i64,
+    /// Only populated for SSO-provisioned users; local accounts have no email.
+    pub email: Option<String>,
 }
 
 /// The user behind a valid session (no secrets).
@@ -79,8 +81,9 @@ pub enum UpdateUserOutcome {
     LastAdmin,
 }
 
-/// Mint a fresh id (a ULID) for either id newtype used in this module.
-fn new_id<T: From<String>>() -> T {
+/// Mint a fresh id (a ULID) for the id newtypes used in this module and in
+/// [`super::sso`].
+pub(super) fn new_id<T: From<String>>() -> T {
     T::from(ulid::Ulid::generate().to_string())
 }
 
@@ -126,6 +129,7 @@ impl Storage {
                     role,
                     disabled: false,
                     created_at,
+                    email: None,
                 }))
             })
             .await
@@ -134,7 +138,7 @@ impl Storage {
     pub async fn get_user_by_username(&self, username: String) -> anyhow::Result<Option<UserRow>> {
         self.runs
             .read(move |conn| {
-                get_user(conn, "SELECT id, username, password_hash, role, disabled, created_at FROM users WHERE username = ?1", &username)
+                get_user(conn, "SELECT id, username, password_hash, role, disabled, created_at, email FROM users WHERE username = ?1", &username)
             })
             .await
     }
@@ -142,7 +146,7 @@ impl Storage {
     pub async fn get_user_by_id(&self, id: UserId) -> anyhow::Result<Option<UserRow>> {
         self.runs
             .read(move |conn| {
-                get_user(conn, "SELECT id, username, password_hash, role, disabled, created_at FROM users WHERE id = ?1", &id)
+                get_user(conn, "SELECT id, username, password_hash, role, disabled, created_at, email FROM users WHERE id = ?1", &id)
             })
             .await
     }
@@ -151,7 +155,7 @@ impl Storage {
         self.runs
             .read(|conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT id, username, password_hash, role, disabled, created_at
+                    "SELECT id, username, password_hash, role, disabled, created_at, email
                      FROM users ORDER BY created_at ASC",
                 )?;
                 let rows = stmt.query_map([], row_to_user)?;
@@ -317,6 +321,7 @@ fn row_to_user(row: &rusqlite::Row) -> rusqlite::Result<UserRow> {
         role: row.get(3)?,
         disabled: row.get::<_, i64>(4)? != 0,
         created_at: row.get(5)?,
+        email: row.get(6)?,
     })
 }
 

@@ -13,22 +13,35 @@
 import type {
   ApiKeyCreatedResponse,
   ApiKeyView,
+  AuthMode,
   AuthScope,
   AuthSessionResponse,
   MeResponse,
   MeUser,
   Role,
+  UserIdentityView,
   UserView,
 } from "@/api";
 import { scopeAtLeast } from "@/lib/authz";
 
+interface IdentityRecord {
+  provider: string;
+  kind: "oidc" | "saml";
+  subject: string;
+  email?: string;
+  last_login_at?: number;
+}
+
 interface UserRecord {
   id: string;
   username: string;
+  /** Empty string models an SSO-only account with no password login. */
   password: string;
   role: Role;
   disabled: boolean;
   created_at: number; // epoch millis internally; RFC3339 on the wire
+  email?: string;
+  identities: IdentityRecord[];
 }
 
 interface ApiKeyRecord {
@@ -54,7 +67,39 @@ interface MockAuthState {
 /** Fixed timestamps so seeded rows are deterministic across reloads/tests. */
 const SEED_TIME = Date.UTC(2026, 5, 1, 12, 0, 0);
 const SETUP_FLAG = "domarinn.mock.setup";
+/** e2e override: set to "closed"/"protect-writes"/"open" before boot. */
+const AUTHMODE_FLAG = "domarinn.mock.authmode";
+/**
+ * Mock stand-in for the HttpOnly session cookie. The real browser sends the
+ * cookie automatically; the fetch mock can't see cookies, so the "current
+ * session" is persisted here and consulted by `resolveAuth`.
+ */
+const SESSION_FLAG = "domarinn.mock.session";
 const STATIC_ADMIN_ID = "u_admin";
+
+function readFlag(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeFlag(key: string, value: string | null): void {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** The effective mock auth mode (default "open" to keep legacy e2e green). */
+export function mockAuthMode(): AuthMode {
+  const raw = readFlag(AUTHMODE_FLAG);
+  if (raw === "closed" || raw === "protect-writes" || raw === "open") return raw;
+  return "open";
+}
 
 function toIso(ms: number): string {
   return new Date(ms).toISOString();
@@ -69,7 +114,9 @@ function seededState(): MockAuthState {
     role: "admin",
     disabled: false,
     created_at: SEED_TIME,
+    identities: [],
   });
+  // A pure local account (no SSO identity) so its role stays admin-editable.
   users.set("u_member", {
     id: "u_member",
     username: "member",
@@ -77,6 +124,26 @@ function seededState(): MockAuthState {
     role: "member",
     disabled: false,
     created_at: SEED_TIME + 60_000,
+    identities: [],
+  });
+  // An SSO-only account: no password, role managed by the IdP.
+  users.set("u_sso", {
+    id: "u_sso",
+    username: "sso.only",
+    password: "",
+    role: "member",
+    disabled: false,
+    created_at: SEED_TIME + 180_000,
+    email: "sso.only@example.com",
+    identities: [
+      {
+        provider: "oidc:google",
+        kind: "oidc",
+        subject: "google-sub-ssoonly",
+        email: "sso.only@example.com",
+        last_login_at: SEED_TIME + 200_000,
+      },
+    ],
   });
   return {
     users,
@@ -89,9 +156,11 @@ function seededState(): MockAuthState {
 
 let state = seededState();
 
-/** Test hook: restore the seeded accounts + clear sessions/keys. */
+/** Test hook: restore seeded accounts + clear sessions/keys/cookie/mode. */
 export function resetMockAuth(): void {
   state = seededState();
+  writeFlag(SESSION_FLAG, null);
+  writeFlag(AUTHMODE_FLAG, null);
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -109,8 +178,28 @@ function scopeForRole(role: Role): AuthScope {
   return role === "admin" ? "admin" : "write";
 }
 
+function pubIdentities(u: UserRecord): UserIdentityView[] {
+  return u.identities.map((i) => ({
+    provider: i.provider,
+    kind: i.kind,
+    subject: i.subject,
+    email: i.email ?? null,
+    last_login_at: i.last_login_at !== undefined ? toIso(i.last_login_at) : null,
+  }));
+}
+
+function roleManagedBy(u: UserRecord): string | null {
+  return u.identities[0]?.provider ?? null;
+}
+
 function pubUser(u: UserRecord): MeUser {
-  return { id: u.id, username: u.username, role: u.role };
+  return {
+    id: u.id,
+    username: u.username,
+    role: u.role,
+    identities: pubIdentities(u),
+    role_managed_by: roleManagedBy(u),
+  };
 }
 
 function pubUserView(u: UserRecord): UserView {
@@ -120,6 +209,10 @@ function pubUserView(u: UserRecord): UserView {
     role: u.role,
     disabled: u.disabled,
     created_at: toIso(u.created_at),
+    email: u.email ?? null,
+    has_password: u.password !== "",
+    identities: pubIdentities(u),
+    role_managed_by: roleManagedBy(u),
   };
 }
 
@@ -172,23 +265,34 @@ export interface ResolvedAuth {
   userId?: string;
 }
 
+const ANONYMOUS: MeResponse = {
+  authenticated: false,
+  user: null,
+  source: "anonymous",
+  scope: null,
+};
+
+function sessionUser(userId: string): ResolvedAuth | null {
+  const u = state.users.get(userId);
+  if (!u || u.disabled) return null;
+  return {
+    me: {
+      authenticated: true,
+      user: pubUser(u),
+      source: "session",
+      scope: scopeForRole(u.role),
+    },
+    userId: u.id,
+  };
+}
+
 /** Resolve a bearer token (or its absence) into an identity + scope. */
 export function resolveAuth(token: string | null): ResolvedAuth {
   if (token) {
     const sessionUserId = state.sessions.get(token);
     if (sessionUserId) {
-      const u = state.users.get(sessionUserId);
-      if (u && !u.disabled) {
-        return {
-          me: {
-            authenticated: true,
-            user: pubUser(u),
-            source: "session",
-            scope: scopeForRole(u.role),
-          },
-          userId: u.id,
-        };
-      }
+      const resolved = sessionUser(sessionUserId);
+      if (resolved) return resolved;
     }
     for (const k of state.apikeys.values()) {
       if (k.secret === token && !k.revoked) {
@@ -206,19 +310,29 @@ export function resolveAuth(token: string | null): ResolvedAuth {
       }
     }
     // A token we don't recognise: report unauthenticated (never 401 from /me).
-    return { me: { authenticated: false, user: null, source: "anonymous", scope: null } };
+    return { me: { ...ANONYMOUS } };
   }
 
-  // No token. During first-run setup nobody is signed in; otherwise fall back
-  // to the implicit static admin (dev/open-mode default).
-  if (setupRequired()) {
-    return { me: { authenticated: false, user: null, source: "anonymous", scope: null } };
+  // No bearer token: consult the mock "cookie" session (set by login/setup).
+  const cookieSession = readFlag(SESSION_FLAG);
+  if (cookieSession) {
+    const resolved = sessionUser(cookieSession);
+    if (resolved) return resolved;
+  }
+
+  // No session at all. In closed mode (and during first-run setup) that means
+  // anonymous; in open mode fall back to the implicit static admin so the
+  // legacy e2e specs keep browsing as an open-mode dev server would.
+  if (setupRequired() || mockAuthMode() === "closed") {
+    return { me: { ...ANONYMOUS } };
   }
   const admin = state.users.get(STATIC_ADMIN_ID);
   return {
     me: {
       authenticated: true,
-      user: admin ? pubUser(admin) : { id: STATIC_ADMIN_ID, username: "admin", role: "admin" },
+      user: admin
+        ? pubUser(admin)
+        : { id: STATIC_ADMIN_ID, username: "admin", role: "admin", identities: [], role_managed_by: null },
       source: "static",
       scope: "admin",
     },
@@ -230,9 +344,13 @@ export function resolveAuth(token: string | null): ResolvedAuth {
 
 export function login(username: string, password: string): AuthSessionResponse | null {
   const u = findByUsername(username);
-  if (!u || u.disabled || u.password !== password) return null;
+  // An SSO-only account (empty password) can never password-login.
+  if (!u || u.disabled || u.password === "" || u.password !== password) {
+    return null;
+  }
   const token = randomToken("sess");
   state.sessions.set(token, u.id);
+  writeFlag(SESSION_FLAG, u.id); // model the Set-Cookie the server sends
   return { token, user: pubUserView(u) };
 }
 
@@ -245,16 +363,19 @@ export function setup(username: string, password: string): AuthSessionResponse {
     role: "admin",
     disabled: false,
     created_at: Date.now(),
+    identities: [],
   };
   state.users.set(id, rec);
   state.setupCompleted = true;
   const token = randomToken("sess");
   state.sessions.set(token, id);
+  writeFlag(SESSION_FLAG, id);
   return { token, user: pubUserView(rec) };
 }
 
 export function logout(token: string | null): void {
   if (token) state.sessions.delete(token);
+  writeFlag(SESSION_FLAG, null); // clear the mock session cookie
 }
 
 // --- api keys --------------------------------------------------------------
@@ -327,6 +448,7 @@ export function createUser(
     role: role === "admin" ? "admin" : "member",
     disabled: false,
     created_at: Date.now(),
+    identities: [],
   };
   state.users.set(id, rec);
   return pubUserView(rec);

@@ -1,12 +1,12 @@
 //! Token authentication and scope enforcement.
 //!
 //! Tokens are configured via `DOMARINN_TOKENS="scope:token,scope:token"`.
-//! The active [`AuthMode`](crate::AuthMode) is derived from whether any tokens
-//! exist (see [`crate`] docs). A request passes through [`authenticate`], which
-//! attaches an [`Identity`] extension; individual routes then demand a scope via
-//! the [`Scoped`] extractor. The middleware itself never rejects — enforcement
-//! lives entirely in the extractor so unauthenticated reads stay open in the
-//! relevant modes.
+//! The active [`AuthMode`](crate::AuthMode) is closed unless explicitly
+//! overridden (see [`crate`] docs). A request passes through [`authenticate`],
+//! which attaches an [`Identity`] extension; individual routes then demand a
+//! scope via the [`Scoped`] extractor. The middleware itself never rejects —
+//! enforcement lives entirely in the extractor so unauthenticated reads stay
+//! open in the opt-out modes.
 
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -14,7 +14,7 @@ use std::str::FromStr;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use axum::extract::FromRequestParts;
-use axum::http::{request::Parts, HeaderMap, StatusCode};
+use axum::http::{request::Parts, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use rand::Rng;
@@ -32,6 +32,11 @@ use crate::AuthMode;
 pub const API_KEY_PREFIX: &str = "domarinn_";
 /// Prefix for session-token secrets (`mses_<hex>`).
 pub const SESSION_PREFIX: &str = "mses_";
+/// Name of the browser-session cookie. It carries the same `mses_*` token a
+/// login response returns in JSON — the cookie is a transport, not a second
+/// kind of credential — which is what lets redirect-based SSO flows (and
+/// plain browsers) authenticate without touching `localStorage`.
+pub const SESSION_COOKIE: &str = "domarinn_session";
 /// Random bytes behind every session token / API key (256 bits of entropy).
 const RANDOM_BYTES: usize = 32;
 /// How many leading characters of a key are stored/displayed as its `prefix`.
@@ -100,7 +105,7 @@ pub struct Grant {
 /// composite authenticator could branch on that and validate JWTs here.
 pub trait Authenticator: Send + Sync {
     fn authenticate(&self, token: &str) -> Option<Grant>;
-    /// Whether any tokens are configured at all (drives the default mode).
+    /// Whether any tokens are configured at all.
     fn has_tokens(&self) -> bool;
 }
 
@@ -204,6 +209,10 @@ pub struct Identity {
     pub source: IdentitySource,
     /// The presenting session's token hash, so `logout` can revoke it.
     pub session_token_hash: Option<String>,
+    /// Whether the credential arrived via the session cookie rather than the
+    /// `Authorization` header. Cookie-authed mutations get the CSRF
+    /// origin check; header credentials are structurally CSRF-immune.
+    pub(crate) via_cookie: bool,
 }
 
 impl Identity {
@@ -217,6 +226,7 @@ impl Identity {
             role: None,
             source: IdentitySource::Anonymous,
             session_token_hash: None,
+            via_cookie: false,
         }
     }
 
@@ -298,10 +308,14 @@ impl SessionAuthenticator {
     }
 }
 
-/// Build an [`Identity`] from the request headers, consulting the full
-/// authenticator chain in order: static token → API key → session. Static
-/// tokens are matched first (constant-time, no I/O); the account-backed
-/// lookups are dispatched by token prefix so at most one DB hit occurs.
+/// Build an [`Identity`] from the request headers. An `Authorization` header
+/// always wins (an explicit credential, even an invalid one, is never
+/// silently ignored in favor of a cookie) and consults the full authenticator
+/// chain in order: static token → API key → session. Static tokens are
+/// matched first (constant-time, no I/O); the account-backed lookups are
+/// dispatched by token prefix so at most one DB hit occurs. Without a header,
+/// the `domarinn_session` cookie is consulted — and may only carry a browser
+/// session, never a static token or API key.
 pub async fn authenticate(
     static_auth: &dyn Authenticator,
     api_keys: &ApiKeyAuthenticator,
@@ -310,9 +324,19 @@ pub async fn authenticate(
     headers: &HeaderMap,
 ) -> Identity {
     let mut identity = Identity::anonymous(mode);
-    let Some(token) = bearer_token(headers) else {
+    let Some((token, source)) = extract_credential(headers) else {
         return identity;
     };
+
+    if source == CredentialSource::Cookie {
+        if token.starts_with(SESSION_PREFIX) {
+            if let Some(user) = sessions.resolve(&token).await {
+                apply_session(&mut identity, user, &token);
+                identity.via_cookie = true;
+            }
+        }
+        return identity;
+    }
 
     // 1. Static tokens (exact, constant-time match against configuration).
     if let Some(grant) = static_auth.authenticate(&token) {
@@ -338,18 +362,22 @@ pub async fn authenticate(
     // 3. Account sessions.
     if token.starts_with(SESSION_PREFIX) {
         if let Some(user) = sessions.resolve(&token).await {
-            identity.scope = Some(Scope::for_role(user.role));
-            identity.label = Some(user.username.clone());
-            identity.user_id = Some(user.user_id);
-            identity.username = Some(user.username);
-            identity.role = Some(user.role);
-            identity.source = IdentitySource::Session;
-            identity.session_token_hash = Some(token_hash(&token));
+            apply_session(&mut identity, user, &token);
             return identity;
         }
     }
 
     identity
+}
+
+fn apply_session(identity: &mut Identity, user: SessionUser, token: &str) {
+    identity.scope = Some(Scope::for_role(user.role));
+    identity.label = Some(user.username.clone());
+    identity.user_id = Some(user.user_id);
+    identity.username = Some(user.username);
+    identity.role = Some(user.role);
+    identity.source = IdentitySource::Session;
+    identity.session_token_hash = Some(token_hash(token));
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +418,13 @@ pub fn generate_session_token() -> String {
     format!("{SESSION_PREFIX}{}", random_hex())
 }
 
+/// Mint a fresh SSO login-transaction id (64 hex chars, 256 bits). Doubles
+/// as the OIDC `state` / SAML `RelayState`; stored server-side only as its
+/// sha256 hash.
+pub fn generate_txn_id() -> String {
+    random_hex()
+}
+
 /// Mint a fresh API key (`domarinn_<64 hex>`).
 pub fn generate_api_key() -> String {
     format!("{API_KEY_PREFIX}{}", random_hex())
@@ -427,6 +462,61 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// Where a request's credential string came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialSource {
+    /// The `Authorization` header.
+    Header,
+    /// The `domarinn_session` cookie.
+    Cookie,
+}
+
+/// The request credential: the `Authorization` header when present, else the
+/// session cookie.
+pub(crate) fn extract_credential(headers: &HeaderMap) -> Option<(String, CredentialSource)> {
+    if let Some(token) = bearer_token(headers) {
+        return Some((token, CredentialSource::Header));
+    }
+    session_cookie_value(headers).map(|token| (token, CredentialSource::Cookie))
+}
+
+fn session_cookie_value(headers: &HeaderMap) -> Option<String> {
+    for value in headers.get_all(axum::http::header::COOKIE) {
+        let Ok(raw) = value.to_str() else { continue };
+        for parsed in cookie::Cookie::split_parse(raw).flatten() {
+            if parsed.name() == SESSION_COOKIE && !parsed.value().is_empty() {
+                return Some(parsed.value().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// `Set-Cookie` value installing the browser-session cookie. `HttpOnly` keeps
+/// it out of script reach; `SameSite=Lax` still sends it on top-level
+/// navigations (the OIDC callback GET) while withholding it from cross-site
+/// subresources and POSTs; `Max-Age` mirrors the session TTL so the cookie
+/// and the DB row expire together.
+pub(crate) fn session_cookie(token: &str, secure: bool) -> HeaderValue {
+    build_session_cookie(token, SESSION_TTL_MS / 1000, secure)
+}
+
+/// `Set-Cookie` value that removes the session cookie (logout).
+pub(crate) fn clear_session_cookie(secure: bool) -> HeaderValue {
+    build_session_cookie("", 0, secure)
+}
+
+fn build_session_cookie(value: &str, max_age_secs: i64, secure: bool) -> HeaderValue {
+    let cookie = cookie::Cookie::build((SESSION_COOKIE, value))
+        .http_only(true)
+        .same_site(cookie::SameSite::Lax)
+        .path("/")
+        .max_age(cookie::time::Duration::seconds(max_age_secs))
+        .secure(secure)
+        .build();
+    HeaderValue::from_str(&cookie.to_string()).expect("session cookie is always valid ASCII")
 }
 
 // ---------------------------------------------------------------------------

@@ -162,6 +162,7 @@ async fn cache_concurrent_put_same_key_one_wins() {
 async fn cache_prune_requires_admin_in_protected_mode() {
     let settings = Settings {
         tokens: Some("admin:domarinn_ops,write:domarinn_ci".to_string()),
+        auth_mode: Some(domarinn_server::AuthMode::ProtectWrites),
         ..Default::default()
     };
     let (app, _dir) = test_app(settings).await;

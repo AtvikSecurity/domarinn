@@ -22,6 +22,7 @@ hosting.
 - [Quick start](#quick-start)
 - [Accounts & auth model](#accounts--auth-model)
 - [First run: creating the admin](#first-run-creating-the-admin)
+- [Single sign-on (OIDC & SAML)](#single-sign-on-oidc--saml)
 - [The API surface](#the-api-surface)
 - [Strict request validation](#strict-request-validation)
 - [Environment variables](#environment-variables)
@@ -35,28 +36,31 @@ hosting.
 ## Quick start
 
 ```sh
-# Open mode — anyone can read and write. Good for a laptop or a trusted network.
+# Closed mode (the default) — every page and API call requires a login.
 domarinn server --data-dir ./data
-# UI + API on http://localhost:8321
+# UI + API on http://localhost:8321 — the first visit walks you through
+# creating the admin account (or POST /api/v1/auth/setup).
 ```
 
-The moment you add credentials the server locks writes down automatically — see
-[the auth model](#accounts--auth-model) below.
-
 ```sh
-# Bootstrap an admin and require a token for writes, in one shot.
+# Bootstrap the admin and a CI write token from the environment, in one shot.
 DOMARINN_ADMIN_USER=admin \
 DOMARINN_ADMIN_PASSWORD='correct horse battery staple' \
 DOMARINN_TOKENS='write:domarinn_ci,admin:domarinn_ops' \
 domarinn server --data-dir ./data
 ```
 
+```sh
+# Explicitly opt out of auth for a laptop or a trusted network.
+DOMARINN_AUTH_MODE=open domarinn server --data-dir ./data
+```
+
 ---
 
 ## Accounts & auth model
 
-domarinn has **three auth modes**. You rarely set one explicitly: the
-effective mode is *derived* from whether any credentials exist.
+domarinn has **three auth modes** and is **`closed` by default** — anonymous
+access is always an explicit operator choice, never an inferred one.
 
 | Mode             | Reads / UI | Writes (ingest, baseline, cache PUT) | Admin (delete, prune, users) |
 |------------------|------------|--------------------------------------|------------------------------|
@@ -68,13 +72,21 @@ effective mode is *derived* from whether any credentials exist.
 
 1. If `DOMARINN_AUTH_MODE` is set (`open` \| `protect-writes` \| `closed`), it
    wins outright. (`protect_writes` with an underscore is also accepted.)
-2. Otherwise, if **any** static token *or* **any** local user account exists, the
-   mode defaults to **`protect-writes`**.
-3. Otherwise it is **`open`**.
+2. Otherwise the mode is **`closed`**. Nothing is derived from whether
+   credentials exist.
 
-So a fresh, credential-less instance is fully open; the first token you configure
-or the first account you create flips it to `protect-writes`. The active mode is
-reported by `GET /api/v1/meta` as `auth_mode`.
+Even in `closed` mode the bootstrap surface stays reachable so a fresh install
+can be claimed: `/health`, `GET /api/v1/meta`, `POST /api/v1/auth/setup`
+(one-shot, while zero users exist), `login`, `me`, and the web UI shell (the
+app itself redirects to the login page). The active mode is reported by
+`GET /api/v1/meta` as `auth_mode`.
+
+> **Upgrade note.** Older releases derived `protect-writes` from the presence of
+> tokens or accounts and defaulted to `open` otherwise. A deployment that never
+> set `DOMARINN_AUTH_MODE` now comes up `closed`: CI uploads with a `write`
+> token keep working unchanged, but anonymous *reads* now require a `read`
+> token (or a login). Set `DOMARINN_AUTH_MODE=protect-writes` to restore the
+> old behavior.
 
 > **`DOMARINN_AUTH_MODE` is validated at startup.** An unrecognized value (a
 > typo like `protectwrites`) **aborts the launch with an error** rather than
@@ -161,8 +173,91 @@ that account exists as an enabled admin, creating it if missing and updating the
 password if it changed. This is the right choice for containers and Kubernetes —
 declare the admin in your secret store and the instance self-seeds.
 
-> Because the bootstrap admin is created *before* the mode is derived, an
-> instance seeded this way comes up in `protect-writes` (not `open`).
+> An instance seeded this way needs no interactive setup: `setup_required` is
+> already `false` on first boot and the seeded admin can log straight in.
+
+---
+
+## Single sign-on (OIDC & SAML)
+
+domarinn can delegate login to one or more external identity providers — any
+OIDC provider (Google, Authentik, Okta, Entra, Keycloak, …) and any SAML 2.0
+IdP. SSO is configured **entirely through the environment**; each configured
+provider becomes a "Continue with …" button on the login page.
+
+**How it works.** A first SSO login **just-in-time provisions** a local
+account, matched strictly on the provider + IdP subject (never on email). The
+account's role is mapped from the IdP's group/claim data and **re-synced on
+every SSO login**, so the IdP stays the source of truth — with one exception:
+the last enabled admin is never auto-demoted. SSO-only accounts have no
+password and cannot use the password form. Browser sessions ride a secure,
+HttpOnly cookie; `Authorization: Bearer` (API keys, static tokens, the CLI)
+is unaffected.
+
+> `DOMARINN_PUBLIC_URL` **must** be set whenever any provider is configured —
+> it builds the OIDC redirect URI (`{PUBLIC_URL}/api/v1/auth/oidc/<name>/callback`)
+> and the SAML ACS/entity URLs. Register that redirect URI at your IdP.
+
+### Global SSO settings
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DOMARINN_SSO_CLOCK_SKEW_SECS` | `60` | Tolerance for OIDC `exp`/`iat` and SAML `NotBefore`/`NotOnOrAfter`. |
+
+### OIDC providers
+
+List the provider names, then set per-provider variables (`<NAME>` is the name
+uppercased with `-`→`_`):
+
+```
+DOMARINN_OIDC_PROVIDERS=google,authentik
+DOMARINN_OIDC_<NAME>_ISSUER=https://accounts.google.com        # required
+DOMARINN_OIDC_<NAME>_CLIENT_ID=...                             # required
+DOMARINN_OIDC_<NAME>_CLIENT_SECRET=...                         # required
+DOMARINN_OIDC_<NAME>_LABEL=Google                              # button label (default: capitalized name)
+DOMARINN_OIDC_<NAME>_SCOPES=openid email profile               # default shown
+DOMARINN_OIDC_<NAME>_GROUPS_CLAIM=groups                       # ID-token claim holding groups
+DOMARINN_OIDC_<NAME>_ADMIN_GROUPS=platform-admins,sec-ops      # membership → admin
+DOMARINN_OIDC_<NAME>_ADMIN_EMAILS=ops@example.com              # or map admins by email
+DOMARINN_OIDC_<NAME>_ALLOWED_EMAIL_DOMAINS=example.com         # restrict who may sign in (optional)
+```
+
+> **Google** does not expose a groups claim — use `ADMIN_EMAILS` for admin
+> mapping. **Authentik/Keycloak/Okta** emit `groups` (configurable via the
+> claim name). When `ALLOWED_EMAIL_DOMAINS` is set, an IdP-unverified email is
+> rejected rather than trusted.
+
+### SAML providers
+
+SAML requires the binary to be built **with the `saml` cargo feature** (the
+published Docker image is; a plain `cargo build` is not, and a SAML-configured
+binary without the feature hard-errors at startup). Configure exactly one IdP
+source per provider:
+
+```
+DOMARINN_SAML_PROVIDERS=okta
+# one of the three IdP sources:
+DOMARINN_SAML_<NAME>_IDP_METADATA_URL=https://…/metadata        # fetched at startup
+DOMARINN_SAML_<NAME>_IDP_METADATA_FILE=/etc/domarinn/okta.xml    # or read from a file
+DOMARINN_SAML_<NAME>_IDP_SSO_URL=…  + DOMARINN_SAML_<NAME>_IDP_CERT=<PEM>   # or explicit
+DOMARINN_SAML_<NAME>_SP_ENTITY_ID=…                              # default: the SP metadata URL
+DOMARINN_SAML_<NAME>_LABEL=Okta
+DOMARINN_SAML_<NAME>_EMAIL_ATTR=email                           # default: emailAddress NameID, else email/mail
+DOMARINN_SAML_<NAME>_GROUPS_ATTR=groups
+DOMARINN_SAML_<NAME>_ADMIN_GROUPS=…  / _ADMIN_EMAILS=…  / _ALLOWED_EMAIL_DOMAINS=…
+DOMARINN_SAML_<NAME>_ALLOW_IDP_INITIATED=false                  # require InResponseTo unless true
+```
+
+The SP metadata your IdP imports is served at
+`{PUBLIC_URL}/api/v1/auth/saml/<name>/metadata`. Response signatures are
+verified (RSA/ECDSA SHA-2 only); **encrypted assertions are not supported** —
+disable assertion encryption for the domarinn app at your IdP. IdP metadata
+without a signing certificate is refused at startup.
+
+Startup **fails fast** on any misconfiguration (a missing required variable is
+named exactly, an unreachable/invalid SAML metadata source aborts the launch).
+OIDC discovery itself is lazy, so a temporarily-unreachable OIDC IdP does not
+prevent the server from starting.
 
 ---
 
@@ -205,8 +300,18 @@ compressed (the server decompresses transparently).
 |--------|-------------------------|-------|-------|
 | POST   | `/api/v1/auth/setup`    | —     | Create the first admin. Open only while zero users exist, else `409`. Returns a session token. |
 | POST   | `/api/v1/auth/login`    | —     | Exchange `{username, password}` for a session token. `401` on bad/disabled credentials. |
-| POST   | `/api/v1/auth/logout`   | (authenticated) | Revoke the presenting session. No-op `200` for token/API-key callers; `401` for anonymous. |
+| POST   | `/api/v1/auth/logout`   | (authenticated) | Revoke the presenting session + clear the cookie. No-op `200` for token/API-key callers; `401` for anonymous. |
 | GET    | `/api/v1/auth/me`       | —     | Report the current identity: `{authenticated, user, source, scope}`. `source` is `anonymous` \| `static` \| `apikey` \| `session`. |
+
+### SSO (only present when configured — see [Single sign-on](#single-sign-on-oidc--saml))
+
+| Method | Path                    | Scope | Notes |
+|--------|-------------------------|-------|-------|
+| GET    | `/api/v1/auth/oidc/{provider}/start` | — | Begin an OIDC login; `303` to the IdP. `?return_to=/path` deep-links back. |
+| GET    | `/api/v1/auth/oidc/{provider}/callback` | — | OIDC redirect target; `303` home or to `/login?sso_error=…`. |
+| GET    | `/api/v1/auth/saml/{provider}/start` | — | Begin a SAML login; `303` to the IdP (redirect binding). |
+| POST   | `/api/v1/auth/saml/{provider}/acs` | — | SAML assertion consumer (HTTP-POST binding). |
+| GET    | `/api/v1/auth/saml/{provider}/metadata` | — | SP metadata XML for the IdP to import. |
 
 ### API keys
 
@@ -343,11 +448,12 @@ being silently ignored and masking the mistake.
 | Variable                        | Default        | Purpose |
 |---------------------------------|----------------|---------|
 | `DOMARINN_DATA_DIR`           | `/data`        | State directory. Holds `domarinn.db` and `cache.db`. Also settable with `--data-dir`. |
-| `DOMARINN_TOKENS`             | (unset)        | Static bearer tokens as `scope:secret` pairs, comma-separated. Configuring any flips the default mode to `protect-writes`. |
-| `DOMARINN_AUTH_MODE`          | (derived)      | Force the mode: `open` \| `protect-writes` \| `closed`. Overrides the derivation. |
+| `DOMARINN_TOKENS`             | (unset)        | Static bearer tokens as `scope:secret` pairs, comma-separated. Grants access but never changes the mode. |
+| `DOMARINN_AUTH_MODE`          | `closed`       | The mode: `open` \| `protect-writes` \| `closed`. Unset means `closed`. |
 | `DOMARINN_ADMIN_USER`         | (unset)        | Bootstrap admin username. Requires the password too. |
 | `DOMARINN_ADMIN_PASSWORD`     | (unset)        | Bootstrap admin password. The account is (re)ensured on every startup. |
-| `DOMARINN_PUBLIC_URL`         | (unset)        | Public base URL for share links / absolute URLs. No trailing slash, no path prefix. |
+| `DOMARINN_PUBLIC_URL`         | (unset)        | Public base URL for share links / absolute URLs. No trailing slash, no path prefix. **Required when any SSO provider is configured** (redirect URIs / SAML endpoints). |
+| `DOMARINN_COOKIE_SECURE`      | (from URL)     | Force the session cookie's `Secure` flag `true`\|`false`. Defaults to on when `DOMARINN_PUBLIC_URL` is `https://`. |
 | `DOMARINN_CACHE_MAX_ENTRY_BYTES` | `4194304` (4 MiB)   | Max size of a single cache entry. |
 | `DOMARINN_CACHE_MAX_BYTES`    | `1073741824` (1 GiB) | Total cache size target for retention. |
 | `DOMARINN_CACHE_MAX_AGE_DAYS` | `30`           | Cache entry max age for retention. |
@@ -480,7 +586,6 @@ curl -s "$BASE/api/v1/runs?project=demo&limit=20"
 curl -s "$BASE/api/v1/runs/$HEAD/compare/$BASE_RUN"
 ```
 
-In `open` mode you can drop the `Authorization` header entirely. In
-`protect-writes` (the default once credentials exist) reads work anonymously but
-writes need a `write` token; in `closed` every call needs at least a `read`
-token.
+In `closed` mode (the default) every call needs at least a `read` token. In
+`protect-writes` reads work anonymously but writes need a `write` token; in
+`open` mode you can drop the `Authorization` header entirely.

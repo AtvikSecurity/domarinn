@@ -17,7 +17,7 @@ use crate::auth::{self, Admin, Identity, Scope, Scoped, Write};
 use crate::domain::{ApiKeyId, Role, UserId};
 use crate::dto::accounts::{
     ApiKeyCreatedResponse, ApiKeyListResponse, ApiKeyView, AuthSessionResponse, MeResponse, MeUser,
-    OkResponse, UserListResponse, UserView,
+    OkResponse, UserIdentityView, UserListResponse, UserView,
 };
 use crate::extract::ApiJson;
 use crate::routes::{not_found, ApiError, ApiResult};
@@ -59,14 +59,7 @@ pub(crate) async fn setup(
         .await?
         .ok_or_else(|| ApiError::status(StatusCode::CONFLICT, "username already exists"))?;
     let token = issue_session(&state, &user.id).await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(AuthSessionResponse {
-            token,
-            user: UserView::from(&user),
-        }),
-    )
-        .into_response())
+    Ok(session_response(&state, StatusCode::CREATED, token, &user))
 }
 
 /// `POST /auth/login` — exchange username + password for a session token.
@@ -82,26 +75,27 @@ pub(crate) async fn login(
     else {
         return Err(invalid());
     };
-    if user.disabled || !auth::verify_password(&user.password_hash, &body.password) {
+    // SSO-only accounts have the empty-string password sentinel; reject them
+    // here so a caller can never brute-force their way past `verify_password`
+    // (which already fails closed on a non-PHC hash — this is defense in
+    // depth and avoids account enumeration via a distinct error).
+    if user.password_hash.is_empty()
+        || user.disabled
+        || !auth::verify_password(&user.password_hash, &body.password)
+    {
         return Err(invalid());
     }
     let token = issue_session(&state, &user.id).await?;
-    Ok((
-        StatusCode::OK,
-        Json(AuthSessionResponse {
-            token,
-            user: UserView::from(&user),
-        }),
-    )
-        .into_response())
+    Ok(session_response(&state, StatusCode::OK, token, &user))
 }
 
-/// `POST /auth/logout` — revoke the presenting session. A no-op (but still 200)
-/// for API-key or static-token callers. Anonymous callers get a 401.
+/// `POST /auth/logout` — revoke the presenting session and clear the session
+/// cookie. A no-op (but still 200) for API-key or static-token callers.
+/// Anonymous callers get a 401.
 pub(crate) async fn logout(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
-) -> ApiResult<Json<OkResponse>> {
+) -> ApiResult<Response> {
     if !identity.is_authenticated() {
         return Err(ApiError::status(
             StatusCode::UNAUTHORIZED,
@@ -111,17 +105,32 @@ pub(crate) async fn logout(
     if let Some(hash) = identity.session_token_hash {
         state.storage.delete_session(hash).await?;
     }
-    Ok(Json(OkResponse { ok: true }))
+    let mut response = Json(OkResponse { ok: true }).into_response();
+    response.headers_mut().append(
+        axum::http::header::SET_COOKIE,
+        auth::clear_session_cookie(state.cookie_secure),
+    );
+    Ok(response)
 }
 
 /// `GET /auth/me` — report the current identity (or anonymity).
-pub(crate) async fn me(Extension(identity): Extension<Identity>) -> ApiResult<Json<MeResponse>> {
+pub(crate) async fn me(
+    State(state): State<AppState>,
+    Extension(identity): Extension<Identity>,
+) -> ApiResult<Json<MeResponse>> {
     let user = match (&identity.user_id, &identity.username, &identity.role) {
-        (Some(id), Some(username), Some(role)) => Some(MeUser {
-            id: id.clone(),
-            username: username.clone(),
-            role: *role,
-        }),
+        (Some(id), Some(username), Some(role)) => {
+            let identities = state.storage.list_identities_for_user(id.clone()).await?;
+            let views = identities.iter().map(UserIdentityView::from).collect();
+            let role_managed_by = identities.first().map(|i| i.provider.clone());
+            Some(MeUser {
+                id: id.clone(),
+                username: username.clone(),
+                role: *role,
+                identities: views,
+                role_managed_by,
+            })
+        }
         _ => None,
     };
     Ok(Json(MeResponse {
@@ -226,13 +235,25 @@ pub(crate) struct PatchUserBody {
     password: Option<String>,
 }
 
-/// `GET /users` — list all accounts (admin only).
+/// `GET /users` — list all accounts (admin only), each with its linked SSO
+/// identities (one `list_all_identities` fetch, grouped by user).
 pub(crate) async fn list_users(
     _scope: Scoped<Admin>,
     State(state): State<AppState>,
 ) -> ApiResult<Json<UserListResponse>> {
     let users = state.storage.list_users().await?;
-    let users = users.iter().map(UserView::from).collect();
+    let all_identities = state.storage.list_all_identities().await?;
+    let mut by_user: std::collections::HashMap<UserId, Vec<_>> = std::collections::HashMap::new();
+    for identity in all_identities {
+        by_user
+            .entry(identity.user_id.clone())
+            .or_default()
+            .push(identity);
+    }
+    let users = users
+        .iter()
+        .map(|user| UserView::from_row(user, by_user.get(&user.id).map_or(&[], |v| v.as_slice())))
+        .collect();
     Ok(Json(UserListResponse { users }))
 }
 
@@ -290,10 +311,11 @@ pub(crate) async fn patch_user(
     }
     let updated = state
         .storage
-        .get_user_by_id(id)
+        .get_user_by_id(id.clone())
         .await?
         .ok_or_else(|| not_found("user"))?;
-    Ok(Json(UserView::from(&updated)))
+    let identities = state.storage.list_identities_for_user(id).await?;
+    Ok(Json(UserView::from_row(&updated, &identities)))
 }
 
 /// `DELETE /users/{id}` — remove an account, refusing the last admin.
@@ -317,7 +339,7 @@ pub(crate) async fn delete_user(
 // ---------------------------------------------------------------------------
 
 /// Mint a session for `user_id` and persist its hash; returns the raw token.
-async fn issue_session(state: &AppState, user_id: &UserId) -> ApiResult<String> {
+pub(crate) async fn issue_session(state: &AppState, user_id: &UserId) -> ApiResult<String> {
     let token = auth::generate_session_token();
     let hash = auth::token_hash(&token);
     let expires_at = auth::session_expiry(Utc::now().timestamp_millis());
@@ -326,6 +348,29 @@ async fn issue_session(state: &AppState, user_id: &UserId) -> ApiResult<String> 
         .create_session(hash, user_id.clone(), expires_at)
         .await?;
     Ok(token)
+}
+
+/// A login/setup success: the session token in the JSON body (scripting
+/// consumers) *and* as the `Set-Cookie` session cookie (browsers, SSO).
+fn session_response(
+    state: &AppState,
+    status: StatusCode,
+    token: String,
+    user: &crate::storage::UserRow,
+) -> Response {
+    let cookie = auth::session_cookie(&token, state.cookie_secure);
+    let mut response = (
+        status,
+        Json(AuthSessionResponse {
+            token,
+            user: UserView::from(user),
+        }),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .append(axum::http::header::SET_COOKIE, cookie);
+    response
 }
 
 /// The user id behind the request, or a 403 when the credentials are not

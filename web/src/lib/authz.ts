@@ -70,8 +70,18 @@ export interface AuthView {
   setupRequired: boolean;
   canWrite: boolean;
   canAdmin: boolean;
-  /** True when the server requires auth for reads and nobody is signed in. */
+  /**
+   * The visitor cannot even read: closed mode, and nobody is signed in. This
+   * drives the hard `RequireAuth` redirect to `/login`.
+   */
   needsLogin: boolean;
+  /**
+   * Signing in would grant more than this visitor currently has (not
+   * authenticated, and the server is not fully open). Drives soft prompts —
+   * nav gating, the API-keys sign-in panel, `RequireAdmin`'s anon redirect —
+   * without forcing a redirect the way `needsLogin` does.
+   */
+  promptLogin: boolean;
   /** True when identity comes from a real login (session/apikey), not the
    *  implicit open-mode principal. Used to decide whether /login redirects. */
   hasRealSession: boolean;
@@ -96,7 +106,11 @@ export function deriveAuthView(
     setupRequired: !!meta?.setup_required,
     canWrite: canWrite(me, authMode),
     canAdmin: canAdmin(me),
-    needsLogin:
+    // Closed mode gates reads too, so an anonymous visitor must sign in.
+    // While meta is still loading (`authMode === undefined`) this stays false
+    // so guards can gate on their own loading state before trusting it.
+    needsLogin: !authenticated && authMode === "closed",
+    promptLogin:
       !authenticated && authMode !== undefined && authMode !== "open",
     hasRealSession:
       authenticated && source !== undefined && source !== "static",

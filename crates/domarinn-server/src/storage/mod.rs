@@ -49,6 +49,7 @@ mod matrix;
 mod projects;
 mod runs;
 mod schema;
+mod sso;
 
 pub use auth::{
     ApiKeyAuth, ApiKeyInfo, DeleteUserOutcome, SessionUser, UpdateUserOutcome, UserRow,
@@ -56,6 +57,7 @@ pub use auth::{
 pub use cases::CaseListFilter;
 pub use matrix::MatrixFilter;
 pub use runs::{RunListFilter, RunListPage};
+pub use sso::{login_txn_expiry, LoginTxn, NewIdentity, UserIdentityRow, LOGIN_TXN_TTL_MS};
 
 const MAX_READERS: usize = 4;
 

@@ -70,13 +70,19 @@ export function Layout() {
     return <Navigate to="/setup" replace />;
   }
 
-  const nav: NavItem[] = [
-    { to: "/", label: "Runs", end: true },
-    { to: "/cache", label: "Cache" },
-  ];
-  if (!view.needsLogin) nav.push({ to: "/keys", label: "API keys" });
-  if (view.canAdmin) nav.push({ to: "/admin", label: "Admin" });
-  nav.push({ to: "/settings", label: "Settings" });
+  // Closed mode + anonymous: the only reachable page is /login, so a full nav
+  // would show dead links that bounce straight back. Render a bare header.
+  const chromeOnly = view.needsLogin;
+
+  const nav: NavItem[] = chromeOnly
+    ? []
+    : [
+        { to: "/", label: "Runs", end: true },
+        { to: "/cache", label: "Cache" },
+      ];
+  if (!chromeOnly && !view.promptLogin) nav.push({ to: "/keys", label: "API keys" });
+  if (!chromeOnly && view.canAdmin) nav.push({ to: "/admin", label: "Admin" });
+  if (!chromeOnly) nav.push({ to: "/settings", label: "Settings" });
 
   return (
     <div className="flex min-h-full flex-col">

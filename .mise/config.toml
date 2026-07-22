@@ -69,6 +69,10 @@ description = "Run every test: Rust workspace tests + the web unit tests (vitest
 depends = ["test"]
 run = "pnpm -C web test"
 
+[tasks.test-saml]
+description = "Run the feature-gated SAML tests (the CI saml job). Needs libxmlsec1/libxml2/openssl dev packages + clang at build time (Debian: libxmlsec1-dev libxml2-dev libssl-dev clang; NixOS: nix-shell -p pkg-config xmlsec libxml2 libxslt openssl clang libtool, plus LIBCLANG_PATH/LD_LIBRARY_PATH — see docs/server.md)."
+run = "cargo test -p domarinn-server --features saml"
+
 [tasks.e2e]
 description = "Run the web end-to-end tests (Playwright). Builds the mock UI and previews it via the config's webServer, so no Rust backend is required."
 run = "pnpm -C web test:e2e"

@@ -11,7 +11,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/api/client";
 import { qk, useMe, useMeta } from "@/api/queries";
 import type { AuthSessionResponse, MetaResponse, MeResponse } from "@/api";
-import { clearToken, getToken, onAuthChange, setToken } from "@/lib/auth";
+import { clearToken, getToken, onAuthChange, onUnauthorized } from "@/lib/auth";
 import { deriveAuthView, type AuthView } from "@/lib/authz";
 import { authTokenReducer, initialAuthTokenState } from "./reducer";
 
@@ -48,9 +48,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [queryClient],
   );
 
+  // An expired session cookie surfaces as a 401 on a protected call. Refresh
+  // `me` so the derived view flips to unauthenticated; in closed mode that
+  // makes RequireAuth redirect to /login (preserving the deep link via
+  // location state). `/auth/me` itself never 401s (skipAuthRedirect), so no
+  // loop. The TokenModal still handles the open/protect-writes case.
+  useEffect(
+    () =>
+      onUnauthorized(() => {
+        void queryClient.invalidateQueries({ queryKey: qk.me });
+      }),
+    [queryClient],
+  );
+
   const metaQuery = useMeta();
   const meQuery = useMe();
 
+  // login/setup now authenticate via the HttpOnly session cookie the server
+  // sets; the response token is no longer persisted (localStorage stays a
+  // fallback for manually-entered static tokens / API keys only). Any token
+  // left over from before this migration (a legacy `mses_`/`sess_` session
+  // token) MUST be cleared — apiRequest still attaches a stored token as a
+  // bearer header, and the server lets the header win over the cookie, so a
+  // stale token would shadow the new cookie session and trap the user in a
+  // login loop. Then invalidate all queries so every view refetches under the
+  // new identity.
   const login = useCallback(
     async (username: string, password: string) => {
       const res = await apiRequest<AuthSessionResponse>("/auth/login", {
@@ -58,8 +80,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: { username, password },
         skipAuthRedirect: true,
       });
-      setToken(res.token); // fires onAuthChange -> sync + invalidate me
-      await queryClient.invalidateQueries({ queryKey: qk.me });
+      clearToken();
+      await queryClient.invalidateQueries();
       return res;
     },
     [queryClient],
@@ -72,9 +94,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: { username, password },
         skipAuthRedirect: true,
       });
-      setToken(res.token);
-      await queryClient.invalidateQueries({ queryKey: qk.meta });
-      await queryClient.invalidateQueries({ queryKey: qk.me });
+      clearToken();
+      await queryClient.invalidateQueries();
       return res;
     },
     [queryClient],
@@ -87,8 +108,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         skipAuthRedirect: true,
       });
     } finally {
+      // Drop any manual token, then reset every query so the previous user's
+      // data never lingers AND the active meta/me queries refetch (documented
+      // resetQueries semantics, unlike clear() which does not guarantee a
+      // refetch of mounted observers). In closed mode the me refetch flips
+      // `needsLogin`, and RequireAuth redirects to /login declaratively.
       clearToken();
-      await queryClient.invalidateQueries({ queryKey: qk.me });
+      await queryClient.resetQueries();
     }
   }, [queryClient]);
 

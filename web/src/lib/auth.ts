@@ -3,6 +3,24 @@
 
 const TOKEN_KEY = "domarinn.token";
 
+// Sessions moved from a localStorage bearer token to an HttpOnly cookie. A
+// token left over from the old scheme (an `mses_` real-server or `sess_` mock
+// session token) would still be attached as a bearer header and — because the
+// server lets the header win over the cookie — shadow the cookie session and
+// lock the user out. Drop any such legacy session token once at module load;
+// genuine manual entries (static tokens, `domarinn_` API keys) are preserved.
+function dropLegacySessionToken(): void {
+  try {
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (token && (token.startsWith("mses_") || token.startsWith("sess_"))) {
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+dropLegacySessionToken();
+
 export function getToken(): string | null {
   try {
     return localStorage.getItem(TOKEN_KEY);

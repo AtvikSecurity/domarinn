@@ -5,13 +5,17 @@
 //! exposes a read/compare/export API plus a shared content-addressed cache.
 //!
 //! ## Auth
-//! The active [`AuthMode`] is derived at startup from configuration and the
-//! environment:
-//! * no tokens configured → [`AuthMode::Open`] (everything open),
-//! * tokens configured → [`AuthMode::ProtectWrites`] by default (reads/UI open,
-//!   writes + admin require a token),
-//! * `DOMARINN_AUTH_MODE=closed` → [`AuthMode::Closed`] (every `/api` call
-//!   requires a token).
+//! The server is **closed by default**: every `/api` call requires
+//! authentication (a session, API key, or static token) unless the operator
+//! explicitly opts out. The active [`AuthMode`] is resolved at startup:
+//! * `DOMARINN_AUTH_MODE` (`open|protect-writes|closed`), when set, always
+//!   wins,
+//! * otherwise the [`ServerConfig::auth_mode`] value is used verbatim — and
+//!   both the CLI and [`ServerConfig::default`] pass [`AuthMode::Closed`].
+//!
+//! `open` (everything anonymous) and `protect-writes` (anonymous reads,
+//! authenticated writes) exist for demos and trusted-network deployments;
+//! they are never inferred.
 //!
 //! Tokens come from `DOMARINN_TOKENS="write:domarinn_ci,admin:domarinn_ops,read:domarinn_view"`.
 //! Extra settings (`DOMARINN_PUBLIC_URL`, cache limits) are read from the
@@ -22,7 +26,7 @@ use std::time::Duration;
 
 use axum::extract::{Request, State};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::Router;
 use ts_rs::TS;
 
@@ -37,7 +41,15 @@ pub mod domain;
 pub mod dto;
 pub mod extract;
 pub mod routes;
+pub mod sso;
 pub mod storage;
+
+// Re-exported for the SAML integration tests (tests are separate crates and
+// cannot reach optional dependencies directly).
+#[cfg(feature = "saml")]
+pub use base64;
+#[cfg(feature = "saml")]
+pub use samael;
 
 /// Default cache limits when the environment does not override them.
 const DEFAULT_MAX_ENTRY_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
@@ -53,8 +65,8 @@ const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 pub struct ServerConfig {
     pub port: u16,
     pub data_dir: std::path::PathBuf,
-    /// Requested auth mode. When left at [`AuthMode::Open`], the effective mode
-    /// is derived from whether tokens are configured.
+    /// Requested auth mode, used verbatim unless `DOMARINN_AUTH_MODE`
+    /// overrides it. Defaults to [`AuthMode::Closed`].
     pub auth_mode: AuthMode,
 }
 
@@ -63,7 +75,7 @@ impl Default for ServerConfig {
         ServerConfig {
             port: 8321,
             data_dir: std::path::PathBuf::from("/data"),
-            auth_mode: AuthMode::Open,
+            auth_mode: AuthMode::Closed,
         }
     }
 }
@@ -140,6 +152,12 @@ pub struct Settings {
     pub admin_user: Option<String>,
     /// Bootstrap admin password (`DOMARINN_ADMIN_PASSWORD`).
     pub admin_password: Option<String>,
+    /// Explicit `DOMARINN_COOKIE_SECURE` override. When unset, the session
+    /// cookie's `Secure` flag is derived from the `DOMARINN_PUBLIC_URL`
+    /// scheme.
+    pub cookie_secure: Option<bool>,
+    /// SSO providers (`DOMARINN_OIDC_*` / `DOMARINN_SAML_*`).
+    pub sso: sso::SsoSettings,
 }
 
 impl Settings {
@@ -159,7 +177,23 @@ impl Settings {
             cache_max_age_days: env("DOMARINN_CACHE_MAX_AGE_DAYS").and_then(|v| v.parse().ok()),
             admin_user: env("DOMARINN_ADMIN_USER"),
             admin_password: env("DOMARINN_ADMIN_PASSWORD"),
+            cookie_secure: parse_bool_env("DOMARINN_COOKIE_SECURE", env("DOMARINN_COOKIE_SECURE"))?,
+            sso: sso::parse_sso_settings(&std::env::vars().collect())?,
         })
+    }
+}
+
+/// Parse a boolean env value, hard-erroring on anything unrecognized — the
+/// same fail-loud posture as `DOMARINN_AUTH_MODE`, since a typo here would
+/// silently change the session cookie's `Secure` flag.
+fn parse_bool_env(name: &str, raw: Option<String>) -> anyhow::Result<Option<bool>> {
+    match raw.as_deref() {
+        None => Ok(None),
+        Some("true") | Some("1") | Some("yes") => Ok(Some(true)),
+        Some("false") | Some("0") | Some("no") => Ok(Some(false)),
+        Some(other) => {
+            anyhow::bail!("invalid {name} '{other}'; expected one of: true, false, 1, 0, yes, no")
+        }
     }
 }
 
@@ -181,6 +215,9 @@ pub struct AppState {
     pub(crate) auth_mode: AuthMode,
     pub(crate) public_url: Option<String>,
     pub(crate) cache_limits: CacheLimits,
+    /// Whether session cookies carry the `Secure` attribute.
+    pub(crate) cookie_secure: bool,
+    pub(crate) sso: Arc<sso::SsoRegistry>,
 }
 
 impl AppState {
@@ -190,18 +227,10 @@ impl AppState {
         let storage = Storage::open(config.data_dir.clone()).await?;
         let authenticator =
             StaticTokenAuthenticator::from_env_value(settings.tokens.as_deref().unwrap_or(""));
-        let has_tokens = authenticator.has_tokens();
 
-        // Ensure a bootstrap admin exists before deriving the mode, so that a
-        // freshly-seeded instance is protected rather than open.
         bootstrap_admin(&storage, &settings).await?;
-        let has_accounts = storage.count_users().await? > 0;
 
-        let auth_mode = resolve_mode(
-            config.auth_mode,
-            settings.auth_mode,
-            has_tokens || has_accounts,
-        );
+        let auth_mode = resolve_mode(config.auth_mode, settings.auth_mode);
         let cache_limits = CacheLimits {
             max_entry_bytes: settings
                 .cache_max_entry_bytes
@@ -209,6 +238,15 @@ impl AppState {
             max_bytes: settings.cache_max_bytes.unwrap_or(DEFAULT_MAX_BYTES),
             max_age_days: settings.cache_max_age_days.unwrap_or(DEFAULT_MAX_AGE_DAYS),
         };
+        let cookie_secure = settings.cookie_secure.unwrap_or_else(|| {
+            settings
+                .public_url
+                .as_deref()
+                .is_some_and(|url| url.starts_with("https://"))
+        });
+        let sso_registry = Arc::new(
+            sso::SsoRegistry::from_settings(&settings.sso, settings.public_url.as_deref()).await?,
+        );
         Ok(AppState {
             api_key_auth: Arc::new(ApiKeyAuthenticator::new(storage.clone())),
             session_auth: Arc::new(SessionAuthenticator::new(storage.clone())),
@@ -217,6 +255,8 @@ impl AppState {
             auth_mode,
             public_url: settings.public_url,
             cache_limits,
+            cookie_secure,
+            sso: sso_registry,
         })
     }
 }
@@ -261,22 +301,12 @@ async fn bootstrap_admin(storage: &Storage, settings: &Settings) -> anyhow::Resu
     Ok(())
 }
 
-fn resolve_mode(
-    config_mode: AuthMode,
-    env_mode: Option<AuthMode>,
-    has_credentials: bool,
-) -> AuthMode {
-    if let Some(mode) = env_mode {
-        return mode;
-    }
-    if config_mode != AuthMode::Open {
-        return config_mode;
-    }
-    if has_credentials {
-        AuthMode::ProtectWrites
-    } else {
-        AuthMode::Open
-    }
+/// An explicit `DOMARINN_AUTH_MODE` always wins; otherwise the configured
+/// mode is used verbatim. Nothing is ever inferred from credentials — an
+/// unset environment means the [`ServerConfig`] default, which is
+/// [`AuthMode::Closed`].
+fn resolve_mode(config_mode: AuthMode, env_mode: Option<AuthMode>) -> AuthMode {
+    env_mode.unwrap_or(config_mode)
 }
 
 /// Middleware that attaches an [`auth::Identity`] to every request. It never
@@ -296,6 +326,111 @@ pub(crate) async fn auth_middleware(
     .await;
     req.extensions_mut().insert(identity);
     next.run(req).await
+}
+
+/// CSRF defense-in-depth for cookie-authed mutations. The session cookie is
+/// `SameSite=Lax`, which already withholds it from cross-site POSTs in every
+/// current browser; this middleware additionally rejects unsafe-method
+/// requests whose identity was resolved *from the cookie* when they present
+/// an `Origin` (or `Referer`) that matches neither `DOMARINN_PUBLIC_URL` nor
+/// the request's own `Host`. Header-credential traffic (CLI, API keys, static
+/// tokens) is structurally exempt — a cross-site attacker cannot set headers.
+pub(crate) async fn csrf_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    use axum::http::Method;
+    let safe_method = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
+    let via_cookie = req
+        .extensions()
+        .get::<auth::Identity>()
+        .is_some_and(|identity| identity.via_cookie);
+    if !safe_method && via_cookie {
+        match presented_origin(req.headers()) {
+            // A parseable Origin/Referer: it must match our origin.
+            PresentedOrigin::Host(presented) => {
+                if !origin_allowed(&presented, state.public_url.as_deref(), req.headers()) {
+                    tracing::warn!(origin = %presented, "rejected cross-origin cookie-authed request");
+                    return cross_origin_rejected();
+                }
+            }
+            // A header is present but does not parse to a host (e.g. the
+            // literal `Origin: null` a sandboxed iframe sends). Fail closed —
+            // we cannot prove it is same-origin.
+            PresentedOrigin::Unparseable => {
+                tracing::warn!("rejected cookie-authed request with an unparseable Origin/Referer");
+                return cross_origin_rejected();
+            }
+            // Neither header present: allow. Browsers always send Origin on
+            // cross-site POSTs, so this is non-browser traffic that chose to
+            // authenticate with a cookie.
+            PresentedOrigin::Absent => {}
+        }
+    }
+    next.run(req).await
+}
+
+fn cross_origin_rejected() -> Response {
+    (
+        axum::http::StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({ "error": "cross-origin request rejected" })),
+    )
+        .into_response()
+}
+
+enum PresentedOrigin {
+    Host(String),
+    Unparseable,
+    Absent,
+}
+
+/// Classify the request's `Origin` (falling back to `Referer`): parsed to a
+/// `host[:port]`, present-but-unparseable, or absent.
+fn presented_origin(headers: &axum::http::HeaderMap) -> PresentedOrigin {
+    let Some(value) = headers
+        .get(axum::http::header::ORIGIN)
+        .or_else(|| headers.get(axum::http::header::REFERER))
+    else {
+        return PresentedOrigin::Absent;
+    };
+    match value.to_str().ok().and_then(url_host) {
+        Some(host) => PresentedOrigin::Host(host),
+        None => PresentedOrigin::Unparseable,
+    }
+}
+
+/// Extract `host[:port]` (lowercased) from an absolute URL. Returns `None`
+/// for anything that does not look like `scheme://host...` — including the
+/// literal `Origin: null`.
+fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let host = rest.split(['/', '?', '#']).next()?;
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
+}
+
+fn origin_allowed(
+    presented: &str,
+    public_url: Option<&str>,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    if let Some(public_host) = public_url.and_then(url_host) {
+        if presented == public_host {
+            return true;
+        }
+    }
+    if let Some(host) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+    {
+        if presented == host.to_ascii_lowercase() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Build the axum application and its state. Exposed so integration tests can
@@ -325,7 +460,8 @@ pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Hourly LRU/age retention against the configured cache limits.
+/// Hourly LRU/age retention against the configured cache limits, plus the
+/// SSO login-transaction / SAML-replay-cache sweep.
 fn spawn_cache_retention(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
@@ -343,6 +479,9 @@ fn spawn_cache_retention(state: AppState) {
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "cache retention failed"),
+            }
+            if let Err(e) = state.storage.sso_gc().await {
+                tracing::warn!(error = %e, "sso gc failed");
             }
         }
     });
@@ -450,23 +589,26 @@ mod tests {
     }
 
     #[test]
-    fn mode_derivation() {
-        assert_eq!(resolve_mode(AuthMode::Open, None, false), AuthMode::Open);
+    fn mode_resolution() {
+        // Env override always wins.
         assert_eq!(
-            resolve_mode(AuthMode::Open, None, true),
-            AuthMode::ProtectWrites
-        );
-        assert_eq!(
-            resolve_mode(AuthMode::Open, Some(AuthMode::Closed), true),
-            AuthMode::Closed
-        );
-        assert_eq!(
-            resolve_mode(AuthMode::Open, Some(AuthMode::Open), true),
+            resolve_mode(AuthMode::Closed, Some(AuthMode::Open)),
             AuthMode::Open
         );
-        // An explicit config mode wins over token-derivation.
         assert_eq!(
-            resolve_mode(AuthMode::Closed, None, false),
+            resolve_mode(AuthMode::Open, Some(AuthMode::Closed)),
+            AuthMode::Closed
+        );
+        // No env: the configured mode is used verbatim — never derived.
+        assert_eq!(resolve_mode(AuthMode::Closed, None), AuthMode::Closed);
+        assert_eq!(resolve_mode(AuthMode::Open, None), AuthMode::Open);
+        assert_eq!(
+            resolve_mode(AuthMode::ProtectWrites, None),
+            AuthMode::ProtectWrites
+        );
+        // The default config is closed.
+        assert_eq!(
+            resolve_mode(ServerConfig::default().auth_mode, None),
             AuthMode::Closed
         );
     }
@@ -517,9 +659,9 @@ mod tests {
     }
 
     #[test]
-    fn config_default_is_open() {
+    fn config_default_is_closed() {
         let config = ServerConfig::default();
-        assert_eq!(config.auth_mode, AuthMode::Open);
+        assert_eq!(config.auth_mode, AuthMode::Closed);
         assert_eq!(config.port, 8321);
     }
 }

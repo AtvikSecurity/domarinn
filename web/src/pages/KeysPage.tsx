@@ -35,7 +35,7 @@ export function KeysPage() {
       </div>
     );
   }
-  if (view.needsLogin) {
+  if (view.promptLogin) {
     return (
       <SignInPrompt message="Sign in to create and manage API keys." />
     );

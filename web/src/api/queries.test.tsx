@@ -44,6 +44,7 @@ describe("useApiKeys / useUsers unwrap the server's wrapped list envelope", () =
     expect(result.current.data!.map((u) => u.username).sort()).toEqual([
       "admin",
       "member",
+      "sso.only",
     ]);
   });
 });

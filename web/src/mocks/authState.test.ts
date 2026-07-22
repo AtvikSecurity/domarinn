@@ -90,9 +90,45 @@ describe("api keys", () => {
 });
 
 describe("users (admin)", () => {
-  it("seeds an admin and a member", () => {
+  it("seeds an admin, a member, and an SSO-only account", () => {
     const users = listUsers();
-    expect(users.map((u) => u.username).sort()).toEqual(["admin", "member"]);
+    expect(users.map((u) => u.username).sort()).toEqual([
+      "admin",
+      "member",
+      "sso.only",
+    ]);
+  });
+
+  it("exposes SSO identity metadata on the seeded accounts", () => {
+    const users = listUsers();
+    // The member is a pure local account.
+    const member = users.find((u) => u.username === "member");
+    expect(member?.has_password).toBe(true);
+    expect(member?.identities).toHaveLength(0);
+    expect(member?.role_managed_by).toBeNull();
+
+    // The SSO-only account has no password and an IdP-managed role.
+    const ssoOnly = users.find((u) => u.username === "sso.only");
+    expect(ssoOnly?.has_password).toBe(false);
+    expect(ssoOnly?.identities[0]?.provider).toBe("oidc:google");
+    expect(ssoOnly?.role_managed_by).toBe("oidc:google");
+  });
+
+  it("models a cookie session: login makes resolveAuth(null) authenticated", () => {
+    const res = login("member", "member");
+    expect(res).not.toBeNull();
+    // No bearer token, but the mock 'cookie' session resolves the member.
+    const { me } = resolveAuth(null);
+    expect(me.authenticated).toBe(true);
+    expect(me.user?.username).toBe("member");
+    logout(null);
+    // After logout the cookie is cleared; open-mode falls back to static admin.
+    expect(resolveAuth(null).me.user?.username).toBe("admin");
+  });
+
+  it("refuses password login for an SSO-only account", () => {
+    expect(login("sso.only", "")).toBeNull();
+    expect(login("sso.only", "anything")).toBeNull();
   });
 
   it("creates, updates, and rejects duplicate usernames", () => {

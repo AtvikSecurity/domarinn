@@ -154,7 +154,26 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
 
   // GET /meta
   if (method === "GET" && seg[0] === "meta" && seg.length === 1) {
-    return json({ ...fx.META, setup_required: auth.setupRequired() });
+    return json({
+      ...fx.META,
+      auth_mode: auth.mockAuthMode(),
+      setup_required: auth.setupRequired(),
+    });
+  }
+
+  // Closed mode: every path except the always-open bootstrap surface
+  // (health, meta, /auth/*) requires an authenticated caller. This mirrors
+  // the real server's Scoped extractor so the closed-mode e2e / an expired
+  // session actually exercises the 401 -> onUnauthorized -> /login path,
+  // instead of the mock silently serving data. Open/protect-writes are
+  // unchanged (existing specs browse anonymously as the static admin).
+  if (
+    auth.mockAuthMode() === "closed" &&
+    seg[0] !== "health" &&
+    seg[0] !== "auth" &&
+    !auth.resolveAuth(bearer(init)).me.authenticated
+  ) {
+    return json({ error: "authentication required" }, 401);
   }
 
   // /auth/... — login, setup, logout, me

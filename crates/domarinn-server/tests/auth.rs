@@ -9,6 +9,7 @@ const TOKENS: &str = "read:domarinn_view,write:domarinn_ci,admin:domarinn_ops";
 fn protect_writes() -> Settings {
     Settings {
         tokens: Some(TOKENS.to_string()),
+        auth_mode: Some(AuthMode::ProtectWrites),
         ..Default::default()
     }
 }

@@ -27,8 +27,8 @@ has the complete table (auth modes, admin bootstrap, cache limits).
 | Env var                 | Default | Purpose |
 |-------------------------|---------|---------|
 | `DOMARINN_DATA_DIR`   | `/data` | Directory holding `domarinn.db` and `cache.db`. Mount a volume here. |
-| `DOMARINN_TOKENS`     | (unset) | Static bearer tokens as comma-separated `scope:secret` pairs (`read:…,write:…,admin:…`). Setting any flips the default auth mode to `protect-writes` (writes/admin require a token; reads stay open). |
-| `DOMARINN_AUTH_MODE`  | (derived) | Force the mode: `open` \| `protect-writes` \| `closed`. |
+| `DOMARINN_TOKENS`     | (unset) | Static bearer tokens as comma-separated `scope:secret` pairs (`read:…,write:…,admin:…`). Grants access; never changes the mode. |
+| `DOMARINN_AUTH_MODE`  | `closed` | The auth mode: `open` \| `protect-writes` \| `closed`. Unset means `closed` — every call and page requires auth. |
 | `DOMARINN_ADMIN_USER` / `DOMARINN_ADMIN_PASSWORD` | (unset) | Bootstrap a local admin account at startup (see [First run](#first-run-creating-the-admin)). |
 | `DOMARINN_PUBLIC_URL` | (unset) | Public base URL used in share links and absolute URLs behind a proxy. No trailing slash, no path prefix. |
 
@@ -39,18 +39,18 @@ distroless image has no shell or curl).
 
 ## First run: creating the admin
 
-A brand-new instance with no tokens and no accounts comes up in **`open`** mode —
-anyone can read and write. To lock it down you create an admin, which flips the
-instance to `protect-writes`. Two ways:
+A brand-new instance comes up **`closed`** — every page and API call requires
+auth — with only the bootstrap surface open (health, meta, setup, login) so it
+can be claimed. Create the admin one of two ways:
 
 - **Bootstrap from the environment (recommended for containers).** Set
   `DOMARINN_ADMIN_USER` and `DOMARINN_ADMIN_PASSWORD`. On every startup the
   server idempotently ensures that enabled admin account exists — ideal with a
-  secret store. An instance seeded this way comes up already in `protect-writes`.
+  secret store.
 - **Interactive setup.** Hit the `/setup` page (or `POST /api/v1/auth/setup`)
-  once to create the first admin.
+  once to create the first admin; it is a 409 once any user exists.
 
-Full details, including how the mode is derived and how tokens vs accounts differ,
+Full details, including the auth modes and how tokens vs accounts differ,
 are in [`./server.md`](./server.md#accounts--auth-model).
 
 ## The image

@@ -66,16 +66,56 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04
+    # Runs in the rust:bookworm container (like the saml job) rather than
+    # directly on the runner: the bare runner's cold compile of the new SSO
+    # crypto dependency tree was slow/heavy enough to get the job killed
+    # before it finished (and before rust-cache could save, so every rerun
+    # stayed cold). The container has a warm toolchain + reliable caching.
+    container: rust:1-bookworm
+    env:
+      # The workflow-level EXDEV workaround points RUSTUP_HOME outside this
+      # container; use the image's own rustup install instead.
+      RUSTUP_HOME: /usr/local/rustup
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
-        with:
-          install_args: rust
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
-      # `mise run test` == `cargo test --workspace` (see .mise/config.toml).
-      - run: mise run test
+        with:
+          key: test
+      # Equivalent to `mise run test` (== `cargo test --workspace`) without
+      # pulling mise's toolchain into the container.
+      - run: cargo test --workspace
+
+  saml:
+    name: saml (feature-gated tests)
+    runs-on: ubuntu-24.04
+    # rust:bookworm brings its own toolchain + the apt packages samael's
+    # xmlsec backend needs at build time; mise is not used here.
+    container: rust:1-bookworm
+    env:
+      # The workflow-level EXDEV workaround points RUSTUP_HOME at the
+      # runner's workspace; inside this container the image's own rustup
+      # install is the right one.
+      RUSTUP_HOME: /usr/local/rustup
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+      - name: Install xmlsec build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libxmlsec1-dev libxml2-dev libxslt1-dev libssl-dev libltdl-dev \
+            pkg-config clang
+      # The rust:bookworm image ships rustc/cargo but not the clippy
+      # component; the other CI jobs get it via mise-action.
+      - run: rustup component add clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
+        with:
+          key: saml
+      - run: cargo clippy -p domarinn-server --features saml --all-targets -- -D warnings
+      - run: cargo test -p domarinn-server --features saml
 
   web:
     name: web (lint + build + vitest)

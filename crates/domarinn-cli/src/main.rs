@@ -309,10 +309,12 @@ fn print_list(items: &[&str], json: bool) {
 }
 
 fn cmd_server(port: u16, data_dir: PathBuf) -> u8 {
+    // Closed by default: anonymous access is an explicit operator choice via
+    // DOMARINN_AUTH_MODE, never the out-of-the-box posture.
     let config = domarinn_server::ServerConfig {
         port,
         data_dir,
-        auth_mode: domarinn_server::AuthMode::Open,
+        auth_mode: domarinn_server::AuthMode::Closed,
     };
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,

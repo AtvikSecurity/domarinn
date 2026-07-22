@@ -23,16 +23,41 @@ services:
       # named volume below). Matches the image default; shown for clarity.
       DOMARINN_DATA_DIR: /data
 
-      # Auth tokens. Comma-separated "name:secret" pairs. When set, writes
-      # (run uploads) require a bearer token; reads stay public unless you run
-      # in a stricter mode. REPLACE these placeholder secrets before exposing
-      # the service — treat them like passwords and inject via a real secret
+      # The server is CLOSED by default: every page and API call requires
+      # auth, and the first visit walks you through creating the admin (or
+      # seed one via DOMARINN_ADMIN_USER / DOMARINN_ADMIN_PASSWORD below).
+      # Anonymous access is an explicit opt-out:
+      #DOMARINN_AUTH_MODE: "protect-writes"   # anonymous reads, gated writes
+      #DOMARINN_AUTH_MODE: "open"             # no auth at all
+
+      # Seed the admin account from the environment (idempotent on startup).
+      # Inject via a real secret store, not this file, in production.
+      #DOMARINN_ADMIN_USER: "admin"
+      #DOMARINN_ADMIN_PASSWORD: "CHANGE_ME_admin_password"
+
+      # Static bearer tokens for CI/bootstrap. Comma-separated "scope:secret"
+      # pairs — the scope must be read, write, or admin (anything else is
+      # ignored). REPLACE these placeholder secrets before exposing the
+      # service — treat them like passwords and inject via a real secret
       # store, not this file, in production.
-      DOMARINN_TOKENS: "ci:CHANGE_ME_ci_token,dev:CHANGE_ME_dev_token"
+      DOMARINN_TOKENS: "write:CHANGE_ME_ci_token,read:CHANGE_ME_view_token"
 
       # Public base URL the server prints in share links and uses to build
-      # absolute URLs behind a reverse proxy. No trailing slash, no path prefix.
+      # absolute URLs behind a reverse proxy. No trailing slash, no path
+      # prefix. REQUIRED if you enable any SSO provider below.
       DOMARINN_PUBLIC_URL: "https://domarinn.example.com"
+
+      # --- Single sign-on (optional) — see docs/server.md#single-sign-on ---
+      # OIDC (Google, Authentik, Okta, Entra, Keycloak, …):
+      #DOMARINN_OIDC_PROVIDERS: "authentik"
+      #DOMARINN_OIDC_AUTHENTIK_ISSUER: "https://auth.example.com/application/o/domarinn/"
+      #DOMARINN_OIDC_AUTHENTIK_CLIENT_ID: "CHANGE_ME"
+      #DOMARINN_OIDC_AUTHENTIK_CLIENT_SECRET: "CHANGE_ME"
+      #DOMARINN_OIDC_AUTHENTIK_ADMIN_GROUPS: "domarinn-admins"
+      # SAML (needs the SAML-enabled image, which this Dockerfile builds):
+      #DOMARINN_SAML_PROVIDERS: "okta"
+      #DOMARINN_SAML_OKTA_IDP_METADATA_URL: "https://example.okta.com/app/…/sso/saml/metadata"
+      #DOMARINN_SAML_OKTA_ADMIN_GROUPS: "domarinn-admins"
     volumes:
       - domarinn-data:/data
     healthcheck:

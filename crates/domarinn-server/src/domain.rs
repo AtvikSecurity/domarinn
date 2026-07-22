@@ -161,6 +161,60 @@ impl FromSql for Scope {
     }
 }
 
+/// Which SSO protocol an identity or login transaction belongs to. Stored in
+/// SQLite (`user_identities.kind`, `login_transactions.kind`) and serialized
+/// into identity views on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum SsoKind {
+    Oidc,
+    Saml,
+}
+
+impl SsoKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SsoKind::Oidc => "oidc",
+            SsoKind::Saml => "saml",
+        }
+    }
+}
+
+impl std::fmt::Display for SsoKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for SsoKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "oidc" => Ok(SsoKind::Oidc),
+            "saml" => Ok(SsoKind::Saml),
+            other => Err(format!(
+                "invalid sso kind '{other}'; expected one of: oidc, saml"
+            )),
+        }
+    }
+}
+
+impl ToSql for SsoKind {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl FromSql for SsoKind {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|e: String| FromSqlError::Other(e.into()))
+    }
+}
+
 /// Status filter for `GET /runs?status=`. A narrower set than
 /// [`domarinn_core::result::CaseStatus`]: `skip`ped cases never move a
 /// run's pass/fail/error counters, so a run-level filter for `skip` would

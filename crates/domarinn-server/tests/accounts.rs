@@ -672,9 +672,10 @@ async fn bootstrap_admin_is_idempotent_and_rotates_password() {
     };
     let (app, _state) = build_app(&config, settings).await.unwrap();
 
-    // A seeded account flips the effective mode to protect-writes.
+    // The configured mode is used verbatim — a seeded account no longer
+    // changes it — and the seed satisfies first-run setup.
     let meta = get(&app, "/api/v1/meta").await;
-    assert_eq!(meta.json()["auth_mode"], "protect-writes");
+    assert_eq!(meta.json()["auth_mode"], "open");
     assert_eq!(meta.json()["setup_required"], false);
 
     let login = post_json(

@@ -1,6 +1,8 @@
 //! Shared fixtures and request helpers for the integration tests.
 #![allow(dead_code)]
 
+pub mod mock_oidc;
+
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
 use axum::Router;
@@ -19,13 +21,23 @@ use domarinn_core::types::{Output, TokenUsage};
 use domarinn_server::{build_app, ServerConfig, Settings};
 
 /// Build a router backed by a fresh temp data dir. Returns the router and the
-/// `TempDir` guard (keep it alive for the duration of the test).
+/// `TempDir` guard (keep it alive for the duration of the test). Most suites
+/// exercise data endpoints, not auth, so this runs in open mode; auth-focused
+/// tests use [`test_app_with_mode`] or set `Settings::auth_mode`.
 pub async fn test_app(settings: Settings) -> (Router, TempDir) {
+    test_app_with_mode(settings, domarinn_server::AuthMode::Open).await
+}
+
+/// [`test_app`] with an explicit configured [`domarinn_server::AuthMode`].
+pub async fn test_app_with_mode(
+    settings: Settings,
+    auth_mode: domarinn_server::AuthMode,
+) -> (Router, TempDir) {
     let dir = TempDir::new().expect("tempdir");
     let config = ServerConfig {
         port: 0,
         data_dir: dir.path().to_path_buf(),
-        auth_mode: domarinn_server::AuthMode::Open,
+        auth_mode,
     };
     let (app, _state) = build_app(&config, settings).await.expect("build_app");
     (app, dir)
@@ -37,6 +49,7 @@ pub async fn test_app(settings: Settings) -> (Router, TempDir) {
 
 pub struct Reply {
     pub status: StatusCode,
+    pub headers: axum::http::HeaderMap,
     pub body: Vec<u8>,
 }
 
@@ -44,10 +57,20 @@ impl Reply {
     pub fn json(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap_or(Value::Null)
     }
+
+    /// All `Set-Cookie` header values on the response.
+    pub fn set_cookies(&self) -> Vec<String> {
+        self.headers
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_string))
+            .collect()
+    }
 }
 
 async fn read_reply(resp: Response<Body>) -> Reply {
     let status = resp.status();
+    let headers = resp.headers().clone();
     let body = resp
         .into_body()
         .collect()
@@ -55,7 +78,11 @@ async fn read_reply(resp: Response<Body>) -> Reply {
         .unwrap()
         .to_bytes()
         .to_vec();
-    Reply { status, body }
+    Reply {
+        status,
+        headers,
+        body,
+    }
 }
 
 pub async fn get(app: &Router, uri: &str) -> Reply {
@@ -82,6 +109,31 @@ pub async fn send(
         builder = builder.header("content-encoding", enc);
     }
     if !body.is_empty() {
+        builder = builder.header("content-type", "application/json");
+    }
+    let req = builder.body(Body::from(body)).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    read_reply(resp).await
+}
+
+/// Like [`send`], but with arbitrary extra headers (cookie/CSRF/SSO tests).
+/// A JSON `Content-Type` is added whenever a body is present, unless the
+/// caller supplied an explicit one (e.g. form-encoded SAML posts).
+pub async fn send_with_headers(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+) -> Reply {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let has_content_type = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
+    if !body.is_empty() && !has_content_type {
         builder = builder.header("content-type", "application/json");
     }
     let req = builder.body(Body::from(body)).unwrap();

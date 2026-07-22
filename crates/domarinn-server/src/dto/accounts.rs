@@ -6,8 +6,32 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use crate::auth::{IdentitySource, Scope};
-use crate::domain::{ApiKeyId, Role, UserId};
-use crate::storage::{ApiKeyInfo, UserRow};
+use crate::domain::{ApiKeyId, Role, SsoKind, UserId};
+use crate::storage::{ApiKeyInfo, UserIdentityRow, UserRow};
+
+/// One linked SSO identity, safe to expose (no tokens). `provider` is the
+/// namespaced key (`oidc:google`), which the UI splits for display.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct UserIdentityView {
+    pub provider: String,
+    pub kind: SsoKind,
+    pub subject: String,
+    pub email: Option<String>,
+    /// RFC3339, or `None` if never used since linking.
+    pub last_login_at: Option<String>,
+}
+
+impl From<&UserIdentityRow> for UserIdentityView {
+    fn from(row: &UserIdentityRow) -> Self {
+        UserIdentityView {
+            provider: row.provider.clone(),
+            kind: row.kind,
+            subject: row.subject.clone(),
+            email: row.email.clone(),
+            last_login_at: row.last_login_at.map(rfc3339),
+        }
+    }
+}
 
 /// One account, safe to expose (no password hash).
 #[derive(Debug, Clone, Serialize, TS)]
@@ -18,17 +42,40 @@ pub struct UserView {
     pub disabled: bool,
     /// RFC3339.
     pub created_at: String,
+    /// Only set for SSO-provisioned accounts.
+    pub email: Option<String>,
+    /// Whether a password login is possible (false for SSO-only accounts).
+    pub has_password: bool,
+    /// Linked SSO identities (empty for local accounts).
+    pub identities: Vec<UserIdentityView>,
+    /// The provider key whose IdP controls this user's role, when any SSO
+    /// identity is linked — its role is re-synced on each SSO login and the
+    /// admin UI should reflect that rather than offer a manual override.
+    pub role_managed_by: Option<String>,
 }
 
-impl From<&UserRow> for UserView {
-    fn from(user: &UserRow) -> Self {
+impl UserView {
+    /// Project a user row and its identity links onto the wire shape.
+    pub fn from_row(user: &UserRow, identities: &[UserIdentityRow]) -> Self {
         UserView {
             id: user.id.clone(),
             username: user.username.clone(),
             role: user.role,
             disabled: user.disabled,
             created_at: rfc3339(user.created_at),
+            email: user.email.clone(),
+            has_password: !user.password_hash.is_empty(),
+            identities: identities.iter().map(UserIdentityView::from).collect(),
+            role_managed_by: identities.first().map(|i| i.provider.clone()),
         }
+    }
+}
+
+impl From<&UserRow> for UserView {
+    /// A user with no identity links (local accounts, and the single-user
+    /// responses that fetch links separately when relevant).
+    fn from(user: &UserRow) -> Self {
+        UserView::from_row(user, &[])
     }
 }
 
@@ -90,6 +137,10 @@ pub struct MeUser {
     pub id: UserId,
     pub username: String,
     pub role: Role,
+    /// Linked SSO identities so Settings can show sign-in methods.
+    pub identities: Vec<UserIdentityView>,
+    /// The provider key managing this user's role (see [`UserView`]).
+    pub role_managed_by: Option<String>,
 }
 
 /// `GET /auth/me` response. Every field is always present on the wire (never
@@ -141,6 +192,7 @@ mod tests {
             role: Role::Admin,
             disabled: false,
             created_at: 1_735_689_600_000, // 2025-01-01T00:00:00Z
+            email: None,
         }
     }
 
@@ -157,6 +209,20 @@ mod tests {
         }
     }
 
+    fn sample_identity_row() -> UserIdentityRow {
+        UserIdentityRow {
+            id: "idn_1".to_string(),
+            user_id: UserId::new("usr_1"),
+            provider: "oidc:google".to_string(),
+            kind: SsoKind::Oidc,
+            subject: "sub-123".to_string(),
+            email: Some("root@example.com".to_string()),
+            display_name: Some("Root".to_string()),
+            created_at: 1_735_689_600_000,
+            last_login_at: Some(1_735_776_000_000), // 2025-01-02T00:00:00Z
+        }
+    }
+
     #[test]
     fn user_view_matches_todays_wire_shape() {
         let dto = UserView::from(&sample_user_row());
@@ -168,15 +234,39 @@ mod tests {
                 "role": "admin",
                 "disabled": false,
                 "created_at": "2025-01-01T00:00:00+00:00",
+                "email": null,
+                "has_password": true,
+                "identities": [],
+                "role_managed_by": null,
             })
         );
+    }
+
+    #[test]
+    fn user_view_surfaces_linked_sso_identities() {
+        let mut row = sample_user_row();
+        row.password_hash = String::new(); // SSO-only
+        row.email = Some("root@example.com".to_string());
+        let dto = UserView::from_row(&row, &[sample_identity_row()]);
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(v["has_password"], false);
+        assert_eq!(v["email"], "root@example.com");
+        assert_eq!(v["role_managed_by"], "oidc:google");
+        assert_eq!(v["identities"][0]["provider"], "oidc:google");
+        assert_eq!(v["identities"][0]["kind"], "oidc");
+        assert_eq!(
+            v["identities"][0]["last_login_at"],
+            "2025-01-02T00:00:00+00:00"
+        );
+        // The subject is exposed for admin display but never a token.
+        assert_eq!(v["identities"][0]["subject"], "sub-123");
     }
 
     #[test]
     fn user_view_never_leaks_the_password_hash() {
         let v = serde_json::to_value(UserView::from(&sample_user_row())).unwrap();
         assert!(v.get("password_hash").is_none());
-        assert_eq!(v.as_object().unwrap().len(), 5);
+        assert_eq!(v.as_object().unwrap().len(), 9);
     }
 
     #[test]
@@ -194,6 +284,10 @@ mod tests {
                         "role": "admin",
                         "disabled": false,
                         "created_at": "2025-01-01T00:00:00+00:00",
+                        "email": null,
+                        "has_password": true,
+                        "identities": [],
+                        "role_managed_by": null,
                     }
                 ]
             })
@@ -285,6 +379,8 @@ mod tests {
                 id: UserId::new("usr_1"),
                 username: "root".to_string(),
                 role: Role::Admin,
+                identities: Vec::new(),
+                role_managed_by: None,
             }),
             source: IdentitySource::Session,
             scope: Some(Scope::Admin),
@@ -297,6 +393,8 @@ mod tests {
                     "id": "usr_1",
                     "username": "root",
                     "role": "admin",
+                    "identities": [],
+                    "role_managed_by": null,
                 },
                 "source": "session",
                 "scope": "admin",
@@ -365,6 +463,10 @@ mod tests {
                     "role": "admin",
                     "disabled": false,
                     "created_at": "2025-01-01T00:00:00+00:00",
+                    "email": null,
+                    "has_password": true,
+                    "identities": [],
+                    "role_managed_by": null,
                 },
             })
         );

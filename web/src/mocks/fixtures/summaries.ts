@@ -66,6 +66,20 @@ export const META: MetaResponse = {
   version: "0.1.0-mock",
   auth_mode: "open",
   setup_required: false,
+  sso_providers: [
+    {
+      name: "google",
+      kind: "oidc",
+      label: "Google",
+      login_url: "/api/v1/auth/oidc/google/start",
+    },
+    {
+      name: "corp",
+      kind: "saml",
+      label: "Corp SSO",
+      login_url: "/api/v1/auth/saml/corp/start",
+    },
+  ],
   supported_schema_versions: [1],
   result_schema_version: RESULT_SCHEMA_VERSION,
   cache: {

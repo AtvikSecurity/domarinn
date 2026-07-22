@@ -9,6 +9,8 @@
 export type { AuthMode } from "./generated/AuthMode";
 export type { MetaCacheLimits } from "./generated/MetaCacheLimits";
 export type { MetaResponse } from "./generated/MetaResponse";
+export type { SsoProviderMeta } from "./generated/SsoProviderMeta";
+export type { SsoKind } from "./generated/SsoKind";
 
 export type { IdentitySource } from "./generated/IdentitySource";
 export type { MeResponse } from "./generated/MeResponse";
@@ -33,6 +35,7 @@ export type { PatchUserBody } from "./generated/PatchUserBody";
 export type { UserId } from "./generated/UserId";
 export type { UserListResponse } from "./generated/UserListResponse";
 export type { UserView } from "./generated/UserView";
+export type { UserIdentityView } from "./generated/UserIdentityView";
 
 export type { AssertName } from "./generated/AssertName";
 export type { AssertResult } from "./generated/AssertResult";

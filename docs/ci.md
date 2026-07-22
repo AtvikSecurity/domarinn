@@ -180,7 +180,7 @@ gets a durable link, and so runs can share a provider cache.
 - **`server-url` / `DOMARINN_SERVER_URL`** — the server base URL. Setting it
   makes the run upload with **`--share`**.
 - **`DOMARINN_TOKEN`** (the action's `token` input) — a bearer token sent on
-  upload. If the server runs in `protect-writes` or `closed` mode, this needs
+  upload. Unless the server is explicitly in `open` mode, this needs
   **`write`** scope (a static `write:` token or an `domarinn_` API key). Always pass
   it from a secret.
 - **`--share`** uploads the completed run and prints `View run: <url>`; the URL

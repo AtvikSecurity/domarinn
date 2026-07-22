@@ -1,15 +1,30 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { clearToken, getToken, onUnauthorized, setToken } from "@/lib/auth";
+import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "./ui/Button";
 
 /**
- * Global token modal. Opens automatically when any request 401s (via the
+ * Global token modal. Opens automatically when a request 401s (via the
  * onUnauthorized bus) and can also be opened manually from Settings.
+ *
+ * In `closed` mode the modal stays out of the way: a 401 there means the
+ * session cookie expired, and the right recovery is the login page (which
+ * RequireAuth redirects to when AuthProvider refreshes `me`), not pasting a
+ * bearer token. The token path only makes sense for open/protect-writes
+ * static-token deployments.
  */
 export function TokenModal() {
+  const { view } = useAuth();
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState("");
+  // Mirror the live auth mode into a ref so the stable onUnauthorized handler
+  // (registered once) always sees the current value. Written from an effect,
+  // not during render.
+  const authModeRef = useRef(view.authMode);
+  useEffect(() => {
+    authModeRef.current = view.authMode;
+  }, [view.authMode]);
 
   // Load the current token when the dialog opens (from either path) rather
   // than reacting to `open` in an effect, which would set state synchronously.
@@ -17,7 +32,14 @@ export function TokenModal() {
     setValue(getToken() ?? "");
     setOpen(true);
   }
-  useEffect(() => onUnauthorized(openWithCurrentToken), []);
+  useEffect(
+    () =>
+      onUnauthorized(() => {
+        if (authModeRef.current === "closed") return;
+        openWithCurrentToken();
+      }),
+    [],
+  );
 
   function handleOpenChange(next: boolean) {
     if (next) openWithCurrentToken();

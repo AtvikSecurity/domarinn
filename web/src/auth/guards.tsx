@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Link, Navigate, useLocation } from "react-router";
+import { Link, Navigate, Outlet, useLocation } from "react-router";
 import { useAuth } from "./AuthProvider";
 import { Button } from "@/components/ui/Button";
 import { CenteredSpinner } from "@/components/ui/Spinner";
@@ -23,13 +23,33 @@ export function ForbiddenState({
   );
 }
 
+/**
+ * Gate every protected route behind a login. Used as a pathless layout route,
+ * so it renders `<Outlet />` for its children when access is allowed.
+ *
+ * `isLoading` (meta + me both resolving) shows a spinner so the login page
+ * never flashes on boot; once data exists, refetches don't re-trip it. If
+ * meta itself errors, `needsLogin` stays false and children render their own
+ * error states rather than trapping the user on `/login`.
+ */
+export function RequireAuth({ children }: { children?: ReactNode }) {
+  const { view, isLoading } = useAuth();
+  const location = useLocation();
+
+  if (isLoading) return <CenteredSpinner label="Checking access…" />;
+  if (view.needsLogin) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+  return <>{children ?? <Outlet />}</>;
+}
+
 /** Gate a route on admin scope: redirect to login if anonymous, else 403. */
 export function RequireAdmin({ children }: { children: ReactNode }) {
   const { view, isLoading } = useAuth();
   const location = useLocation();
 
   if (isLoading) return <CenteredSpinner label="Checking access…" />;
-  if (view.needsLogin) {
+  if (view.promptLogin) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
   if (!view.canAdmin) {

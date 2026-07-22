@@ -55,3 +55,11 @@ chrono = { version = "0.4", features = ["serde"] }
 [profile.release]
 strip = true
 lto = "thin"
+
+# The dev/test profile drops debuginfo. The SSO stack pulls in a large,
+# compile-heavy crypto tree (openidconnect → rsa, num-bigint-dig, p256/p384,
+# elliptic-curve); generating debuginfo for it dominates the cold `cargo test`
+# compile in both time and peak memory. We do not ship or debug the test
+# binaries with a debugger, so line-tables are enough for panic backtraces.
+[profile.dev]
+debug = "line-tables-only"
