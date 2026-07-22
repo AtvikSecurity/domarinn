@@ -24,7 +24,7 @@ anstyle = "1"
 anstream = "1"
 # Unified text diffs of case outputs and config snapshots (Task 19). Approved new
 # dependency; a small, dependency-light Myers-diff implementation.
-similar = "2"
+similar = "3"
 # Live progress bar during `run`, drawn on stderr (Task 20). Approved new
 # dependency; hides itself on non-TTY so it never touches machine output.
 indicatif = "0.18"
