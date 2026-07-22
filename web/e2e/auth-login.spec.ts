@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("Login", () => {
-  test("wrong password shows an inline error and does not open the token modal", async ({
+  test("wrong password shows an inline error and stays on /login", async ({
     page,
   }) => {
     await page.goto("/login");
@@ -11,12 +11,12 @@ test.describe("Login", () => {
     await page.getByLabel("Password").fill("wrong-password");
     await page.getByRole("button", { name: "Sign in" }).click();
 
-    // Inline error, still on /login, and the 401→token-modal path is suppressed.
+    // The login request is skipAuthRedirect, so its 401 is handled inline (an
+    // error message) rather than tripping the global redirect — the user stays
+    // put on /login with no popup or navigation.
     await expect(page.getByRole("alert")).toHaveText(/Invalid username or password/);
     await expect(page).toHaveURL(/\/login$/);
-    await expect(
-      page.getByRole("heading", { name: "Access token required" }),
-    ).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
   });
 
   test("correct credentials establish a session and redirect home", async ({

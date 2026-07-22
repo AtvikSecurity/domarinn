@@ -48,11 +48,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [queryClient],
   );
 
-  // An expired session cookie surfaces as a 401 on a protected call. Refresh
-  // `me` so the derived view flips to unauthenticated; in closed mode that
-  // makes RequireAuth redirect to /login (preserving the deep link via
-  // location state). `/auth/me` itself never 401s (skipAuthRedirect), so no
-  // loop. The TokenModal still handles the open/protect-writes case.
+  // An expired session cookie (or any protected call) surfaces as a 401.
+  // Refresh `me` so the derived view flips to unauthenticated and the nav/UI
+  // reflect it. `/auth/me` itself never 401s (skipAuthRedirect), so no loop.
+  // The actual redirect to /login is driven inside the router by
+  // `useUnauthorizedRedirect` (Layout), which fires on the same signal.
   useEffect(
     () =>
       onUnauthorized(() => {

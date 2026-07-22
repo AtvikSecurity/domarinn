@@ -10,7 +10,7 @@ export interface AuthTokenState {
 export type AuthTokenAction =
   | { type: "signed-in"; token: string }
   | { type: "signed-out" }
-  /** Reconcile with an external change (e.g. Settings/TokenModal writes). */
+  /** Reconcile with an external change (e.g. the Settings token field). */
   | { type: "sync"; token: string | null };
 
 export function initialAuthTokenState(token: string | null): AuthTokenState {

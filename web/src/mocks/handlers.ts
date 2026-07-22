@@ -390,7 +390,7 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       return json(fx.cacheStats());
     }
     if (method === "POST" && seg[1] === "prune") {
-      // Admin action: exercise the 401 -> token modal flow when unauthenticated.
+      // Admin action: exercise the 401 -> /login redirect when unauthenticated.
       const authed = (init.headers as Record<string, string> | undefined)?.[
         "Authorization"
       ];

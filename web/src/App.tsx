@@ -4,7 +4,6 @@ import { ApiError } from "@/api/client";
 import { AuthProvider } from "@/auth/AuthProvider";
 import { RequireAdmin, RequireAuth } from "@/auth/guards";
 import { Layout } from "@/components/Layout";
-import { TokenModal } from "@/components/TokenModal";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { NotFound } from "@/components/NotFound";
 import { RunsList } from "@/pages/RunsList";
@@ -82,7 +81,6 @@ export function App() {
       <TooltipProvider>
         <AuthProvider>
           <RouterProvider router={router} />
-          <TokenModal />
         </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>

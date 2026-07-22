@@ -1,11 +1,58 @@
-import { useState } from "react";
-import { NavLink, Navigate, Outlet, useLocation } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import {
+  NavLink,
+  Navigate,
+  Outlet,
+  useLocation,
+  useNavigate,
+} from "react-router";
 import { useMeta } from "@/api/queries";
 import { isMockEnabled } from "@/api/client";
 import { useAuth } from "@/auth/AuthProvider";
+import { onUnauthorized } from "@/lib/auth";
 import { cn } from "@/lib/cn";
 import { Button } from "./ui/Button";
 import { ThemeToggleButton } from "./ThemeToggle";
+
+/**
+ * Router-scoped bridge from the app-wide 401 signal to a login redirect.
+ *
+ * The 401 bus (`onUnauthorized`) lives outside React Router — it is fired from
+ * the fetch wrapper and consumed by `AuthProvider`, which sits above
+ * `RouterProvider`. This hook runs inside the router (Layout is the `/` route
+ * element, mounted on every page), so it can turn an unhandled 401 into a
+ * `navigate("/login")` in ANY auth mode — replacing the old token-paste modal.
+ *
+ * It complements, not duplicates, `RequireAuth`: that gate redirects when an
+ * anonymous visitor lands directly on a closed-mode route (no request has 401'd
+ * yet); this hook redirects when a request actually comes back 401 (an expired
+ * session, or a protected action in open/protect-writes mode). The attempted
+ * location rides along as `from` so login can restore the deep link.
+ */
+function useUnauthorizedRedirect(): void {
+  const navigate = useNavigate();
+  const location = useLocation();
+  // Mirror the live location into a ref so the once-registered listener always
+  // sees the current page without re-subscribing on every navigation.
+  const locationRef = useRef(location);
+  useEffect(() => {
+    locationRef.current = location;
+  }, [location]);
+
+  useEffect(
+    () =>
+      onUnauthorized(() => {
+        const current = locationRef.current;
+        // Already on a public auth page — nothing to redirect to (and their
+        // own requests never 401 anyway), so avoid a self-navigation loop.
+        if (current.pathname === "/login" || current.pathname === "/setup") {
+          return;
+        }
+        void navigate("/login", { replace: true, state: { from: current } });
+      }),
+    [navigate],
+  );
+}
 
 interface NavItem {
   to: string;
@@ -64,6 +111,9 @@ export function Layout() {
   const meta = useMeta();
   const { view } = useAuth();
   const location = useLocation();
+
+  // Turn any unhandled 401 into a redirect to /login (all auth modes).
+  useUnauthorizedRedirect();
 
   // First-run gate: force the setup flow until an admin exists.
   if (view.setupRequired && location.pathname !== "/setup") {
