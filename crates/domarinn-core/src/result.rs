@@ -113,22 +113,33 @@ pub struct AssertResult {
 }
 
 /// The result of one matrix cell.
+///
+/// The web UI receives this document verbatim from `GET /runs/{id}/cases/{key}`
+/// (the stored blob, not a re-derived DTO), so every `skip_serializing_if`
+/// here means "key absent on the wire". Field-level `#[ts(optional)]` is used
+/// instead of struct-level `#[ts(optional_fields)]` because the struct-level
+/// form only marks `Option` fields and would emit `tags` as required even
+/// though it is skipped when empty; without it, ts-rs's serde-aware fallback
+/// (`default` + `skip_serializing_if`) marks `tags` optional too.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(optional_fields)]
 pub struct CaseResult {
     pub cell: CellKey,
     pub case_key: CaseKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     pub status: CaseStatus,
     pub score: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub output: Option<Output>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub prompt: Option<RenderedPrompt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub stop_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "unknown")]
@@ -136,8 +147,10 @@ pub struct CaseResult {
     #[serde(default)]
     pub asserts: Vec<AssertResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub usage: Option<TokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub cost_usd: Option<f64>,
     pub latency_ms: u64,
     #[serde(default)]
@@ -145,6 +158,7 @@ pub struct CaseResult {
     #[serde(default)]
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error: Option<String>,
 }
 

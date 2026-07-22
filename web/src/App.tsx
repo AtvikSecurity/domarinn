@@ -6,6 +6,7 @@ import { RequireAdmin, RequireAuth } from "@/auth/guards";
 import { Layout } from "@/components/Layout";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { NotFound } from "@/components/NotFound";
+import { RouteError } from "@/components/RouteError";
 import { RunsList } from "@/pages/RunsList";
 import { RunDetail } from "@/pages/RunDetail";
 import { ComparePage } from "@/pages/ComparePage";
@@ -36,6 +37,9 @@ const router = createBrowserRouter([
   {
     path: "/",
     element: <Layout />,
+    // Last-resort boundary: also catches errors thrown by Layout itself, so
+    // it renders without the app chrome.
+    errorElement: <RouteError />,
     children: [
       // Public: the only pages an unauthenticated visitor may reach in
       // closed mode. Both keep their own setup/session redirects.
@@ -47,6 +51,9 @@ const router = createBrowserRouter([
       // not exist.
       {
         element: <RequireAuth />,
+        // Page-level crashes render inside Layout's Outlet, keeping the
+        // header and navigation usable.
+        errorElement: <RouteError />,
         children: [
           { index: true, element: <RunsList /> },
           { path: "runs/:id", element: <RunDetail /> },

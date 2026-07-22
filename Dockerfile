@@ -1,20 +1,28 @@
 # syntax=docker/dockerfile:1
 #
-# domarinn — multi-stage build producing a tiny, fully static image.
+# domarinn — multi-stage build producing a small, mostly-static image.
 #
 #   stage 1 (web)      build the React/Vite UI  -> web/dist
-#   stage 2 (cdeps)    build static openssl/libxml2/xmlsec1 for musl
-#   stage 3 (builder)  compile the static musl binary, embedding web/dist
-#   stage 4 (runtime)  distroless/static, binary-only, its own healthcheck
+#   stage 2 (cdeps)    build static openssl/libxml2/xmlsec1 (native glibc)
+#   stage 3 (builder)  compile the binary, embedding web/dist
+#   stage 4 (runtime)  distroless/cc, binary-only, its own healthcheck
 #
-# The result is a single ~self-contained binary on a scratch-like base: no
-# shell, no libc, no package manager, nothing to CVE-scan but the binary.
+# The binary statically links every C dependency (openssl, libxml2, xmlsec1,
+# bundled SQLite) and dynamically links ONLY glibc, which distroless/cc
+# provides. The CVE surface is the binary plus distroless's glibc/libgcc,
+# patched by rebasing on base-image updates (Renovate watches the tags).
 #
 # SAML support (the `saml` cargo feature) needs samael's xmlsec backend, which
-# links libxmlsec1/libxml2/openssl at build time. Those have no static musl
-# packages on Alpine, and bindgen cannot dlopen libclang from a static-musl
-# host — so the builder runs on glibc (Debian) and cross-compiles to musl,
-# with the three C libraries built statically from pinned tarballs.
+# links libxmlsec1/libxml2/openssl at build time. Those are built from pinned
+# tarballs rather than apt because Debian only packages xmlsec 1.2.x (bookworm
+# 1.2.37, trixie 1.2.41) and samael needs 1.3.x (issue #82: 1.2.3x breaks its
+# ID registration), and because our libxml2 is configured minimal (no
+# zlib/lzma/http), dropping whole attack-surface classes Debian's build keeps.
+#
+# History: this used to be a fully-static musl cross-build on distroless/
+# static. The musl-gcc cross machinery (kernel-header symlinks, stub archive
+# workarounds, per-arch casing) cost more than the ~22MB of glibc base image
+# it saved; a native glibc build needs none of it.
 
 # ---------------------------------------------------------------------------
 # Stage 1: build the web UI. Vite emits static assets into web/dist, which the
@@ -37,61 +45,42 @@ RUN pnpm -C web install --frozen-lockfile || pnpm -C web install
 RUN pnpm -C web build
 
 # ---------------------------------------------------------------------------
-# Stage 2: build static OpenSSL + libxml2 + xmlsec1 against musl.
+# Stage 2: build static OpenSSL + libxml2 + xmlsec1, native glibc.
 #
 # Pinned tarball versions (bump + rebuild on upstream security releases;
 # Renovate watches the ARGs). xmlsec is pinned to 1.3.x — samael issue #82
-# reports 1.2.3x breaks its ID registration. All three are built with musl-gcc
-# and installed into $MUSL_PREFIX; the builder stage links them statically.
+# reports 1.2.3x breaks its ID registration. Static archives only; the
+# builder stage links them into the binary. Native builds, so ./config //
+# ./configure autodetect the platform — the same Dockerfile serves amd64 and
+# arm64 without cross-compile casing.
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS cdeps
-ARG TARGETARCH
 ARG OPENSSL_VER=3.5.1
 ARG LIBXML2_VER=2.13.5
 ARG XMLSEC_VER=1.3.7
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    musl-tools musl-dev linux-libc-dev make perl pkg-config curl ca-certificates xz-utils \
+    gcc libc6-dev make perl pkg-config curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Debian's `musl-gcc` wrapper does not put the Linux kernel headers
-# (linux/*, asm/*, asm-generic/*) on musl's include path, so anything using
-# them (OpenSSL's mem_sec.c, …) fails to compile. Symlink them from
-# linux-libc-dev into musl's include dir. Arch-aware for amd64 + arm64.
-RUN set -eux; \
-    case "$TARGETARCH" in \
-      amd64) MUSL_TRIPLE=x86_64-linux-musl; GNU_TRIPLE=x86_64-linux-gnu ;; \
-      arm64) MUSL_TRIPLE=aarch64-linux-musl; GNU_TRIPLE=aarch64-linux-gnu ;; \
-      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    ln -sf /usr/include/linux "/usr/include/${MUSL_TRIPLE}/linux"; \
-    ln -sf /usr/include/asm-generic "/usr/include/${MUSL_TRIPLE}/asm-generic"; \
-    ln -sf "/usr/include/${GNU_TRIPLE}/asm" "/usr/include/${MUSL_TRIPLE}/asm"
-
-ENV MUSL_PREFIX=/usr/local/musl
-ENV CC=musl-gcc
-ENV PKG_CONFIG_PATH=${MUSL_PREFIX}/lib/pkgconfig
-ENV PATH=${MUSL_PREFIX}/bin:${PATH}
+ENV CDEPS_PREFIX=/usr/local/cdeps
+ENV PKG_CONFIG_PATH=${CDEPS_PREFIX}/lib/pkgconfig
+ENV PATH=${CDEPS_PREFIX}/bin:${PATH}
 WORKDIR /build
 
 # 1. OpenSSL — no shared libs, no engines/dso; the same install feeds both
 #    xmlsec1's configure and the Rust build's OPENSSL_DIR.
-RUN case "$TARGETARCH" in \
-      amd64) OSSL_TARGET=linux-x86_64 ;; \
-      arm64) OSSL_TARGET=linux-aarch64 ;; \
-      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac && \
-    curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VER}/openssl-${OPENSSL_VER}.tar.gz" -o openssl.tar.gz && \
+RUN curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VER}/openssl-${OPENSSL_VER}.tar.gz" -o openssl.tar.gz && \
     tar xf openssl.tar.gz && cd "openssl-${OPENSSL_VER}" && \
-    ./Configure "$OSSL_TARGET" no-shared no-dso no-engine no-tests \
-      --prefix="$MUSL_PREFIX" --openssldir="$MUSL_PREFIX/ssl" --libdir=lib && \
+    ./config no-shared no-dso no-engine no-tests \
+      --prefix="$CDEPS_PREFIX" --openssldir="$CDEPS_PREFIX/ssl" --libdir=lib && \
     make -j"$(nproc)" && make install_sw && cd .. && rm -rf "openssl-${OPENSSL_VER}" openssl.tar.gz
 
 # 2. libxml2 — minimal: no python/zlib/lzma/http, kills large attack-surface
 #    classes we never touch. Static only.
 RUN curl -fsSL "https://download.gnome.org/sources/libxml2/${LIBXML2_VER%.*}/libxml2-${LIBXML2_VER}.tar.xz" -o libxml2.tar.xz && \
     tar xf libxml2.tar.xz && cd "libxml2-${LIBXML2_VER}" && \
-    ./configure --host="$(${CC} -dumpmachine)" --prefix="$MUSL_PREFIX" \
+    ./configure --prefix="$CDEPS_PREFIX" \
       --enable-static --disable-shared \
       --without-python --without-zlib --without-lzma --without-http && \
     make -j"$(nproc)" && make install && cd .. && rm -rf "libxml2-${LIBXML2_VER}" libxml2.tar.xz
@@ -100,76 +89,41 @@ RUN curl -fsSL "https://download.gnome.org/sources/libxml2/${LIBXML2_VER%.*}/lib
 #    no XSLT (removes the entire XSLT-transform class), OpenSSL only.
 RUN curl -fsSL "https://github.com/lsh123/xmlsec/releases/download/${XMLSEC_VER}/xmlsec1-${XMLSEC_VER}.tar.gz" -o xmlsec1.tar.gz && \
     tar xf xmlsec1.tar.gz && cd "xmlsec1-${XMLSEC_VER}" && \
-    ./configure --host="$(${CC} -dumpmachine)" --prefix="$MUSL_PREFIX" \
+    ./configure --prefix="$CDEPS_PREFIX" \
       --enable-static --disable-shared --enable-crypto-dl=no \
-      --without-libxslt --without-gnutls --without-nss --with-openssl="$MUSL_PREFIX" \
+      --without-libxslt --without-gnutls --without-nss --with-openssl="$CDEPS_PREFIX" \
       --disable-apps --disable-docs && \
     make -j"$(nproc)" && make install && cd .. && rm -rf "xmlsec1-${XMLSEC_VER}" xmlsec1.tar.gz
 
-# 4. Empty stub archives, mirroring upstream musl's install. musl folds
-#    libm/libdl/libpthread/librt into libc.a and ships empty stubs so stray
-#    `-lm` etc. resolve harmlessly. Our from-source prefix lacks them, and the
-#    builder stage links via the host *glibc* cc driver, so xmlsec1/libxml2's
-#    pkg-config `-lm` would otherwise fall through to glibc's static libm —
-#    undefined refs to _dl_x86_cpu_features/errno at link time.
-RUN for lib in m dl pthread rt; do ar rcs "${MUSL_PREFIX}/lib/lib${lib}.a"; done
-
 # ---------------------------------------------------------------------------
-# Stage 3: compile the static CLI/server binary against musl (glibc host).
+# Stage 3: compile the CLI/server binary, native glibc.
 #
 # Toolchain notes:
-#   * A glibc host so bindgen (samael's build script) can dlopen libclang —
-#     impossible from a static-musl host (samael issue #37).
-#   * musl-tools provides musl-gcc for the musl target; rusqlite's `bundled`
-#     SQLite and ring compile with it via the CC_<target> env below.
+#   * clang/libclang for bindgen (samael's build script).
 #   * The rustls crypto provider must stay pinned to `ring` (never aws-lc-rs)
 #     to avoid cmake + arm64 pain; verify with `cargo tree`. The static
 #     OpenSSL from stage 2 enters ONLY via samael and coexists with ring
 #     (ring 0.17 prefixes its symbols).
+#   * rusqlite's `bundled` SQLite compiles natively with the host gcc.
 # ---------------------------------------------------------------------------
 FROM rust:1-bookworm AS builder
-ARG TARGETARCH
 WORKDIR /src
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    musl-tools musl-dev linux-libc-dev clang libclang-dev make perl pkg-config \
+    clang libclang-dev make perl pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Same kernel-header symlink fix as the cdeps stage (rusqlite's bundled SQLite
-# and ring compile with musl-gcc here too).
-RUN set -eux; \
-    case "$TARGETARCH" in \
-      amd64) MUSL_TRIPLE=x86_64-linux-musl; GNU_TRIPLE=x86_64-linux-gnu ;; \
-      arm64) MUSL_TRIPLE=aarch64-linux-musl; GNU_TRIPLE=aarch64-linux-gnu ;; \
-      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    ln -sf /usr/include/linux "/usr/include/${MUSL_TRIPLE}/linux"; \
-    ln -sf /usr/include/asm-generic "/usr/include/${MUSL_TRIPLE}/asm-generic"; \
-    ln -sf "/usr/include/${GNU_TRIPLE}/asm" "/usr/include/${MUSL_TRIPLE}/asm"
-
-# The musl target for this platform.
-RUN case "$TARGETARCH" in \
-      amd64) echo x86_64-unknown-linux-musl ;; \
-      arm64) echo aarch64-unknown-linux-musl ;; \
-      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac > /tmp/target && rustup target add "$(cat /tmp/target)"
-
 # The static C libs built in stage 2.
-COPY --from=cdeps /usr/local/musl /usr/local/musl
+COPY --from=cdeps /usr/local/cdeps /usr/local/cdeps
 
-ENV MUSL_PREFIX=/usr/local/musl
-ENV PKG_CONFIG_PATH=${MUSL_PREFIX}/lib/pkgconfig
+ENV CDEPS_PREFIX=/usr/local/cdeps
+ENV PKG_CONFIG_PATH=${CDEPS_PREFIX}/lib/pkgconfig
 ENV PKG_CONFIG_ALL_STATIC=1
-ENV PKG_CONFIG_ALLOW_CROSS=1
-ENV OPENSSL_DIR=${MUSL_PREFIX}
+ENV OPENSSL_DIR=${CDEPS_PREFIX}
 ENV OPENSSL_STATIC=1
 # xmlsec1-config on PATH so samael's build script finds it and emits static
 # link directives (it branches on the absence of XMLSEC_CRYPTO_DYNAMIC_LOADING).
-ENV PATH=${MUSL_PREFIX}/bin:${PATH}
-# musl-gcc as the cross C compiler for both musl targets (only one is active
-# per build, matching the target selected above).
-ENV CC_x86_64_unknown_linux_musl=musl-gcc
-ENV CC_aarch64_unknown_linux_musl=musl-gcc
+ENV PATH=${CDEPS_PREFIX}/bin:${PATH}
 
 # Copy the workspace. Cargo.lock is copied so the release build is reproducible.
 COPY Cargo.toml Cargo.lock ./
@@ -178,23 +132,27 @@ COPY crates/ ./crates/
 COPY --from=web /app/web/dist ./web/dist
 
 # Build only the CLI binary (it pulls in core + cache + server) with SAML on.
+# The gate asserts every C dependency linked statically: the only dynamic
+# libraries allowed are glibc's own (libc/libm/libgcc_s + the loader), which
+# distroless/cc provides. A stray libxml2/libssl/libxmlsec `=>` line fails
+# the build.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    TARGET="$(cat /tmp/target)" && \
-    cargo build --release --target "$TARGET" --features saml -p domarinn-cli && \
-    cp "target/${TARGET}/release/domarinn" /domarinn && \
-    # Fail the build if the binary is not fully static.
-    ! ldd /domarinn 2>/dev/null | grep -q '=>' && echo "static OK"
+    cargo build --release --features saml -p domarinn-cli && \
+    cp target/release/domarinn /domarinn && \
+    ldd /domarinn && \
+    ! ldd /domarinn | grep '=>' | grep -vE '/lib(c|m|gcc_s)\.so|ld-linux|linux-vdso' && \
+    echo "glibc-only OK"
 
 # Empty dir that becomes the runtime image's /data mountpoint. It has to be
 # made here: distroless has no shell, so the runtime stage can only COPY it in.
 RUN mkdir -p /data
 
 # ---------------------------------------------------------------------------
-# Stage 4: runtime. distroless/static has no shell and no libc — a static musl
-# binary runs directly, and the binary is its own healthcheck probe.
+# Stage 4: runtime. distroless/cc has glibc (and nothing else — no shell, no
+# package manager); its debian12 tag matches the bookworm builder's glibc.
 # ---------------------------------------------------------------------------
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 COPY --from=builder /domarinn /domarinn
 

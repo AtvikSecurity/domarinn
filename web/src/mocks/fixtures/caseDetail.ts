@@ -92,7 +92,9 @@ export function caseDetail(runId: string, caseKey: string): CaseResult | undefin
     },
     case_key: row.case_key,
     name: row.name,
-    tags: row.tags,
+    // Like the server: `tags` is `skip_serializing_if = "Vec::is_empty"`, so
+    // an untagged case has no `tags` key at all.
+    ...(row.tags.length > 0 ? { tags: row.tags } : {}),
     status: row.status,
     score,
     output: fullOutput(meta, row.seed, row.status),

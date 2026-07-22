@@ -9,5 +9,13 @@ import type { TokenUsage } from "./TokenUsage";
 
 /**
  * The result of one matrix cell.
+ *
+ * The web UI receives this document verbatim from `GET /runs/{id}/cases/{key}`
+ * (the stored blob, not a re-derived DTO), so every `skip_serializing_if`
+ * here means "key absent on the wire". Field-level `#[ts(optional)]` is used
+ * instead of struct-level `#[ts(optional_fields)]` because the struct-level
+ * form only marks `Option` fields and would emit `tags` as required even
+ * though it is skipped when empty; without it, ts-rs's serde-aware fallback
+ * (`default` + `skip_serializing_if`) marks `tags` optional too.
  */
-export type CaseResult = { cell: CellKey, case_key: CaseKey, name?: string, tags: Array<string>, status: CaseStatus, score: number, output?: Output, prompt?: RenderedPrompt, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };
+export type CaseResult = { cell: CellKey, case_key: CaseKey, name?: string, tags?: Array<string>, status: CaseStatus, score: number, output?: Output, prompt?: RenderedPrompt, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };

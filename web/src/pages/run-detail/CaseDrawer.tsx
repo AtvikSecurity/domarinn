@@ -74,7 +74,7 @@ export function CaseDrawer({
               <div className="space-y-5">
                 <div className="flex flex-wrap items-center gap-2">
                   <StatusBadge status={detail.data.status} />
-                  {detail.data.tags.map((t) => (
+                  {(detail.data.tags ?? []).map((t) => (
                     <span
                       key={t}
                       className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted"

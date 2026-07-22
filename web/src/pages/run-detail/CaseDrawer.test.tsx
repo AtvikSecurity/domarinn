@@ -219,6 +219,64 @@ describe("CaseDrawer baseline-diff section", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The case-detail endpoint returns the *stored* CaseResult blob verbatim, and
+// the runner serializes with `skip_serializing_if`, so keys like `tags` (empty
+// vec), `cost_usd`, and `error` are simply absent — not null, not []. The
+// drawer must render such a blob without throwing (regression: every untagged
+// case crashed the whole route with "Cannot read properties of undefined").
+// ---------------------------------------------------------------------------
+
+describe("CaseDrawer with a lean stored blob", () => {
+  beforeEach(() => {
+    mockUseCaseDetail.mockReset();
+    mockUseSuites.mockReset();
+    mockUseCaseHistory.mockReset();
+    mockUseCaseHistory.mockReturnValue(idleHistory());
+    setSuites(null);
+  });
+
+  it("renders a blob whose serde-skipped keys (tags, cost_usd, error) are absent", () => {
+    mockUseCaseDetail.mockReturnValue({
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: () => {},
+      // Mirrors a real `GET /runs/{id}/cases/{key}` body for an untagged case:
+      // no `tags`, `cost_usd`, or `error` keys at all.
+      data: {
+        cell: { provider_id: "qwen", prompt_id: "qa", test_id: "capital/germany", repeat: 0 },
+        case_key: CASE,
+        name: "capital/germany",
+        status: "pass",
+        score: 1,
+        output: "Berlin",
+        stop_reason: "stop",
+        asserts: [
+          {
+            kind: "icontains",
+            status: "pass",
+            score: 1,
+            weight: 1,
+            reason: 'output contains "Berlin" (case-insensitive)',
+            cached: false,
+          },
+        ],
+        usage: { input_tokens: 26, output_tokens: 158 },
+        latency_ms: 28,
+        cached: true,
+        attempts: 0,
+      },
+    } as unknown as CaseDetail);
+
+    renderDrawer();
+
+    expect(screen.getByText("Output")).toBeInTheDocument();
+    expect(screen.getByText("Berlin")).toBeInTheDocument();
+    expect(screen.getByText(/output contains "Berlin"/)).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema-v2 drawer sections: rendered prompt, stop_reason chip, raw metadata.
 // The baseline is pinned to null throughout so the diff section stays hidden and
 // only the v2 affordances are under test.
