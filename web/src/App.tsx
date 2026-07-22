@@ -10,6 +10,7 @@ import { RouteError } from "@/components/RouteError";
 import { RunsList } from "@/pages/RunsList";
 import { RunDetail } from "@/pages/RunDetail";
 import { ComparePage } from "@/pages/ComparePage";
+import { SearchPage } from "@/pages/SearchPage";
 import { CacheStatsPage } from "@/pages/CacheStatsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { LoginPage } from "@/pages/LoginPage";
@@ -64,6 +65,7 @@ const router = createBrowserRouter([
           // navigating (see RunsList/RunDetail) and 404 via the catch-all
           // below otherwise.
           { path: "runs/:id/compare/:other", element: <ComparePage /> },
+          { path: "search", element: <SearchPage /> },
           { path: "cache", element: <CacheStatsPage /> },
           { path: "settings", element: <SettingsPage /> },
           { path: "keys", element: <KeysPage /> },

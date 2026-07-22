@@ -64,6 +64,16 @@ impl Storage {
             .write(move |conn| {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 let n = tx.execute("DELETE FROM runs WHERE id = ?1", params![id.as_str()])?;
+                // FTS virtual tables have no FK cascade; drop the search rows
+                // in the same transaction.
+                tx.execute(
+                    "DELETE FROM runs_fts WHERE run_id = ?1",
+                    params![id.as_str()],
+                )?;
+                tx.execute(
+                    "DELETE FROM cases_fts WHERE run_id = ?1",
+                    params![id.as_str()],
+                )?;
                 tx.commit()?;
                 Ok(n > 0)
             })
@@ -103,6 +113,10 @@ struct PreparedCase {
     score: f64,
     stop_reason: Option<String>,
     tags: Vec<String>,
+    // Search-index text that has no `cases` column of its own (`cases_fts`
+    // is written in the same transaction; see `storage::search`).
+    prompt_text: Option<String>,
+    error: Option<String>,
 }
 
 struct PreparedRun {
@@ -189,6 +203,8 @@ impl PreparedRun {
                 score: case.score,
                 stop_reason: case.stop_reason.clone(),
                 tags: case.tags.clone(),
+                prompt_text: case.prompt.as_ref().map(super::search::flatten_prompt),
+                error: case.error.clone(),
             });
         }
 
@@ -330,7 +346,35 @@ impl PreparedRun {
                     params![self.id, case.case_key, tag],
                 )?;
             }
+            super::search::index_case(
+                &tx,
+                &super::search::CaseFtsRow {
+                    run_id: &self.id,
+                    case_key: &case.case_key,
+                    name: case.name.as_deref(),
+                    prompt_text: case.prompt_text.as_deref(),
+                    output_text: case.output_text.as_deref(),
+                    error: case.error.as_deref(),
+                    tags: &case.tags,
+                },
+            )?;
         }
+
+        super::search::index_run(
+            &tx,
+            &super::search::RunFtsRow {
+                run_id: &self.id,
+                project: self.project.as_deref(),
+                suite: self.suite.as_deref(),
+                branch: self.git_branch.as_deref(),
+                commit: self.git_commit.as_deref(),
+                // `runs.description` is not part of the upload document today;
+                // it is inserted NULL above. Indexed anyway so it becomes
+                // searchable the moment ingest starts populating it.
+                description: None,
+                tags: &self.tags,
+            },
+        )?;
 
         tx.commit()?;
         Ok(IngestOutcome::Created)

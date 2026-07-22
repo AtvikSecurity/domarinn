@@ -42,12 +42,13 @@ export function BaselineDiffSection({
   // hook order stays stable across renders.
   const show = !!baselineRunId && baselineRunId !== runId;
 
-  const [expanded, setExpanded] = useState(false);
+  // Expanded (and therefore fetching) by default, like every drawer section.
+  const [expanded, setExpanded] = useState(true);
   const [mode, setMode] = useState<DiffMode>("side");
 
-  // Enabled gate: the baseline case is not fetched until the section is
-  // expanded. The query key is unchanged, so it shares cache with any other
-  // reader of the same (baselineRunId, caseKey).
+  // Enabled gate: the baseline case is not fetched while the section is
+  // tucked away (or hidden). The query key is unchanged, so it shares cache
+  // with any other reader of the same (baselineRunId, caseKey).
   const baseline = useCaseDetail(baselineRunId ?? "", caseKey, {
     enabled: expanded && show,
   });

@@ -33,6 +33,8 @@ const RUN_CHUNK: i64 = 100;
 pub(super) fn run(conn: &mut Connection) -> anyhow::Result<()> {
     backfill_cases(conn)?;
     backfill_runs(conn)?;
+    // FTS index for rows that predate migration 5 (see `storage::search`).
+    super::search::backfill(conn)?;
     Ok(())
 }
 

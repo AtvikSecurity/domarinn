@@ -78,9 +78,8 @@ describe("CaseHistorySection", () => {
     mockUseCaseHistory.mockReset();
   });
 
-  it("defers the fetch until expanded (enabled gating)", async () => {
+  it("fetches immediately (expanded by default) and disables when tucked away", async () => {
     const user = userEvent.setup();
-    // Collapsed: a disabled query (react-query reports pending + idle).
     mockUseCaseHistory.mockReturnValue({
       isPending: true,
       isError: false,
@@ -88,26 +87,23 @@ describe("CaseHistorySection", () => {
     } as unknown as HistoryResult);
     renderSection();
 
+    // Expanded from the first render: the window query fires right away.
     const toggle = screen.getByRole("button", { name: "History" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    // Wired but disabled — no square rendered, and every call is enabled:false.
-    expect(squareRunIds()).toHaveLength(0);
-    expect(mockUseCaseHistory.mock.calls.length).toBeGreaterThan(0);
-    expect(
-      mockUseCaseHistory.mock.calls.every((c) => c[3]?.enabled === false),
-    ).toBe(true);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const firstCall = mockUseCaseHistory.mock.calls.at(-1)!;
+    expect(firstCall[3]?.enabled).toBe(true);
+    expect(firstCall[3]?.limit).toBe(20);
 
     await user.click(toggle);
 
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    // Now enabled, with the fixed 20-run window.
+    // Collapsed: content unmounts and the query is disabled, not refetching.
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(squareRunIds()).toHaveLength(0);
     const lastCall = mockUseCaseHistory.mock.calls.at(-1)!;
-    expect(lastCall[3]?.enabled).toBe(true);
-    expect(lastCall[3]?.limit).toBe(20);
+    expect(lastCall[3]?.enabled).toBe(false);
   });
 
-  it("renders squares oldest→newest, reversing the newest-first payload", async () => {
-    const user = userEvent.setup();
+  it("renders squares oldest→newest, reversing the newest-first payload", () => {
     // Payload newest-first: run-03 (current) → run-02 → run-01.
     mockUseCaseHistory.mockReturnValue(
       loaded([
@@ -118,14 +114,11 @@ describe("CaseHistorySection", () => {
     );
     renderSection();
 
-    await user.click(screen.getByRole("button", { name: "History" }));
-
     // Displayed left-to-right oldest→newest — the reverse of the payload.
     expect(squareRunIds()).toEqual(["run-01", "run-02", "run-03"]);
   });
 
-  it("ring-highlights the current run's square and marks the baseline", async () => {
-    const user = userEvent.setup();
+  it("ring-highlights the current run's square and marks the baseline", () => {
     mockUseCaseHistory.mockReturnValue(
       loaded([
         point({ run_id: CURRENT }),
@@ -134,7 +127,6 @@ describe("CaseHistorySection", () => {
       ]),
     );
     renderSection();
-    await user.click(screen.getByRole("button", { name: "History" }));
 
     // Exactly one square is flagged current, and it is the drawer's run.
     const current = document.querySelectorAll('[data-history-square][data-current="true"]');
@@ -150,13 +142,11 @@ describe("CaseHistorySection", () => {
     ).toBe(BASELINE);
   });
 
-  it("each square deep-links to the same case in that run", async () => {
-    const user = userEvent.setup();
+  it("each square deep-links to the same case in that run", () => {
     mockUseCaseHistory.mockReturnValue(
       loaded([point({ run_id: CURRENT }), point({ run_id: BASELINE })]),
     );
     renderSection();
-    await user.click(screen.getByRole("button", { name: "History" }));
 
     const baselineLink = document.querySelector(
       `[data-history-square][data-run-id="${BASELINE}"]`,
@@ -166,8 +156,7 @@ describe("CaseHistorySection", () => {
     );
   });
 
-  it("shows a changed marker only under runs whose output_changed is true", async () => {
-    const user = userEvent.setup();
+  it("shows a changed marker only under runs whose output_changed is true", () => {
     // newest-first: run-03 changed, run-02 unchanged, run-01 oldest (null).
     mockUseCaseHistory.mockReturnValue(
       loaded([
@@ -177,7 +166,6 @@ describe("CaseHistorySection", () => {
       ]),
     );
     renderSection();
-    await user.click(screen.getByRole("button", { name: "History" }));
 
     const markers = document.querySelectorAll("[data-output-changed]");
     expect(markers).toHaveLength(1);
@@ -188,8 +176,7 @@ describe("CaseHistorySection", () => {
     ).toBe("run-03");
   });
 
-  it("renders the score sparkline only when ≥2 points carry a score", async () => {
-    const user = userEvent.setup();
+  it("renders the score sparkline only when ≥2 points carry a score", () => {
 
     // Only one scored point (the other is null) — no sparkline.
     mockUseCaseHistory.mockReturnValue(
@@ -199,7 +186,6 @@ describe("CaseHistorySection", () => {
       ]),
     );
     const { unmount } = renderSection();
-    await user.click(screen.getByRole("button", { name: "History" }));
     expect(screen.queryByRole("img", { name: "Score trend" })).not.toBeInTheDocument();
     unmount();
 
@@ -211,12 +197,10 @@ describe("CaseHistorySection", () => {
       ]),
     );
     renderSection();
-    await user.click(screen.getByRole("button", { name: "History" }));
     expect(screen.getByRole("img", { name: "Score trend" })).toBeInTheDocument();
   });
 
-  it("summarizes the window as N runs · M output changes", async () => {
-    const user = userEvent.setup();
+  it("summarizes the window as N runs · M output changes", () => {
     mockUseCaseHistory.mockReturnValue(
       loaded([
         point({ run_id: "run-03", output_changed: true }),
@@ -225,20 +209,17 @@ describe("CaseHistorySection", () => {
       ]),
     );
     renderSection();
-    await user.click(screen.getByRole("button", { name: "History" }));
 
     expect(screen.getByText("3 runs · 2 output changes")).toBeInTheDocument();
   });
 
-  it("shows a muted message on error", async () => {
-    const user = userEvent.setup();
+  it("shows a muted message on error", () => {
     mockUseCaseHistory.mockReturnValue({
       isPending: false,
       isError: true,
       data: undefined,
     } as unknown as HistoryResult);
     renderSection();
-    await user.click(screen.getByRole("button", { name: "History" }));
 
     expect(screen.getByText("Case history is unavailable.")).toBeInTheDocument();
     expect(squareRunIds()).toHaveLength(0);

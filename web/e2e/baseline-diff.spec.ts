@@ -12,14 +12,11 @@ test.describe("Case drawer baseline diff", () => {
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
 
-    // The section header names the (short-form) baseline run and starts collapsed.
+    // The section header names the (short-form) baseline run and is expanded
+    // by default — the baseline case is fetched and the diff renders directly.
     const toggle = drawer.getByRole("button", { name: /Diff vs baseline/ });
     await expect(toggle).toBeVisible();
     await expect(toggle).toHaveText(new RegExp(MONEY_RUN_BASELINE));
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
-
-    // Expand -> the baseline case is fetched and the side-by-side diff renders.
-    await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
 
     const sidePane = drawer.locator('[data-diff-mode="side"]');

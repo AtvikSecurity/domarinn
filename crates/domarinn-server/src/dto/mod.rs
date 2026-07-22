@@ -23,6 +23,7 @@
 //! * [`projects`] — projects, suites, and the suite pass-rate series.
 //! * [`cache`] — cache stats and prune responses.
 //! * [`meta`] — the `/api/v1/meta` response.
+//! * [`search`] — the `/api/v1/search` grouped full-text hits.
 
 pub mod accounts;
 pub mod cache;
@@ -34,3 +35,4 @@ pub mod matrix;
 pub mod meta;
 pub mod projects;
 pub mod runs;
+pub mod search;

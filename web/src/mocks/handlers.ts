@@ -260,6 +260,12 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
     }
   }
 
+  // GET /search
+  if (method === "GET" && seg[0] === "search" && seg.length === 1) {
+    const limit = Math.min(Math.max(Number(p.get("limit") ?? 20) || 20, 1), 50);
+    return json(fx.searchFixtures(p.get("q") ?? "", limit));
+  }
+
   // /runs...
   if (seg[0] === "runs") {
     // GET /runs

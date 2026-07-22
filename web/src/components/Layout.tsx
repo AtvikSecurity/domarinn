@@ -12,6 +12,7 @@ import { useAuth } from "@/auth/AuthProvider";
 import { onUnauthorized } from "@/lib/auth";
 import { cn } from "@/lib/cn";
 import { Button } from "./ui/Button";
+import { SearchBar } from "./SearchBar";
 import { ThemeToggleButton } from "./ThemeToggle";
 
 /**
@@ -161,6 +162,7 @@ export function Layout() {
               </NavLink>
             ))}
           </nav>
+          {chromeOnly ? null : <SearchBar />}
           <div className="ml-auto flex items-center gap-3">
             {isMockEnabled() ? (
               <span className="rounded-full bg-amber/12 px-2 py-0.5 text-[11px] font-medium text-amber ring-1 ring-inset ring-amber/25">

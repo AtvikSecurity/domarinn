@@ -19,6 +19,7 @@
 //! * [`history`] — one case's evolution across a suite's recent runs,
 //! * [`matrix`] — the per-run prompt × provider aggregate matrix,
 //! * [`projects`] — projects, suites, and baselines,
+//! * [`search`] — FTS5 full-text search over runs and cases,
 //! * [`cache`] — the content-addressed cache table, stats, and pruning.
 //!
 //! [`Storage`] is defined here; each submodule attaches its own `impl Storage`
@@ -49,6 +50,7 @@ mod matrix;
 mod projects;
 mod runs;
 mod schema;
+mod search;
 mod sso;
 
 pub use auth::{

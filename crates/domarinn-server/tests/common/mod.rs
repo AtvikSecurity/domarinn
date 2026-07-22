@@ -195,6 +195,8 @@ pub struct CaseSpec {
     pub asserts: Vec<(AssertName, AssertStatus)>,
     pub cost_usd: Option<f64>,
     pub latency_ms: u64,
+    pub rendered_prompt: Option<&'static str>,
+    pub error: Option<&'static str>,
 }
 
 impl CaseSpec {
@@ -210,7 +212,22 @@ impl CaseSpec {
             asserts: vec![(AssertName::Contains, AssertStatus::Pass)],
             cost_usd: Some(0.0025),
             latency_ms: 42,
+            rendered_prompt: None,
+            error: None,
         }
+    }
+
+    /// Set the case's rendered prompt to a text-style [`RenderedPrompt`]
+    /// (default: none).
+    pub fn rendered_prompt(mut self, text: &'static str) -> Self {
+        self.rendered_prompt = Some(text);
+        self
+    }
+
+    /// Set the case's provider error string (default: none).
+    pub fn error(mut self, error: &'static str) -> Self {
+        self.error = Some(error);
+        self
     }
 
     pub fn output(mut self, output: Option<&'static str>) -> Self {
@@ -291,7 +308,9 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
             0.0
         },
         output: spec.output.map(|o| Output::Text(o.to_string())),
-        prompt: None,
+        prompt: spec
+            .rendered_prompt
+            .map(|t| domarinn_core::types::RenderedPrompt::Text(t.to_string())),
         stop_reason: None,
         raw: None,
         asserts,
@@ -304,7 +323,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         latency_ms: spec.latency_ms,
         cached: false,
         attempts: 1,
-        error: None,
+        error: spec.error.map(str::to_string),
     }
 }
 

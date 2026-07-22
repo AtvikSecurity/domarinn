@@ -149,38 +149,35 @@ describe("CaseDrawer baseline-diff section", () => {
     expect(screen.queryByText(/Diff vs baseline/)).not.toBeInTheDocument();
   });
 
-  it("defers the baseline fetch until expanded (enabled gating)", async () => {
+  it("fetches the baseline immediately (expanded by default); collapsing disables it", async () => {
     const user = userEvent.setup();
     setSuites(BASELINE);
     setCaseDetail(baselineDetail("loading"));
     renderDrawer();
 
-    const toggle = screen.getByRole("button", { name: /Diff vs baseline/ });
-    // Collapsed: the baseline query is wired but disabled — no fetch fires.
+    // Expanded from the first render: the baseline query fires right away.
     expect(baselineCalls().length).toBeGreaterThan(0);
-    expect(baselineCalls().every((c) => c[2]?.enabled === false)).toBe(true);
-
-    await user.click(toggle);
-
-    // Expanded: the same query is now enabled.
-    expect(baselineCalls().some((c) => c[2]?.enabled === true)).toBe(true);
+    expect(baselineCalls().at(-1)?.[2]?.enabled).toBe(true);
     expect(screen.getByText("Loading baseline…")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Diff vs baseline/ }));
+
+    // Tucked away: the query is disabled again.
+    expect(baselineCalls().at(-1)?.[2]?.enabled).toBe(false);
+    expect(screen.queryByText("Loading baseline…")).not.toBeInTheDocument();
   });
 
-  it("shows a not-in-baseline message on a baseline 404", async () => {
-    const user = userEvent.setup();
+  it("shows a not-in-baseline message on a baseline 404", () => {
     setSuites(BASELINE);
     setCaseDetail(baselineDetail("error"));
     renderDrawer();
 
-    await user.click(screen.getByRole("button", { name: /Diff vs baseline/ }));
     expect(
       screen.getByText("This case does not exist in the baseline run."),
     ).toBeInTheDocument();
   });
 
-  it("shows the identical note when the outputs match", async () => {
-    const user = userEvent.setup();
+  it("shows the identical note when the outputs match", () => {
     setSuites(BASELINE);
     setCaseDetail(
       baselineDetail({ output: "same output" }),
@@ -188,7 +185,6 @@ describe("CaseDrawer baseline-diff section", () => {
     );
     renderDrawer();
 
-    await user.click(screen.getByRole("button", { name: /Diff vs baseline/ }));
     expect(screen.getByText("Output identical to baseline.")).toBeInTheDocument();
     // The identical note replaces the diff — no mode control is rendered.
     expect(
@@ -196,16 +192,13 @@ describe("CaseDrawer baseline-diff section", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("renders the diff and a full-compare link when the outputs differ", async () => {
-    const user = userEvent.setup();
+  it("renders the diff and a full-compare link when the outputs differ", () => {
     setSuites(BASELINE);
     setCaseDetail(
       baselineDetail({ output: "baseline output" }),
       currentDetail("current output"),
     );
     renderDrawer();
-
-    await user.click(screen.getByRole("button", { name: /Diff vs baseline/ }));
 
     expect(
       screen.getByRole("radiogroup", { name: "Diff mode" }),
@@ -321,8 +314,7 @@ describe("CaseDrawer schema-v2 sections", () => {
     setSuites(null);
   });
 
-  it("renders a messages-style prompt as role chips in order, on expand", async () => {
-    const user = userEvent.setup();
+  it("renders a messages-style prompt as role chips in order, expanded by default", () => {
     mockUseCaseDetail.mockReturnValue(
       v2Detail({
         prompt: {
@@ -336,11 +328,8 @@ describe("CaseDrawer schema-v2 sections", () => {
     renderDrawer();
 
     const toggle = screen.getByRole("button", { name: /Prompt/ });
-    // Header reflects the message count and the cards are collapsed initially.
+    // Header reflects the message count; the cards are visible immediately.
     expect(toggle).toHaveAccessibleName(/2 messages/);
-    expect(screen.queryByText("system")).not.toBeInTheDocument();
-
-    await user.click(toggle);
 
     const sys = screen.getByText("system");
     const usr = screen.getByText("user");
@@ -355,18 +344,15 @@ describe("CaseDrawer schema-v2 sections", () => {
     expect(screen.getByText(/resolve the empty cart/)).toBeInTheDocument();
   });
 
-  it("renders a text-style prompt with no role chips", async () => {
-    const user = userEvent.setup();
+  it("renders a text-style prompt with no role chips", () => {
     mockUseCaseDetail.mockReturnValue(
       v2Detail({ prompt: { text: "a single flattened prompt body" } }),
     );
     renderDrawer();
 
     const toggle = screen.getByRole("button", { name: /Prompt/ });
-    // No message count on a text prompt.
+    // No message count on a text prompt; the body is visible immediately.
     expect(toggle).toHaveAccessibleName(/^Prompt$/);
-    await user.click(toggle);
-
     expect(screen.getByText(/single flattened prompt body/)).toBeInTheDocument();
     expect(screen.queryByText("system")).not.toBeInTheDocument();
     expect(screen.queryByText("user")).not.toBeInTheDocument();
@@ -391,17 +377,17 @@ describe("CaseDrawer schema-v2 sections", () => {
     expect(chip).not.toHaveClass("text-amber");
   });
 
-  it("renders the raw provider-metadata section only when raw is present, as a JSON tree", async () => {
-    const user = userEvent.setup();
+  it("renders the raw provider-metadata section only when raw is present, as a JSON tree", () => {
     mockUseCaseDetail.mockReturnValue(
       v2Detail({ raw: { model: "gpt-4o-mini", finish_reason: "end_turn" } }),
     );
     renderDrawer();
 
-    const toggle = screen.getByRole("button", { name: /Provider metadata/ });
-    expect(toggle).toBeInTheDocument();
-    await user.click(toggle);
-    // JsonTree renders the object keys and its expand/collapse controls.
+    // Expanded by default: the JsonTree (keys + expand/collapse controls) is
+    // visible without clicking the section header.
+    expect(
+      screen.getByRole("button", { name: /Provider metadata/ }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/"model"/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Collapse all" }),

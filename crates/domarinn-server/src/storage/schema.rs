@@ -190,6 +190,22 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         );
         "#,
         ),
+        // Full-text search. Plain FTS5 tables (not external-content: prompt and
+        // error text exist only inside the compressed `cases.detail` blobs, so
+        // no content table has them). Ingest writes these rows in the same
+        // transaction as `cases`/`runs`; `delete_run` removes them explicitly
+        // (FTS tables have no FK cascade); the startup backfill indexes rows
+        // that predate this migration (`storage::search::backfill`).
+        M::up(
+            r#"
+        CREATE VIRTUAL TABLE runs_fts USING fts5(
+            run_id UNINDEXED, project, suite, branch, commit_sha, description, tags
+        );
+        CREATE VIRTUAL TABLE cases_fts USING fts5(
+            run_id UNINDEXED, case_key UNINDEXED, name, prompt, output, error, tags
+        );
+        "#,
+        ),
     ])
 }
 

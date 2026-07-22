@@ -538,6 +538,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     use crate::dto::meta::MetaResponse;
     use crate::dto::projects::{ProjectsResponse, SuitesResponse};
     use crate::dto::runs::{IngestResponse, RunDetailResponse, RunListResponse};
+    use crate::dto::search::SearchResponse;
     use crate::routes::BaselineBody;
 
     let cfg = Config::new().with_out_dir(dir).with_large_int("number");
@@ -556,6 +557,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     CacheStatsResponse::export_all(&cfg)?;
     PruneResponse::export_all(&cfg)?;
     MetaResponse::export_all(&cfg)?;
+    SearchResponse::export_all(&cfg)?;
     MeResponse::export_all(&cfg)?;
     AuthSessionResponse::export_all(&cfg)?;
     UserListResponse::export_all(&cfg)?;

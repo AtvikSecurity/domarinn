@@ -32,11 +32,12 @@ function isTruncationStop(reason: string): boolean {
 
 /**
  * A collapsible drawer section: an uppercase header button with a rotating
- * chevron (the drawer's dominant `Section` convention), collapsed by default.
+ * chevron (the drawer's dominant `Section` convention). Open by default —
+ * the drawer shows everything it has; the toggle is for tucking sections away.
  */
 function CollapsibleSection({
   title,
-  defaultOpen = false,
+  defaultOpen = true,
   children,
 }: {
   title: ReactNode;

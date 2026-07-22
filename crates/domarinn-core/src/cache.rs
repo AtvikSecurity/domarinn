@@ -113,6 +113,11 @@ pub struct CacheEntry {
     pub cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+    /// Raw provider metadata, replayed on a hit so cached cases keep their
+    /// "Provider metadata" drawer section. Absent in entries written before
+    /// this field existed (they replay with no raw, as they always did).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<Json>,
     pub domarinn_version: String,
 }
 

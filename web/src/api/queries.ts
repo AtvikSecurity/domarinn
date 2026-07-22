@@ -1,4 +1,5 @@
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -23,6 +24,7 @@ import type {
   RunConfigResponse,
   RunDetailResponse,
   RunListResponse,
+  SearchResponse,
   SuitesResponse,
   UserListResponse,
   UserView,
@@ -45,6 +47,7 @@ export const qk = {
   matrixAll: (id: string) => ["matrix", id, "all"] as const,
   compare: (id: string, other?: string) => ["compare", id, other ?? null] as const,
   runConfig: (id: string) => ["runConfig", id] as const,
+  search: (q: string, limit: number) => ["search", q, limit] as const,
   projects: ["projects"] as const,
   suites: (project: string) => ["suites", project] as const,
   cacheStats: ["cache", "stats"] as const,
@@ -87,6 +90,11 @@ export function useRun(id: string, opts: { enabled?: boolean } = {}) {
     queryFn: ({ signal }) =>
       apiRequest<RunDetailResponse>(`/runs/${encodeURIComponent(id)}`, { signal }),
     enabled,
+    // Run-to-run navigation (history squares, compare links) re-renders
+    // RunDetail with a new id; without a placeholder the page — and the open
+    // case drawer inside it — unmounts into a full-page spinner and remounts.
+    // Keep the previous run on screen and swap in place.
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -106,6 +114,10 @@ export function useRunCases(id: string, filters: CaseFilters) {
         signal,
       }),
     getNextPageParam: (last) => last.next_cursor ?? undefined,
+    // See useRun: keeps the grid mounted while switching runs. Consumers must
+    // not fetchNextPage off placeholder pages (stale cursor for the new run) —
+    // RunDetail gates hasNextPage on !isPlaceholderData.
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -125,6 +137,8 @@ export function useMatrix(id: string, opts: { enabled?: boolean } = {}) {
       apiRequest<MatrixResponse>(`/runs/${encodeURIComponent(id)}/matrix`, { signal }),
     enabled,
     staleTime: 60_000,
+    // See useRun: keeps the provider/prompt chips stable while switching runs.
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -170,6 +184,28 @@ export function useCaseDetail(
         { signal },
       ),
     enabled,
+  });
+}
+
+/**
+ * Grouped full-text hits for `q` (`GET /search`). Disabled for blank queries;
+ * previous hits stay visible while a keystroke's refetch is in flight so the
+ * search dropdown/page never flashes empty mid-typing.
+ */
+export function useSearch(
+  q: string,
+  opts: { enabled?: boolean; limit?: number } = {},
+) {
+  const query = q.trim();
+  const limit = opts.limit ?? 20;
+  const enabled = (opts.enabled ?? true) && query.length > 0;
+  return useQuery({
+    queryKey: qk.search(query, limit),
+    queryFn: ({ signal }) =>
+      apiRequest<SearchResponse>("/search", { params: { q: query, limit }, signal }),
+    enabled,
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
 }
 

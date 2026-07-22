@@ -324,7 +324,9 @@ export function RunDetail() {
           onSelect={selectCase}
           sorting={sorting}
           onSortingChange={onSortingChange}
-          hasNextPage={casesQ.hasNextPage}
+          // While placeholder pages from the previous run are showing, their
+          // cursor is meaningless for this run — don't let the grid page on it.
+          hasNextPage={casesQ.hasNextPage && !casesQ.isPlaceholderData}
           fetchNextPage={casesQ.fetchNextPage}
           isFetchingNextPage={casesQ.isFetchingNextPage}
           totalCount={r.case_count}

@@ -19,6 +19,7 @@ export {
 } from "./fixtures/runStats";
 export { buildMatrix } from "./fixtures/matrix";
 export { caseDetail } from "./fixtures/caseDetail";
+export { searchFixtures } from "./fixtures/search";
 export {
   caseHistory,
   defaultCompareTarget,

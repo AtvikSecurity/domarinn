@@ -18,12 +18,9 @@ test.describe("Case drawer history timeline", () => {
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
 
-    // The section starts collapsed; expanding fetches the history window.
+    // The section is expanded by default; the history window loads directly.
     const toggle = drawer.getByRole("button", { name: "History" });
     await expect(toggle).toBeVisible();
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
-
-    await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
 
     // checkout-agent/regression has 12 runs carrying this case -> >= 2 squares.

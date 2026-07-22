@@ -29,7 +29,9 @@ export function CaseHistorySection({
   runId: string;
   caseKey: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  // Expanded (and therefore fetching) by default; the `enabled` gate still
+  // stops the window from refetching while the section is tucked away.
+  const [expanded, setExpanded] = useState(true);
   const history = useCaseHistory(project, suite, caseKey, {
     enabled: expanded,
     limit: 20,

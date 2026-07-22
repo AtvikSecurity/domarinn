@@ -25,6 +25,7 @@ use crate::domain::RunStatusFilter;
 use crate::dto::cache::PruneResponse;
 use crate::dto::meta::{MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
+use crate::dto::search::SearchResponse;
 use crate::extract::{ApiJson, ApiQuery};
 use crate::storage::{
     self, CachePutOutcome, CaseListFilter, IngestOutcome, MatrixFilter, RunListFilter,
@@ -100,6 +101,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/runs/{id}/export", get(export_run))
         .route("/api/v1/runs/{id}/config", get(get_run_config))
         .route("/api/v1/runs/{id}/compare/{other}", get(compare_runs))
+        .route("/api/v1/search", get(search))
         .route("/api/v1/projects", get(list_projects))
         .route("/api/v1/projects/{project}/suites", get(list_suites))
         .route(
@@ -571,6 +573,23 @@ async fn compare_runs(
         Some(cmp) => Ok(Json(cmp).into_response()),
         None => Err(not_found("run")),
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchQuery {
+    q: String,
+    limit: Option<i64>,
+}
+
+async fn search(
+    _scope: Scoped<Read>,
+    State(state): State<AppState>,
+    ApiQuery(q): ApiQuery<SearchQuery>,
+) -> ApiResult<Response> {
+    let limit = clamp_limit(q.limit);
+    let res: SearchResponse = state.storage.search(q.q, limit).await?;
+    Ok(Json(res).into_response())
 }
 
 async fn delete_run(

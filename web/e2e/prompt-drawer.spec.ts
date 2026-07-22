@@ -17,15 +17,15 @@ test.describe("Case drawer schema-v2 sections", () => {
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
 
-    // stop_reason chip on the meta line — visible without expanding anything.
+    // stop_reason chip on the meta line. Asserted via the chip's title —
+    // "end_turn" also appears inside the (now default-expanded) raw JSON tree.
     await expect(drawer.getByTitle("Provider stop reason")).toBeVisible();
-    await expect(drawer.getByText("end_turn")).toBeVisible();
+    await expect(drawer.getByTitle("Provider stop reason")).toHaveText("end_turn");
 
-    // Prompt section starts collapsed; expanding it reveals role-tagged cards.
+    // Prompt section is expanded by default: role-tagged cards are visible
+    // immediately, and the toggle can still tuck them away.
     const promptToggle = drawer.getByRole("button", { name: /prompt/i });
     await expect(promptToggle).toBeVisible();
-    await expect(promptToggle).toHaveAttribute("aria-expanded", "false");
-    await promptToggle.click();
     await expect(promptToggle).toHaveAttribute("aria-expanded", "true");
 
     await expect(drawer.getByText("system", { exact: true })).toBeVisible();
@@ -33,13 +33,16 @@ test.describe("Case drawer schema-v2 sections", () => {
     // The message content renders through the OutputViewer.
     await expect(drawer.getByText(/customer needs help/i)).toBeVisible();
 
-    // Provider metadata section starts collapsed; expanding shows a JSON tree.
+    // Provider metadata section is expanded by default with its JSON tree.
     const rawToggle = drawer.getByRole("button", { name: /provider metadata/i });
     await expect(rawToggle).toBeVisible();
-    await expect(rawToggle).toHaveAttribute("aria-expanded", "false");
-    await rawToggle.click();
     await expect(rawToggle).toHaveAttribute("aria-expanded", "true");
     await expect(drawer.getByText(/"finish_reason"/)).toBeVisible();
+
+    // Collapsing still works and hides the tree.
+    await rawToggle.click();
+    await expect(rawToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(drawer.getByText(/"finish_reason"/)).toHaveCount(0);
   });
 
   test("marks a truncated stop reason (max_tokens) on the meta line", async ({
@@ -50,7 +53,7 @@ test.describe("Case drawer schema-v2 sections", () => {
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
     await expect(drawer.getByTitle("Provider stop reason")).toBeVisible();
-    await expect(drawer.getByText("max_tokens")).toBeVisible();
+    await expect(drawer.getByTitle("Provider stop reason")).toHaveText("max_tokens");
   });
 
   test("a v1 case renders none of the schema-v2 sections or chips", async ({

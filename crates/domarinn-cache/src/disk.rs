@@ -197,6 +197,7 @@ mod tests {
             usage: None,
             cost_usd: None,
             stop_reason: None,
+            raw: None,
             domarinn_version: "test".into(),
         }
     }
