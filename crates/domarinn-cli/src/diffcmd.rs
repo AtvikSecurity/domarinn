@@ -3,12 +3,15 @@
 use std::path::PathBuf;
 
 use clap::Args;
-use domarinn_core::diff::{diff_runs, Delta, RunDiff};
-use domarinn_core::result::RunResult;
+use domarinn_core::diff::{diff_runs, RunDiff};
+use domarinn_core::result::{CaseResult, RunResult};
 
+use crate::casedetail;
+use crate::diffrender::{render_markdown, render_table, DiffScope};
 use crate::exit;
 use crate::loadrun::load_run;
 use crate::output::{self, Format};
+use crate::style::Palette;
 
 #[derive(Args)]
 pub struct DiffArgs {
@@ -19,6 +22,15 @@ pub struct DiffArgs {
     /// Output format: table, json, md.
     #[arg(long, value_enum, default_value = "table")]
     pub format: DiffFormat,
+    /// Which cases get an inline output diff.
+    #[arg(long, value_enum, default_value_t = DiffScope::Regressions)]
+    pub diffs: DiffScope,
+    /// Do not truncate inline output diffs.
+    #[arg(long)]
+    pub full: bool,
+    /// Diff the full config snapshot (default: digest note + prompts section only).
+    #[arg(long)]
+    pub config_diff: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +40,7 @@ pub enum DiffFormat {
     Md,
 }
 
-pub fn execute_diff(args: DiffArgs) -> u8 {
+pub fn execute_diff(args: DiffArgs, palette: Palette) -> u8 {
     let base = match load_run(&args.base) {
         Ok(r) => r,
         Err(e) => {
@@ -44,17 +56,37 @@ pub fn execute_diff(args: DiffArgs) -> u8 {
         }
     };
     let diff = diff_runs(&base, &head);
-    let text = match args.format {
-        DiffFormat::Json => serde_json::to_string_pretty(&diff).unwrap_or_default(),
-        DiffFormat::Md => render_markdown(&diff),
-        DiffFormat::Table => render_table(&diff),
-    };
-    println!("{text}");
-    if diff.has_regression() {
+    // The JSON format is the machine wire type and stays byte-identical to a raw
+    // `to_string_pretty(&diff)`; markdown carries no color. Only the table is
+    // palette-aware, so route it through the colored writer (Windows-safe).
+    let exit_code = if diff.has_regression() {
         exit::ASSERT_FAIL
     } else {
         exit::OK
+    };
+    match args.format {
+        DiffFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&diff).unwrap_or_default()
+        ),
+        DiffFormat::Md => println!("{}", render_markdown(&base, &head, &diff)),
+        DiffFormat::Table => {
+            let text = render_table(
+                &base,
+                &head,
+                &diff,
+                args.diffs,
+                args.full,
+                args.config_diff,
+                &palette,
+            );
+            if let Err(e) = output::write_colored_stdout(&text, palette) {
+                eprintln!("error: {e}");
+                return exit::INFRA;
+            }
+        }
     }
+    exit_code
 }
 
 #[derive(Args)]
@@ -62,12 +94,23 @@ pub struct ViewArgs {
     /// Run to view (id, path, or `latest`).
     #[arg(default_value = "latest")]
     pub run: String,
-    /// Output format: table, json, jsonl, junit.
+    /// Output format: table, json, jsonl, junit, md.
     #[arg(long, value_enum)]
     pub format: Option<Format>,
+    /// Show only failed/errored cases. The table footer still summarizes the
+    /// whole run; json/jsonl/junit emit only the filtered cases.
+    #[arg(long)]
+    pub failed: bool,
+    /// Show full detail for matching case(s): case_key, case_key prefix
+    /// (≥4 chars), test id, or name substring (repeatable).
+    #[arg(long = "case")]
+    pub cases: Vec<String>,
+    /// With --case: include raw provider metadata (v2 runs).
+    #[arg(long)]
+    pub raw: bool,
 }
 
-pub fn execute_view(args: ViewArgs) -> u8 {
+pub fn execute_view(args: ViewArgs, palette: Palette) -> u8 {
     let run = match load_run(&args.run) {
         Ok(r) => r,
         Err(e) => {
@@ -75,112 +118,134 @@ pub fn execute_view(args: ViewArgs) -> u8 {
             return exit::USAGE;
         }
     };
+    // `--case` switches from the run-wide table to per-case detail; without it the
+    // existing whole-run rendering is untouched. (`view` has no `--out`; the
+    // detail view writes only to stdout.)
+    if args.cases.is_empty() {
+        let format = args.format.unwrap_or(Format::Table);
+        if let Err(e) = output::emit(format, &run, None, palette, args.failed) {
+            eprintln!("error: {e}");
+            return exit::INFRA;
+        }
+        return exit::OK;
+    }
+    execute_view_cases(&run, &args, palette)
+}
+
+/// The `view --case` path: resolve the selectors, apply `--failed`, and render
+/// the matched cases in the requested format.
+///
+/// `junit`/`md` are rejected (exit 2): a per-case detail dump has no meaningful
+/// JUnit testsuite or run-summary-markdown form. `table` prints the human detail
+/// blocks; `json` always emits an array (even for one case, so `jq` is
+/// predictable) and `jsonl` one case per line.
+fn execute_view_cases(run: &RunResult, args: &ViewArgs, palette: Palette) -> u8 {
     let format = args.format.unwrap_or(Format::Table);
-    if let Err(e) = output::emit(format, &run, None) {
-        eprintln!("error: {e}");
-        return exit::INFRA;
-    }
-    exit::OK
-}
-
-fn render_table(diff: &RunDiff) -> String {
-    let s = &diff.summary;
-    let mut out = String::new();
-    out.push_str("comparison vs baseline:\n");
-    for case in &diff.cases {
-        let marker = match case.delta {
-            Delta::NewlyFailing => "REGRESS",
-            Delta::NewlyPassing => "FIXED  ",
-            Delta::Added => "NEW    ",
-            Delta::Removed => "REMOVED",
-            _ => continue,
-        };
-        out.push_str(&format!(
-            "  {marker}  {}\n",
-            case.name
-                .clone()
-                .unwrap_or_else(|| case.case_key.to_string())
-        ));
-    }
-    out.push_str(&format!(
-        "\n{} newly failing, {} newly passing, {} still failing, {} output-changed, {} added, {} removed\n",
-        s.newly_failing, s.newly_passing, s.still_failing, s.output_changed, s.added, s.removed
-    ));
-    out.push_str(&format!(
-        "McNemar: {} regressions vs {} fixes, statistic {:.2}{}\n",
-        diff.mcnemar.regressions,
-        diff.mcnemar.fixes,
-        diff.mcnemar.statistic,
-        if diff.mcnemar.significant {
-            " (significant at 95%)"
-        } else {
-            ""
-        }
-    ));
-    out
-}
-
-/// A markdown comparison suitable for a PR comment.
-pub fn render_markdown(diff: &RunDiff) -> String {
-    let s = &diff.summary;
-    let mut out = String::new();
-    let verdict = if diff.has_regression() {
-        "❌ Regressions detected"
-    } else {
-        "✅ No regressions"
+    let unsupported = match format {
+        Format::Junit => Some("junit"),
+        Format::Md => Some("md"),
+        _ => None,
     };
-    out.push_str(&format!("### domarinn comparison — {verdict}\n\n"));
-    out.push_str("| metric | count |\n|---|---|\n");
-    out.push_str(&format!("| Newly failing | {} |\n", s.newly_failing));
-    out.push_str(&format!("| Newly passing | {} |\n", s.newly_passing));
-    out.push_str(&format!("| Still failing | {} |\n", s.still_failing));
-    out.push_str(&format!("| Output changed | {} |\n", s.output_changed));
-    out.push_str(&format!("| Added | {} |\n", s.added));
-    out.push_str(&format!("| Removed | {} |\n", s.removed));
-    if diff.mcnemar.significant {
-        out.push_str(&format!(
-            "\n> McNemar test: change is statistically significant (statistic {:.2}).\n",
-            diff.mcnemar.statistic
-        ));
+    if let Some(name) = unsupported {
+        eprintln!(
+            "error: view --case does not support --format {name} \
+             (per-case detail has no {name} form); use table, json, or jsonl"
+        );
+        return exit::USAGE;
     }
-    let regressions: Vec<&str> = diff
-        .cases
-        .iter()
-        .filter(|c| c.delta == Delta::NewlyFailing)
-        .filter_map(|c| c.name.as_deref())
-        .collect();
-    if !regressions.is_empty() {
-        out.push_str("\n**Newly failing:**\n");
-        for name in regressions {
-            out.push_str(&format!("- {name}\n"));
+
+    let matched = casedetail::select_union(run, &args.cases);
+    if matched.is_empty() {
+        eprintln!(
+            "error: no case matches selector(s): {}",
+            args.cases.join(", ")
+        );
+        let suggestions = casedetail::suggestions(run, &args.cases);
+        if !suggestions.is_empty() {
+            eprintln!("closest cases:");
+            for s in suggestions {
+                eprintln!("  {s}");
+            }
+        }
+        return exit::USAGE;
+    }
+
+    // `--failed` intersects the selection across every format.
+    let cases: Vec<&CaseResult> = if args.failed {
+        matched
+            .into_iter()
+            .filter(|c| casedetail::is_failed(c))
+            .collect()
+    } else {
+        matched
+    };
+
+    match format {
+        Format::Json => match serde_json::to_string_pretty(&cases) {
+            Ok(s) => {
+                println!("{s}");
+                exit::OK
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                exit::INFRA
+            }
+        },
+        Format::Jsonl => {
+            let mut out = String::new();
+            for case in &cases {
+                match serde_json::to_string(case) {
+                    Ok(s) => {
+                        out.push_str(&s);
+                        out.push('\n');
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return exit::INFRA;
+                    }
+                }
+            }
+            print!("{out}");
+            exit::OK
+        }
+        // Table (and the default): the human detail view.
+        _ => {
+            if cases.is_empty() {
+                // The selectors matched, but `--failed` filtered everything out.
+                println!("no matching failed/errored cases");
+                return exit::OK;
+            }
+            let mut out = String::new();
+            for (i, case) in cases.iter().enumerate() {
+                if i > 0 {
+                    out.push('\n');
+                }
+                out.push_str(&casedetail::render_case_detail(case, &palette, args.raw));
+            }
+            if let Err(e) = output::write_colored_stdout(&out, palette) {
+                eprintln!("error: {e}");
+                return exit::INFRA;
+            }
+            exit::OK
         }
     }
-    out
 }
 
 /// Write a markdown run summary (pass/fail counts + any baseline comparison).
+///
+/// A thin wrapper over [`output::render_run_md`] — the reusable summary core is
+/// shared with `run --format md` / `view --format md` — plus the optional
+/// baseline comparison (base run + diff) that only the `--summary-md` path
+/// carries.
 pub fn write_summary_md(
     path: &PathBuf,
-    run: &RunResult,
-    comparison: Option<&RunDiff>,
+    head: &RunResult,
+    comparison: Option<(&RunResult, &RunDiff)>,
 ) -> std::io::Result<()> {
-    let s = &run.summary;
-    let mut out = String::new();
-    out.push_str(&format!(
-        "### domarinn run — {} passed, {} failed, {} errored\n\n",
-        s.passed, s.failed, s.errored
-    ));
-    let rate = domarinn_core::stats::wilson(s.passed, s.total, domarinn_core::stats::Z_95);
-    out.push_str(&format!(
-        "Pass rate: **{:.1}%** (95% CI {:.1}%–{:.1}%, n={})\n",
-        rate.rate * 100.0,
-        rate.lower * 100.0,
-        rate.upper * 100.0,
-        rate.total
-    ));
-    if let Some(diff) = comparison {
+    let mut out = output::render_run_md(head);
+    if let Some((base, diff)) = comparison {
         out.push('\n');
-        out.push_str(&render_markdown(diff));
+        out.push_str(&render_markdown(base, head, diff));
     }
     std::fs::write(path, out)
 }

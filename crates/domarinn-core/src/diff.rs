@@ -197,6 +197,9 @@ mod tests {
                 0.0
             },
             output: Some(Output::Text(output.into())),
+            prompt: None,
+            stop_reason: None,
+            raw: None,
             asserts: vec![],
             usage: None,
             cost_usd: None,

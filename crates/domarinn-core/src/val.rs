@@ -9,16 +9,24 @@
 //!   (JSON / CSV / JSONL, which have no tags).
 //! * anything else — a normal value that is rendered through the template engine.
 //!
-//! YAML tags only exist in YAML, so [`desugar_raw_tags`] rewrites `!raw x` into
-//! `{$raw: x}` before deserialization. After that single normalization every
-//! source format flows through one code path: [`Val`]'s custom `Deserialize`
-//! recognizes the `{$raw: …}` object and marks the value raw.
+//! YAML tags only exist in YAML, so [`desugar_tags`] rewrites `!raw x` into
+//! `{$raw: x}` (and `!file "p"` into `{$file: "p"}`) before deserialization.
+//! After that single normalization every source format flows through one code
+//! path: [`Val`]'s custom `Deserialize` recognizes the `{$raw: …}` object and
+//! marks the value raw, and the resolver recognizes `{$file: …}` file-content
+//! references (see [`crate::filevars`]).
 
 use serde::de::{Deserialize, Deserializer};
 use serde_json::Value as Json;
 
 /// The key that marks an object as a raw (never-rendered) value.
 pub const RAW_KEY: &str = "$raw";
+
+/// The key that marks a var as a sandboxed file-content reference, resolved at
+/// suite-load time by [`crate::filevars`]. Not handled by [`Val`]'s
+/// `Deserialize` (which needs no filesystem access); the marker survives as an
+/// ordinary object until the resolver, which has the suite directory, loads it.
+pub const FILE_KEY: &str = "$file";
 
 /// A configuration value that is either rendered through the template engine
 /// ([`Val::Tpl`]) or passed through verbatim ([`Val::Raw`]).
@@ -95,34 +103,42 @@ impl schemars::JsonSchema for Val {
     }
 }
 
-/// Recursively rewrite YAML `!raw <value>` tags into `{$raw: <value>}` objects.
+/// Recursively rewrite the sugar YAML tags into their format-agnostic wrapper
+/// objects: `!raw <value>` → `{$raw: <value>}` and `!file "<path>"` →
+/// `{$file: "<path>"}`.
 ///
 /// `serde_yaml_ng` surfaces a YAML tag as [`serde_yaml_ng::Value::Tagged`]. We
-/// normalize the `!raw` tag (with or without the leading `!`) into the wrapper
+/// normalize the known tags (with or without the leading `!`) into the wrapper
 /// object so the rest of deserialization is format-agnostic. All other tags are
 /// left intact (their inner value is still walked).
-pub fn desugar_raw_tags(value: serde_yaml_ng::Value) -> serde_yaml_ng::Value {
+pub fn desugar_tags(value: serde_yaml_ng::Value) -> serde_yaml_ng::Value {
     use serde_yaml_ng::Value as Yaml;
     match value {
         Yaml::Tagged(tagged) => {
             let tag = tagged.tag.to_string();
-            let inner = desugar_raw_tags(tagged.value);
-            if tag == "!raw" || tag == "raw" {
-                let mut map = serde_yaml_ng::Mapping::new();
-                map.insert(Yaml::String(RAW_KEY.to_string()), inner);
-                Yaml::Mapping(map)
-            } else {
+            let inner = desugar_tags(tagged.value);
+            let wrapper_key = match tag.as_str() {
+                "!raw" | "raw" => Some(RAW_KEY),
+                "!file" | "file" => Some(FILE_KEY),
+                _ => None,
+            };
+            match wrapper_key {
+                Some(key) => {
+                    let mut map = serde_yaml_ng::Mapping::new();
+                    map.insert(Yaml::String(key.to_string()), inner);
+                    Yaml::Mapping(map)
+                }
                 // Preserve unknown tags but keep walking their contents.
-                Yaml::Tagged(Box::new(serde_yaml_ng::value::TaggedValue {
+                None => Yaml::Tagged(Box::new(serde_yaml_ng::value::TaggedValue {
                     tag: tagged.tag,
                     value: inner,
-                }))
+                })),
             }
         }
-        Yaml::Sequence(seq) => Yaml::Sequence(seq.into_iter().map(desugar_raw_tags).collect()),
+        Yaml::Sequence(seq) => Yaml::Sequence(seq.into_iter().map(desugar_tags).collect()),
         Yaml::Mapping(map) => Yaml::Mapping(
             map.into_iter()
-                .map(|(k, v)| (desugar_raw_tags(k), desugar_raw_tags(v)))
+                .map(|(k, v)| (desugar_tags(k), desugar_tags(v)))
                 .collect(),
         ),
         other => other,
@@ -137,7 +153,7 @@ mod tests {
     /// deserialize into the target type.
     fn from_yaml<T: for<'de> Deserialize<'de>>(text: &str) -> T {
         let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(text).unwrap();
-        let desugared = desugar_raw_tags(raw);
+        let desugared = desugar_tags(raw);
         serde_yaml_ng::from_value(desugared).unwrap()
     }
 
@@ -153,6 +169,15 @@ mod tests {
         let v: Val = from_yaml("!raw \"{{7*7}}\"");
         assert_eq!(v, Val::Raw(Json::String("{{7*7}}".into())));
         assert!(v.is_raw());
+    }
+
+    #[test]
+    fn yaml_file_tag_desugars_to_file_wrapper() {
+        // `!file "p"` becomes `{$file: "p"}`; the resolver (not `Val`) loads it,
+        // so here it stays a plain templatable object.
+        let v: Val = from_yaml("!file \"data/doc.txt\"");
+        assert_eq!(v, Val::Tpl(serde_json::json!({ "$file": "data/doc.txt" })));
+        assert!(!v.is_raw());
     }
 
     #[test]

@@ -108,6 +108,43 @@ and `type` belong to the chosen kind.
 See [`providers.md`](./providers.md) for behavior and protocol details; the
 tables below cover the config surface.
 
+### Environment interpolation (`${env:VAR}`)
+
+Provider **configuration** may pull values from the environment with a
+`${env:VAR}` placeholder, resolved once at load time — so a suite can point at a
+per-developer endpoint or a per-environment gateway without committing it:
+
+```yaml
+providers:
+  - id: gateway
+    type: openai
+    model: "${env:LLM_MODEL}"
+    base_url: "${env:LLM_BASE_URL:-https://api.openai.com/v1}"   # with a default
+    api_key_env: LLM_API_KEY   # still just the *name* of the key's env var
+```
+
+| Form | Meaning |
+|------|---------|
+| `${env:VAR}` | The value of `VAR`. **An unset `VAR` is a hard load error** that names the field and the variable. |
+| `${env:VAR:-default}` | The value of `VAR`, or `default` when `VAR` is unset. |
+| `$${env:VAR}` | An **escape** — rendered as the literal text `${env:VAR}`, no lookup. |
+
+Scope is deliberately narrow. Interpolation runs **only** over provider-bearing
+config: every entry in `providers`, the `provider:` block inside any `grader`
+(top-level or on an `llm-rubric` assert), and the `cache.s3` settings. It is
+resolved on the fully composed document — after [`extends`/`imports`](#composition-with-extends-and-imports)
+merge — so a placeholder introduced by a base layer still resolves.
+
+`${env:…}` is **not** applied to test `vars`. Vars have their own, sandboxed
+templating (`{{ env.X }}`, below), kept separate so an untrusted fixture can
+never smuggle a different endpoint or key name into a provider. A `${…}` that is
+not `${env:…}` (for example a placeholder your own HTTP backend interprets) is
+left untouched.
+
+> This resolves the *endpoint*, not the *secret*. API keys are still read at
+> call time from the variable named by `api_key_env` — never written into the
+> suite, and never interpolated here.
+
 ### `type: exec`
 
 Spawns an external command that speaks the exec JSON protocol on stdio — the
@@ -328,6 +365,56 @@ is sugar for `negate: true` — e.g. `type: not-contains` is exactly
 `type: contains` with `negate: true`. Full assertion reference:
 [`assertions.md`](./assertions.md).
 
+### Matrix / parameter sweeps
+
+A case with a `matrix` **fans out over the cartesian product of its axes** — one
+concrete case per combination. Each axis maps a var name to the list of values
+it takes, and each combination's axis values are merged into `vars` (the axis
+**wins** over a base var of the same name, for that key only):
+
+```yaml
+tests:
+  - id: greet
+    matrix:
+      style: [terse, warm]
+      temperature: [0, 1]
+    vars: { name: "Ada" }   # base var, present in every cell
+    assert:
+      - { type: icontains, value: "Ada" }
+```
+
+This expands to **four** cases. Axes iterate in **sorted key order**, and the
+default id encodes every `key=value` pair, so ids are deterministic and stable
+across runs (which keeps [`CaseKey`](#test-ids)s — and therefore diffing —
+stable):
+
+```
+greet[style=terse,temperature=0]
+greet[style=terse,temperature=1]
+greet[style=warm,temperature=0]
+greet[style=warm,temperature=1]
+```
+
+For a friendlier id shape, set `matrix_id` to a minijinja template rendered
+against the axis values of each combination:
+
+```yaml
+  - id: locale
+    matrix_id: "sweep-{{ lang }}"        # → sweep-en, sweep-fr, sweep-de
+    matrix:
+      lang: [en, fr, de]
+```
+
+Notes:
+
+- The matrix expands **before** `defaults` are merged, and it applies to
+  file-loaded cases too — a `matrix` in a `.yaml`/`.json` test file sweeps just
+  like an inline one.
+- An **empty axis** (`style: []`) is an error — there is nothing to sweep.
+- Expansion is pure: a `!raw` axis value stays raw in the produced case's vars.
+- `matrix_id` sees only the axis values (not base vars), so it stays
+  deterministic.
+
 ### Test ids
 
 A test with no `id` is assigned one automatically:
@@ -349,6 +436,7 @@ extension:
 | `.json` | Either a top-level **array** of test objects, or an **object with a `tests` array**. |
 | `.jsonl`, `.ndjson` | **One test object per line** (blank lines ignored). |
 | `.csv` | One test **per row**; columns become vars, with reserved column names (below). |
+| `.tsv` | Same as `.csv`, but **tab-separated**. |
 
 **CSV reserved columns** — every other column becomes a `vars` entry:
 
@@ -372,6 +460,42 @@ extension:
 id,tags,question,__assert
 q1,"smoke,fast",what is 2+2,"[{""type"":""contains"",""value"":""4""}]"
 ```
+
+A `.tsv` file is the same as `.csv` but **tab-separated** — handy when field
+values contain commas.
+
+### File-content vars (`!file` / `{$file}`)
+
+A single var can pull its value from a file next to the suite instead of being
+written inline — useful for large documents, shared golden fixtures, and
+adversarial inputs kept out of the YAML:
+
+```yaml
+tests:
+  - vars:
+      document: !file "fixtures/article.txt"          # loaded as text
+      rubric:   { $file: "fixtures/rubric.json" }     # parsed by extension → JSON
+      payload:  { $file: "fixtures/probe.txt", raw: true }  # never templated
+```
+
+The `!file "path"` YAML tag and the format-agnostic `{$file: "path"}` object form
+are the same mechanism (the tag desugars to the object, exactly like `!raw`), so
+file vars work in JSON / JSONL / CSV fixtures too.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `$file` | — (required) | Path to the fixture, **relative to the suite directory**. |
+| `parse` | `true` | When true, parse by extension: `.json` → JSON, `.yaml`/`.yml` → YAML, anything else → text. Set `false` to force text even for a structured extension. |
+| `raw` | `false` | When true, the loaded content is marked [raw](#keeping-a-literal-value-out-of-the-template-engine) and is **never** run through the template engine — the right choice for untrusted fixtures (an SSTI payload in the file stays literal). |
+
+**Sandboxed.** The path is resolved relative to the suite directory and must
+stay inside it: `!file "../../etc/passwd"` (or a symlink pointing outside the
+suite) is **refused**, not read. The same guard covers `file://` prompt/message
+content and `file://` test-file globs.
+
+**Cache note.** A file var's content becomes part of the rendered vars, which are
+the provider request identity (cache key) — so **editing a fixture busts the
+cache** for the cases that read it, exactly as editing an inline value would.
 
 ### Generators
 
@@ -545,6 +669,55 @@ tests:
       token_hint: "prefix-{{ env.BUILD_ID }}"
     # the prompt sees the rendered vars plus env
 ```
+
+### Filters and functions
+
+On top of minijinja's own builtins — `trim`, `default`, `int`, `float`, `lower`,
+`upper`, `length`, `replace`, `join`, and the rest — domarinn registers the
+filters and functions below. They are available anywhere a template is rendered:
+vars, prompts, `http` headers/body, and `jinja` assertions.
+
+**Deterministic** (same input → same output, always):
+
+| Call | Kind | Result |
+|------|------|--------|
+| `x \| json_encode` / `x \| to_json` | filter | Compact JSON string of any value. |
+| `s \| json_decode` / `s \| from_json` | filter | Parse a JSON string into a value. |
+| `s \| b64encode` / `s \| b64decode` | filter | Standard (padded) base64 encode/decode. |
+| `s \| sha256` | filter | Lower-case hex SHA-256 digest. |
+| `s \| md5` | filter | Lower-case hex MD5 digest (legacy interop; not for security). |
+| `s \| blake3` | filter | Lower-case hex BLAKE3 digest. |
+| `s \| regex_replace(pat, repl)` | filter | Replace every match of `pat`; `$1` backreferences work in `repl`. |
+| `s \| regex_match(pat)` | filter | `true` if `pat` matches anywhere in `s`. |
+| `s \| slugify` | filter | ASCII slug: lower-cased, non-alphanumerics collapse to single `-`, no leading/trailing dashes. |
+| `s \| truncate(n)` | filter | First `n` characters (by Unicode scalar). |
+
+**Pinned non-deterministic** — because a rendered prompt is persisted with the
+run and diffed across runs, these are constrained so a render stays reproducible:
+
+| Call | Result |
+|------|--------|
+| `now()` / `now(fmt)` | Current time as RFC3339, or `strftime`-formatted. Honors `DOMARINN_NOW` (an RFC3339 instant) when set, so a run can be pinned; otherwise the wall clock. |
+| `uuid(seed)` | A deterministic, v4-shaped UUID derived from `seed`. |
+| `rand(seed)` | A deterministic float in `[0, 1)` derived from `seed`. |
+| `randint(lo, hi, seed)` | A deterministic integer in `[lo, hi]` (inclusive). |
+
+`uuid`, `rand`, and `randint` **require an explicit seed** — an unseeded
+`rand()` is a template error, not a fresh random value. Seed with something
+stable and per-case (e.g. `rand(vars.case_id)`) when you want variety that still
+reproduces.
+
+```yaml
+tests:
+  - vars:
+      doc_id: "{{ doc | sha256 | truncate(12) }}"
+      slug: "{{ title | slugify }}"
+      nonce: "{{ uuid(doc_id) }}"
+```
+
+A [raw value](#keeping-a-literal-value-out-of-the-template-engine) bypasses the
+engine entirely, so `{{ x | sha256 }}` inside a `!raw` value is passed through
+verbatim — filters never touch it.
 
 ### Keeping a literal value out of the template engine
 

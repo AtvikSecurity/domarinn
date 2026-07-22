@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
-import { useRun, useRunCases, useRuns, useSetBaseline } from "@/api/queries";
+import type { OnChangeFn, SortingState } from "@tanstack/react-table";
+import {
+  useMatrix,
+  useRun,
+  useRunCases,
+  useRuns,
+  useSetBaseline,
+} from "@/api/queries";
 import { mergeParams, parseCaseFilters } from "@/lib/filters";
+import { parseSort, serializeSort } from "@/lib/sort";
+import { distinctProviders, distinctPrompts } from "@/lib/matrix";
 import { previousRun } from "@/lib/compare";
 import {
   formatCost,
@@ -13,9 +22,11 @@ import { PassRateBadge } from "@/components/PassRateBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { cn } from "@/lib/cn";
 import { CaseGrid } from "./run-detail/CaseGrid";
 import { CaseDrawer } from "./run-detail/CaseDrawer";
+import { MatrixView } from "./run-detail/MatrixView";
 
 const STATUS_CHIPS: { value: string; label: string }[] = [
   { value: "", label: "All" },
@@ -32,6 +43,23 @@ export function RunDetail() {
 
   const run = useRun(id);
   const casesQ = useRunCases(id, filters);
+  // Provider/prompt axes come from the matrix endpoint's columns (the complete,
+  // authoritative set). Chips + grid columns appear only for a run with >1
+  // distinct provider (resp. prompt); while the matrix loads, both stay hidden.
+  const matrix = useMatrix(id);
+  const providerValues = useMemo(
+    () => distinctProviders(matrix.data),
+    [matrix.data],
+  );
+  const promptValues = useMemo(() => distinctPrompts(matrix.data), [matrix.data]);
+  const showProvider = providerValues.length > 1;
+  const showPrompt = promptValues.length > 1;
+  // A run is "matrix-shaped" when it spans more than one provider or prompt —
+  // only then is the List | Matrix toggle offered. `?view=matrix` deep-loaded on
+  // a single-provider run silently falls back to the list.
+  const matrixShaped = showProvider || showPrompt;
+  const viewMode: "list" | "matrix" =
+    matrixShaped && filters.view === "matrix" ? "matrix" : "list";
   const baseline = useSetBaseline(run.data?.project ?? "", run.data?.suite ?? "");
   // Sibling runs in the same project/suite, used only to resolve a default
   // compare target (the immediately older run) for the header's Compare
@@ -68,10 +96,38 @@ export function RunDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
+  // Client-side sort of the loaded cases, encoded in `?sort=`.
+  const sorting = useMemo(() => parseSort(params.get("sort")), [params]);
+  const onSortingChange = useCallback<OnChangeFn<SortingState>>(
+    (updater) => {
+      const next = typeof updater === "function" ? updater(sorting) : updater;
+      setParams(mergeParams(params, { sort: serializeSort(next) }), {
+        replace: true,
+      });
+    },
+    [params, setParams, sorting],
+  );
+
   function setStatus(value: string) {
     setParams(mergeParams(params, { status: value || undefined }), {
       replace: true,
     });
+  }
+  function setProvider(value: string) {
+    setParams(mergeParams(params, { provider: value || undefined }), {
+      replace: true,
+    });
+  }
+  function setPrompt(value: string) {
+    setParams(mergeParams(params, { prompt: value || undefined }), {
+      replace: true,
+    });
+  }
+  function setView(value: "list" | "matrix") {
+    setParams(
+      mergeParams(params, { view: value === "matrix" ? "matrix" : undefined }),
+      { replace: true },
+    );
   }
   function selectCase(caseKey: string) {
     setParams(mergeParams(params, { case: caseKey }));
@@ -186,37 +242,73 @@ export function RunDetail() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-1 rounded-lg border border-border bg-surface p-0.5">
-          {STATUS_CHIPS.map((chip) => (
-            <button
-              key={chip.value}
-              onClick={() => setStatus(chip.value)}
-              className={cn(
-                "rounded-md px-2.5 py-1 text-sm font-medium transition-colors",
-                (filters.status ?? "") === chip.value
-                  ? "bg-surface-2 text-fg"
-                  : "text-muted hover:text-fg",
-              )}
-            >
-              {chip.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="ml-auto">
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name / output…"
-            aria-label="Search cases"
-            className="h-8 w-56 rounded-md border border-border bg-surface px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+        {/* List | Matrix toggle — only for matrix-shaped runs. Stays visible in
+            both modes so the user can switch back. */}
+        {matrixShaped ? (
+          <SegmentedControl
+            ariaLabel="View"
+            options={[
+              { value: "list", label: "List" },
+              { value: "matrix", label: "Matrix" },
+            ]}
+            value={viewMode}
+            onChange={setView}
           />
-        </div>
+        ) : null}
+
+        {/* The status/provider/prompt chips and search filter the LIST only, so
+            they are hidden in matrix mode (the matrix already shows every axis). */}
+        {viewMode === "list" ? (
+          <>
+            <ChipGroup
+              label="Status"
+              chips={STATUS_CHIPS}
+              active={filters.status ?? ""}
+              onSelect={setStatus}
+            />
+
+            {/* Provider / prompt chips appear only for matrix-shaped runs (>1
+                distinct value each); nothing renders while the matrix loads. */}
+            {showProvider ? (
+              <ChipGroup
+                label="Provider"
+                chips={toChips(providerValues)}
+                active={filters.provider ?? ""}
+                onSelect={setProvider}
+              />
+            ) : null}
+            {showPrompt ? (
+              <ChipGroup
+                label="Prompt"
+                chips={toChips(promptValues)}
+                active={filters.prompt ?? ""}
+                onSelect={setPrompt}
+              />
+            ) : null}
+
+            <div className="ml-auto">
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search name / output…"
+                aria-label="Search cases"
+                className="h-8 w-56 rounded-md border border-border bg-surface px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          </>
+        ) : (
+          <span className="text-xs text-muted">
+            Every provider and prompt is shown; status filters and search apply to
+            the list view.
+          </span>
+        )}
       </div>
 
-      {/* Grid */}
-      {casesQ.isPending ? (
+      {/* Body: matrix pivot or the virtualized list. */}
+      {viewMode === "matrix" ? (
+        <MatrixView runId={id} onSelectCase={selectCase} />
+      ) : casesQ.isPending ? (
         <CenteredSpinner label="Loading cases…" />
       ) : casesQ.isError ? (
         <ErrorState error={casesQ.error} onRetry={() => casesQ.refetch()} />
@@ -226,8 +318,12 @@ export function RunDetail() {
         <CaseGrid
           cases={cases}
           assertLabels={r.assert_labels}
+          showProvider={showProvider}
+          showPrompt={showPrompt}
           selectedKey={filters.case}
           onSelect={selectCase}
+          sorting={sorting}
+          onSortingChange={onSortingChange}
           hasNextPage={casesQ.hasNextPage}
           fetchNextPage={casesQ.fetchNextPage}
           isFetchingNextPage={casesQ.isFetchingNextPage}
@@ -235,7 +331,56 @@ export function RunDetail() {
         />
       )}
 
-      <CaseDrawer runId={id} caseKey={filters.case} onClose={closeCase} />
+      <CaseDrawer
+        runId={id}
+        project={r.project ?? ""}
+        suite={r.suite ?? ""}
+        caseKey={filters.case}
+        onClose={closeCase}
+      />
+    </div>
+  );
+}
+
+/** Build an "All" reset chip plus one chip per value. */
+function toChips(values: string[]): { value: string; label: string }[] {
+  return [{ value: "", label: "All" }, ...values.map((v) => ({ value: v, label: v }))];
+}
+
+/** A single-select segmented chip group backed by a URL param. Mirrors the
+ *  status chips' look; the `label` names the group for assistive tech (and the
+ *  E2E, which scopes to `role="group"` by name). */
+function ChipGroup({
+  label,
+  chips,
+  active,
+  onSelect,
+}: {
+  label: string;
+  chips: { value: string; label: string }[];
+  active: string;
+  onSelect: (value: string) => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className="flex items-center gap-1 rounded-lg border border-border bg-surface p-0.5"
+    >
+      {chips.map((chip) => (
+        <button
+          key={chip.value}
+          onClick={() => onSelect(chip.value)}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-sm font-medium transition-colors",
+            active === chip.value
+              ? "bg-surface-2 text-fg"
+              : "text-muted hover:text-fg",
+          )}
+        >
+          {chip.label}
+        </button>
+      ))}
     </div>
   );
 }

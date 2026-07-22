@@ -10,14 +10,17 @@ import type {
   ApiKeyListResponse,
   AuthScope,
   CacheStatsResponse,
+  CaseHistoryResponse,
   CaseListResponse,
   CaseResult,
   CompareResponse,
+  MatrixResponse,
   MetaResponse,
   MeResponse,
   ProjectsResponse,
   PruneResponse,
   Role,
+  RunConfigResponse,
   RunDetailResponse,
   RunListResponse,
   SuitesResponse,
@@ -36,7 +39,12 @@ export const qk = {
   cases: (id: string, filters: CaseFilters) => ["cases", id, filters] as const,
   caseDetail: (id: string, caseKey: string) =>
     ["case", id, caseKey] as const,
+  caseHistory: (project: string, suite: string, caseKey: string, limit: number) =>
+    ["caseHistory", project, suite, caseKey, limit] as const,
+  matrix: (id: string) => ["matrix", id] as const,
+  matrixAll: (id: string) => ["matrix", id, "all"] as const,
   compare: (id: string, other?: string) => ["compare", id, other ?? null] as const,
+  runConfig: (id: string) => ["runConfig", id] as const,
   projects: ["projects"] as const,
   suites: (project: string) => ["suites", project] as const,
   cacheStats: ["cache", "stats"] as const,
@@ -83,9 +91,12 @@ export function useRun(id: string, opts: { enabled?: boolean } = {}) {
 }
 
 export function useRunCases(id: string, filters: CaseFilters) {
-  // Only the server-side filters go to the API; `case` (the drawer selection)
-  // is client-only.
-  const { case: _case, ...serverFilters } = filters;
+  // Only the server-side filters go to the API; `case` (the drawer selection),
+  // `sort` (client-side grid ordering), and `view` (list/matrix toggle) are
+  // client-only — stripping them here keeps them out of both the request and the
+  // query key, so sorting, opening the drawer, or switching views never triggers
+  // a refetch.
+  const { case: _case, sort: _sort, view: _view, ...serverFilters } = filters;
   return useInfiniteQuery({
     queryKey: qk.cases(id, serverFilters),
     initialPageParam: undefined as string | undefined,
@@ -98,7 +109,59 @@ export function useRunCases(id: string, filters: CaseFilters) {
   });
 }
 
-export function useCaseDetail(id: string, caseKey: string | undefined) {
+/**
+ * The run's provider × prompt × test matrix (`GET /runs/{id}/matrix`). The
+ * columns are the complete, first-seen `(provider, prompt)` set, so this is the
+ * authoritative source for which provider/prompt filter chips + grid columns a
+ * run should show (a run is "matrix-shaped" when it has >1 distinct provider or
+ * prompt). Small and stable, so a single default page is fetched; Task 12's
+ * matrix view reuses this hook (and `qk.matrix`).
+ */
+export function useMatrix(id: string, opts: { enabled?: boolean } = {}) {
+  const enabled = (opts.enabled ?? true) && !!id;
+  return useQuery({
+    queryKey: qk.matrix(id),
+    queryFn: ({ signal }) =>
+      apiRequest<MatrixResponse>(`/runs/${encodeURIComponent(id)}/matrix`, { signal }),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * Every test row of a run's matrix, draining the endpoint's row pagination
+ * (`next_cursor`) via an infinite query. Distinct from {@link useMatrix} (a
+ * single default page, used only to derive the axes/chips) by its `qk.matrixAll`
+ * key: Task 12's matrix view needs the complete grid, so it fetches the large
+ * `limit` and follows the cursor to the end. Columns are identical across pages
+ * (the endpoint only paginates rows), so callers read them off the first page.
+ */
+export function useMatrixAll(id: string, opts: { enabled?: boolean } = {}) {
+  const enabled = (opts.enabled ?? true) && !!id;
+  return useInfiniteQuery({
+    queryKey: qk.matrixAll(id),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      apiRequest<MatrixResponse>(`/runs/${encodeURIComponent(id)}/matrix`, {
+        // Server clamps to 1..=500; ask for the max so most runs are one page.
+        params: { limit: 500, cursor: pageParam },
+        signal,
+      }),
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useCaseDetail(
+  id: string,
+  caseKey: string | undefined,
+  opts: { enabled?: boolean } = {},
+) {
+  // The query key is unchanged (id + caseKey); `enabled` only gates when the
+  // fetch fires — the drawer's baseline diff uses it to defer fetching the
+  // baseline case until its section is expanded.
+  const enabled = (opts.enabled ?? true) && !!caseKey;
   return useQuery({
     queryKey: qk.caseDetail(id, caseKey ?? ""),
     queryFn: ({ signal }) =>
@@ -106,7 +169,40 @@ export function useCaseDetail(id: string, caseKey: string | undefined) {
         `/runs/${encodeURIComponent(id)}/cases/${encodeURIComponent(caseKey!)}`,
         { signal },
       ),
-    enabled: !!caseKey,
+    enabled,
+  });
+}
+
+/** Server default/clamp for the case-history window (see
+ *  `HISTORY_DEFAULT_LIMIT`/`HISTORY_MAX_LIMIT` in the routes crate). */
+const CASE_HISTORY_DEFAULT_LIMIT = 20;
+
+/**
+ * A single case's evolution across the recent runs of its suite (`GET
+ * /projects/{project}/suites/{suite}/cases/{case_key}/history`). `points` come
+ * back newest-first; the timeline section reverses them for oldest→newest
+ * display. `enabled` gates the fetch so the drawer's collapsed History section
+ * only asks for the window once it is expanded.
+ */
+export function useCaseHistory(
+  project: string,
+  suite: string,
+  caseKey: string | undefined,
+  opts: { enabled?: boolean; limit?: number } = {},
+) {
+  const limit = opts.limit ?? CASE_HISTORY_DEFAULT_LIMIT;
+  const enabled = (opts.enabled ?? true) && !!project && !!suite && !!caseKey;
+  return useQuery({
+    queryKey: qk.caseHistory(project, suite, caseKey ?? "", limit),
+    queryFn: ({ signal }) =>
+      apiRequest<CaseHistoryResponse>(
+        `/projects/${encodeURIComponent(project)}/suites/${encodeURIComponent(
+          suite,
+        )}/cases/${encodeURIComponent(caseKey!)}/history`,
+        { params: { limit }, signal },
+      ),
+    enabled,
+    staleTime: 60_000,
   });
 }
 
@@ -119,6 +215,23 @@ export function useCompare(id: string, other?: string) {
         `/runs/${encodeURIComponent(id)}/compare${suffix}`,
         { signal },
       ),
+  });
+}
+
+/**
+ * The run's config digest + snapshot (`GET /runs/{id}/config`). Cheap
+ * config-drift fetch (extracted from the stored blob, no full re-download).
+ * `enabled` gates the fetch so the compare page's ConfigDrift panel only asks
+ * for both runs' configs once it is opened (`?config=1`).
+ */
+export function useRunConfig(id: string, opts: { enabled?: boolean } = {}) {
+  const enabled = (opts.enabled ?? true) && !!id;
+  return useQuery({
+    queryKey: qk.runConfig(id),
+    queryFn: ({ signal }) =>
+      apiRequest<RunConfigResponse>(`/runs/${encodeURIComponent(id)}/config`, { signal }),
+    enabled,
+    staleTime: 60_000,
   });
 }
 

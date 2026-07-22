@@ -1,14 +1,18 @@
 //! The `domarinn run` command: execute a suite and report results.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use clap::Args;
 use domarinn_core::cache::CacheMode;
 use domarinn_core::filter::FilterOpts;
+use domarinn_core::progress::ProgressSink;
 use domarinn_core::runner::RunOptions;
 
 use crate::exit;
 use crate::output::{self, Format};
+use crate::progress::RunProgressBar;
+use crate::style::Palette;
 use crate::{cachecfg, diffcmd};
 
 #[derive(Args)]
@@ -49,7 +53,7 @@ pub struct RunArgs {
     #[arg(short = 'j', long)]
     pub concurrency: Option<usize>,
 
-    /// Output format(s) (repeatable): table, json, jsonl, junit.
+    /// Output format(s) (repeatable): table, json, jsonl, junit, md.
     #[arg(long = "format", value_enum)]
     pub format: Vec<Format>,
 
@@ -68,9 +72,17 @@ pub struct RunArgs {
     /// Upload the run to the server after it completes.
     #[arg(long)]
     pub share: bool,
+
+    /// Do not persist raw provider metadata in the result document.
+    #[arg(long)]
+    pub no_raw: bool,
+
+    /// Disable the live progress bar.
+    #[arg(long)]
+    pub no_progress: bool,
 }
 
-pub fn execute(args: RunArgs, server_url: Option<String>) -> u8 {
+pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verbose: u8) -> u8 {
     let (suite, raw) = match domarinn_core::loader::load_file_raw(&args.path) {
         Ok(pair) => pair,
         Err(e) => {
@@ -111,6 +123,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>) -> u8 {
         repeat: args.repeat.max(1),
         cache_mode,
         concurrency: args.concurrency,
+        include_raw: !args.no_raw,
     };
 
     let cache = cachecfg::build_cache(&suite, server_url.as_deref());
@@ -129,13 +142,31 @@ pub fn execute(args: RunArgs, server_url: Option<String>) -> u8 {
         grader = grader.with_embeddings(embeddings);
     }
 
-    let result = match runtime.block_on(domarinn_core::run(
+    // Live progress on stderr only when it's a terminal, not opted out, and not
+    // in verbose mode (`-vv`+ streams diagnostics that the bar would clobber).
+    // indicatif also hides a stderr bar on a non-TTY — this is belt-and-suspenders
+    // so stdout purity and non-TTY silence never depend on that alone.
+    let progress = if std::io::stderr().is_terminal() && !args.no_progress && verbose < 2 {
+        Some(RunProgressBar::new(palette))
+    } else {
+        None
+    };
+
+    let run_result = runtime.block_on(domarinn_core::run_with_progress(
         &suite,
         &base_dir,
         cache.as_ref(),
         Some(&grader),
         &opts,
-    )) {
+        progress.as_ref().map(|p| p as &dyn ProgressSink),
+    ));
+    // Unconditionally clear the bar: an error path must never leave it stuck, and
+    // clearing an already-finished bar is a no-op.
+    if let Some(bar) = &progress {
+        bar.finish();
+    }
+
+    let result = match run_result {
         Ok(r) => r,
         Err(e) => {
             eprintln!("run error: {e}");
@@ -153,29 +184,33 @@ pub fn execute(args: RunArgs, server_url: Option<String>) -> u8 {
         args.format.clone()
     };
     for format in &formats {
-        if let Err(e) = output::emit(*format, &result, args.out.as_deref()) {
+        // `run` never filters cases; the human table is the only palette-aware
+        // output.
+        if let Err(e) = output::emit(*format, &result, args.out.as_deref(), palette, false) {
             eprintln!("error writing output: {e}");
             return exit::INFRA;
         }
     }
 
-    // Baseline comparison.
+    // Baseline comparison. Keep the loaded base run alongside the diff so the
+    // markdown (output diffs, config drift) can join base↔head cases.
     let mut regressed = false;
-    let mut comparison = None;
+    let mut baseline: Option<(domarinn_core::RunResult, domarinn_core::diff::RunDiff)> = None;
     if let Some(reference) = &args.against {
         match crate::loadrun::load_run(reference) {
             Ok(base) => {
                 let d = domarinn_core::diff_runs(&base, &result);
-                eprintln!("{}", diffcmd::render_markdown(&d));
+                eprintln!("{}", crate::diffrender::render_markdown(&base, &result, &d));
                 regressed = d.has_regression();
-                comparison = Some(d);
+                baseline = Some((base, d));
             }
             Err(e) => tracing::warn!(error = %e, "--against baseline unavailable"),
         }
     }
 
     if let Some(path) = &args.summary_md {
-        if let Err(e) = diffcmd::write_summary_md(path, &result, comparison.as_ref()) {
+        let comparison = baseline.as_ref().map(|(base, diff)| (base, diff));
+        if let Err(e) = diffcmd::write_summary_md(path, &result, comparison) {
             tracing::warn!(error = %e, "could not write summary");
         }
     }

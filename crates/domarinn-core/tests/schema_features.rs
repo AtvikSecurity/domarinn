@@ -45,10 +45,36 @@ fn all_assertion_types_are_in_the_schema() {
 }
 
 #[test]
+fn test_case_matrix_fields_are_in_the_schema() {
+    // Matrix / parameter sweeps add `matrix` and `matrix_id` to a test case; the
+    // published config schema must advertise both so editors complete them.
+    let schema = schema_text();
+    for field in ["matrix", "matrix_id"] {
+        assert!(
+            schema.contains(field),
+            "test-case field '{field}' missing from config schema"
+        );
+    }
+}
+
+#[test]
 fn result_schema_is_versioned() {
     let schema = serde_json::to_string(&domarinn_core::result_schema()).unwrap();
     assert!(schema.contains("schema_version"));
-    assert_eq!(domarinn_core::RESULT_SCHEMA_VERSION, 1);
+    assert_eq!(domarinn_core::RESULT_SCHEMA_VERSION, 2);
+}
+
+#[test]
+fn result_schema_exposes_prompt_stop_reason_and_raw() {
+    // v2 persists the rendered prompt, the provider stop_reason, and raw
+    // provider metadata per case; the published schema must advertise all three.
+    let schema = serde_json::to_string(&domarinn_core::result_schema()).unwrap();
+    for field in ["\"prompt\"", "\"stop_reason\"", "\"raw\""] {
+        assert!(
+            schema.contains(field),
+            "result JSON Schema must expose the {field} field"
+        );
+    }
 }
 
 #[test]

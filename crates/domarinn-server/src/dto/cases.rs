@@ -22,6 +22,17 @@ pub struct CaseListItem {
     pub completion_tokens: Option<i64>,
     pub cost_usd: Option<f64>,
     pub latency_ms: Option<i64>,
+    /// Matrix-cell identity, promoted out of the stored blob (migration 3) so
+    /// the UI can filter/pivot without decompressing each case. All optional:
+    /// legacy/pre-backfill rows are NULL and failed-backfill rows carry the
+    /// empty-string sentinel, which the list query maps to `None`.
+    pub provider_id: Option<String>,
+    pub prompt_id: Option<String>,
+    pub test_id: Option<String>,
+    /// DB column is `repeat_idx`; the wire name is `repeat`.
+    pub repeat: Option<i64>,
+    pub score: Option<f64>,
+    pub stop_reason: Option<String>,
 }
 
 /// `GET /runs/{id}/cases` response.
@@ -62,6 +73,12 @@ mod tests {
             completion_tokens: Some(20),
             cost_usd: Some(0.0025),
             latency_ms: Some(42),
+            provider_id: Some("openai".to_string()),
+            prompt_id: Some("default".to_string()),
+            test_id: Some("t1".to_string()),
+            repeat: Some(0),
+            score: Some(1.0),
+            stop_reason: Some("stop".to_string()),
         };
         assert_eq!(
             serde_json::to_value(&dto).unwrap(),
@@ -78,6 +95,12 @@ mod tests {
                 "completion_tokens": 20,
                 "cost_usd": 0.0025,
                 "latency_ms": 42,
+                "provider_id": "openai",
+                "prompt_id": "default",
+                "test_id": "t1",
+                "repeat": 0,
+                "score": 1.0,
+                "stop_reason": "stop",
             })
         );
     }
@@ -95,11 +118,35 @@ mod tests {
             completion_tokens: None,
             cost_usd: None,
             latency_ms: None,
+            provider_id: None,
+            prompt_id: None,
+            test_id: None,
+            repeat: None,
+            score: None,
+            stop_reason: None,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["asserts"], json!([]));
         assert!(v["name"].is_null());
         assert_eq!(v["status"], "skip");
+        // The migration-3 cell fields serialize as explicit `null`, never
+        // omitted (DTO null-not-omitted convention), so the UI always sees the
+        // keys.
+        for key in [
+            "provider_id",
+            "prompt_id",
+            "test_id",
+            "repeat",
+            "score",
+            "stop_reason",
+        ] {
+            assert!(v.get(key).is_some(), "missing key {key}");
+            assert!(
+                v[key].is_null(),
+                "expected {key} to be null, got {:?}",
+                v[key]
+            );
+        }
     }
 
     #[test]

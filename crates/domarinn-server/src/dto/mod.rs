@@ -17,6 +17,9 @@
 //!   stored in the `cases.asserts` DB column.
 //! * [`cases`] — case list items and the case detail envelope.
 //! * [`compare`] — the run/run comparison response.
+//! * [`config`] — the `GET /runs/{id}/config` digest + snapshot response.
+//! * [`history`] — one case's evolution across a suite's recent runs.
+//! * [`matrix`] — the per-run prompt × provider aggregate matrix.
 //! * [`projects`] — projects, suites, and the suite pass-rate series.
 //! * [`cache`] — cache stats and prune responses.
 //! * [`meta`] — the `/api/v1/meta` response.
@@ -25,6 +28,9 @@ pub mod accounts;
 pub mod cache;
 pub mod cases;
 pub mod compare;
+pub mod config;
+pub mod history;
+pub mod matrix;
 pub mod meta;
 pub mod projects;
 pub mod runs;

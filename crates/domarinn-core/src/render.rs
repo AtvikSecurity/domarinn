@@ -25,6 +25,10 @@ pub enum RenderError {
         #[source]
         source: std::io::Error,
     },
+    /// A `file://` prompt/message reference that would read outside the suite
+    /// directory. Closes a `file://../../etc/passwd` sandbox-escape hole.
+    #[error(transparent)]
+    Sandbox(#[from] crate::sandbox::SandboxError),
     #[error("prompt '{0}' must set exactly one of 'template' or 'messages'")]
     BadPrompt(String),
 }
@@ -102,9 +106,12 @@ pub fn render_prompt(
 
 /// If `spec` is `file://<path>`, read the file relative to `base_dir`; otherwise
 /// return `spec` unchanged.
+///
+/// The path is resolved through [`crate::sandbox`], so a `file://../../etc/passwd`
+/// (or a symlink pointing outside the suite) is refused rather than read.
 pub fn load_content(spec: &str, base_dir: &Path) -> Result<String, RenderError> {
     if let Some(rel) = spec.strip_prefix("file://") {
-        let path = base_dir.join(rel);
+        let path = crate::sandbox::resolve_within(base_dir, rel)?;
         std::fs::read_to_string(&path).map_err(|source| RenderError::Io {
             path: path.display().to_string(),
             source,
@@ -192,6 +199,29 @@ mod tests {
         let ctx = serde_json::json!({ "x": "ok" });
         let rendered = render_prompt(&prompt, &ctx, &engine, dir.path()).unwrap();
         assert_eq!(rendered, RenderedPrompt::Text("System: ok".into()));
+    }
+
+    #[test]
+    fn file_traversal_out_of_the_suite_is_refused() {
+        // Security regression: a `file://../secret` reference must NOT read the
+        // file outside the suite directory. Before the sandbox fix this escaped.
+        let parent = tempfile::tempdir().unwrap();
+        std::fs::write(parent.path().join("secret.txt"), "TOP SECRET").unwrap();
+        let base = parent.path().join("suite");
+        std::fs::create_dir(&base).unwrap();
+
+        let engine = TemplateEngine::new();
+        let prompt = Prompt {
+            id: "p".into(),
+            template: Some("file://../secret.txt".into()),
+            messages: None,
+        };
+        let err = render_prompt(&prompt, &serde_json::json!({}), &engine, &base).unwrap_err();
+        assert!(
+            matches!(err, RenderError::Sandbox(_)),
+            "traversal must be a sandbox error, not a successful read: {err:?}"
+        );
+        assert!(err.to_string().contains("refuses to read outside"));
     }
 
     #[test]

@@ -393,6 +393,9 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     use crate::dto::cache::{CacheStatsResponse, PruneResponse};
     use crate::dto::cases::CaseListResponse;
     use crate::dto::compare::CompareResponse;
+    use crate::dto::config::RunConfigResponse;
+    use crate::dto::history::CaseHistoryResponse;
+    use crate::dto::matrix::MatrixResponse;
     use crate::dto::meta::MetaResponse;
     use crate::dto::projects::{ProjectsResponse, SuitesResponse};
     use crate::dto::runs::{IngestResponse, RunDetailResponse, RunListResponse};
@@ -406,6 +409,9 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     IngestResponse::export_all(&cfg)?;
     CaseListResponse::export_all(&cfg)?;
     CompareResponse::export_all(&cfg)?;
+    RunConfigResponse::export_all(&cfg)?;
+    CaseHistoryResponse::export_all(&cfg)?;
+    MatrixResponse::export_all(&cfg)?;
     ProjectsResponse::export_all(&cfg)?;
     SuitesResponse::export_all(&cfg)?;
     CacheStatsResponse::export_all(&cfg)?;

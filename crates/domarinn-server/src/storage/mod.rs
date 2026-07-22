@@ -16,6 +16,8 @@
 //! * [`runs`] — ingest + run list/detail/export,
 //! * [`cases`] — case list (lean) + case detail,
 //! * [`compare`] — the run/run diff,
+//! * [`history`] — one case's evolution across a suite's recent runs,
+//! * [`matrix`] — the per-run prompt × provider aggregate matrix,
 //! * [`projects`] — projects, suites, and baselines,
 //! * [`cache`] — the content-addressed cache table, stats, and pruning.
 //!
@@ -35,10 +37,15 @@ use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
+use crate::dto::runs::CaseAssertLean;
+
 mod auth;
+mod backfill;
 mod cache;
 mod cases;
 mod compare;
+mod history;
+mod matrix;
 mod projects;
 mod runs;
 mod schema;
@@ -47,6 +54,7 @@ pub use auth::{
     ApiKeyAuth, ApiKeyInfo, DeleteUserOutcome, SessionUser, UpdateUserOutcome, UserRow,
 };
 pub use cases::CaseListFilter;
+pub use matrix::MatrixFilter;
 pub use runs::{RunListFilter, RunListPage};
 
 const MAX_READERS: usize = 4;
@@ -196,6 +204,9 @@ impl Storage {
         schema::runs_migrations()
             .to_latest(&mut runs_writer)
             .context("applying runs migrations")?;
+        // Populate the migration-3 columns for any rows written before the
+        // migration (fresh DBs and already-backfilled DBs select 0 rows).
+        backfill::run(&mut runs_writer).context("backfilling runs database")?;
 
         let cache_path = dir.join("cache.db");
         let mut cache_writer = open_conn(&cache_path)?;
@@ -231,6 +242,44 @@ pub(super) fn to_microusd(cost: Option<f64>) -> Option<i64> {
 
 pub(super) fn from_microusd(micro: Option<i64>) -> Option<f64> {
     micro.map(|m| m as f64 / 1_000_000.0)
+}
+
+/// Map the empty-string backfill sentinel (and a genuine NULL) to `None`.
+///
+/// Migration 3's backfill stamps `''` into a text column when a row's blob
+/// can't be decoded, so a failed-backfill row must read back as "no value" on
+/// the wire rather than an empty string. Applied to the promoted cell text
+/// columns (`provider_id`/`prompt_id`/`test_id`/`stop_reason`) and to
+/// `runs.config_digest`.
+pub(super) fn empty_to_none(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.is_empty())
+}
+
+/// Parse a case row's stored `asserts` JSON, degrading gracefully.
+///
+/// The `asserts` column is always written by this codebase as a serialized
+/// `Vec<CaseAssertLean>`, so any row it produced parses cleanly. A parse
+/// failure therefore means a hand-tampered or otherwise corrupt blob; rather
+/// than fail the whole read we treat it as "no asserts" and warn (with the
+/// `run_id`/`case_key`) so the bad row is visible in logs. `None` (a NULL
+/// column) is simply "no asserts".
+pub(super) fn parse_stored_asserts(
+    raw: Option<String>,
+    run_id: &str,
+    case_key: &str,
+) -> Vec<CaseAssertLean> {
+    let Some(s) = raw else {
+        return Vec::new();
+    };
+    serde_json::from_str(&s).unwrap_or_else(|e| {
+        tracing::warn!(
+            run_id = %run_id,
+            case_key = %case_key,
+            error = %e,
+            "unparseable stored asserts; treating as empty"
+        );
+        Vec::new()
+    })
 }
 
 pub(super) fn compress(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { MONEY_RUN } from "./helpers";
+import { MONEY_RUN, MONEY_RUN_BASELINE } from "./helpers";
 
 // Latest run of each other suite (see src/mocks/fixtures.ts run counts).
 const SEARCH_RERANK_RUN = "search-rerank-ndcg-eval-10";
@@ -29,6 +29,20 @@ test.describe("Runs list", () => {
     await expect(
       page.getByRole("link", { name: SUPPORT_BOT_RUN, exact: true }),
     ).toBeVisible();
+  });
+
+  test("marks the suite's pinned baseline run with a chip", async ({ page }) => {
+    await page.goto("/");
+
+    // The default baseline for checkout-agent/regression is the run before the
+    // latest (see BASELINE_BY_SUITE in src/mocks/fixtures.ts) — its row carries
+    // a "baseline" chip surfaced from the server's suite summary.
+    const baselineRow = page
+      .getByRole("row")
+      .filter({
+        has: page.getByRole("link", { name: MONEY_RUN_BASELINE, exact: true }),
+      });
+    await expect(baselineRow.getByText("baseline")).toBeVisible();
   });
 
   test("project filter narrows the list and writes the URL param", async ({ page }) => {

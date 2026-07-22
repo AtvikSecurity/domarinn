@@ -4,13 +4,14 @@ One binary, `domarinn`: the eval engine, the results server, and its own
 container healthcheck. Global flags apply to every subcommand.
 
 ```
-domarinn [-v|-vv] [--server-url URL] <command> [args]
+domarinn [-v|-vv] [--color WHEN] [--server-url URL] <command> [args]
 ```
 
 | Global flag | Effect |
 |-------------|--------|
 | `-v`, `-vv` | Increase log verbosity: `warn` (default) → `info` → `debug` → `trace`. Logs go to **stderr**. See [Logging](#logging). |
 | `--log-format <fmt>` | How log lines are rendered: `auto` (default), `pretty`, `compact`, or `json` (also `DOMARINN_LOG_FORMAT`). See [Logging](#logging). |
+| `--color <when>` | When to colorize human output (the results table, listings, diffs): `auto` (default; color a TTY), `always`, or `never`. Honors [`NO_COLOR`](https://no-color.org/) and `CLICOLOR_FORCE`. **Machine formats (`json`/`jsonl`/`junit`) are never colored**, and neither is `--out` file output. |
 | `--server-url <url>` | Results server base URL (or set `DOMARINN_SERVER_URL`). Used by `run --share`, `share`, and the `http` cache backend. |
 | `--version` | Print the version. |
 | `--help` | Print help for the binary or a subcommand. |
@@ -82,8 +83,10 @@ results, and persist the run under `.domarinn/runs/<id>/`.
 | `--cache-only` | Read cache only; a miss is an infrastructure error (offline CI). |
 | `--repeat <N>` | Run each cell N times (variance / pass@k). |
 | `-j`, `--concurrency <N>` | Max concurrent provider calls (overrides `runner.concurrency`). |
-| `--format <F>` | Output format, repeatable: `table` (default), `json`, `jsonl`, `junit`. |
+| `--format <F>` | Output format, repeatable: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`, on stdout. |
 | `--out <FILE>` | Write the primary output to a file instead of stdout. |
+| `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |
+| `--no-progress` | Disable the live progress bar (see below). |
 | `--against <REF>` | Compare against a baseline run (a run id, a `result.json` path, or `latest`); a regression sets exit code `1`. |
 | `--summary-md <FILE>` | Write a Markdown summary (pass/fail counts, Wilson pass-rate CI, and any baseline comparison) — used by the CI action for PR comments. |
 | `--share` | Upload the completed run to the configured server. |
@@ -93,6 +96,14 @@ domarinn run examples/render-health                 # run, print a table
 domarinn run --tag safety -j 8 --format junit --out results.xml
 domarinn run --against latest --summary-md summary.md
 ```
+
+**Live progress.** When stderr is a terminal, `run` draws a single progress bar
+on **stderr** — elapsed time, a bar, `done/total`, and a running pass/fail/error
+tally. It is purely cosmetic: it never touches **stdout**, so piping or
+redirecting results (`domarinn run --format json > out.json`) is byte-identical
+with or without it. The bar is suppressed automatically when stderr is not a
+terminal (e.g. captured CI logs), under `-vv`+ (so it never clobbers streamed
+diagnostics), and with `--no-progress`.
 
 See [configuration.md](./configuration.md) for the suite file and
 [statistics.md](./statistics.md) for `--repeat`/`--against`.
@@ -107,25 +118,59 @@ one-line summary); exit `2` and lists issues otherwise.
 domarinn validate examples/render-health
 ```
 
-## `domarinn diff <BASE> <HEAD> [--format table|json|md]`
+## `domarinn diff <BASE> <HEAD> [flags]`
 
 Diff two runs. Each run reference is a run id, a `result.json` path, or `latest`.
 Reports regressions, fixes, output changes, added/removed cases, and a McNemar
 significance verdict. Exit `1` when `HEAD` regressed against `BASE`; `0`
-otherwise. `--format md` emits a Markdown table for PR comments.
+otherwise.
+
+| Flag | Effect |
+|------|--------|
+| `--format <F>` | `table` (default), `json`, or `md` (a Markdown table for PR comments). |
+| `--diffs <SCOPE>` | Which cases get an inline output diff: `regressions` (default; newly-failing only), `changed` (any case whose output changed), `all` (every joined case), or `none`. |
+| `--full` | Do not truncate inline output diffs (show every changed line). |
+| `--config-diff` | Diff the full config snapshot. Default is a compact digest note plus the prompts section only. |
 
 ```sh
 domarinn diff .domarinn/runs/A/result.json latest
+domarinn diff base latest --diffs all --full --config-diff
 ```
 
-## `domarinn view [RUN] [--format ...]`
+## `domarinn view [RUN] [flags]`
 
 Render a stored run in the terminal (default `latest`). `RUN` is a run id, a
-`result.json` path, or `latest`. Formats: `table` (default), `json`, `jsonl`,
-`junit`.
+`result.json` path, or `latest`.
+
+| Flag | Effect |
+|------|--------|
+| `--format <F>` | `table` (default), `json`, `jsonl`, `junit`, `md`. |
+| `--failed` | Show only failed/errored cases. The table footer still summarizes the whole run; `json`/`jsonl`/`junit` emit only the filtered cases. |
+| `--case <SEL>` | Show full detail for matching case(s) — a `case_key`, a `case_key` prefix (≥4 chars), a test id, or a name substring (repeatable). Rejected for `junit`/`md`. |
+| `--raw` | With `--case`, include the raw provider metadata (v2 runs). |
 
 ```sh
 domarinn view latest
+domarinn view latest --failed
+domarinn view latest --case greet --raw
+```
+
+## `domarinn runs [flags]`
+
+List stored runs, newest first — a local table by default, or the results
+server's runs with `--remote`.
+
+| Flag | Effect |
+|------|--------|
+| `-n`, `--limit <N>` | Max runs to show (default `20`; `0` = unlimited). |
+| `--suite <NAME>` | Only runs of this suite. |
+| `--remote` | List runs from the results server (`--server-url` / `DOMARINN_SERVER_URL`) instead of `.domarinn/runs`. |
+| `--json` | Emit JSON instead of a table. |
+
+```sh
+domarinn runs -n 5
+domarinn runs --suite refusals --json
+domarinn runs --remote
 ```
 
 ## `domarinn share [PATH] [--strict]`

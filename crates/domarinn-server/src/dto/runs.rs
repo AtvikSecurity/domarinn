@@ -80,6 +80,10 @@ pub struct RunDetailResponse {
     pub duration_ms: i64,
     pub content_hash: String,
     pub uploaded_by: Option<String>,
+    /// The run's config digest (migration-3 `runs.config_digest` column).
+    /// `None` for legacy rows with no digest and for failed-backfill rows that
+    /// carry the empty-string sentinel, which the query maps to `None`.
+    pub config_digest: Option<String>,
     pub tags: Vec<String>,
     pub assert_labels: Vec<String>,
 }
@@ -227,6 +231,7 @@ mod tests {
             duration_ms: 30000,
             content_hash: "sha256:deadbeef".to_string(),
             uploaded_by: Some("alice".to_string()),
+            config_digest: Some("sha256:cfg".to_string()),
             tags: vec!["nightly".to_string()],
             assert_labels: vec!["contains".to_string(), "regex".to_string()],
         };
@@ -254,10 +259,46 @@ mod tests {
                 "duration_ms": 30000,
                 "content_hash": "sha256:deadbeef",
                 "uploaded_by": "alice",
+                "config_digest": "sha256:cfg",
                 "tags": ["nightly"],
                 "assert_labels": ["contains", "regex"],
             })
         );
+    }
+
+    #[test]
+    fn run_detail_response_nulls_absent_config_digest() {
+        // A run with no digest must serialize `config_digest` as explicit JSON
+        // null, not omit the key (DTO null-not-omitted convention).
+        let dto = RunDetailResponse {
+            id: RunId::new("r-3"),
+            project: None,
+            suite: None,
+            created_at: "2026-01-01T00:00:00+00:00".to_string(),
+            uploaded_at: "2026-01-01T00:00:01+00:00".to_string(),
+            schema_version: 1,
+            git_branch: None,
+            git_commit: None,
+            git_dirty: None,
+            ci_provider: None,
+            ci_run_url: None,
+            case_count: 0,
+            pass_count: 0,
+            fail_count: 0,
+            error_count: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cost_usd: None,
+            duration_ms: 0,
+            content_hash: "sha256:deadbeef".to_string(),
+            uploaded_by: None,
+            config_digest: None,
+            tags: vec![],
+            assert_labels: vec![],
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        assert!(v.get("config_digest").is_some());
+        assert!(v["config_digest"].is_null());
     }
 
     #[test]

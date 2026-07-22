@@ -10,29 +10,13 @@ use std::path::{Path, PathBuf};
 use serde_yaml_ng::Value as Yaml;
 
 use crate::config::Suite;
-use crate::val::desugar_raw_tags;
+use crate::interp::{interpolate_env, ProcessEnv};
+use crate::val::desugar_tags;
 
-/// A structural validation problem, with a human-readable location.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Issue {
-    pub path: String,
-    pub message: String,
-}
-
-impl Issue {
-    fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
-        Issue {
-            path: path.into(),
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for Issue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.path, self.message)
-    }
-}
+// `Issue` and `validate` live in `loader_validate`; re-export here so the
+// `crate::loader::validate` / `crate::loader::Issue` paths (and the crate-root
+// re-exports built on them) are unchanged after the split.
+pub use crate::loader_validate::{validate, Issue};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
@@ -53,6 +37,18 @@ pub enum LoadError {
     Deserialize(String),
     #[error("cyclic extends/imports at {path}")]
     Cycle { path: PathBuf },
+    /// A `${env:VAR}` interpolation referenced an unset variable and supplied no
+    /// `:-default`. The message names the dotted path, the variable, and the
+    /// default-hint so the fix is obvious.
+    #[error(
+        "{path}: environment variable `{var}` is not set \
+         (set it, or provide a fallback with `${{env:{var}:-<default>}}`)"
+    )]
+    EnvMissing { path: String, var: String },
+    /// A malformed or unterminated `${env:…}` interpolation (e.g. a missing
+    /// closing brace or an empty variable name).
+    #[error("{path}: malformed `${{env:…}}` interpolation: {message}")]
+    EnvSyntax { path: String, message: String },
 }
 
 /// Deserialize the normalized YAML into a [`Suite`], attaching a dotted path to
@@ -81,7 +77,10 @@ pub fn load_str(text: &str) -> Result<Suite, LoadError> {
 /// from. [`validate`] needs the raw shape to check for unknown keys in the
 /// `flatten`ed provider/assert mappings (which serde cannot deny).
 pub fn load_str_raw(text: &str) -> Result<(Suite, Yaml), LoadError> {
-    let raw = normalize(serde_yaml_ng::from_str(text)?);
+    let mut raw = normalize(serde_yaml_ng::from_str(text)?);
+    // Resolve `${env:VAR}` in provider-bearing subtrees before deserialize, so
+    // the `Suite` (and the `raw` shape `validate` inspects) sees final values.
+    interpolate_env(&mut raw, &ProcessEnv)?;
     let suite = deserialize_suite(raw.clone(), None)?;
     Ok((suite, raw))
 }
@@ -96,7 +95,11 @@ pub fn load_file(path: &Path) -> Result<Suite, LoadError> {
 /// suite was built from, for [`validate`]'s raw-shape checks.
 pub fn load_file_raw(path: &Path) -> Result<(Suite, Yaml), LoadError> {
     let file = resolve_suite_path(path);
-    let raw = load_and_compose(&file, &mut Vec::new())?;
+    let mut raw = load_and_compose(&file, &mut Vec::new())?;
+    // Env interpolation runs on the fully composed tree — after `extends` /
+    // `imports` merge, before deserialize — so a `${env:VAR}` in a base layer
+    // resolves once, in its final position.
+    interpolate_env(&mut raw, &ProcessEnv)?;
     let suite = deserialize_suite(raw.clone(), Some(&file))?;
     Ok((suite, raw))
 }
@@ -227,7 +230,7 @@ pub fn resolve_suite_path(path: &Path) -> PathBuf {
 
 /// Apply every YAML-level normalization pass.
 fn normalize(value: Yaml) -> Yaml {
-    desugar_not_asserts(desugar_raw_tags(value))
+    desugar_not_asserts(desugar_tags(value))
 }
 
 /// Rewrite `type: not-<kind>` into `type: <kind>` + `negate: true`, so the
@@ -251,254 +254,6 @@ fn desugar_not_asserts(value: Yaml) -> Yaml {
         }
         Yaml::Sequence(seq) => Yaml::Sequence(seq.into_iter().map(desugar_not_asserts).collect()),
         other => other,
-    }
-}
-
-/// Run structural validation that does not require rendering templates or
-/// contacting providers. Returns an empty vec when the suite is well-formed.
-///
-/// `raw` is the normalized YAML the suite was deserialized from (see
-/// [`load_str_raw`] / [`load_file_raw`]). It is needed to catch unknown keys in
-/// the `flatten`ed provider and assert mappings, which serde's
-/// `deny_unknown_fields` cannot guard — an unknown key there is silently
-/// dropped during deserialization, so it must be found in the raw shape.
-pub fn validate(suite: &Suite, raw: &Yaml) -> Vec<Issue> {
-    let mut issues = Vec::new();
-
-    check_unknown_flatten_keys(raw, &mut issues);
-
-    if suite.version != 1 {
-        issues.push(Issue::new(
-            "version",
-            format!("unsupported version {} (expected 1)", suite.version),
-        ));
-    }
-
-    if suite.providers.is_empty() {
-        issues.push(Issue::new("providers", "at least one provider is required"));
-    }
-
-    let mut seen_provider_ids = std::collections::HashSet::new();
-    for (i, provider) in suite.providers.iter().enumerate() {
-        if !seen_provider_ids.insert(provider.id.as_str()) {
-            issues.push(Issue::new(
-                format!("providers[{i}]"),
-                format!("duplicate provider id '{}'", provider.id),
-            ));
-        }
-    }
-
-    let mut seen_prompt_ids = std::collections::HashSet::new();
-    for (i, prompt) in suite.prompts.iter().enumerate() {
-        match (&prompt.template, &prompt.messages) {
-            (Some(_), Some(_)) => issues.push(Issue::new(
-                format!("prompts[{i}]"),
-                "set exactly one of 'template' or 'messages', not both",
-            )),
-            (None, None) => issues.push(Issue::new(
-                format!("prompts[{i}]"),
-                "set exactly one of 'template' or 'messages'",
-            )),
-            _ => {}
-        }
-        if !seen_prompt_ids.insert(prompt.id.as_str()) {
-            issues.push(Issue::new(
-                format!("prompts[{i}]"),
-                format!("duplicate prompt id '{}'", prompt.id),
-            ));
-        }
-    }
-
-    issues
-}
-
-/// The set of keys a `flatten`ed config enum (Provider or Assert) accepts,
-/// derived from the generated JSON Schema so it can never drift from the code.
-struct VariantKeys {
-    /// Keys common to every variant (the outer struct's own, un-flattened
-    /// fields — e.g. `id`/`label` for a provider, `weight`/`negate` for an
-    /// assert).
-    common: std::collections::BTreeSet<String>,
-    /// Keys accepted by each `type` variant, including `type` itself.
-    by_type: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-}
-
-impl VariantKeys {
-    /// Read the key sets for `def` (`"Provider"` or `"Assert"`) out of the
-    /// `config_schema()` output. Each variant lives under `oneOf`, keyed by the
-    /// `const` value of its `type` property.
-    fn from_schema(schema: &serde_json::Value, def: &str) -> VariantKeys {
-        use std::collections::{BTreeMap, BTreeSet};
-        let node = &schema["$defs"][def];
-        let common = node
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .map(|o| o.keys().cloned().collect())
-            .unwrap_or_default();
-        let mut by_type = BTreeMap::new();
-        if let Some(variants) = node.get("oneOf").and_then(|v| v.as_array()) {
-            for variant in variants {
-                let Some(props) = variant.get("properties").and_then(|p| p.as_object()) else {
-                    continue;
-                };
-                let ty = props
-                    .get("type")
-                    .and_then(|t| t.get("const"))
-                    .and_then(|s| s.as_str());
-                if let Some(ty) = ty {
-                    let keys: BTreeSet<String> = props.keys().cloned().collect();
-                    by_type.insert(ty.to_string(), keys);
-                }
-            }
-        }
-        VariantKeys { common, by_type }
-    }
-
-    /// The sorted union of common + variant keys for `ty`, for error messages.
-    fn allowed(&self, ty: &str) -> Vec<String> {
-        let mut all: Vec<String> = self.common.iter().cloned().collect();
-        if let Some(v) = self.by_type.get(ty) {
-            all.extend(v.iter().cloned());
-        }
-        all.sort_unstable();
-        all.dedup();
-        all
-    }
-}
-
-/// Flag unknown keys in the `flatten`ed provider and assert mappings of the raw
-/// YAML — plus the bare `ProviderKind` mappings nested inside graders. serde
-/// silently drops such keys (a `flatten`ed or internally-tagged enum cannot use
-/// `deny_unknown_fields`), so a typo like `basurl` would otherwise go unmeasured.
-///
-/// The `Grader` struct itself does have `deny_unknown_fields`, so its grader-LEVEL
-/// keys (`provider`/`template`/`verdict_mode`) are already rejected by serde at
-/// deserialize time — even inside a `flatten`ed `llm-rubric` assert. What serde
-/// cannot reject is the `provider:` value, which is a bare internally-tagged
-/// `ProviderKind`; that mapping is what this walk covers, at every place a grader
-/// can appear: the top-level `grader.provider` and every `llm-rubric` assert's
-/// inner `grader.provider` (both `defaults.assert[]` and inline `tests[].assert[]`).
-///
-/// Key sets come entirely from the schema — no hand-maintained allowlist.
-/// Free-form bags (`params`, an exec assert's `config`, an http provider's
-/// `body`) are values, not mappings we walk, so their inner keys are never checked.
-fn check_unknown_flatten_keys(raw: &Yaml, issues: &mut Vec<Issue>) {
-    let schema = crate::config_schema();
-    let provider_keys = VariantKeys::from_schema(&schema, "Provider");
-    let assert_keys = VariantKeys::from_schema(&schema, "Assert");
-    // A grader's `provider:` is a bare `ProviderKind` (no wrapping `id`/`label`),
-    // so its key set has no common fields — only the per-`type` variant keys.
-    let provider_kind_keys = VariantKeys::from_schema(&schema, "ProviderKind");
-
-    if let Some(providers) = raw.get("providers").and_then(Yaml::as_sequence) {
-        for (i, entry) in providers.iter().enumerate() {
-            check_flatten_entry(
-                entry,
-                &provider_keys,
-                &format!("providers[{i}]"),
-                "provider",
-                issues,
-            );
-        }
-    }
-
-    // Top-level `grader.provider`.
-    check_grader_provider(raw.get("grader"), &provider_kind_keys, "grader", issues);
-
-    if let Some(asserts) = raw
-        .get("defaults")
-        .and_then(|d| d.get("assert"))
-        .and_then(Yaml::as_sequence)
-    {
-        for (j, entry) in asserts.iter().enumerate() {
-            let path = format!("defaults.assert[{j}]");
-            check_flatten_entry(entry, &assert_keys, &path, "assert", issues);
-            check_grader_provider(
-                entry.get("grader"),
-                &provider_kind_keys,
-                &format!("{path}.grader"),
-                issues,
-            );
-        }
-    }
-
-    if let Some(tests) = raw.get("tests").and_then(Yaml::as_sequence) {
-        for (i, test) in tests.iter().enumerate() {
-            // Only inline test cases carry an `assert` list; a `file://` glob is
-            // a string and a generator source is a `{generator: ...}` mapping.
-            if test.as_mapping().is_none() || test.get("generator").is_some() {
-                continue;
-            }
-            if let Some(asserts) = test.get("assert").and_then(Yaml::as_sequence) {
-                for (j, entry) in asserts.iter().enumerate() {
-                    let path = format!("tests[{i}].assert[{j}]");
-                    check_flatten_entry(entry, &assert_keys, &path, "assert", issues);
-                    check_grader_provider(
-                        entry.get("grader"),
-                        &provider_kind_keys,
-                        &format!("{path}.grader"),
-                        issues,
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Check the `provider:` mapping inside a grader, if present. `grader` is the raw
-/// value under a `grader:` key (top-level or on an `llm-rubric` assert);
-/// `grader_path` is that grader's dotted path (e.g. `grader`,
-/// `tests[0].assert[1].grader`). A missing grader or missing/non-mapping provider
-/// is nothing to check — serde has already rejected any grader-LEVEL typo via
-/// `Grader`'s `deny_unknown_fields`, so only the nested `provider:` needs walking.
-fn check_grader_provider(
-    grader: Option<&Yaml>,
-    keys: &VariantKeys,
-    grader_path: &str,
-    issues: &mut Vec<Issue>,
-) {
-    if let Some(provider) = grader.and_then(|g| g.get("provider")) {
-        check_flatten_entry(
-            provider,
-            keys,
-            &format!("{grader_path}.provider"),
-            "provider",
-            issues,
-        );
-    }
-}
-
-/// Check one provider/assert mapping against its schema-derived key set. The
-/// mapping's `type` selects the variant; an entry with no (or an unknown) type
-/// is skipped, since it would already have failed to deserialize before
-/// `validate` runs.
-fn check_flatten_entry(
-    entry: &Yaml,
-    keys: &VariantKeys,
-    path: &str,
-    kind: &str,
-    issues: &mut Vec<Issue>,
-) {
-    let Some(map) = entry.as_mapping() else {
-        return;
-    };
-    let Some(ty) = entry.get("type").and_then(|v| v.as_str()) else {
-        return;
-    };
-    let Some(variant) = keys.by_type.get(ty) else {
-        return;
-    };
-    for (k, _) in map {
-        let Some(key) = k.as_str() else { continue };
-        if !keys.common.contains(key) && !variant.contains(key) {
-            issues.push(Issue::new(
-                path.to_string(),
-                format!(
-                    "unknown {kind} field '{key}'; expected one of {}",
-                    keys.allowed(ty).join(", ")
-                ),
-            ));
-        }
     }
 }
 
@@ -625,13 +380,6 @@ tests:
     }
 
     #[test]
-    fn missing_providers_is_an_issue() {
-        let (suite, raw) = load_str_raw("version: 1\nproviders: []\n").unwrap();
-        let issues = validate(&suite, &raw);
-        assert!(issues.iter().any(|i| i.path == "providers"));
-    }
-
-    #[test]
     fn extends_deep_merges_and_appends_asserts() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -746,214 +494,78 @@ tests:
     }
 
     #[test]
-    fn typo_provider_key_is_flagged_by_validate() {
-        // `basurl` (a typo of `base_url`) is silently dropped by serde's
-        // `flatten` of the internally-tagged ProviderKind, so it must be caught
-        // by the schema-driven validate pass instead.
-        let (suite, raw) = load_str_raw(
+    fn env_interpolation_resolves_provider_base_url() {
+        // Unique var name so this can't collide with a parallel test.
+        std::env::set_var("DOMARINN_TEST_INTERP_URL", "https://ollama.local/v1");
+        let (suite, _raw) = load_str_raw(
             r#"
 version: 1
 providers:
-  - {id: p, type: openai, model: gpt-x, basurl: "http://localhost"}
+  - {id: p, type: openai, model: m, base_url: "${env:DOMARINN_TEST_INTERP_URL}"}
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
-        let hit = issues
-            .iter()
-            .find(|i| i.path == "providers[0]")
-            .unwrap_or_else(|| panic!("expected a providers[0] issue, got {issues:?}"));
-        assert!(
-            hit.message.contains("basurl"),
-            "message should name the key: {}",
-            hit.message
-        );
+        std::env::remove_var("DOMARINN_TEST_INTERP_URL");
+        match &suite.providers[0].kind {
+            crate::config::ProviderKind::Openai { base_url, .. } => {
+                assert_eq!(base_url.as_deref(), Some("https://ollama.local/v1"));
+            }
+            other => panic!("expected openai provider, got {other:?}"),
+        }
     }
 
     #[test]
-    fn typo_assert_key_is_flagged_by_validate() {
-        // `weigth` (a typo of `weight`) inside an inline assert is dropped by
-        // the flattened AssertKind; validate must flag it and name the key.
-        let (suite, raw) = load_str_raw(
+    fn env_interpolation_missing_var_names_file_and_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("domarinn.yaml"),
             r#"
 version: 1
 providers:
-  - {id: p, type: exec, command: ["x"]}
-tests:
-  - vars: {}
-    assert:
-      - {type: contains, value: "hi", weigth: 2}
+  - {id: p, type: openai, model: m, base_url: "${env:DOMARINN_TEST_DEFINITELY_UNSET}"}
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
-        let hit = issues
-            .iter()
-            .find(|i| i.path == "tests[0].assert[0]")
-            .unwrap_or_else(|| panic!("expected a tests[0].assert[0] issue, got {issues:?}"));
+        let err = load_file(dir.path()).unwrap_err();
+        assert!(matches!(err, LoadError::EnvMissing { .. }), "{err:?}");
+        let msg = err.to_string();
         assert!(
-            hit.message.contains("weigth"),
-            "message should name the key: {}",
-            hit.message
+            msg.contains("providers[0].base_url"),
+            "names the dotted path: {msg}"
+        );
+        assert!(
+            msg.contains("DOMARINN_TEST_DEFINITELY_UNSET"),
+            "names the variable: {msg}"
         );
     }
 
     #[test]
-    fn typo_grader_provider_key_is_flagged_by_validate() {
-        // The top-level `grader.provider` is a bare `ProviderKind` mapping.
-        // `basurl` (a typo of `base_url`) is silently dropped by the
-        // internally-tagged enum — the `Grader` struct's `deny_unknown_fields`
-        // only guards the grader-LEVEL keys, not the nested provider mapping.
-        let (suite, raw) = load_str_raw(
-            r#"
-version: 1
-providers: [{id: p, type: exec, command: ["x"]}]
-grader:
-  provider: {type: anthropic, model: m, basurl: "http://localhost"}
-"#,
-        )
-        .unwrap();
-        let issues = validate(&suite, &raw);
-        let hit = issues
-            .iter()
-            .find(|i| i.path == "grader.provider")
-            .unwrap_or_else(|| panic!("expected a grader.provider issue, got {issues:?}"));
-        assert!(
-            hit.message.contains("basurl"),
-            "message should name the key: {}",
-            hit.message
-        );
-    }
-
-    #[test]
-    fn typo_llm_rubric_grader_provider_key_is_flagged_by_validate() {
-        // An `llm-rubric` assert can carry its own inner `grader`, whose
-        // `provider` is again a bare `ProviderKind`. A typo there corrupts the
-        // grading model silently, so validate must flag it and name the key.
-        let (suite, raw) = load_str_raw(
-            r#"
-version: 1
-providers: [{id: p, type: exec, command: ["x"]}]
-tests:
-  - vars: {}
-    assert:
-      - type: llm-rubric
-        value: "ok"
-        grader:
-          provider: {type: anthropic, model: m, basurl: "http://localhost"}
-"#,
-        )
-        .unwrap();
-        let issues = validate(&suite, &raw);
-        let hit = issues
-            .iter()
-            .find(|i| i.path == "tests[0].assert[0].grader.provider")
-            .unwrap_or_else(|| {
-                panic!("expected a tests[0].assert[0].grader.provider issue, got {issues:?}")
-            });
-        assert!(
-            hit.message.contains("basurl"),
-            "message should name the key: {}",
-            hit.message
-        );
-    }
-
-    #[test]
-    fn typo_defaults_llm_rubric_grader_provider_key_is_flagged_by_validate() {
-        // Same nested grader.provider, but reached through `defaults.assert`.
-        let (suite, raw) = load_str_raw(
-            r#"
-version: 1
-providers: [{id: p, type: exec, command: ["x"]}]
-defaults:
-  assert:
-    - type: llm-rubric
-      value: "ok"
-      grader:
-        provider: {type: openai, model: m, api_ky_env: K}
-"#,
-        )
-        .unwrap();
-        let issues = validate(&suite, &raw);
-        let hit = issues
-            .iter()
-            .find(|i| i.path == "defaults.assert[0].grader.provider")
-            .unwrap_or_else(|| {
-                panic!("expected a defaults.assert[0].grader.provider issue, got {issues:?}")
-            });
-        assert!(
-            hit.message.contains("api_ky_env"),
-            "message should name the key: {}",
-            hit.message
-        );
-    }
-
-    #[test]
-    fn valid_grader_provider_keys_do_not_false_positive() {
-        // A well-formed grader (top-level and inside llm-rubric) with a
-        // free-form `params` bag must pass clean.
-        let (suite, raw) = load_str_raw(
-            r#"
-version: 1
-providers: [{id: p, type: exec, command: ["x"]}]
-grader:
-  provider: {type: anthropic, model: m, base_url: "http://x", api_key_env: K, params: {max_tokens: 4096}}
-tests:
-  - vars: {}
-    assert:
-      - type: llm-rubric
-        value: "ok"
-        grader:
-          provider: {type: openai, model: m, api_key_env: K, params: {anything: 1}}
-"#,
-        )
-        .unwrap();
-        assert!(
-            validate(&suite, &raw).is_empty(),
-            "{:?}",
-            validate(&suite, &raw)
-        );
-    }
-
-    #[test]
-    fn valid_provider_and_assert_keys_do_not_false_positive() {
-        // Every documented key — including free-form `params` contents and the
-        // desugared `not-*` assert's injected `negate` — must pass clean.
-        let (suite, raw) = load_str_raw(
+    fn env_interpolation_applies_after_extends() {
+        // A `${env:...}` placeholder introduced by a base layer must resolve on
+        // the composed tree, not be left dangling.
+        std::env::set_var("DOMARINN_TEST_INTERP_BASE_MODEL", "llama3.1");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("base.yaml"),
             r#"
 version: 1
 providers:
-  - {id: p, type: openai, model: m, base_url: "http://x", api_key_env: K, params: {anything_here: 1}}
-defaults:
-  assert:
-    - {type: length, max: 10}
-tests:
-  - vars: {}
-    assert:
-      - {type: not-contains, value: "x", weight: 2}
-      - {type: llm-rubric, value: "ok", params: {arbitrary: true}}
+  - {id: p, type: openai, model: "${env:DOMARINN_TEST_INTERP_BASE_MODEL}"}
 "#,
         )
         .unwrap();
-        assert!(
-            validate(&suite, &raw).is_empty(),
-            "{:?}",
-            validate(&suite, &raw)
-        );
-    }
-
-    #[test]
-    fn duplicate_provider_ids_flagged() {
-        let dup = r#"
-version: 1
-providers:
-  - {id: dup, type: exec, command: ["a"]}
-  - {id: dup, type: exec, command: ["b"]}
-"#;
-        let (suite, raw) = load_str_raw(dup).unwrap();
-        let issues = validate(&suite, &raw);
-        assert!(issues
-            .iter()
-            .any(|i| i.message.contains("duplicate provider id")));
+        std::fs::write(
+            dir.path().join("domarinn.yaml"),
+            "version: 1\nextends: \"file://base.yaml\"\nsuite: child\n",
+        )
+        .unwrap();
+        let (suite, _raw) = load_file_raw(dir.path()).unwrap();
+        std::env::remove_var("DOMARINN_TEST_INTERP_BASE_MODEL");
+        match &suite.providers[0].kind {
+            crate::config::ProviderKind::Openai { model, .. } => {
+                assert_eq!(model, "llama3.1");
+            }
+            other => panic!("expected openai provider, got {other:?}"),
+        }
     }
 }

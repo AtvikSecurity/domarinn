@@ -68,6 +68,16 @@ esac
 The [reusable action](#the-reusable-action) below does exactly this, plus the
 report upload and PR comment, so you usually don't hand-roll it.
 
+### Stable output in CI
+
+CI logs are deterministic: domarinn detects that its output is captured (not a
+terminal) and drops everything cosmetic. The **live progress bar is suppressed**
+on a non-TTY stderr (so no carriage returns or redraws clutter the log), and
+**human output is never colored** without a terminal. `stdout` — your `json`,
+`jsonl`, or `junit` report — is byte-for-byte identical whether or not a terminal
+is attached. If you ever need to force it, `NO_COLOR=1`, `--color never`, and
+`--no-progress` all guarantee plain, stable output regardless of environment.
+
 ---
 
 ## The reusable action

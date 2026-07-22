@@ -17,6 +17,17 @@ domarinn-core = { workspace = true }
 domarinn-cache = { workspace = true }
 domarinn-server = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
+# Color/styling layer. Both crates are already in the lockfile via clap
+# (clap_builder depends on anstyle 1.0.14 and anstream 1.0.0), so declaring them
+# here reuses the resolved versions and adds no new crates to the build.
+anstyle = "1"
+anstream = "1"
+# Unified text diffs of case outputs and config snapshots (Task 19). Approved new
+# dependency; a small, dependency-light Myers-diff implementation.
+similar = "2"
+# Live progress bar during `run`, drawn on stderr (Task 20). Approved new
+# dependency; hides itself on non-TTY so it never touches machine output.
+indicatif = "0.18"
 tokio = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -31,3 +42,6 @@ tracing = { workspace = true }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+# The JSON diff golden (tests/commands.rs) recomputes `diff_runs` directly to
+# assert `diff --format json` is byte-identical to the raw serialization.
+domarinn-core = { workspace = true }

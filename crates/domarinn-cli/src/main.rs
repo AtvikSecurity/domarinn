@@ -11,12 +11,17 @@ use clap::{Parser, Subcommand};
 
 mod cachecfg;
 mod cachecmd;
+mod casedetail;
 mod diffcmd;
+mod diffrender;
 mod import;
 mod loadrun;
 mod output;
+mod progress;
 mod run;
+mod runscmd;
 mod share;
+mod style;
 
 /// Exit codes with meaning to CI.
 pub mod exit {
@@ -55,6 +60,11 @@ struct Cli {
     /// Results server base URL (or set DOMARINN_SERVER_URL).
     #[arg(long, global = true)]
     server_url: Option<String>,
+
+    /// When to colorize human output: auto (color a TTY), always, or never.
+    /// Honors NO_COLOR and CLICOLOR_FORCE; machine formats are never colored.
+    #[arg(long, global = true, value_enum, default_value_t = style::ColorChoice::Auto)]
+    color: style::ColorChoice,
 }
 
 #[derive(Subcommand)]
@@ -63,6 +73,8 @@ enum Command {
     Run(run::RunArgs),
     /// Upload a completed run to a results server and print its URL.
     Share(share::ShareArgs),
+    /// List stored runs (newest first).
+    Runs(runscmd::RunsArgs),
     /// Diff two runs (regressions, fixes, output changes, significance).
     Diff(diffcmd::DiffArgs),
     /// Render a stored run in the terminal.
@@ -169,11 +181,16 @@ fn main() -> ExitCode {
         format: cli.log_format.into(),
     });
 
+    // Resolve the color decision once, from the flag + environment + stdout TTY,
+    // and thread the same palette through every command.
+    let palette = style::Palette::detect(cli.color);
+
     let code = match cli.command {
-        Command::Run(args) => run::execute(args, cli.server_url),
+        Command::Run(args) => run::execute(args, cli.server_url, palette, cli.verbose),
         Command::Share(args) => share::execute(args, cli.server_url),
-        Command::Diff(args) => diffcmd::execute_diff(args),
-        Command::View(args) => diffcmd::execute_view(args),
+        Command::Runs(args) => runscmd::execute(args, cli.server_url, palette),
+        Command::Diff(args) => diffcmd::execute_diff(args, palette),
+        Command::View(args) => diffcmd::execute_view(args, palette),
         Command::Cache { cmd } => cachecmd::execute(cmd),
         Command::Import { format, path } => match format {
             ImportFormat::Promptfoo => import::execute(path),

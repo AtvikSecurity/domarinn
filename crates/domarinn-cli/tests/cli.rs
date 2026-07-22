@@ -145,8 +145,110 @@ fn run_json_format_is_valid_json() {
         .unwrap();
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["schema_version"], 2);
     assert_eq!(value["summary"]["passed"], 1);
+}
+
+/// `--color always` forces ANSI even when stdout is a pipe (assert_cmd is never
+/// a TTY), so the human table carries escape sequences.
+#[test]
+fn run_color_always_emits_ansi_when_piped() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    let output = bin()
+        .args(["run", "--color", "always"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains('\x1b'),
+        "--color always should emit ANSI escapes; got:\n{stdout}"
+    );
+    // The status token survives byte-for-byte inside the escapes.
+    assert!(stdout.contains("PASS"));
+}
+
+/// The default over a pipe is no color: assert_cmd is not a TTY and neither
+/// NO_COLOR nor CLICOLOR_FORCE is set.
+#[test]
+fn run_default_piped_has_no_ansi() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    let output = bin()
+        .arg("run")
+        .current_dir(dir.path())
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains('\x1b'),
+        "piped default output must be plain; got:\n{stdout}"
+    );
+}
+
+/// `NO_COLOR` disables color under `--color auto` even if a TTY were present.
+#[test]
+fn run_no_color_env_disables_ansi() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    let output = bin()
+        .args(["run", "--color", "auto"])
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains('\x1b'),
+        "NO_COLOR must suppress ANSI; got:\n{stdout}"
+    );
+}
+
+/// The structural guarantee: even with `--color always`, the JSON machine format
+/// carries no escapes and still parses.
+#[test]
+fn run_color_always_json_is_pure_json() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    let output = bin()
+        .args(["run", "--color", "always", "--format", "json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(
+        !output.stdout.contains(&0x1b),
+        "machine JSON must never contain ANSI escapes even with --color always"
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["summary"]["passed"], 1);
+}
+
+/// File output forces color off regardless of `--color always`: a file must
+/// never carry terminal escapes.
+#[test]
+fn run_out_file_color_always_has_no_ansi() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    let out = dir.path().join("table.txt");
+    bin()
+        .args(["run", "--color", "always", "--out"])
+        .arg(&out)
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(
+        !bytes.contains(&0x1b),
+        "--out file must be plain even with --color always"
+    );
+    assert!(String::from_utf8_lossy(&bytes).contains("PASS"));
 }
 
 #[test]
@@ -318,4 +420,96 @@ fn server_honors_data_dir_env_var() {
         !stderr.contains("/data/domarinn.db"),
         "server must not fall back to the /data default when DOMARINN_DATA_DIR is set; got:\n{stderr}"
     );
+}
+
+/// Over a pipe (assert_cmd is not a TTY) the live progress bar must be fully
+/// hidden: no carriage returns and no ANSI escapes leak onto stderr, so CI logs
+/// and captured output stay clean. This is the non-TTY silence guarantee.
+#[test]
+fn run_progress_bar_is_hidden_over_a_pipe() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    let output = bin().arg("run").current_dir(dir.path()).output().unwrap();
+    assert!(output.status.success());
+    let stderr = &output.stderr;
+    assert!(
+        !stderr.contains(&b'\r'),
+        "a hidden bar must not emit carriage returns; got stderr:\n{}",
+        String::from_utf8_lossy(stderr)
+    );
+    assert!(
+        !stderr.contains(&0x1b),
+        "a hidden bar must not emit ANSI escapes; got stderr:\n{}",
+        String::from_utf8_lossy(stderr)
+    );
+}
+
+/// `--no-progress` is accepted and is equally silent over a pipe (the flag is an
+/// opt-out that must never make output noisier).
+#[test]
+fn run_no_progress_flag_is_accepted_and_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    let output = bin()
+        .args(["run", "--no-progress"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(
+        !output.stderr.contains(&b'\r') && !output.stderr.contains(&0x1b),
+        "--no-progress stderr must carry no bar artifacts; got:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// stdout purity is independent of `--no-progress`: the primary (table) output
+/// is byte-identical with and without the flag, so the progress bar can never
+/// perturb the machine-facing stream.
+#[test]
+fn run_stdout_is_byte_identical_with_and_without_no_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    let with_bar = bin().arg("run").current_dir(dir.path()).output().unwrap();
+    let no_bar = bin()
+        .args(["run", "--no-progress"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(with_bar.status.success() && no_bar.status.success());
+    assert_eq!(
+        with_bar.stdout, no_bar.stdout,
+        "stdout must be byte-identical regardless of the progress bar"
+    );
+}
+
+/// A suite whose single case fans out over a 2x2 matrix. `list tests` must
+/// enumerate the expanded, deterministically-ordered cell ids.
+const MATRIX_SUITE: &str = r#"
+version: 1
+suite: matrix
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"ok\"}'"]
+tests:
+  - id: greet
+    matrix:
+      style: [terse, warm]
+      temperature: [0, 1]
+    assert:
+      - {type: contains, value: "ok"}
+"#;
+
+#[test]
+fn list_tests_enumerates_expanded_matrix_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), MATRIX_SUITE);
+    bin()
+        .args(["list", "tests"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("greet[style=terse,temperature=0]"))
+        .stdout(predicate::str::contains("greet[style=warm,temperature=1]"));
 }

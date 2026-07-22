@@ -472,6 +472,23 @@
             "$ref": "#/$defs/Val"
           }
         },
+        "matrix": {
+          "description": "Parameter sweep: each axis maps a var name to the list of values it takes.\nThe case fans out over the cartesian product of its axes (one case per\ncombination), with each axis value merged into `vars`. See\n[`crate::matrix`].",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Val"
+            }
+          }
+        },
+        "matrix_id": {
+          "description": "Optional minijinja template for a matrix cell's id, rendered against the\naxis values (e.g. `\"{{ style }}-{{ temperature }}\"`). Defaults to\n`<base-id>[key=value,…]`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "assert": {
           "type": "array",
           "items": {

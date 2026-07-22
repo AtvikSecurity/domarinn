@@ -12,8 +12,9 @@ use domarinn_core::cache::CacheMode;
 use domarinn_core::cache::{
     CacheBackend, CacheEntry, CacheError, CacheKey, CacheStats, PurgeFilter,
 };
+use domarinn_core::progress::{ProgressEvent, ProgressSink};
 use domarinn_core::result::{AssertStatus, CaseStatus};
-use domarinn_core::runner::{run, RunOptions};
+use domarinn_core::runner::{run, run_with_progress, RunOptions};
 use domarinn_core::DefaultGrader;
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -342,6 +343,180 @@ tests:
 }
 
 #[tokio::test]
+async fn matrix_sweep_produces_a_cell_per_combination_with_stable_case_keys() {
+    // A 2x2 matrix over one provider → four cases, run twice; the ids and
+    // therefore the CaseKeys must be identical across runs (stable diffing).
+    let yaml = r#"
+version: 1
+providers:
+  - {id: p, type: exec, command: ["sh","-c","cat >/dev/null; printf '{\"output\":\"ok\"}'"]}
+tests:
+  - id: greet
+    matrix:
+      style: [terse, warm]
+      temperature: [0, 1]
+    assert:
+      - {type: contains, value: "ok"}
+"#;
+    let suite = domarinn_core::load_str(yaml).unwrap();
+    let cache = MemCache::default();
+
+    let first = run(&suite, Path::new("."), &cache, None, &RunOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(first.cases.len(), 4, "2x2 matrix expands to four cells");
+    let ids: Vec<String> = first.cases.iter().map(|c| c.cell.test_id.clone()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "greet[style=terse,temperature=0]",
+            "greet[style=terse,temperature=1]",
+            "greet[style=warm,temperature=0]",
+            "greet[style=warm,temperature=1]",
+        ]
+    );
+    assert_eq!(first.summary.passed, 4);
+
+    let second = run(&suite, Path::new("."), &cache, None, &RunOptions::default())
+        .await
+        .unwrap();
+    let keys_first: Vec<_> = first.cases.iter().map(|c| c.case_key.clone()).collect();
+    let keys_second: Vec<_> = second.cases.iter().map(|c| c.case_key.clone()).collect();
+    assert_eq!(
+        keys_first, keys_second,
+        "matrix cell case keys must be stable across runs"
+    );
+}
+
+/// A [`ProgressSink`] that records every event it receives, in order.
+#[derive(Default)]
+struct CollectingSink {
+    events: Mutex<Vec<ProgressEvent>>,
+}
+
+impl ProgressSink for CollectingSink {
+    fn event(&self, event: &ProgressEvent) {
+        self.events.lock().unwrap().push(event.clone());
+    }
+}
+
+#[tokio::test]
+async fn progress_events_bracket_the_run_and_match_the_summary() {
+    // A mixed suite: two cells pass, one fails — so the CaseFinished tallies must
+    // reconcile against the returned summary across statuses, not just totals.
+    let yaml = r#"
+version: 1
+providers:
+  - {id: p, type: exec, command: ["sh","-c","cat >/dev/null; printf '{\"output\":\"hello\"}'"]}
+tests:
+  - {id: t1, vars: {}, assert: [{type: contains, value: "hello"}]}
+  - {id: t2, vars: {}, assert: [{type: contains, value: "hello"}]}
+  - {id: t3, vars: {}, assert: [{type: contains, value: "goodbye"}]}
+"#;
+    let suite = domarinn_core::load_str(yaml).unwrap();
+    let cache = MemCache::default();
+    let sink = CollectingSink::default();
+
+    let result = run_with_progress(
+        &suite,
+        Path::new("."),
+        &cache,
+        None,
+        &RunOptions::default(),
+        Some(&sink),
+    )
+    .await
+    .unwrap();
+
+    let events = sink.events.lock().unwrap();
+    let total = result.summary.total as usize;
+    assert_eq!(total, 3);
+
+    // RunStarted is first and carries the cell total.
+    match &events[0] {
+        ProgressEvent::RunStarted { total: t } => assert_eq!(*t, total),
+        other => panic!("first event must be RunStarted, got {other:?}"),
+    }
+    // RunFinished is last and carries the same summary the run returned.
+    match events.last().unwrap() {
+        ProgressEvent::RunFinished { summary } => {
+            assert_eq!(summary.total, result.summary.total);
+            assert_eq!(summary.passed, result.summary.passed);
+            assert_eq!(summary.failed, result.summary.failed);
+        }
+        other => panic!("last event must be RunFinished, got {other:?}"),
+    }
+
+    // Exactly `total` Started and `total` Finished, each index seen once.
+    let started: Vec<usize> = events
+        .iter()
+        .filter_map(|e| match e {
+            ProgressEvent::CaseStarted { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    let mut finished: Vec<usize> = events
+        .iter()
+        .filter_map(|e| match e {
+            ProgressEvent::CaseFinished { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started.len(), total, "one CaseStarted per cell");
+    assert_eq!(finished.len(), total, "one CaseFinished per cell");
+    finished.sort_unstable();
+    assert_eq!(
+        finished,
+        (0..total).collect::<Vec<_>>(),
+        "each index finishes once"
+    );
+
+    // The Finished statuses reconcile against the summary, status by status.
+    let mut passed = 0u64;
+    let mut failed = 0u64;
+    let mut errored = 0u64;
+    for e in events.iter() {
+        if let ProgressEvent::CaseFinished { status, .. } = e {
+            match status {
+                CaseStatus::Pass => passed += 1,
+                CaseStatus::Fail => failed += 1,
+                CaseStatus::Error => errored += 1,
+                CaseStatus::Skip => {}
+            }
+        }
+    }
+    assert_eq!(passed, result.summary.passed);
+    assert_eq!(failed, result.summary.failed);
+    assert_eq!(errored, result.summary.errored);
+}
+
+#[tokio::test]
+async fn run_is_equivalent_to_run_with_progress_none() {
+    // `run` is a delegate: same suite, same result shape, with no sink attached.
+    let yaml = fixed_output_suite("hello", false, "      - {type: contains, value: \"hello\"}");
+    let suite = domarinn_core::load_str(&yaml).unwrap();
+    let cache = MemCache::default();
+
+    let via_run = run(&suite, Path::new("."), &cache, None, &RunOptions::default())
+        .await
+        .unwrap();
+    let via_progress = run_with_progress(
+        &suite,
+        Path::new("."),
+        &cache,
+        None,
+        &RunOptions::default(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(via_run.summary.total, via_progress.summary.total);
+    assert_eq!(via_run.summary.passed, via_progress.summary.passed);
+    assert_eq!(via_run.cases.len(), via_progress.cases.len());
+}
+
+#[tokio::test]
 async fn matrix_is_deterministically_ordered() {
     // Two providers, two tests → four cells, always in the same order.
     let yaml = r#"
@@ -372,4 +547,130 @@ tests:
             ("b".into(), "t2".into()),
         ]
     );
+}
+
+/// A suite whose system-under-test is a (mocked) anthropic provider, with a
+/// templated prompt so the persisted rendered prompt can be asserted. The
+/// anthropic provider surfaces both `stop_reason` and the full raw payload,
+/// which exec providers do not — so it exercises the v2 capture end to end.
+fn anthropic_capture_suite(uri: &str) -> String {
+    r#"
+version: 1
+suite: capture
+providers:
+  - {id: p, type: anthropic, model: claude-x, base_url: "__URI__", api_key_env: DOMARINN_RAW_CAPTURE_KEY}
+prompts:
+  - {id: greet, template: "hello {{ name }}"}
+tests:
+  - id: t1
+    vars: {name: "world"}
+    assert:
+      - {type: contains, value: "hi"}
+"#
+    .replace("__URI__", uri)
+}
+
+/// Mount a `/v1/messages` mock returning `body`, and run the capture suite with
+/// `opts`, returning the single `CaseResult`.
+async fn run_capture(
+    body: serde_json::Value,
+    opts: RunOptions,
+) -> domarinn_core::result::CaseResult {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    std::env::set_var("DOMARINN_RAW_CAPTURE_KEY", "sk-test");
+
+    let yaml = anthropic_capture_suite(&server.uri());
+    let suite = domarinn_core::load_str(&yaml).unwrap();
+    let cache = MemCache::default();
+    let mut result = run(&suite, Path::new("."), &cache, None, &opts)
+        .await
+        .unwrap();
+    result.cases.pop().expect("one case")
+}
+
+#[tokio::test]
+async fn run_captures_prompt_stop_reason_and_raw() {
+    let opts = RunOptions {
+        cache_mode: CacheMode::Disabled,
+        ..Default::default()
+    };
+    let case = run_capture(
+        json!({
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "hi there"}]
+        }),
+        opts,
+    )
+    .await;
+
+    assert_eq!(case.status, CaseStatus::Pass);
+    assert_eq!(
+        case.prompt,
+        Some(domarinn_core::types::RenderedPrompt::Text(
+            "hello world".into()
+        )),
+        "the rendered prompt sent to the provider must be captured"
+    );
+    assert_eq!(case.stop_reason.as_deref(), Some("end_turn"));
+    let raw = case.raw.as_ref().expect("raw retained by default");
+    assert_eq!(raw["stop_reason"], "end_turn");
+}
+
+#[tokio::test]
+async fn no_raw_option_drops_raw_but_keeps_prompt_and_stop_reason() {
+    let opts = RunOptions {
+        cache_mode: CacheMode::Disabled,
+        include_raw: false,
+        ..Default::default()
+    };
+    let case = run_capture(
+        json!({
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "hi there"}]
+        }),
+        opts,
+    )
+    .await;
+
+    // Only raw is suppressed; the prompt and stop_reason are still captured.
+    assert!(
+        case.raw.is_none(),
+        "include_raw = false must drop raw metadata"
+    );
+    assert_eq!(case.stop_reason.as_deref(), Some("end_turn"));
+    assert_eq!(
+        case.prompt,
+        Some(domarinn_core::types::RenderedPrompt::Text(
+            "hello world".into()
+        ))
+    );
+}
+
+#[tokio::test]
+async fn oversized_raw_metadata_is_dropped_whole() {
+    // A raw payload over 64 KiB is dropped entirely (truncated JSON is useless);
+    // the rest of the case is unaffected.
+    let big = "x".repeat(70 * 1024);
+    let opts = RunOptions {
+        cache_mode: CacheMode::Disabled,
+        ..Default::default()
+    };
+    let case = run_capture(
+        json!({
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "hi there"}],
+            "blob": big
+        }),
+        opts,
+    )
+    .await;
+
+    assert!(case.raw.is_none(), "raw over 64 KiB must be dropped whole");
+    assert_eq!(case.status, CaseStatus::Pass);
+    assert_eq!(case.stop_reason.as_deref(), Some("end_turn"));
 }

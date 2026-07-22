@@ -258,6 +258,17 @@ pub struct TestCase {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vars: BTreeMap<String, Val>,
+    /// Parameter sweep: each axis maps a var name to the list of values it takes.
+    /// The case fans out over the cartesian product of its axes (one case per
+    /// combination), with each axis value merged into `vars`. See
+    /// [`crate::matrix`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub matrix: BTreeMap<String, Vec<Val>>,
+    /// Optional minijinja template for a matrix cell's id, rendered against the
+    /// axis values (e.g. `"{{ style }}-{{ temperature }}"`). Defaults to
+    /// `<base-id>[key=value,…]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assert: Vec<Assert>,
     /// If set, the case passes when its weighted-mean score >= threshold;

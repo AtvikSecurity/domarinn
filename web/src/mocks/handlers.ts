@@ -119,9 +119,17 @@ function filterCases(cases: MockCaseRow[], p: URLSearchParams): MockCaseRow[] {
   const status = p.get("status");
   const tag = p.get("tag");
   const q = p.get("q")?.toLowerCase().trim();
+  // Matrix-identity server filters (exact match on the promoted columns), the
+  // same ones the real `GET /runs/{id}/cases` accepts (crates/.../cases.rs).
+  const provider = p.get("provider");
+  const prompt = p.get("prompt");
+  const test = p.get("test");
   return cases.filter((c) => {
     if (status && c.status !== status) return false;
     if (tag && !c.tags.includes(tag)) return false;
+    if (provider && c.provider_id !== provider) return false;
+    if (prompt && c.prompt_id !== prompt) return false;
+    if (test && c.test_id !== test) return false;
     if (q) {
       const hay = `${c.name} ${c.output_preview} ${c.case_key}`.toLowerCase();
       if (!hay.includes(q)) return false;
@@ -271,6 +279,29 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
         return detail ? json(detail) : notFound();
       }
     }
+    // GET /runs/:id/matrix — provider × prompt × test pivot. Columns are always
+    // complete; the test rows paginate via ?limit/?cursor. An unknown run is a
+    // 404 (buildMatrix returns undefined), mirroring the server.
+    if (seg[2] === "matrix" && method === "GET" && seg.length === 3) {
+      const limitRaw = p.get("limit");
+      const limit =
+        limitRaw !== null && limitRaw.trim() !== "" && Number.isFinite(Number(limitRaw))
+          ? Number(limitRaw)
+          : undefined;
+      const cursorRaw = p.get("cursor");
+      const cursor =
+        cursorRaw !== null && cursorRaw.trim() !== "" && Number.isFinite(Number(cursorRaw))
+          ? Number(cursorRaw)
+          : undefined;
+      const matrix = fx.buildMatrix(runId, { limit, cursor });
+      return matrix ? json(matrix) : notFound();
+    }
+    // GET /runs/:id/config — the run's config digest + snapshot (cheap
+    // config-drift fetch; the real server extracts it from the stored blob).
+    if (seg[2] === "config" && method === "GET" && seg.length === 3) {
+      const cfg = fx.runConfig(runId);
+      return cfg ? json(cfg) : notFound();
+    }
     if (seg[2] === "compare" && method === "GET") {
       // Real server: `GET /runs/{id}/compare/{other}` only —
       // `Path((id, other))` requires both segments, so there is no route for
@@ -307,6 +338,29 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
         if (!runId) return json({ error: "run_id required" }, 400);
         fx.setSuiteBaseline(project, suite, runId);
         return json({ project, suite, run_id: runId });
+      }
+      // GET /projects/:project/suites/:suite/cases/:case_key/history — one
+      // case's timeline across the suite's recent runs. Points are newest-first;
+      // an unknown project/suite/case (no run carries the case) is a 404, like
+      // the real handler.
+      if (
+        method === "GET" &&
+        seg[4] === "cases" &&
+        seg[6] === "history" &&
+        seg.length === 7
+      ) {
+        const suite = seg[3];
+        const caseKey = seg[5];
+        if (suite === undefined || caseKey === undefined) return notFound();
+        const limitRaw = p.get("limit");
+        const limit =
+          limitRaw !== null &&
+          limitRaw.trim() !== "" &&
+          Number.isFinite(Number(limitRaw))
+            ? Number(limitRaw)
+            : undefined;
+        const history = fx.caseHistory(project, suite, caseKey, limit);
+        return history ? json(history) : notFound();
       }
     }
   }

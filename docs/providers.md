@@ -21,6 +21,29 @@ Every provider has an `id` (used in results and cache keys) and an optional
 > `anthropic.rs`, `openai.rs`, `http_provider.rs`, `embeddings.rs`, the shared
 > networking in `net.rs`, and the `ProviderKind` schema in `config.rs`.
 
+### Environment-driven config
+
+Any string in a provider's configuration may contain a `${env:VAR}` placeholder,
+resolved once at load time — handy for a per-developer endpoint or a
+per-environment gateway that shouldn't be committed:
+
+```yaml
+providers:
+  - id: gateway
+    type: openai
+    model: "${env:LLM_MODEL}"
+    base_url: "${env:LLM_BASE_URL:-https://api.openai.com/v1}"
+    api_key_env: LLM_API_KEY
+```
+
+An unset `${env:VAR}` with no `:-default` is a hard load error that names the
+field and the variable; `$${env:VAR}` escapes to a literal. This resolves the
+*endpoint*, not the *secret* — API keys are still read at call time from the
+variable named by `api_key_env`. The same interpolation covers a `grader`'s
+`provider` block and `cache.s3`, but never test `vars`. See
+[Environment interpolation](./configuration.md#environment-interpolation-envvar)
+for the full rules.
+
 ---
 
 ## `exec` — the flagship

@@ -26,11 +26,21 @@ use crate::dto::cache::PruneResponse;
 use crate::dto::meta::{MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
 use crate::extract::{ApiJson, ApiQuery};
-use crate::storage::{self, CachePutOutcome, CaseListFilter, IngestOutcome, RunListFilter};
+use crate::storage::{
+    self, CachePutOutcome, CaseListFilter, IngestOutcome, MatrixFilter, RunListFilter,
+};
 use crate::AppState;
 
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 200;
+/// The case-history endpoint has its own tighter window than the run/case
+/// lists: a timeline of the last few runs, defaulting to 20 and capped at 100.
+const HISTORY_DEFAULT_LIMIT: i64 = 20;
+const HISTORY_MAX_LIMIT: i64 = 100;
+/// The matrix endpoint paginates test ROWS (columns never paginate), with a
+/// wider window than the case list: defaults to 100 and caps at 500.
+const MATRIX_DEFAULT_LIMIT: i64 = 100;
+const MATRIX_MAX_LIMIT: i64 = 500;
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
 /// Build the full API router with all middleware layers applied.
@@ -62,13 +72,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/runs/{id}", get(get_run).delete(delete_run))
         .route("/api/v1/runs/{id}/cases", get(list_cases))
         .route("/api/v1/runs/{id}/cases/{case_key}", get(get_case))
+        .route("/api/v1/runs/{id}/matrix", get(run_matrix))
         .route("/api/v1/runs/{id}/export", get(export_run))
+        .route("/api/v1/runs/{id}/config", get(get_run_config))
         .route("/api/v1/runs/{id}/compare/{other}", get(compare_runs))
         .route("/api/v1/projects", get(list_projects))
         .route("/api/v1/projects/{project}/suites", get(list_suites))
         .route(
             "/api/v1/projects/{project}/suites/{suite}/baseline",
             put(put_baseline).delete(delete_baseline),
+        )
+        .route(
+            "/api/v1/projects/{project}/suites/{suite}/cases/{case_key}/history",
+            get(case_history),
         )
         .route("/api/v1/cache/stats", get(cache_stats))
         .route("/api/v1/cache/prune", post(cache_prune))
@@ -417,6 +433,10 @@ struct CaseQuery {
     status: Option<CaseStatus>,
     tag: Option<String>,
     q: Option<String>,
+    provider: Option<String>,
+    prompt: Option<String>,
+    test: Option<String>,
+    stop_reason: Option<String>,
     limit: Option<i64>,
     cursor: Option<String>,
 }
@@ -435,6 +455,10 @@ async fn list_cases(
         status: q.status,
         tag: q.tag,
         q: q.q,
+        provider: q.provider,
+        prompt: q.prompt,
+        test: q.test,
+        stop_reason: q.stop_reason,
         limit: clamp_limit(q.limit),
         cursor: q.cursor.as_deref().and_then(|c| c.parse::<i64>().ok()),
     };
@@ -460,6 +484,49 @@ async fn export_run(
 ) -> ApiResult<Response> {
     match state.storage.export_run(id).await? {
         Some(doc) => Ok(Json(doc).into_response()),
+        None => Err(not_found("run")),
+    }
+}
+
+/// Query for `GET /runs/{id}/matrix`. `limit` bounds the test ROWS per page;
+/// columns are always complete.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MatrixQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
+}
+
+async fn run_matrix(
+    _scope: Scoped<Read>,
+    State(state): State<AppState>,
+    Path(id): Path<RunId>,
+    ApiQuery(q): ApiQuery<MatrixQuery>,
+) -> ApiResult<Response> {
+    // An unknown run is a 404; a known run whose cases all lack cell columns
+    // returns an empty matrix (handled by the aggregation), not an error.
+    if !state.storage.run_exists(id.clone()).await? {
+        return Err(not_found("run"));
+    }
+    let filter = MatrixFilter {
+        run_id: id,
+        limit: q
+            .limit
+            .unwrap_or(MATRIX_DEFAULT_LIMIT)
+            .clamp(1, MATRIX_MAX_LIMIT),
+        cursor: q.cursor.as_deref().and_then(|c| c.parse::<i64>().ok()),
+    };
+    let matrix = state.storage.run_matrix(filter).await?;
+    Ok(Json(matrix).into_response())
+}
+
+async fn get_run_config(
+    _scope: Scoped<Read>,
+    State(state): State<AppState>,
+    Path(id): Path<RunId>,
+) -> ApiResult<Response> {
+    match state.storage.get_run_config(id).await? {
+        Some(config) => Ok(Json(config).into_response()),
         None => Err(not_found("run")),
     }
 }
@@ -540,6 +607,33 @@ async fn delete_baseline(
         Ok(StatusCode::NO_CONTENT.into_response())
     } else {
         Err(not_found("baseline"))
+    }
+}
+
+/// Query for `GET /projects/{project}/suites/{suite}/cases/{case_key}/history`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryQuery {
+    limit: Option<i64>,
+}
+
+async fn case_history(
+    _scope: Scoped<Read>,
+    State(state): State<AppState>,
+    Path((project, suite, case_key)): Path<(String, String, CaseKey)>,
+    ApiQuery(q): ApiQuery<HistoryQuery>,
+) -> ApiResult<Response> {
+    let limit = q
+        .limit
+        .unwrap_or(HISTORY_DEFAULT_LIMIT)
+        .clamp(1, HISTORY_MAX_LIMIT);
+    match state
+        .storage
+        .case_history(project, suite, case_key, limit)
+        .await?
+    {
+        Some(history) => Ok(Json(history).into_response()),
+        None => Err(not_found("case")),
     }
 }
 

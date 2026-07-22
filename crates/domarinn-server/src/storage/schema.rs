@@ -125,6 +125,26 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         CREATE INDEX idx_api_keys_user ON api_keys(user_id);
         "#,
         ),
+        // Migration 3: promote matrix-cell identity, score, stop_reason, and the
+        // run config digest out of the zstd blobs into queryable columns +
+        // indexes. Ingest writes them going forward; `backfill` populates
+        // pre-existing rows on open. `repeat_idx` (not `repeat`) sidesteps the
+        // SQL keyword.
+        M::up(
+            r#"
+        ALTER TABLE cases ADD COLUMN provider_id TEXT;
+        ALTER TABLE cases ADD COLUMN prompt_id TEXT;
+        ALTER TABLE cases ADD COLUMN test_id TEXT;
+        ALTER TABLE cases ADD COLUMN repeat_idx INTEGER;
+        ALTER TABLE cases ADD COLUMN score REAL;
+        ALTER TABLE cases ADD COLUMN stop_reason TEXT;
+        CREATE INDEX idx_cases_run_provider ON cases(run_id, provider_id);
+        CREATE INDEX idx_cases_run_test ON cases(run_id, test_id);
+        CREATE INDEX idx_cases_key ON cases(case_key);
+        ALTER TABLE runs ADD COLUMN config_digest TEXT;
+        CREATE INDEX idx_runs_digest ON runs(project, suite, config_digest);
+        "#,
+        ),
     ])
 }
 

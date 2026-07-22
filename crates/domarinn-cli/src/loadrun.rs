@@ -38,6 +38,8 @@ pub fn load_run(reference: &str) -> Result<RunResult, String> {
     serde_json::from_str(&text).map_err(|e| format!("parsing {}: {e}", path.display()))
 }
 
-fn runs_dir() -> PathBuf {
+/// The local run store: `.domarinn/runs`, holding one `<run_id>/result.json`
+/// per persisted run plus a plain-text `latest` pointer file.
+pub(crate) fn runs_dir() -> PathBuf {
     Path::new(".domarinn").join("runs")
 }

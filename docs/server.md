@@ -237,7 +237,9 @@ token has no owning user and gets a `403` here.
 | GET    | `/api/v1/runs/{id}`                      | `read`  | Full run detail. `404` if unknown. |
 | GET    | `/api/v1/runs/{id}/cases`               | `read`  | Lean list of the run's cases (filterable, paginated). |
 | GET    | `/api/v1/runs/{id}/cases/{case_key}`    | `read`  | One case's full detail. |
+| GET    | `/api/v1/runs/{id}/matrix`              | `read`  | Prompt × provider aggregate matrix (rows = tests, paginated). |
 | GET    | `/api/v1/runs/{id}/export`              | `read`  | The original, lossless run document. |
+| GET    | `/api/v1/runs/{id}/config`              | `read`  | The run's config digest + snapshot (no full export). |
 | GET    | `/api/v1/runs/{id}/compare/{other}`     | `read`  | Diff two runs (regressions/improvements per case). |
 | DELETE | `/api/v1/runs/{id}`                      | `admin` | Delete a run. `204` on success. |
 
@@ -264,7 +266,17 @@ RFC3339), `limit` (default `50`, max `200`), `cursor`. The response is
 `cursor` to page.
 
 **Case filters** (`GET /api/v1/runs/{id}/cases`): `status`, `tag`, `q`
-(free-text), `limit`, `cursor`.
+(free-text), `provider`, `prompt`, `test`, `stop_reason` (each an exact match on
+the promoted cell columns), `limit`, `cursor`.
+
+**Matrix** (`GET /api/v1/runs/{id}/matrix`) returns the run's prompt × provider
+aggregate. `columns` is the complete set of `(provider, prompt)` pairs (first-seen
+order); `rows` is one per test, each with a `cells` array aligned 1:1 with
+`columns` — a `null` cell means that test never ran on that column. Each cell
+collapses that test × column's repeats into status counts, `score_mean`,
+`pass_fraction`, `distinct_outputs` (a flakiness signal), `latency_ms_mean`,
+`cost_usd`, and the cell's `case_keys`. Only `rows` paginate: `limit` (default
+`100`, max `500`) and `cursor`; columns are always complete.
 
 ### Projects, suites, baselines
 
@@ -274,6 +286,7 @@ RFC3339), `limit` (default `50`, max `200`), `cursor`. The response is
 | GET    | `/api/v1/projects/{project}/suites`                      | `read`  | List a project's suites. |
 | PUT    | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Pin a baseline run: body `{ "run_id": "..." }`. `404` if the run is unknown. |
 | DELETE | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Unpin the baseline. `204` on success. |
+| GET    | `/api/v1/projects/{project}/suites/{suite}/cases/{case_key}/history` | `read` | One case's status/score/output-hash across the suite's recent runs. `limit` (default `20`, max `100`). |
 
 ### Cache (shared provider cache)
 

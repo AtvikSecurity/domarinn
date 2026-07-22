@@ -13,7 +13,23 @@ export const RUNS_FILTER_KEYS = [
 export type RunsFilterKey = (typeof RUNS_FILTER_KEYS)[number];
 export type RunsFilters = Partial<Record<RunsFilterKey, string>>;
 
-export const CASE_FILTER_KEYS = ["status", "tag", "q", "case"] as const;
+// `case` (drawer selection), `sort` (grid ordering), and `view` (list vs matrix
+// display toggle) are CLIENT-ONLY keys: they live in the URL for shareability but
+// are stripped before any request so they never hit the server or the
+// react-query cache key (see `useRunCases`). `provider` and `prompt`, by
+// contrast, are SERVER filters (the case-list endpoint accepts them since
+// migration 3) — they flow through to the request and participate in the query
+// key, exactly like `status`/`tag`/`q`.
+export const CASE_FILTER_KEYS = [
+  "status",
+  "tag",
+  "q",
+  "provider",
+  "prompt",
+  "case",
+  "sort",
+  "view",
+] as const;
 export type CaseFilterKey = (typeof CASE_FILTER_KEYS)[number];
 export type CaseFilters = Partial<Record<CaseFilterKey, string>>;
 

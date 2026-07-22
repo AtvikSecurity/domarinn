@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Live smoke suite. It points an OpenAI-compatible provider at a per-developer
+# endpoint supplied entirely through the environment via `${env:VAR}`
+# interpolation — nothing about the endpoint, model, or key is committed here.
+#
+# The three variables come from a git-ignored `.mise/config.local.toml`, so mise
+# injects them for you:
+#
+#   DOMARINN_SMOKE_BASE_URL   e.g. http://localhost:11434/v1
+#   DOMARINN_SMOKE_MODEL      e.g. llama3.1
+#   DOMARINN_SMOKE_API_KEY    the env var *name* is fixed; its value stays in env
+#
+# Run it (mise supplies the vars):
+#
+#   mise exec -- domarinn validate examples/smoke/domarinn.yaml
+#   mise exec -- domarinn run      examples/smoke/domarinn.yaml
+#
+# Without those variables set, `validate` fails fast: an unset `${env:VAR}` with
+# no `:-default` is a hard load error that names the variable.
+version: 1
+project: examples
+suite: smoke
+
+providers:
+  - id: ollama
+    type: openai
+    # base_url and model are resolved from the environment at load time.
+    model: "${env:DOMARINN_SMOKE_MODEL}"
+    base_url: "${env:DOMARINN_SMOKE_BASE_URL}"
+    # api_key_env names the variable to read the key from — never the key itself.
+    api_key_env: DOMARINN_SMOKE_API_KEY
+    params:
+      max_tokens: 64
+      temperature: 0
+
+prompts:
+  - id: capital
+    messages:
+      - role: user
+        content: "What is the capital of {{ country }}? Reply with only the city name."
+
+tests:
+  - id: capital/france
+    vars:
+      country: "France"
+    assert:
+      - type: icontains
+        value: "Paris"

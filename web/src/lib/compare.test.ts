@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { classifyDelta, isFailing, previousRun } from "./compare";
+import {
+  classifyDelta,
+  formatScoreDelta,
+  isFailing,
+  previousRun,
+} from "./compare";
 import type { CaseStatus, RunListItem } from "@/api";
 
 function run(id: string, created_at: string): RunListItem {
@@ -58,6 +63,27 @@ describe("classifyDelta", () => {
 
   it("removed takes precedence when head is missing even if base was failing", () => {
     expect(classifyDelta("error", null)).toBe("removed");
+  });
+});
+
+describe("formatScoreDelta", () => {
+  const MINUS = "−";
+
+  it("renders an em-dash, muted, when the delta is null (a missing score)", () => {
+    expect(formatScoreDelta(null)).toEqual({ text: "—", tone: "muted" });
+  });
+
+  it("renders zero unsigned and muted", () => {
+    expect(formatScoreDelta(0)).toEqual({ text: "0.00", tone: "muted" });
+  });
+
+  it("renders a gain with a + sign and the pass tone (2-dec)", () => {
+    expect(formatScoreDelta(0.2)).toEqual({ text: "+0.20", tone: "pass" });
+    expect(formatScoreDelta(0.128)).toEqual({ text: "+0.13", tone: "pass" });
+  });
+
+  it("renders a regression with a unicode minus and the fail tone (2-dec)", () => {
+    expect(formatScoreDelta(-0.3)).toEqual({ text: `${MINUS}0.30`, tone: "fail" });
   });
 });
 

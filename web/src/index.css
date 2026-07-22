@@ -106,3 +106,64 @@ body {
     transform: translateX(100%);
   }
 }
+
+/* highlight.js theme mapped onto the design tokens instead of shipping a stock
+ * hljs stylesheet. Because every color is a theme variable, syntax colors
+ * follow light/dark automatically (see CodeView.tsx, which emits `.hljs-*`
+ * spans). Accent = keywords, pass(green) = strings, amber = numbers/literals,
+ * muted = comments. */
+.hljs {
+  color: var(--fg);
+  background: transparent;
+}
+.hljs-comment,
+.hljs-quote,
+.hljs-meta {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-name,
+.hljs-tag,
+.hljs-title,
+.hljs-section,
+.hljs-doctag {
+  color: var(--accent);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--accent);
+}
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition,
+.hljs-regexp {
+  color: var(--pass);
+}
+.hljs-number,
+.hljs-literal,
+.hljs-type,
+.hljs-class,
+.hljs-params,
+.hljs-template-variable {
+  color: var(--amber);
+}
+.hljs-variable,
+.hljs-property {
+  color: var(--fg);
+}
+.hljs-deletion {
+  color: var(--fail);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}

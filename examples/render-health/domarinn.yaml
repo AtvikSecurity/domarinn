@@ -29,6 +29,9 @@ tests:
     tags: [smoke]
     vars:
       user_input: "hello world"
+      # A deterministic template filter in action: slugify normalizes free text
+      # into a URL/id-safe token ("Hello, World!" -> "hello-world").
+      slug: "{{ 'Hello, World!' | slugify }}"
     assert:
       - type: contains
         value: "hello"

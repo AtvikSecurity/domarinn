@@ -10,3 +10,7 @@ web/dist/
 # Local editor / OS noise
 .DS_Store
 .superpowers/
+
+# mise local overrides (per-developer env, e.g. smoke-test endpoints)
+.mise/config.local.toml
+mise.local.toml

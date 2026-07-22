@@ -7,4 +7,15 @@ import type { CaseStatus } from "./CaseStatus";
  * One row of `GET /runs/{id}/cases` — lean: a preview and the assert
  * outcomes, not the full stored `CaseResult` (see [`CaseDetailResponse`]).
  */
-export type CaseListItem = { case_key: CaseKey, idx: number, name: string | null, status: CaseStatus, output_preview: string | null, asserts: Array<CaseAssertLean>, prompt_tokens: number | null, completion_tokens: number | null, cost_usd: number | null, latency_ms: number | null, };
+export type CaseListItem = { case_key: CaseKey, idx: number, name: string | null, status: CaseStatus, output_preview: string | null, asserts: Array<CaseAssertLean>, prompt_tokens: number | null, completion_tokens: number | null, cost_usd: number | null, latency_ms: number | null, 
+/**
+ * Matrix-cell identity, promoted out of the stored blob (migration 3) so
+ * the UI can filter/pivot without decompressing each case. All optional:
+ * legacy/pre-backfill rows are NULL and failed-backfill rows carry the
+ * empty-string sentinel, which the list query maps to `None`.
+ */
+provider_id: string | null, prompt_id: string | null, test_id: string | null, 
+/**
+ * DB column is `repeat_idx`; the wire name is `repeat`.
+ */
+repeat: number | null, score: number | null, stop_reason: string | null, };

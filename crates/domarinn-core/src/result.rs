@@ -10,9 +10,9 @@ use ts_rs::TS;
 
 use crate::asserts::AssertName;
 use crate::ids::{CaseKey, RunId};
-use crate::types::{Output, TokenUsage};
+use crate::types::{Output, RenderedPrompt, TokenUsage};
 
-pub const RESULT_SCHEMA_VERSION: u32 = 1;
+pub const RESULT_SCHEMA_VERSION: u32 = 2;
 
 /// Identity of one cell in the provider × prompt × test × repeat matrix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -126,6 +126,13 @@ pub struct CaseResult {
     pub score: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Output>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<RenderedPrompt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown")]
+    pub raw: Option<serde_json::Value>,
     #[serde(default)]
     pub asserts: Vec<AssertResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -250,6 +257,32 @@ mod tests {
             ..with.clone()
         };
         assert_ne!(with.case_key(), without.case_key());
+    }
+
+    #[test]
+    fn v1_case_result_deserializes_with_absent_v2_fields_and_re_serializes_byte_stable() {
+        // A v1 result document has none of the v2 keys. It must deserialize with
+        // all three defaulting to `None`, and — because they carry
+        // `skip_serializing_if` — re-serialize without emitting any of them, so a
+        // stored-then-reloaded v1 document is byte-identical (the server's
+        // content-hash idempotency depends on absent fields staying absent).
+        let v1 = r#"{
+            "cell": {"provider_id": "p", "test_id": "t"},
+            "case_key": "0011223344556677",
+            "status": "pass",
+            "score": 1.0,
+            "output": "hello",
+            "latency_ms": 12
+        }"#;
+        let case: CaseResult = serde_json::from_str(v1).unwrap();
+        assert!(case.prompt.is_none());
+        assert!(case.stop_reason.is_none());
+        assert!(case.raw.is_none());
+
+        let reserialized = serde_json::to_string(&case).unwrap();
+        assert!(!reserialized.contains("prompt"));
+        assert!(!reserialized.contains("stop_reason"));
+        assert!(!reserialized.contains("\"raw\""));
     }
 
     #[test]

@@ -7,10 +7,11 @@ use domarinn_core::ids::RunId;
 use domarinn_core::result::{AssertStatus, RunResult};
 
 use super::{
-    compress, content_hash, decompress, encode_cursor, from_microusd, ms_to_rfc3339, now_ms,
-    sha256_hex, to_microusd, IngestOutcome, Storage,
+    compress, content_hash, decompress, empty_to_none, encode_cursor, from_microusd, ms_to_rfc3339,
+    now_ms, sha256_hex, to_microusd, IngestOutcome, Storage,
 };
 use crate::domain::RunStatusFilter;
+use crate::dto::config::RunConfigResponse;
 use crate::dto::runs::{CaseAssertLean, RunDetailResponse, RunListItem};
 
 impl Storage {
@@ -38,6 +39,10 @@ impl Storage {
 
     pub async fn export_run(&self, id: RunId) -> anyhow::Result<Option<serde_json::Value>> {
         self.runs.read(move |conn| export_run_blob(conn, &id)).await
+    }
+
+    pub async fn get_run_config(&self, id: RunId) -> anyhow::Result<Option<RunConfigResponse>> {
+        self.runs.read(move |conn| run_config_blob(conn, &id)).await
     }
 
     pub async fn run_exists(&self, id: RunId) -> anyhow::Result<bool> {
@@ -89,6 +94,14 @@ struct PreparedCase {
     cost_microusd: Option<i64>,
     latency_ms: i64,
     detail: Vec<u8>,
+    // Migration-3 cell columns, promoted out of the `detail` blob so the matrix
+    // views can filter/join without decompressing every row.
+    provider_id: String,
+    prompt_id: Option<String>,
+    test_id: String,
+    repeat_idx: i64,
+    score: f64,
+    stop_reason: Option<String>,
     tags: Vec<String>,
 }
 
@@ -113,6 +126,7 @@ struct PreparedRun {
     duration_ms: i64,
     content_hash: String,
     uploaded_by: Option<String>,
+    config_digest: String,
     tags: Vec<String>,
     blob: Vec<u8>,
     cases: Vec<PreparedCase>,
@@ -168,6 +182,12 @@ impl PreparedRun {
                 cost_microusd: to_microusd(case.cost_usd),
                 latency_ms: case.latency_ms as i64,
                 detail,
+                provider_id: case.cell.provider_id.clone(),
+                prompt_id: case.cell.prompt_id.clone(),
+                test_id: case.cell.test_id.clone(),
+                repeat_idx: case.cell.repeat as i64,
+                score: case.score,
+                stop_reason: case.stop_reason.clone(),
                 tags: case.tags.clone(),
             });
         }
@@ -193,6 +213,7 @@ impl PreparedRun {
             duration_ms,
             content_hash,
             uploaded_by,
+            config_digest: run.config_digest.clone(),
             tags: run.filters.tags.clone(),
             blob,
             cases,
@@ -222,13 +243,13 @@ impl PreparedRun {
                 git_branch, git_commit, git_dirty, ci_provider, ci_run_url,
                 case_count, pass_count, fail_count, error_count,
                 prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                content_hash, uploaded_by
+                content_hash, uploaded_by, config_digest
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19, ?20,
-                ?21, ?22
+                ?21, ?22, ?23
             )",
             params![
                 self.id,
@@ -253,6 +274,7 @@ impl PreparedRun {
                 self.duration_ms,
                 self.content_hash,
                 self.uploaded_by,
+                self.config_digest,
             ],
         )?;
 
@@ -273,8 +295,12 @@ impl PreparedRun {
                 "INSERT OR IGNORE INTO cases (
                     run_id, case_key, idx, name, status, output_preview, output_text,
                     output_hash, asserts, prompt_tokens, completion_tokens, cost_microusd,
-                    latency_ms, detail
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    latency_ms, detail,
+                    provider_id, prompt_id, test_id, repeat_idx, score, stop_reason
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                    ?15, ?16, ?17, ?18, ?19, ?20
+                )",
                 params![
                     self.id,
                     case.case_key,
@@ -290,6 +316,12 @@ impl PreparedRun {
                     case.cost_microusd,
                     case.latency_ms,
                     case.detail,
+                    case.provider_id,
+                    case.prompt_id,
+                    case.test_id,
+                    case.repeat_idx,
+                    case.score,
+                    case.stop_reason,
                 ],
             )?;
             for tag in &case.tags {
@@ -508,7 +540,7 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     git_branch, git_commit, git_dirty, ci_provider, ci_run_url,
                     case_count, pass_count, fail_count, error_count,
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                    content_hash, uploaded_by
+                    content_hash, uploaded_by, config_digest
              FROM runs WHERE id = ?1",
             params![id.as_str()],
             |row| {
@@ -534,6 +566,8 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     duration_ms: row.get::<_, i64>(18)?,
                     content_hash: row.get::<_, String>(19)?,
                     uploaded_by: row.get::<_, Option<String>>(20)?,
+                    // Map the empty-string backfill sentinel to `None`.
+                    config_digest: empty_to_none(row.get::<_, Option<String>>(21)?),
                     // Filled in below, after the row is loaded.
                     tags: Vec::new(),
                     assert_labels: Vec::new(),
@@ -595,4 +629,39 @@ fn export_run_blob(conn: &Connection, id: &RunId) -> anyhow::Result<Option<serde
     let bytes = decompress(&blob)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     Ok(Some(value))
+}
+
+/// Like [`export_run_blob`], but extracts just the `config_digest` and
+/// `config_snapshot` from the stored run document — the cheap config fetch
+/// behind `GET /runs/{id}/config`. Returns `None` when the run has no stored
+/// blob (unknown run). The digest is `None` when absent or the empty-string
+/// sentinel; the snapshot is `null` when the document has none.
+fn run_config_blob(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunConfigResponse>> {
+    let blob: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT body FROM run_blobs WHERE run_id = ?1",
+            params![id.as_str()],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(blob) = blob else {
+        return Ok(None);
+    };
+    let bytes = decompress(&blob)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let config_digest = empty_to_none(
+        value
+            .get("config_digest")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    );
+    let config = value
+        .get("config_snapshot")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    Ok(Some(RunConfigResponse {
+        run_id: id.clone(),
+        config_digest,
+        config,
+    }))
 }

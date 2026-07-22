@@ -134,24 +134,30 @@ pub fn gzip(bytes: &[u8]) -> Vec<u8> {
 /// Spec for a single case in a fixture run.
 pub struct CaseSpec {
     pub provider: &'static str,
+    pub prompt: Option<&'static str>,
     pub test: &'static str,
     pub repeat: u32,
     pub status: CaseStatus,
     pub output: Option<&'static str>,
     pub tags: Vec<&'static str>,
     pub asserts: Vec<(AssertName, AssertStatus)>,
+    pub cost_usd: Option<f64>,
+    pub latency_ms: u64,
 }
 
 impl CaseSpec {
     pub fn new(provider: &'static str, test: &'static str, status: CaseStatus) -> Self {
         CaseSpec {
             provider,
+            prompt: None,
             test,
             repeat: 0,
             status,
             output: Some("hello"),
             tags: Vec::new(),
             asserts: vec![(AssertName::Contains, AssertStatus::Pass)],
+            cost_usd: Some(0.0025),
+            latency_ms: 42,
         }
     }
 
@@ -169,12 +175,37 @@ impl CaseSpec {
         self.asserts = asserts;
         self
     }
+
+    /// Set the cell's `prompt_id` (default: none).
+    pub fn prompt(mut self, prompt: &'static str) -> Self {
+        self.prompt = Some(prompt);
+        self
+    }
+
+    /// Set the cell's `repeat` index (default: 0). Distinct repeats of the same
+    /// provider/prompt/test produce distinct `case_key`s.
+    pub fn repeat(mut self, repeat: u32) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
+    /// Override the per-case cost in USD (default: `Some(0.0025)`).
+    pub fn cost(mut self, cost_usd: Option<f64>) -> Self {
+        self.cost_usd = cost_usd;
+        self
+    }
+
+    /// Override the per-case latency in ms (default: 42).
+    pub fn latency(mut self, latency_ms: u64) -> Self {
+        self.latency_ms = latency_ms;
+        self
+    }
 }
 
 fn build_case(spec: &CaseSpec) -> CaseResult {
     let cell = CellKey {
         provider_id: spec.provider.to_string(),
-        prompt_id: None,
+        prompt_id: spec.prompt.map(|p| p.to_string()),
         test_id: spec.test.to_string(),
         repeat: spec.repeat,
     };
@@ -208,14 +239,17 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
             0.0
         },
         output: spec.output.map(|o| Output::Text(o.to_string())),
+        prompt: None,
+        stop_reason: None,
+        raw: None,
         asserts,
         usage: Some(TokenUsage {
             input_tokens: 10,
             output_tokens: 20,
             cache_read_tokens: None,
         }),
-        cost_usd: Some(0.0025),
-        latency_ms: 42,
+        cost_usd: spec.cost_usd,
+        latency_ms: spec.latency_ms,
         cached: false,
         attempts: 1,
         error: None,

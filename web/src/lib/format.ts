@@ -2,6 +2,15 @@
 
 const numberFmt = new Intl.NumberFormat("en-US");
 
+/** Short display form of a run id. Real run ids are content-hash idempotency
+ *  keys (see the generated `RunId` doc) — an opaque hex hash collapses to a
+ *  git-style 12-char prefix, while the demo's readable slug ids (which contain
+ *  non-hex letters) are already scannable and pass through unchanged. */
+export function shortRunId(id: string): string {
+  if (id.length > 16 && /^[0-9a-f]+$/i.test(id)) return id.slice(0, 12);
+  return id;
+}
+
 export function formatInt(n: number | undefined | null): string {
   if (n === undefined || n === null) return "-";
   return numberFmt.format(Math.round(n));

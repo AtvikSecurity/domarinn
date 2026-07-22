@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# File-content vars: a var can pull its value from a file next to the suite,
+# instead of being written inline. Handy for large documents, golden fixtures,
+# and untrusted adversarial inputs.
+#
+# Every fixture path is resolved *relative to this directory* and sandboxed —
+# `!file "../../etc/passwd"` (or a symlink pointing outside) is refused, not
+# read. No API key required: the system under test is the testkit fake provider.
+version: 1
+project: examples
+suite: file-vars
+
+providers:
+  - id: echo
+    type: exec
+    command: ["fake-provider"]
+    cache_salt: "dev"
+
+tests:
+  # 1. Plain text fixture, loaded via the `!file` tag. Its content becomes the
+  #    `user_input` var, which the fake provider echoes straight back.
+  - id: doc/echo
+    vars:
+      user_input: !file "fixtures/article.txt"
+    assert:
+      - type: icontains
+        value: "assertions"
+
+  # 2. A `.json` fixture is parsed by extension into a structured value. With no
+  #    `user_input` set, the fake provider echoes the whole vars map, so the
+  #    parsed object round-trips into the (valid-JSON) output.
+  - id: doc/structured-rubric
+    vars:
+      rubric: { $file: "fixtures/rubric.json" }
+    assert:
+      - type: is-json
+      - type: icontains
+        value: "must_mention"
+
+  # 3. `parse: false` forces text even for a structured extension — the raw JSON
+  #    source is echoed verbatim rather than parsed.
+  - id: doc/raw-json-text
+    vars:
+      user_input: { $file: "fixtures/rubric.json", parse: false }
+    assert:
+      - type: contains
+        value: "must_mention"
+
+  # 4. An untrusted fixture marked `raw: true` is NEVER run through the template
+  #    engine, so an SSTI payload in the file stays literal ({{7*7}} != 49).
+  - id: adversarial/ssti-fixture
+    tags: [adversarial]
+    vars:
+      user_input: { $file: "fixtures/ssti-probe.txt", raw: true }
+    assert:
+      - type: not-contains
+        value: "49"

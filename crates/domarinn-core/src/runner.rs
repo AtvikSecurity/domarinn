@@ -21,6 +21,7 @@ use crate::config::{Assert, AssertKind, Suite, TestCase};
 use crate::filter::{Filter, FilterOpts};
 use crate::generate::resolve_generators;
 use crate::ids::{CaseKey, RunId};
+use crate::progress::{ProgressEvent, ProgressSink};
 use crate::provider::{
     CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse, TestMeta,
 };
@@ -33,7 +34,11 @@ use crate::result::{
 };
 use crate::scoring::{case_verdict, remaining_can_change_outcome, Scored};
 use crate::template::TemplateEngine;
-use crate::types::Output;
+use crate::types::{Output, RenderedPrompt};
+
+/// Upper bound on the raw provider metadata persisted per case. A payload over
+/// this size is dropped wholesale (truncated JSON is useless) rather than stored.
+const RAW_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -54,6 +59,9 @@ pub struct RunOptions {
     pub cache_mode: CacheMode,
     /// Max concurrent provider calls. `None` uses the suite's `runner.concurrency`.
     pub concurrency: Option<usize>,
+    /// Persist the provider's raw response metadata in each `CaseResult`. Default
+    /// `true`; disabled by `--no-raw` to keep result documents small.
+    pub include_raw: bool,
 }
 
 impl Default for RunOptions {
@@ -63,6 +71,7 @@ impl Default for RunOptions {
             repeat: 1,
             cache_mode: CacheMode::ReadWrite,
             concurrency: None,
+            include_raw: true,
         }
     }
 }
@@ -127,13 +136,35 @@ pub trait AssertGrader: Send + Sync {
 }
 
 /// Run a suite and produce a [`RunResult`].
-#[tracing::instrument(name = "run", skip_all, fields(project = ?suite.project, suite = ?suite.suite))]
+///
+/// The stable entry point used by the server and embedders: a thin delegate to
+/// [`run_with_progress`] with no progress sink. Its signature is intentionally
+/// unchanged — front-ends that want live progress call `run_with_progress`.
 pub async fn run(
     suite: &Suite,
     base_dir: &Path,
     cache: &dyn CacheBackend,
     grader: Option<&dyn AssertGrader>,
     opts: &RunOptions,
+) -> Result<RunResult, RunError> {
+    run_with_progress(suite, base_dir, cache, grader, opts, None).await
+}
+
+/// Run a suite and produce a [`RunResult`], emitting [`ProgressEvent`]s to an
+/// optional [`ProgressSink`] as it goes.
+///
+/// The sink is a bare `Option<&dyn ProgressSink>` parameter rather than a
+/// [`RunOptions`] field on purpose: a trait object is neither `Debug` nor
+/// `Clone`, and `RunOptions` must keep both derives. See [`crate::progress`]
+/// for the full rationale (sync trait, not a channel; core stays UI-agnostic).
+#[tracing::instrument(name = "run", skip_all, fields(project = ?suite.project, suite = ?suite.suite))]
+pub async fn run_with_progress(
+    suite: &Suite,
+    base_dir: &Path,
+    cache: &dyn CacheBackend,
+    grader: Option<&dyn AssertGrader>,
+    opts: &RunOptions,
+    progress: Option<&dyn ProgressSink>,
 ) -> Result<RunResult, RunError> {
     let started_at = Utc::now();
     let engine = TemplateEngine::new();
@@ -209,12 +240,33 @@ pub async fn run(
     }
 
     let total = cells.len();
+    if let Some(sink) = progress {
+        sink.event(&ProgressEvent::RunStarted { total });
+    }
     let mut slots: Vec<Option<CaseResult>> = (0..total).map(|_| None).collect();
     let completed: Vec<(usize, CaseResult)> = futures::stream::iter(cells.into_iter().enumerate())
         .map(|(i, cell)| {
             let ctx = &ctx;
             let engine = &engine;
             async move {
+                // First statement in the per-cell task, so `CaseStarted` reflects
+                // true in-flight order under `buffer_unordered`, not output order.
+                if let Some(sink) = progress {
+                    sink.event(&ProgressEvent::CaseStarted {
+                        index: i,
+                        cell: CellKey {
+                            provider_id: cell.provider.id().to_string(),
+                            prompt_id: cell.prompt.map(|p| p.id.clone()),
+                            test_id: cell.test.id.clone().unwrap_or_default(),
+                            repeat: cell.repeat,
+                        },
+                        name: cell
+                            .test
+                            .description
+                            .clone()
+                            .or_else(|| cell.test.id.clone()),
+                    });
+                }
                 let case = run_cell(
                     cell.provider,
                     cell.prompt,
@@ -226,9 +278,21 @@ pub async fn run(
                     ctx,
                     base_dir,
                     opts.cache_mode,
+                    opts.include_raw,
                     &retry_cfg,
                 )
                 .await;
+                if let Some(sink) = progress {
+                    sink.event(&ProgressEvent::CaseFinished {
+                        index: i,
+                        cell: case.cell.clone(),
+                        name: case.name.clone(),
+                        status: case.status,
+                        score: case.score,
+                        latency_ms: case.latency_ms,
+                        cached: case.cached,
+                    });
+                }
                 (i, case)
             }
         })
@@ -245,6 +309,11 @@ pub async fn run(
 
     let finished_at = Utc::now();
     let summary = summarize(&cases);
+    if let Some(sink) = progress {
+        sink.event(&ProgressEvent::RunFinished {
+            summary: summary.clone(),
+        });
+    }
     let config_snapshot = serde_json::to_value(suite).unwrap_or(Json::Null);
     let config_digest = format!(
         "blake3:{}",
@@ -296,6 +365,7 @@ async fn run_cell(
     ctx: &CallCtx,
     base_dir: &Path,
     cache_mode: CacheMode,
+    include_raw: bool,
     retry_cfg: &RetryConfig,
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
@@ -314,14 +384,30 @@ async fn run_cell(
     // prompts and `jinja` assertions (`{{ env.X }}`), and never enters the key.
     let rendered_vars = match render::render_vars(&test.vars, engine) {
         Ok(v) => v,
-        Err(e) => return error_case(cell, case_key, name, test, format!("rendering vars: {e}")),
+        Err(e) => {
+            return error_case(
+                cell,
+                case_key,
+                name,
+                test,
+                format!("rendering vars: {e}"),
+                None,
+            )
+        }
     };
     let var_ctx = render::context_with_env(&rendered_vars);
     let rendered_prompt = match prompt {
         Some(p) => match render_prompt(p, &var_ctx, engine, base_dir) {
             Ok(rp) => Some(rp),
             Err(e) => {
-                return error_case(cell, case_key, name, test, format!("rendering prompt: {e}"))
+                return error_case(
+                    cell,
+                    case_key,
+                    name,
+                    test,
+                    format!("rendering prompt: {e}"),
+                    None,
+                )
             }
         },
         None => None,
@@ -359,7 +445,7 @@ async fn run_cell(
     {
         Ok(triple) => triple,
         Err(e) => {
-            return error_case(cell, case_key, name, test, e);
+            return error_case(cell, case_key, name, test, e, rendered_prompt);
         }
     };
     let latency_ms = start.elapsed().as_millis() as u64;
@@ -402,6 +488,9 @@ async fn run_cell(
         status,
         score: verdict.score,
         output: Some(response.output),
+        prompt: rendered_prompt,
+        stop_reason: response.stop_reason,
+        raw: raw_to_persist(include_raw, response.raw),
         asserts: assert_results,
         usage: response.usage,
         cost_usd: response.cost_usd,
@@ -623,6 +712,7 @@ fn error_case(
     name: Option<String>,
     test: &TestCase,
     error: String,
+    prompt: Option<RenderedPrompt>,
 ) -> CaseResult {
     CaseResult {
         cell,
@@ -632,6 +722,9 @@ fn error_case(
         status: CaseStatus::Error,
         score: 0.0,
         output: None,
+        prompt,
+        stop_reason: None,
+        raw: None,
         asserts: Vec::new(),
         usage: None,
         cost_usd: None,
@@ -639,6 +732,31 @@ fn error_case(
         cached: false,
         attempts: 1,
         error: Some(error),
+    }
+}
+
+/// Apply the raw-metadata retention policy: keep the payload only when raw
+/// persistence is enabled and it fits within [`RAW_MAX_BYTES`]; otherwise drop
+/// it to `None` (an oversized blob is dropped whole — truncated JSON is useless).
+fn raw_to_persist(include_raw: bool, raw: Option<Json>) -> Option<Json> {
+    if !include_raw {
+        return None;
+    }
+    let raw = raw?;
+    match serde_json::to_vec(&raw) {
+        Ok(bytes) if bytes.len() > RAW_MAX_BYTES => {
+            tracing::debug!(
+                raw_bytes = bytes.len(),
+                max_bytes = RAW_MAX_BYTES,
+                "dropping oversized raw provider metadata"
+            );
+            None
+        }
+        Ok(_) => Some(raw),
+        Err(e) => {
+            tracing::debug!(error = %e, "dropping unserializable raw provider metadata");
+            None
+        }
     }
 }
 

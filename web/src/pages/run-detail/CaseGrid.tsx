@@ -3,24 +3,63 @@ import {
   createColumnHelper,
   flexRender,
   getCoreRowModel,
+  getSortedRowModel,
   useReactTable,
+  type OnChangeFn,
+  type SortingState,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { CaseListItem } from "@/api";
 import { AssertDot, StatusBadge } from "@/components/StatusBadge";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { formatCost, formatLatency, formatTokens } from "@/lib/format";
+import { compareStatus } from "@/lib/sort";
 import { cn } from "@/lib/cn";
 
-const NAME_MIN = 300;
+const STATUS_W = 84;
+const NAME_MIN = 240;
+const PREVIEW_MIN = 220;
 const ASSERT_W = 92;
 const NUM_W = 84;
+const IDENT_W = 132;
+
+/** Right-aligned numeric columns (header justified to the right). */
+const NUMERIC_COLS = new Set(["tokens", "cost", "latency", "score"]);
+
+/** Grid-template width token for a column, keyed by its stable id. Driven off
+ *  the live column set so the header/body track the same order the table
+ *  renders (matrix-only provider/prompt columns shift everything after them). */
+function colWidth(id: string): string {
+  if (id === "status") return `${STATUS_W}px`;
+  if (id === "name") return `minmax(${NAME_MIN}px, 1.2fr)`;
+  if (id === "provider" || id === "prompt") return `${IDENT_W}px`;
+  if (id === "preview") return `minmax(${PREVIEW_MIN}px, 1.4fr)`;
+  if (id.startsWith("assert:")) return `${ASSERT_W}px`;
+  return `${NUM_W}px`;
+}
+
+/** Min px a column contributes to the grid's intrinsic width. */
+function colMinWidth(id: string): number {
+  if (id === "status") return STATUS_W;
+  if (id === "name") return NAME_MIN;
+  if (id === "provider" || id === "prompt") return IDENT_W;
+  if (id === "preview") return PREVIEW_MIN;
+  if (id.startsWith("assert:")) return ASSERT_W;
+  return NUM_W;
+}
 
 interface CaseGridProps {
   cases: CaseListItem[];
   assertLabels: string[];
+  /** Show the provider column (matrix-shaped runs only — same >1-distinct
+   *  signal that drives the RunDetail provider chips). */
+  showProvider?: boolean;
+  /** Show the prompt column (matrix-shaped runs only). */
+  showPrompt?: boolean;
   selectedKey?: string;
   onSelect: (caseKey: string) => void;
+  sorting: SortingState;
+  onSortingChange: OnChangeFn<SortingState>;
   hasNextPage?: boolean;
   fetchNextPage?: () => void;
   isFetchingNextPage?: boolean;
@@ -32,8 +71,12 @@ const col = createColumnHelper<CaseListItem>();
 export function CaseGrid({
   cases,
   assertLabels,
+  showProvider = false,
+  showPrompt = false,
   selectedKey,
   onSelect,
+  sorting,
+  onSortingChange,
   hasNextPage,
   fetchNextPage,
   isFetchingNextPage,
@@ -63,62 +106,130 @@ export function CaseGrid({
     );
 
     return [
-      col.accessor("name", {
+      col.accessor("status", {
+        id: "status",
+        header: () => <span>Status</span>,
+        sortingFn: (a, b) => compareStatus(a.original.status, b.original.status),
+        cell: ({ row }) => <StatusBadge status={row.original.status} size="xs" />,
+      }),
+      col.accessor((c) => c.name ?? c.case_key, {
         id: "name",
         header: () => <span>Case</span>,
         cell: ({ row }) => {
           const c = row.original;
+          // A repeat index > 0 rides along as a subtle suffix (rather than its
+          // own column); repeat 0 / null shows nothing.
+          const repeat = c.repeat != null && c.repeat > 0 ? c.repeat : null;
           return (
-            <div className="flex min-w-0 items-center gap-2">
-              <StatusBadge status={c.status} size="xs" />
-              <div className="min-w-0">
-                <div className="truncate font-medium">{c.name ?? c.case_key}</div>
-                <div className="truncate font-mono text-[11px] text-muted">
-                  {c.case_key}
-                </div>
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-baseline gap-1">
+                <span className="truncate font-medium">
+                  {c.name ?? c.case_key}
+                </span>
+                {repeat != null ? (
+                  <span className="shrink-0 font-mono text-[11px] text-muted">
+                    #{repeat}
+                  </span>
+                ) : null}
+              </div>
+              <div className="truncate font-mono text-[11px] text-muted">
+                {c.case_key}
               </div>
             </div>
           );
         },
       }),
+      ...(showProvider
+        ? [
+            col.accessor("provider_id", {
+              id: "provider",
+              header: () => <span>Provider</span>,
+              cell: ({ getValue }) => <IdentCell value={getValue()} />,
+            }),
+          ]
+        : []),
+      ...(showPrompt
+        ? [
+            col.accessor("prompt_id", {
+              id: "prompt",
+              header: () => <span>Prompt</span>,
+              cell: ({ getValue }) => <IdentCell value={getValue()} />,
+            }),
+          ]
+        : []),
+      col.accessor("output_preview", {
+        id: "preview",
+        enableSorting: false,
+        header: () => <span>Preview</span>,
+        cell: ({ getValue }) => {
+          const text = getValue()?.trim();
+          if (!text)
+            return <span className="text-muted/50" aria-hidden>–</span>;
+          return (
+            <span
+              className="block truncate font-mono text-[11px] text-muted"
+              title={text}
+            >
+              {text}
+            </span>
+          );
+        },
+      }),
       ...assertCols,
-      col.display({
+      col.accessor((c) => (c.prompt_tokens ?? 0) + (c.completion_tokens ?? 0), {
         id: "tokens",
-        header: () => <span className="block text-right">Tokens</span>,
-        cell: ({ row }) => (
+        header: () => <span>Tokens</span>,
+        cell: ({ getValue }) => (
           <span className="block text-right tabular-nums text-muted">
-            {formatTokens(
-              (row.original.prompt_tokens ?? 0) +
-                (row.original.completion_tokens ?? 0),
-            )}
+            {formatTokens(getValue())}
           </span>
         ),
       }),
       col.accessor("cost_usd", {
         id: "cost",
-        header: () => <span className="block text-right">Cost</span>,
+        header: () => <span>Cost</span>,
         cell: ({ getValue }) => (
           <span className="block text-right tabular-nums text-muted">
-            {formatCost(getValue() as number | undefined)}
+            {formatCost(getValue())}
           </span>
         ),
       }),
       col.accessor("latency_ms", {
         id: "latency",
-        header: () => <span className="block text-right">Latency</span>,
+        header: () => <span>Latency</span>,
         cell: ({ getValue }) => (
           <span className="block text-right tabular-nums text-muted">
-            {formatLatency(getValue() as number)}
+            {formatLatency(getValue())}
           </span>
         ),
       }),
+      col.accessor("score", {
+        id: "score",
+        header: () => <span>Score</span>,
+        cell: ({ getValue }) => {
+          const v = getValue();
+          return (
+            <span className="block text-right tabular-nums text-muted">
+              {v == null ? "–" : v.toFixed(2)}
+            </span>
+          );
+        },
+      }),
     ];
-  }, [assertLabels]);
+  }, [assertLabels, showProvider, showPrompt]);
 
   const table = useReactTable({
     data: cases,
     columns,
+    state: { sorting },
+    onSortingChange,
+    // Single-column sort, ascending-first for every column (so a numeric column
+    // does not default to descending) — keeps the header cycle asc -> desc ->
+    // clear and the `?sort=` encoding in lockstep.
+    enableMultiSort: false,
+    sortDescFirst: false,
     getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
   });
 
   const rows = table.getRowModel().rows;
@@ -131,12 +242,21 @@ export function CaseGrid({
     overscan: 14,
   });
 
-  const gridTemplate = useMemo(
-    () =>
-      `minmax(${NAME_MIN}px, 1.7fr) repeat(${assertLabels.length}, ${ASSERT_W}px) ${NUM_W}px ${NUM_W}px ${NUM_W}px`,
-    [assertLabels.length],
+  // Both the header and every body row lay out on this one template, derived
+  // from the live column ids so provider/prompt columns (when present) shift
+  // everything after them consistently.
+  const columnIds = useMemo(
+    () => columns.map((c) => c.id ?? ""),
+    [columns],
   );
-  const minWidth = NAME_MIN + assertLabels.length * ASSERT_W + NUM_W * 3;
+  const gridTemplate = useMemo(
+    () => columnIds.map(colWidth).join(" "),
+    [columnIds],
+  );
+  const minWidth = useMemo(
+    () => columnIds.reduce((sum, id) => sum + colMinWidth(id), 0),
+    [columnIds],
+  );
 
   const virtualItems = rowVirtualizer.getVirtualItems();
   const rowCount = rows.length;
@@ -165,11 +285,53 @@ export function CaseGrid({
             style={{ gridTemplateColumns: gridTemplate }}
             role="row"
           >
-            {table.getFlatHeaders().map((header) => (
-              <div key={header.id} className="truncate px-1" role="columnheader">
-                {flexRender(header.column.columnDef.header, header.getContext())}
-              </div>
-            ))}
+            {table.getFlatHeaders().map((header) => {
+              const canSort = header.column.getCanSort();
+              const sorted = header.column.getIsSorted(); // false | "asc" | "desc"
+              const numeric = NUMERIC_COLS.has(header.column.id);
+              return (
+                <div
+                  key={header.id}
+                  className="min-w-0 px-1"
+                  role="columnheader"
+                  aria-sort={
+                    !canSort
+                      ? undefined
+                      : sorted === "asc"
+                        ? "ascending"
+                        : sorted === "desc"
+                          ? "descending"
+                          : "none"
+                  }
+                >
+                  {canSort ? (
+                    <button
+                      type="button"
+                      onClick={header.column.getToggleSortingHandler()}
+                      className={cn(
+                        "inline-flex w-full min-w-0 items-center gap-1 rounded uppercase tracking-wide transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                        numeric ? "justify-end" : "justify-start",
+                      )}
+                    >
+                      <span className="truncate">
+                        {flexRender(
+                          header.column.columnDef.header,
+                          header.getContext(),
+                        )}
+                      </span>
+                      <SortArrow dir={sorted} />
+                    </button>
+                  ) : (
+                    <div className="truncate">
+                      {flexRender(
+                        header.column.columnDef.header,
+                        header.getContext(),
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {/* Virtualized body */}
@@ -222,9 +384,38 @@ export function CaseGrid({
         <span>
           Showing {rows.length}
           {totalCount != null && totalCount > rows.length ? ` of ${totalCount}+` : ""} cases
+          {hasNextPage ? (
+            <span className="text-muted/70"> (sorted within loaded cases)</span>
+          ) : null}
         </span>
         {isFetchingNextPage ? <span>Loading more…</span> : null}
       </div>
     </div>
+  );
+}
+
+/** Small mono cell for the provider/prompt identity columns; a faint dash when
+ *  the value is absent. */
+function IdentCell({ value }: { value: string | null }) {
+  if (!value) return <span className="text-muted/50" aria-hidden>–</span>;
+  return (
+    <span className="block truncate font-mono text-[11px] text-muted" title={value}>
+      {value}
+    </span>
+  );
+}
+
+/** Sort-direction indicator: solid arrow when active, faint glyph otherwise. */
+function SortArrow({ dir }: { dir: false | "asc" | "desc" }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "shrink-0 text-[10px] leading-none",
+        dir ? "text-fg" : "text-muted opacity-40",
+      )}
+    >
+      {dir === "asc" ? "↑" : dir === "desc" ? "↓" : "↕"}
+    </span>
   );
 }

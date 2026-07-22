@@ -45,3 +45,4 @@ http-body-util = "0.1"
 tempfile = "3"
 flate2 = "1"
 ulid = { workspace = true }
+rusqlite = { version = "0.40", features = ["bundled"] }

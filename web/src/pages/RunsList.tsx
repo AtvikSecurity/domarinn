@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { useRuns } from "@/api/queries";
+import { useRuns, useSuites } from "@/api/queries";
 import type { RunListItem } from "@/api";
 import { parseRunsFilters } from "@/lib/filters";
+import { suitePassRateSeries } from "@/lib/suites";
 import { previousRun } from "@/lib/compare";
 import {
   formatCost,
@@ -131,6 +132,19 @@ export function RunsList() {
 function SuiteGroup({ group }: { group: Group }) {
   const [selected, setSelected] = useState<string[]>([]);
 
+  // Prefer the server's authoritative pass-rate series + pinned baseline
+  // (deduped per project by TanStack Query). Fall back to the client-computed
+  // series from the loaded run pages while it loads or on error.
+  const suitesQ = useSuites(group.project ?? undefined);
+  const summary = group.suite
+    ? suitesQ.data?.suites.find((s) => s.suite === group.suite)
+    : undefined;
+  const series =
+    summary && summary.series.length > 0
+      ? suitePassRateSeries(summary)
+      : group.series;
+  const baselineRunId = summary?.baseline_run_id ?? null;
+
   function toggle(id: string) {
     setSelected((prev) =>
       prev.includes(id)
@@ -184,7 +198,7 @@ function SuiteGroup({ group }: { group: Group }) {
           ) : null}
           <span className="text-[11px] text-muted">pass-rate trend</span>
           <Sparkline
-            values={group.series}
+            values={series}
             min={0}
             max={1}
             width={120}
@@ -242,6 +256,14 @@ function SuiteGroup({ group }: { group: Group }) {
                       {r.id}
                     </Link>
                     <CopyButton value={r.id} label="Copy run id" iconOnly />
+                    {r.id === baselineRunId ? (
+                      <span
+                        className="rounded bg-accent/12 px-1.5 py-0.5 text-[11px] font-medium text-accent"
+                        title="Pinned comparison baseline for this suite"
+                      >
+                        baseline
+                      </span>
+                    ) : null}
                   </span>
                 </td>
                 <td className="px-3 py-2 text-muted">

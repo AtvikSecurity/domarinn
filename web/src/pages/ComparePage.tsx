@@ -1,15 +1,24 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCompare, useRun, useRuns } from "@/api/queries";
-import type { CaseStatus, CompareCaseRow, CompareSummary } from "@/api";
-import { DELTA_LABEL } from "@/lib/compare";
+import type {
+  CaseStatus,
+  CompareCaseRow,
+  CompareSummary,
+  RunTotals,
+} from "@/api";
+import { DELTA_LABEL, formatScoreDelta } from "@/lib/compare";
 import { mergeParams } from "@/lib/filters";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { cn } from "@/lib/cn";
 import { CompareRowExpansion } from "./compare/CompareRowExpansion";
+import { AggregateDeltas, type AggregateStatsInput } from "./compare/AggregateDeltas";
+import { McNemarPanel } from "./compare/McNemarPanel";
+import { ConfigDrift } from "./compare/ConfigDrift";
+import type { DiffMode } from "./compare/DiffView";
 
 type ChipKey =
   | "newly_failing"
@@ -28,11 +37,24 @@ const CHIP_META: { key: ChipKey; label: string; tone: string }[] = [
   { key: "removed", label: "Removed", tone: "text-muted ring-border bg-surface-2" },
 ];
 
+/** `?diff=` is a client-only URL param (never sent to the compare endpoint);
+ *  absent/unknown ⇒ the default side-by-side mode. */
+function parseDiffMode(value: string | null): DiffMode {
+  return value === "inline" || value === "lines" ? value : "side";
+}
+
 export function ComparePage() {
   const { id = "", other } = useParams();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const activeDelta = params.get("delta") as ChipKey | null;
+  const diffMode = parseDiffMode(params.get("diff"));
+  // `?case=` (the expanded row) is client-only too — same convention as the
+  // run-detail drawer, lifted here so a row expansion is shareable/deep-linkable.
+  const expandedCase = params.get("case");
+  // `?config=1` (client-only) opens the config-drift panel; the header chip
+  // toggles it and it is deep-linkable.
+  const configOpen = params.get("config") === "1";
 
   const compare = useCompare(id, other);
   // The real CompareResponse carries `base`/`head` as plain run ids, not
@@ -59,6 +81,28 @@ export function ComparePage() {
     );
   }
 
+  function setDiffMode(mode: DiffMode) {
+    // Default mode drops the param entirely so a shared URL stays clean.
+    setParams(mergeParams(params, { diff: mode === "side" ? undefined : mode }), {
+      replace: true,
+    });
+  }
+
+  function toggleCase(caseKey: string) {
+    setParams(
+      mergeParams(params, {
+        case: expandedCase === caseKey ? undefined : caseKey,
+      }),
+      { replace: true },
+    );
+  }
+
+  function toggleConfig() {
+    setParams(mergeParams(params, { config: configOpen ? undefined : "1" }), {
+      replace: true,
+    });
+  }
+
   if (compare.isPending) return <CenteredSpinner label="Computing comparison…" />;
   if (compare.isError)
     return <ErrorState error={compare.error} onRetry={() => compare.refetch()} />;
@@ -70,10 +114,11 @@ export function ComparePage() {
   if (headRun.isError)
     return <ErrorState error={headRun.error} onRetry={() => headRun.refetch()} />;
 
-  const { summary } = compare.data;
+  const { summary, stats, totals, config } = compare.data;
   const base = baseRun.data;
   const head = headRun.data;
   const runOptions = suiteRuns.data?.pages.flatMap((p) => p.runs) ?? [];
+  const configChanged = config.changed === true;
 
   return (
     <div className="space-y-5">
@@ -136,8 +181,43 @@ export function ComparePage() {
               Pick two different runs to compare.
             </span>
           ) : null}
+          {configChanged ? (
+            <button
+              type="button"
+              onClick={toggleConfig}
+              aria-pressed={configOpen}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition-all",
+                "text-amber ring-amber/30 bg-amber/8",
+                configOpen
+                  ? "ring-2 ring-offset-1 ring-offset-bg"
+                  : "opacity-90 hover:opacity-100",
+              )}
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+              </svg>
+              Config changed
+            </button>
+          ) : null}
         </div>
       </div>
+
+      {configOpen ? <ConfigDrift baseId={base.id} headId={head.id} /> : null}
+
+      {/* Head-vs-base aggregate deltas — server-authoritative, from
+          CompareResponse.totals (Task 4) rather than the two run details. */}
+      <AggregateDeltas base={totalsToInput(totals.base)} head={totalsToInput(totals.head)} />
 
       {/* Summary chips (filter the grid) */}
       <div className="flex flex-wrap gap-2">
@@ -169,10 +249,22 @@ export function ComparePage() {
         ) : null}
       </div>
 
+      {/* Statistical significance: McNemar + Wilson pass-rate intervals,
+          placed below the summary chips. */}
+      <McNemarPanel stats={stats} />
+
       {rows.length === 0 ? (
         <EmptyState title="No cases in this delta group" />
       ) : (
-        <DeltaTable baseId={base.id} headId={head.id} rows={rows} />
+        <DeltaTable
+          baseId={base.id}
+          headId={head.id}
+          rows={rows}
+          expandedCase={expandedCase}
+          onToggleCase={toggleCase}
+          diffMode={diffMode}
+          onDiffModeChange={setDiffMode}
+        />
       )}
     </div>
   );
@@ -182,10 +274,44 @@ function summaryCount(summary: CompareSummary, key: ChipKey): number {
   return summary[key];
 }
 
+/** Map a server `RunTotals` onto the plain shape `AggregateDeltas` consumes.
+ *  `duration_ms` is nullable on the wire (a run may lack timing) — treat a
+ *  missing duration as zero so the delta stays well-defined. */
+function totalsToInput(t: RunTotals): AggregateStatsInput {
+  return {
+    prompt_tokens: t.prompt_tokens,
+    completion_tokens: t.completion_tokens,
+    cost_usd: t.cost_usd,
+    duration_ms: t.duration_ms ?? 0,
+    case_count: t.case_count,
+  };
+}
+
+const SCORE_DELTA_TONE: Record<"pass" | "fail" | "muted", string> = {
+  pass: "text-pass",
+  fail: "text-fail",
+  muted: "text-muted",
+};
+
+/** The "Δ score" cell: signed 2-dec `score_delta`, pass/fail tinted, muted for
+ *  zero, em-dash when a score was missing on either side. */
+function ScoreDeltaCell({ delta }: { delta: number | null }) {
+  const { text, tone } = formatScoreDelta(delta);
+  return (
+    <span className={cn("font-mono text-xs tabular-nums", SCORE_DELTA_TONE[tone])}>
+      {text}
+    </span>
+  );
+}
+
 function StatusCell({ status }: { status: CaseStatus | null }) {
   if (status === null) return <span className="text-xs text-muted">—</span>;
   return <StatusBadge status={status} size="xs" />;
 }
+
+/** Shared column template for the delta table header + rows (they must match):
+ *  Case / Base / Head / Delta / Δ score / Output. */
+const DELTA_GRID_COLUMNS = "1.5fr 76px 76px 140px 84px 76px";
 
 const deltaTone: Record<string, string> = {
   newly_failing: "text-fail",
@@ -200,13 +326,20 @@ function DeltaTable({
   baseId,
   headId,
   rows,
+  expandedCase,
+  onToggleCase,
+  diffMode,
+  onDiffModeChange,
 }: {
   baseId: string;
   headId: string;
   rows: CompareCaseRow[];
+  expandedCase: string | null;
+  onToggleCase: (caseKey: string) => void;
+  diffMode: DiffMode;
+  onDiffModeChange: (mode: DiffMode) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -216,16 +349,36 @@ function DeltaTable({
     getItemKey: (i) => rows[i]?.case_key ?? String(i),
   });
 
+  // Deep-link support: scroll the (possibly off-screen, virtualized) expanded
+  // row into view exactly once, and ONLY for a `?case=` present at mount. The
+  // target is captured at mount so a session that started without a deep link
+  // never auto-scrolls — otherwise the first user row-click would recenter the
+  // viewport (scrollToIndex scrolls unconditionally in react-virtual v3).
+  const deepLinkedCase = useRef(expandedCase);
+  const didInitialScroll = useRef(false);
+  useEffect(() => {
+    if (didInitialScroll.current) return;
+    didInitialScroll.current = true;
+    const target = deepLinkedCase.current;
+    if (!target) return;
+    const index = rows.findIndex((r) => r.case_key === target);
+    if (index >= 0) virtualizer.scrollToIndex(index, { align: "center" });
+  }, [rows, virtualizer]);
+
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-surface">
+    <div
+      data-testid="delta-table"
+      className="overflow-hidden rounded-xl border border-border bg-surface"
+    >
       <div
         className="grid items-center border-b border-border bg-surface-2/95 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted"
-        style={{ gridTemplateColumns: "1.6fr 90px 90px 130px 90px" }}
+        style={{ gridTemplateColumns: DELTA_GRID_COLUMNS }}
       >
         <span>Case</span>
         <span>Base</span>
         <span>Head</span>
         <span>Delta</span>
+        <span>Δ score</span>
         <span className="text-right">Output</span>
       </div>
       <div ref={parentRef} className="max-h-[64vh] overflow-auto">
@@ -233,7 +386,7 @@ function DeltaTable({
           {virtualizer.getVirtualItems().map((vi) => {
             const row = rows[vi.index];
             if (!row) return null;
-            const isOpen = expanded === row.case_key;
+            const isOpen = expandedCase === row.case_key;
             return (
               <div
                 key={row.case_key}
@@ -243,15 +396,13 @@ function DeltaTable({
                 style={{ top: 0, transform: `translateY(${vi.start}px)` }}
               >
                 <button
-                  onClick={() =>
-                    setExpanded((cur) => (cur === row.case_key ? null : row.case_key))
-                  }
+                  onClick={() => onToggleCase(row.case_key)}
                   aria-expanded={isOpen}
                   className={cn(
                     "grid w-full items-center px-4 py-2 text-left text-sm outline-none hover:bg-surface-2 focus-visible:bg-surface-2",
                     isOpen && "bg-surface-2",
                   )}
-                  style={{ gridTemplateColumns: "1.6fr 90px 90px 130px 90px" }}
+                  style={{ gridTemplateColumns: DELTA_GRID_COLUMNS }}
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <svg
@@ -276,9 +427,17 @@ function DeltaTable({
                   </span>
                   <StatusCell status={row.base_status} />
                   <StatusCell status={row.head_status} />
-                  <span className={cn("text-xs font-medium", deltaTone[row.delta])}>
-                    {DELTA_LABEL[row.delta]}
+                  <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <span className={cn("text-xs font-medium", deltaTone[row.delta])}>
+                      {DELTA_LABEL[row.delta]}
+                    </span>
+                    {row.assert_flips.length > 0 ? (
+                      <span className="rounded-full bg-accent/12 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-accent ring-1 ring-inset ring-accent/25">
+                        {row.assert_flips.length} flips
+                      </span>
+                    ) : null}
                   </span>
+                  <ScoreDeltaCell delta={row.score_delta} />
                   <span className="text-right">
                     {row.output_changed ? (
                       <span className="rounded-full bg-amber/12 px-2 py-0.5 text-[11px] font-medium text-amber ring-1 ring-inset ring-amber/25">
@@ -294,6 +453,9 @@ function DeltaTable({
                     baseRunId={baseId}
                     headRunId={headId}
                     caseKey={row.case_key}
+                    assertFlips={row.assert_flips}
+                    mode={diffMode}
+                    onModeChange={onDiffModeChange}
                   />
                 ) : null}
               </div>

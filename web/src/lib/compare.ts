@@ -56,6 +56,33 @@ export function classifyDelta(
   return "unchanged";
 }
 
+/** Unicode minus (U+2212) — reads better than a hyphen next to a number, and
+ *  matches the aggregate-delta formatting. */
+const MINUS = "−";
+
+/** How a score delta should render: `tone` drives the tint (pass tint for a
+ *  gain, fail for a regression, muted for zero/absent), `text` is the signed
+ *  2-dec magnitude (or an em-dash when either score was missing). */
+export interface ScoreDeltaDisplay {
+  text: string;
+  tone: "pass" | "fail" | "muted";
+}
+
+/**
+ * Format a per-case `score_delta` (`head_score - base_score`, or `null` when a
+ * score was absent on either side) for the compare grid. Pure so it can be
+ * unit-tested and shared. `null` ⇒ em-dash, muted; `0` ⇒ unsigned `0.00`,
+ * muted; positive ⇒ `+X.XX`, pass tint; negative ⇒ `−X.XX`, fail tint.
+ */
+export function formatScoreDelta(delta: number | null): ScoreDeltaDisplay {
+  if (delta === null) return { text: "—", tone: "muted" };
+  const sign = delta > 0 ? "+" : delta < 0 ? MINUS : "";
+  return {
+    text: `${sign}${Math.abs(delta).toFixed(2)}`,
+    tone: delta > 0 ? "pass" : delta < 0 ? "fail" : "muted",
+  };
+}
+
 /** Delta groups that the compare summary chips can filter by. */
 export const COMPARE_FILTER_DELTAS: CompareDelta[] = [
   "newly_failing",

@@ -25,11 +25,24 @@ describe("pickParams / parseRunsFilters", () => {
     expect(pickParams(sp("q=%20%20"), ["q"])).toEqual({});
   });
 
-  it("parses case filters including the client-only case key", () => {
-    expect(parseCaseFilters(sp("status=pass&case=case-0007&q=foo"))).toEqual({
+  it("parses case filters including the client-only case + sort keys", () => {
+    expect(
+      parseCaseFilters(sp("status=pass&case=case-0007&q=foo&sort=-latency")),
+    ).toEqual({
       status: "pass",
       case: "case-0007",
       q: "foo",
+      sort: "-latency",
+    });
+  });
+
+  it("parses the provider + prompt server filters (Task 11)", () => {
+    expect(
+      parseCaseFilters(sp("provider=gpt-5-mini&prompt=cot-v2&status=fail")),
+    ).toEqual({
+      provider: "gpt-5-mini",
+      prompt: "cot-v2",
+      status: "fail",
     });
   });
 });

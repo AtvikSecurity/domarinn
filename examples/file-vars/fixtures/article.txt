@@ -1,0 +1,4 @@
+The Domarinn eval engine renders prompts through a real Jinja engine, caches
+provider responses by request identity, and grades output with deterministic,
+zero-LLM assertions. Large inputs like this article live in a fixture file so
+the suite stays readable and the document can be reused across cases.

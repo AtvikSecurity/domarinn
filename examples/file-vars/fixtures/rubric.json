@@ -1,0 +1,4 @@
+{
+  "must_mention": ["cache", "assertions"],
+  "max_words": 80
+}

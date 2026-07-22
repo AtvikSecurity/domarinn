@@ -10,7 +10,10 @@ use std::path::Path;
 use serde_json::Value as Json;
 
 use crate::config::{Assert, Defaults, GeneratorSpec, Suite, TestCase, TestSource};
-use crate::val::{desugar_raw_tags, Val};
+use crate::filevars::resolve_file_vars;
+use crate::matrix::expand_matrix;
+use crate::sandbox::{self, SandboxError};
+use crate::val::{desugar_tags, Val};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveError {
@@ -30,6 +33,10 @@ pub enum ResolveError {
     Parse { path: String, message: String },
     #[error("test source '{0}' must be a file:// reference")]
     NotFileUrl(String),
+    /// A `file://` reference (test-file glob or file-var fixture) that would read
+    /// outside the suite directory. Closes a sandbox-escape hole.
+    #[error(transparent)]
+    Sandbox(#[from] SandboxError),
 }
 
 /// The result of expanding `tests:`.
@@ -59,11 +66,26 @@ pub fn expand_tests(suite: &Suite, base_dir: &Path) -> Result<Expanded, ResolveE
         }
     }
 
+    // Matrix / parameter sweeps: expand each case's cross-product of axes into
+    // concrete cases (identity when it has no `matrix`). Done after case
+    // production — so file-loaded cases sweep too — and before `defaults` merge.
+    let mut swept = Vec::with_capacity(out.tests.len());
+    for tc in out.tests.drain(..) {
+        swept.extend(expand_matrix(&tc)?);
+    }
+    out.tests = swept;
+
     if let Some(defaults) = &suite.defaults {
         for tc in &mut out.tests {
             merge_defaults(tc, defaults);
         }
     }
+
+    // Sandboxed file-content vars (`{$file: …}` / `!file`) are resolved last, so
+    // fixtures pulled in by matrix axes or `defaults` are loaded too. Runs before
+    // any rendering (the runner renders later), so a fixture is never a template.
+    resolve_file_vars(&mut out.tests, base_dir)?;
+
     Ok(out)
 }
 
@@ -98,6 +120,9 @@ fn load_glob(spec: &str, base_dir: &Path) -> Result<Vec<TestCase>, ResolveError>
     let rel = spec
         .strip_prefix("file://")
         .ok_or_else(|| ResolveError::NotFileUrl(spec.to_string()))?;
+    // Reject a traversal in the glob spec itself (`file://../x/*.yaml`) before
+    // touching the filesystem; glob metacharacters are ordinary components here.
+    sandbox::reject_bad_spec(base_dir, rel)?;
     let pattern = base_dir.join(rel);
     let pattern_str = pattern.to_string_lossy().to_string();
 
@@ -108,6 +133,8 @@ fn load_glob(spec: &str, base_dir: &Path) -> Result<Vec<TestCase>, ResolveError>
     })?;
     for path in matches.flatten() {
         if path.is_file() {
+            // Defense in depth: a symlinked match must still resolve inside base.
+            sandbox::assert_within(base_dir, &path, &path.to_string_lossy())?;
             files.push(path);
         }
     }
@@ -139,7 +166,8 @@ fn load_test_file(path: &Path) -> Result<Vec<TestCase>, ResolveError> {
         "yaml" | "yml" => parse_yaml_tests(&text, path)?,
         "json" => parse_json_tests(&text, path)?,
         "jsonl" | "ndjson" => parse_jsonl_tests(&text, path)?,
-        "csv" => parse_csv_tests(&text, path)?,
+        "csv" => parse_delimited_tests(&text, path, b',')?,
+        "tsv" => parse_delimited_tests(&text, path, b'\t')?,
         other => {
             return Err(ResolveError::Parse {
                 path: path.display().to_string(),
@@ -157,7 +185,7 @@ fn load_test_file(path: &Path) -> Result<Vec<TestCase>, ResolveError> {
 fn parse_yaml_tests(text: &str, path: &Path) -> Result<Vec<TestCase>, ResolveError> {
     let value: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(text).map_err(|e| parse_err(path, e))?;
-    let value = desugar_raw_tags(value);
+    let value = desugar_tags(value);
     let seq = match value {
         serde_yaml_ng::Value::Sequence(seq) => seq,
         serde_yaml_ng::Value::Mapping(mut map) => {
@@ -217,10 +245,17 @@ fn parse_jsonl_tests(text: &str, path: &Path) -> Result<Vec<TestCase>, ResolveEr
         .collect()
 }
 
-/// CSV: header names become var keys. Reserved columns: `id`, `description`,
-/// `tags` (comma-separated), `threshold`, `__assert` (a JSON assert list).
-fn parse_csv_tests(text: &str, path: &Path) -> Result<Vec<TestCase>, ResolveError> {
-    let mut reader = csv::Reader::from_reader(text.as_bytes());
+/// Delimited tables (CSV with `,`, TSV with `\t`): header names become var keys.
+/// Reserved columns: `id`, `description`, `tags` (comma-separated), `threshold`,
+/// `__assert` (a JSON assert list).
+fn parse_delimited_tests(
+    text: &str,
+    path: &Path,
+    delimiter: u8,
+) -> Result<Vec<TestCase>, ResolveError> {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .from_reader(text.as_bytes());
     let headers = reader.headers().map_err(|e| parse_err(path, e))?.clone();
     let mut out = Vec::new();
     for record in reader.records() {
@@ -395,5 +430,177 @@ tests:
         let expanded = expand_tests(&suite, Path::new(".")).unwrap();
         assert_eq!(expanded.tests.len(), 0);
         assert_eq!(expanded.deferred_generators.len(), 1);
+    }
+
+    #[test]
+    fn loads_tsv_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "cases.tsv",
+            "id\ttags\tquestion\nq1\tsmoke,fast\twhat is 2+2\n",
+        );
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests: ["file://cases.tsv"]
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, dir.path()).unwrap();
+        assert_eq!(expanded.tests.len(), 1);
+        let tc = &expanded.tests[0];
+        assert_eq!(tc.id.as_deref(), Some("q1"));
+        assert_eq!(tc.tags, vec!["smoke".to_string(), "fast".to_string()]);
+        assert_eq!(
+            tc.vars["question"],
+            Val::Tpl(Json::String("what is 2+2".into()))
+        );
+    }
+
+    #[test]
+    fn expand_tests_sweeps_a_matrix_into_stable_ids() {
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests:
+  - id: greet
+    matrix:
+      style: [terse, warm]
+      temperature: [0, 1]
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, Path::new(".")).unwrap();
+        let ids: Vec<&str> = expanded
+            .tests
+            .iter()
+            .map(|t| t.id.as_deref().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "greet[style=terse,temperature=0]",
+                "greet[style=terse,temperature=1]",
+                "greet[style=warm,temperature=0]",
+                "greet[style=warm,temperature=1]",
+            ]
+        );
+        // Axis values landed in vars.
+        assert_eq!(
+            expanded.tests[0].vars["style"],
+            Val::Tpl(Json::String("terse".into()))
+        );
+    }
+
+    #[test]
+    fn matrix_applies_to_file_loaded_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "cases.yaml", "- id: c\n  matrix: {n: [1, 2]}\n");
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests: ["file://cases.yaml"]
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, dir.path()).unwrap();
+        assert_eq!(expanded.tests.len(), 2);
+        assert_eq!(expanded.tests[0].id.as_deref(), Some("c[n=1]"));
+        assert_eq!(expanded.tests[1].id.as_deref(), Some("c[n=2]"));
+    }
+
+    #[test]
+    fn expand_tests_resolves_file_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "doc.txt", "hello from disk");
+        write(dir.path(), "cfg.json", r#"{"k": 1}"#);
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests:
+  - id: t
+    vars:
+      document: !file "doc.txt"
+      schema: { $file: "cfg.json" }
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, dir.path()).unwrap();
+        let tc = &expanded.tests[0];
+        assert_eq!(
+            tc.vars["document"],
+            Val::Tpl(Json::String("hello from disk".into()))
+        );
+        assert_eq!(tc.vars["schema"], Val::Tpl(serde_json::json!({ "k": 1 })));
+    }
+
+    #[test]
+    fn file_var_with_raw_is_never_templated() {
+        // SSTI proof: a raw fixture reaches the case verbatim.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "probe.txt", "{{7*7}}");
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests:
+  - id: t
+    vars:
+      payload: { $file: "probe.txt", raw: true }
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, dir.path()).unwrap();
+        assert!(expanded.tests[0].vars["payload"].is_raw());
+        assert_eq!(
+            expanded.tests[0].vars["payload"],
+            Val::Raw(Json::String("{{7*7}}".into()))
+        );
+    }
+
+    #[test]
+    fn file_var_escape_is_refused() {
+        let parent = tempfile::tempdir().unwrap();
+        std::fs::write(parent.path().join("secret.txt"), "TOP SECRET").unwrap();
+        let base = parent.path().join("suite");
+        std::fs::create_dir(&base).unwrap();
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests:
+  - id: t
+    vars:
+      leak: !file "../secret.txt"
+"#,
+        )
+        .unwrap();
+        let err = expand_tests(&suite, &base).unwrap_err();
+        assert!(matches!(err, ResolveError::Sandbox(_)), "{err:?}");
+        assert!(err.to_string().contains("refuses to read outside"));
+    }
+
+    #[test]
+    fn tests_file_glob_traversal_is_refused() {
+        // A `file://../x.yaml` test-source glob must not escape the suite dir.
+        let parent = tempfile::tempdir().unwrap();
+        std::fs::write(parent.path().join("evil.yaml"), "- {vars: {}}\n").unwrap();
+        let base = parent.path().join("suite");
+        std::fs::create_dir(&base).unwrap();
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests: ["file://../evil.yaml"]
+"#,
+        )
+        .unwrap();
+        let err = expand_tests(&suite, &base).unwrap_err();
+        assert!(matches!(err, ResolveError::Sandbox(_)), "{err:?}");
     }
 }

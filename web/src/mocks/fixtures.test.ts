@@ -1,14 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
   allRunSummaries,
+  buildMatrix,
   caseDetail,
+  caseHistory,
   compareRuns,
   defaultCompareTarget,
   runCases,
   runListItem,
+  toCaseListItem,
 } from "./fixtures";
 import { classifyDelta } from "@/lib/compare";
 import { parseTimestamp } from "@/lib/format";
+
+// The one matrix-shaped fixture suite (3 providers × 2 prompts × 12 tests × 2
+// repeats = 144 cases). Its latest run is what the matrix view + provider/prompt
+// filters exercise.
+const MATRIX_RUN = "search-rerank-ndcg-eval-10";
+const MONEY_RUN = "checkout-agent-regression-12";
 
 describe("fixture dataset", () => {
   const runs = allRunSummaries();
@@ -99,5 +108,299 @@ describe("fixture dataset", () => {
     expect(result.summary.output_changed).toBe(outputChanged);
     expect(result.summary.added).toBe(added);
     expect(result.summary.removed).toBe(removed);
+  });
+
+  // Pins the case the baseline-diff E2E (web/e2e/baseline-diff.spec.ts) opens:
+  // on the money run vs its baseline, `case-0024` must have two present,
+  // differing outputs so the drawer's "Diff vs baseline" renders a real diff.
+  // Mirrors OUTPUT_CHANGED_CASE in web/e2e/helpers.ts.
+  it("has a deterministic output-changed case between the money run and its baseline", () => {
+    const head = "checkout-agent-regression-12";
+    const base = "checkout-agent-regression-11";
+    const key = "case-0024";
+
+    const headDetail = caseDetail(head, key)!;
+    const baseDetail = caseDetail(base, key)!;
+    expect(headDetail).toBeTruthy();
+    expect(baseDetail).toBeTruthy();
+
+    expect(headDetail.output).toBeTruthy();
+    expect(baseDetail.output).toBeTruthy();
+    expect(headDetail.output).not.toBe(baseDetail.output);
+    // Both sides render output (not the skip/error special cases), so the diff
+    // has content on both panes.
+    expect(headDetail.status).not.toBe("skip");
+    expect(headDetail.status).not.toBe("error");
+    expect(baseDetail.status).not.toBe("skip");
+    expect(baseDetail.status).not.toBe("error");
+  });
+});
+
+// Pins the case-history fixture the timeline section + its E2E
+// (web/e2e/case-history.spec.ts) rely on: on the money run's suite, `case-0024`
+// must resolve to a deterministic newest-first window whose `output_changed`
+// chain matches the server's `points[i + 1]` semantics (storage/history.rs).
+// Mirrors OUTPUT_CHANGED_CASE in web/e2e/helpers.ts.
+describe("case-history fixture", () => {
+  const PROJECT = "checkout-agent";
+  const SUITE = "regression";
+  const KEY = "case-0024";
+
+  it("returns one newest-first point per run of the suite that carries the case", () => {
+    const h = caseHistory(PROJECT, SUITE, KEY)!;
+    expect(h).toBeTruthy();
+    expect(h.project).toBe(PROJECT);
+    expect(h.suite).toBe(SUITE);
+    expect(h.case_key).toBe(KEY);
+
+    // case-0024's idx (24) is below every regression run's case count, so it
+    // appears in all 12 runs of the suite.
+    expect(h.points).toHaveLength(12);
+    // Newest-first: strictly descending created_at, latest run first.
+    expect(h.points[0]!.run_id).toBe("checkout-agent-regression-12");
+    expect(h.points.at(-1)!.run_id).toBe("checkout-agent-regression-01");
+    for (let i = 1; i < h.points.length; i++) {
+      expect(parseTimestamp(h.points[i - 1]!.created_at)).toBeGreaterThan(
+        parseTimestamp(h.points[i]!.created_at),
+      );
+    }
+    // The suite's pinned baseline rides along on the response.
+    expect(h.baseline_run_id).toBe("checkout-agent-regression-11");
+  });
+
+  it("computes output_changed against the next-older point, null at the oldest", () => {
+    const h = caseHistory(PROJECT, SUITE, KEY)!;
+    // Server semantics: output_changed[i] = points[i].hash !== points[i+1].hash
+    // when both are present, else null; the oldest returned point is null.
+    for (let i = 0; i < h.points.length; i++) {
+      const cur = h.points[i]!;
+      const older = h.points[i + 1];
+      const expected =
+        older && cur.output_hash != null && older.output_hash != null
+          ? cur.output_hash !== older.output_hash
+          : null;
+      expect(cur.output_changed).toBe(expected);
+    }
+    expect(h.points.at(-1)!.output_changed).toBeNull();
+    // The newest point differs from its predecessor — same fact the
+    // baseline-diff pin encodes for regression-12 vs regression-11.
+    expect(h.points[0]!.output_changed).toBe(true);
+  });
+
+  it("caps the window at `limit`, keeping the newest runs", () => {
+    const h = caseHistory(PROJECT, SUITE, KEY, 3)!;
+    expect(h.points.map((p) => p.run_id)).toEqual([
+      "checkout-agent-regression-12",
+      "checkout-agent-regression-11",
+      "checkout-agent-regression-10",
+    ]);
+    // The oldest point in the (capped) window is still null — the server does
+    // not look past the LIMIT window when computing output_changed.
+    expect(h.points.at(-1)!.output_changed).toBeNull();
+  });
+
+  it("reversing the newest-first points yields the oldest→newest timeline", () => {
+    const h = caseHistory(PROJECT, SUITE, KEY)!;
+    const chronological = [...h.points].reverse();
+    for (let i = 1; i < chronological.length; i++) {
+      expect(parseTimestamp(chronological[i]!.created_at)).toBeGreaterThan(
+        parseTimestamp(chronological[i - 1]!.created_at),
+      );
+    }
+  });
+
+  it("returns undefined when no run of the suite carries the case (a 404)", () => {
+    expect(caseHistory(PROJECT, SUITE, "case-9999")).toBeUndefined();
+    expect(caseHistory("no-such-project", SUITE, KEY)).toBeUndefined();
+    expect(caseHistory(PROJECT, "no-such-suite", KEY)).toBeUndefined();
+  });
+});
+
+describe("matrix-shaped fixture suite", () => {
+  it("emits a real provider × prompt grid with >1 distinct provider and prompt", () => {
+    const cases = runCases(MATRIX_RUN);
+    // 3 providers × 2 prompts × 12 tests × 2 repeats.
+    expect(cases).toHaveLength(144);
+
+    const items = cases.map(toCaseListItem);
+    const providers = new Set(items.map((c) => c.provider_id));
+    const prompts = new Set(items.map((c) => c.prompt_id));
+    const tests = new Set(items.map((c) => c.test_id));
+    const repeats = new Set(items.map((c) => c.repeat));
+    expect(providers).toEqual(new Set(["gpt-5-mini", "claude-sonnet", "llama-70b"]));
+    expect(prompts).toEqual(new Set(["baseline", "cot-v2"]));
+    expect(tests.size).toBe(12);
+    expect(repeats).toEqual(new Set([0, 1]));
+
+    // Every case carries the migration-3 identity fields (no nulls on the axes)
+    // plus a numeric score.
+    for (const c of items) {
+      expect(c.provider_id).toBeTruthy();
+      expect(c.prompt_id).toBeTruthy();
+      expect(c.test_id).toBeTruthy();
+      expect(typeof c.repeat).toBe("number");
+      expect(typeof c.score).toBe("number");
+    }
+  });
+
+  it("single-provider (flat) suites keep a set provider with one distinct value", () => {
+    const items = runCases(MONEY_RUN).map(toCaseListItem);
+    expect(new Set(items.map((c) => c.provider_id))).toEqual(new Set(["openai"]));
+    // Real single-provider runs: null prompt, test_id === case_key, repeat 0.
+    for (const c of items) {
+      expect(c.provider_id).toBe("openai");
+      expect(c.prompt_id).toBeNull();
+      expect(c.test_id).toBe(c.case_key);
+      expect(c.repeat).toBe(0);
+    }
+  });
+
+  it("buildMatrix pivots the matrix run into complete columns and per-test rows", () => {
+    const m = buildMatrix(MATRIX_RUN)!;
+    expect(m).toBeTruthy();
+    expect(m.run_id).toBe(MATRIX_RUN);
+
+    // 6 columns = (provider, prompt) pairs, first-seen order (test 0 emits them
+    // all before the next test).
+    expect(m.columns).toEqual([
+      { provider_id: "gpt-5-mini", prompt_id: "baseline" },
+      { provider_id: "gpt-5-mini", prompt_id: "cot-v2" },
+      { provider_id: "claude-sonnet", prompt_id: "baseline" },
+      { provider_id: "claude-sonnet", prompt_id: "cot-v2" },
+      { provider_id: "llama-70b", prompt_id: "baseline" },
+      { provider_id: "llama-70b", prompt_id: "cot-v2" },
+    ]);
+
+    // 12 test rows, default page holds them all (no pagination).
+    expect(m.rows).toHaveLength(12);
+    expect(m.next_cursor).toBeNull();
+
+    for (const row of m.rows) {
+      expect(row.cells).toHaveLength(m.columns.length);
+      for (const cell of row.cells) {
+        expect(cell).not.toBeNull();
+        const c = cell!;
+        // Each cell collapses exactly the 2 repeats of that test × column.
+        expect(c.total).toBe(2);
+        expect(c.passed + c.failed + c.errored + c.skipped).toBe(c.total);
+        expect(c.case_keys).toHaveLength(2);
+        expect(c.pass_fraction).toBeCloseTo(c.passed / c.total, 6);
+        // distinct_outputs is a flakiness signal in [1, total].
+        expect(c.distinct_outputs).toBeGreaterThanOrEqual(1);
+        expect(c.distinct_outputs).toBeLessThanOrEqual(c.total);
+      }
+    }
+  });
+
+  it("buildMatrix reconciles cell totals with the provider/prompt case filters", () => {
+    const m = buildMatrix(MATRIX_RUN)!;
+    const items = runCases(MATRIX_RUN).map(toCaseListItem);
+
+    // The whole grid's cell totals sum to the run's case count.
+    const gridTotal = m.rows
+      .flatMap((r) => r.cells)
+      .reduce((sum, cell) => sum + (cell?.total ?? 0), 0);
+    expect(gridTotal).toBe(items.length);
+
+    // A single provider's column totals equal the cases carrying that provider
+    // (what the `?provider=` server filter returns).
+    const providerColumns = m.columns
+      .map((col, i) => ({ col, i }))
+      .filter(({ col }) => col.provider_id === "gpt-5-mini");
+    const providerCellTotal = m.rows
+      .flatMap((r) => providerColumns.map(({ i }) => r.cells[i]))
+      .reduce((sum, cell) => sum + (cell?.total ?? 0), 0);
+    const providerCaseCount = items.filter(
+      (c) => c.provider_id === "gpt-5-mini",
+    ).length;
+    expect(providerCellTotal).toBe(providerCaseCount);
+    expect(providerCaseCount).toBe(48); // 2 prompts × 12 tests × 2 repeats
+  });
+
+  it("buildMatrix collapses a flat run to a single column and 404s an unknown run", () => {
+    const m = buildMatrix(MONEY_RUN, { limit: 5 })!;
+    expect(m.columns).toEqual([{ provider_id: "openai", prompt_id: null }]);
+    // Row pagination is honoured: 5 test rows + a cursor to continue.
+    expect(m.rows).toHaveLength(5);
+    expect(m.next_cursor).not.toBeNull();
+    for (const row of m.rows) {
+      expect(row.cells).toHaveLength(1);
+      expect(row.cells[0]!.total).toBe(1); // one case per test on a flat run
+    }
+
+    expect(buildMatrix("no-such-run")).toBeUndefined();
+  });
+
+  // These two cells are hard-coded by the matrix E2E (web/e2e/matrix.spec.ts):
+  // pin them here so any fixture-RNG drift fails fast at the unit level instead
+  // of as an opaque Playwright failure. Columns are provider-major:
+  // index 2 = claude-sonnet · baseline, index 0 = gpt-5-mini · baseline.
+  it("pins the E2E's 1/2 cell and its two-provider compare group", () => {
+    const m = buildMatrix(MATRIX_RUN)!;
+    const test000 = m.rows.find((r) => r.test_id === "test-000")!;
+    // The `1/2` tile the E2E clicks (data-cell="test-000:2").
+    const oneOfTwo = test000.cells[2]!;
+    expect({ passed: oneOfTwo.passed, total: oneOfTwo.total }).toEqual({
+      passed: 1,
+      total: 2,
+    });
+
+    // test-002 · baseline: exactly two of the three providers produced output on
+    // their first repeat (the third's first repeat skipped), so the compare modal
+    // offers the two-way word diff. Baseline column indices are 0/2/4.
+    const test002 = m.rows.find((r) => r.test_id === "test-002")!;
+    const withOutput = [0, 2, 4].filter((ci) => {
+      const first = test002.cells[ci]!.case_keys[0]!;
+      const d = caseDetail(MATRIX_RUN, first)!;
+      const out = typeof d.output === "string" ? d.output : d.output == null ? "" : "x";
+      return out.trim() !== "";
+    });
+    expect(withOutput).toHaveLength(2);
+  });
+});
+
+// Pins the schema-v2 case-detail fixture the prompt-drawer E2E
+// (web/e2e/prompt-drawer.spec.ts) opens: on the support-bot/tone-and-safety
+// suite, specific cases must carry a messages/text prompt, a truncating/clean
+// stop_reason, and raw metadata — while the money run stays fully v1 so the
+// "v1 renders nothing" assertion has a clean target. Mirrors V2_RUN/V2_*_CASE in
+// web/e2e/helpers.ts.
+describe("schema-v2 case-detail fixture", () => {
+  const V2_RUN = "support-bot-tone-and-safety-09";
+
+  it("emits a messages-style prompt with system+user turns, a clean stop, and raw metadata", () => {
+    const d = caseDetail(V2_RUN, "case-0000")!;
+    expect(d.status).toBe("pass");
+    expect(d.prompt && "messages" in d.prompt).toBe(true);
+    const msgs = (d.prompt as { messages: { role: string }[] }).messages;
+    expect(msgs.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(d.stop_reason).toBe("end_turn");
+    expect(typeof d.raw).toBe("object");
+    expect(d.raw).not.toBeNull();
+  });
+
+  it("emits a truncating stop_reason (max_tokens) on a deterministic case", () => {
+    expect(caseDetail(V2_RUN, "case-0001")!.stop_reason).toBe("max_tokens");
+  });
+
+  it("emits a text-style prompt on a deterministic case", () => {
+    const d = caseDetail(V2_RUN, "case-0003")!;
+    expect(d.prompt && "text" in d.prompt).toBe(true);
+  });
+
+  it("leaves skipped cases fully v1 (nothing was sent or returned)", () => {
+    const skip = runCases(V2_RUN).find((c) => c.status === "skip");
+    expect(skip).toBeTruthy();
+    const d = caseDetail(V2_RUN, skip!.case_key)!;
+    expect(d.prompt).toBeUndefined();
+    expect(d.stop_reason).toBeUndefined();
+    expect(d.raw).toBeUndefined();
+  });
+
+  it("leaves every other suite (the money run) v1-shaped", () => {
+    const d = caseDetail(MONEY_RUN, "case-0000")!;
+    expect(d.prompt).toBeUndefined();
+    expect(d.stop_reason).toBeUndefined();
+    expect(d.raw).toBeUndefined();
   });
 });

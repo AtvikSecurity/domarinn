@@ -7,9 +7,8 @@ use rusqlite::{params, Connection};
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 
-use super::{decompress, from_microusd, Storage};
+use super::{decompress, empty_to_none, from_microusd, parse_stored_asserts, Storage};
 use crate::dto::cases::{CaseDetailResponse, CaseListItem, CaseListResponse};
-use crate::dto::runs::CaseAssertLean;
 
 impl Storage {
     pub async fn list_cases(&self, filter: CaseListFilter) -> anyhow::Result<CaseListResponse> {
@@ -34,6 +33,11 @@ pub struct CaseListFilter {
     pub status: Option<CaseStatus>,
     pub tag: Option<String>,
     pub q: Option<String>,
+    /// Exact-match on the promoted cell columns (migration 3).
+    pub provider: Option<String>,
+    pub prompt: Option<String>,
+    pub test: Option<String>,
+    pub stop_reason: Option<String>,
     pub limit: i64,
     pub cursor: Option<i64>,
 }
@@ -42,7 +46,8 @@ impl CaseListFilter {
     fn query(self, conn: &Connection) -> anyhow::Result<CaseListResponse> {
         let mut sql = String::from(
             "SELECT case_key, idx, name, status, output_preview, asserts,
-                    prompt_tokens, completion_tokens, cost_microusd, latency_ms
+                    prompt_tokens, completion_tokens, cost_microusd, latency_ms,
+                    provider_id, prompt_id, test_id, repeat_idx, score, stop_reason
              FROM cases WHERE run_id = ?1",
         );
         let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
@@ -65,6 +70,22 @@ impl CaseListFilter {
             let b = args.len();
             sql.push_str(&format!(" AND (output_text LIKE ?{a} OR name LIKE ?{b})"));
         }
+        if let Some(provider) = &self.provider {
+            args.push(provider.clone().into());
+            sql.push_str(&format!(" AND provider_id = ?{}", args.len()));
+        }
+        if let Some(prompt) = &self.prompt {
+            args.push(prompt.clone().into());
+            sql.push_str(&format!(" AND prompt_id = ?{}", args.len()));
+        }
+        if let Some(test) = &self.test {
+            args.push(test.clone().into());
+            sql.push_str(&format!(" AND test_id = ?{}", args.len()));
+        }
+        if let Some(stop_reason) = &self.stop_reason {
+            args.push(stop_reason.clone().into());
+            sql.push_str(&format!(" AND stop_reason = ?{}", args.len()));
+        }
         if let Some(cursor) = self.cursor {
             args.push(cursor.into());
             sql.push_str(&format!(" AND idx > ?{}", args.len()));
@@ -76,24 +97,9 @@ impl CaseListFilter {
         let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
             let case_key: String = row.get(0)?;
             let asserts_str: Option<String> = row.get(5)?;
-            // Graceful degrade: the `asserts` column is always written by this
-            // codebase as a serialized `Vec<CaseAssertLean>`, so any row it
-            // produced parses cleanly. A parse failure therefore means a
-            // hand-tampered or otherwise corrupt blob; rather than fail the
-            // whole case listing we treat it as "no asserts" and warn so the
-            // bad row is visible in logs.
-            let asserts: Vec<CaseAssertLean> = match asserts_str {
-                Some(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-                    tracing::warn!(
-                        run_id = %self.run_id.as_str(),
-                        case_key = %case_key,
-                        error = %e,
-                        "unparseable stored asserts; treating as empty"
-                    );
-                    Vec::new()
-                }),
-                None => Vec::new(),
-            };
+            // Graceful degrade (see `parse_stored_asserts`): a corrupt/tampered
+            // row lists as having no asserts rather than failing the whole read.
+            let asserts = parse_stored_asserts(asserts_str, self.run_id.as_str(), &case_key);
             let status_raw: String = row.get(3)?;
             let status = CaseStatus::from_str(&status_raw).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, e.into())
@@ -112,6 +118,15 @@ impl CaseListFilter {
                     completion_tokens: row.get::<_, Option<i64>>(7)?,
                     cost_usd: from_microusd(row.get::<_, Option<i64>>(8)?),
                     latency_ms: row.get::<_, Option<i64>>(9)?,
+                    // Map the empty-string backfill sentinel to `None` on the
+                    // text columns; `repeat_idx`/`score` are numeric and land
+                    // NULL on sentinel rows.
+                    provider_id: empty_to_none(row.get::<_, Option<String>>(10)?),
+                    prompt_id: empty_to_none(row.get::<_, Option<String>>(11)?),
+                    test_id: empty_to_none(row.get::<_, Option<String>>(12)?),
+                    repeat: row.get::<_, Option<i64>>(13)?,
+                    score: row.get::<_, Option<f64>>(14)?,
+                    stop_reason: empty_to_none(row.get::<_, Option<String>>(15)?),
                 },
             ))
         })?;

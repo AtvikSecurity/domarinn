@@ -4,9 +4,10 @@ import type { CaseKey } from "./CaseKey";
 import type { CaseStatus } from "./CaseStatus";
 import type { CellKey } from "./CellKey";
 import type { Output } from "./Output";
+import type { RenderedPrompt } from "./RenderedPrompt";
 import type { TokenUsage } from "./TokenUsage";
 
 /**
  * The result of one matrix cell.
  */
-export type CaseResult = { cell: CellKey, case_key: CaseKey, name?: string, tags: Array<string>, status: CaseStatus, score: number, output?: Output, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };
+export type CaseResult = { cell: CellKey, case_key: CaseKey, name?: string, tags: Array<string>, status: CaseStatus, score: number, output?: Output, prompt?: RenderedPrompt, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };

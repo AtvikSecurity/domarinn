@@ -32,6 +32,7 @@ impl TemplateEngine {
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_undefined_behavior(UndefinedBehavior::Strict);
+        crate::template_fns::register(&mut env);
         Self { env }
     }
 
@@ -145,5 +146,46 @@ mod tests {
         assert!(!eng
             .eval_bool("output | length < 3", &json!({"output": "longer"}))
             .unwrap());
+    }
+
+    #[test]
+    fn custom_filter_is_available_in_prompts() {
+        // The registered `sha256` filter is usable from an ordinary render.
+        let eng = TemplateEngine::new();
+        let out = eng
+            .render_str("{{ doc | sha256 }}", &json!({"doc": "abc"}))
+            .unwrap();
+        assert_eq!(
+            out,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn custom_filter_is_available_in_jinja_asserts() {
+        // `regex_match` powers a `jinja` assertion.
+        let eng = TemplateEngine::new();
+        assert!(eng
+            .eval_bool(
+                "output | regex_match('^[0-9]+$')",
+                &json!({"output": "12345"})
+            )
+            .unwrap());
+        assert!(!eng
+            .eval_bool(
+                "output | regex_match('^[0-9]+$')",
+                &json!({"output": "12a45"})
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn raw_val_bypasses_filters() {
+        // A raw value that *looks* like a filter pipeline must pass through
+        // verbatim — the SSTI guard covers filters, not just `{{7*7}}`.
+        let eng = TemplateEngine::new();
+        let val = Val::Raw(json!("{{ 'x' | sha256 }}"));
+        let out = eng.render_val(&val, &json!({})).unwrap();
+        assert_eq!(out, json!("{{ 'x' | sha256 }}"));
     }
 }

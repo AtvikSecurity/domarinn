@@ -4,26 +4,39 @@ import { useCaseDetail } from "@/api/queries";
 import type { AssertResult } from "@/api";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { ErrorState } from "@/components/States";
+import { JsonTree, OutputViewer, RawText, outputToString } from "@/components/output";
 import { formatCost, formatLatency, formatTokens } from "@/lib/format";
 import { cn } from "@/lib/cn";
-
-function stringify(v: unknown): string {
-  if (v === undefined) return "";
-  return typeof v === "string" ? v : JSON.stringify(v, null, 2);
-}
+import { BaselineDiffSection } from "./BaselineDiffSection";
+import { CaseHistorySection } from "./CaseHistorySection";
+import {
+  PromptSection,
+  RawMetadataSection,
+  StopReasonChip,
+} from "./CaseDrawerSections";
 
 export function CaseDrawer({
   runId,
+  project,
+  suite,
   caseKey,
   onClose,
 }: {
   runId: string;
+  project: string;
+  suite: string;
   caseKey: string | undefined;
   onClose: () => void;
 }) {
   const open = !!caseKey;
   const detail = useCaseDetail(runId, caseKey);
+
+  // Shareable deep link to this exact case (the drawer re-opens from `?case=`).
+  const permalink = caseKey
+    ? `${window.location.origin}/runs/${encodeURIComponent(runId)}?case=${encodeURIComponent(caseKey)}`
+    : "";
 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
@@ -40,11 +53,16 @@ export function CaseDrawer({
               </Dialog.Title>
               <div className="truncate font-mono text-xs text-muted">{caseKey}</div>
             </div>
-            <Dialog.Close className="rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M6 6l12 12M18 6L6 18" />
-              </svg>
-            </Dialog.Close>
+            <div className="flex shrink-0 items-center gap-1">
+              {caseKey ? (
+                <CopyButton value={permalink} label="Copy link" />
+              ) : null}
+              <Dialog.Close className="rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </Dialog.Close>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-5 py-4">
@@ -64,7 +82,21 @@ export function CaseDrawer({
                       {t}
                     </span>
                   ))}
-                  <span className="ml-auto text-xs text-muted">
+                  {detail.data.cached ? (
+                    <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-muted">
+                      cached
+                    </span>
+                  ) : null}
+                  {detail.data.attempts > 1 ? (
+                    <span className="rounded bg-amber/12 px-1.5 py-0.5 text-[11px] font-medium text-amber">
+                      {detail.data.attempts} attempts
+                    </span>
+                  ) : null}
+                  {detail.data.stop_reason ? (
+                    <StopReasonChip reason={detail.data.stop_reason} />
+                  ) : null}
+                  <span className="ml-auto text-xs tabular-nums text-muted">
+                    score {detail.data.score.toFixed(2)} ·{" "}
                     {formatTokens(
                       (detail.data.usage?.input_tokens ?? 0) +
                         (detail.data.usage?.output_tokens ?? 0),
@@ -73,6 +105,15 @@ export function CaseDrawer({
                     {formatLatency(detail.data.latency_ms)}
                   </span>
                 </div>
+
+                {detail.data.error ? (
+                  <div className="rounded-lg border border-fail/25 bg-fail/5 p-3">
+                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-fail">
+                      Error
+                    </div>
+                    <p className="text-sm text-fail/90">{detail.data.error}</p>
+                  </div>
+                ) : null}
 
                 <Section title="Assertions">
                   <div className="space-y-2">
@@ -86,8 +127,35 @@ export function CaseDrawer({
                 </Section>
 
                 <Section title="Output">
-                  <CodeBlock text={stringify(detail.data.output)} />
+                  <OutputViewer value={detail.data.output} />
                 </Section>
+
+                {detail.data.prompt ? (
+                  <PromptSection prompt={detail.data.prompt} />
+                ) : null}
+
+                {caseKey ? (
+                  <BaselineDiffSection
+                    project={project}
+                    suite={suite}
+                    runId={runId}
+                    caseKey={caseKey}
+                    currentOutput={detail.data.output}
+                  />
+                ) : null}
+
+                {caseKey ? (
+                  <CaseHistorySection
+                    project={project}
+                    suite={suite}
+                    runId={runId}
+                    caseKey={caseKey}
+                  />
+                ) : null}
+
+                {detail.data.raw !== undefined ? (
+                  <RawMetadataSection raw={detail.data.raw} />
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -105,14 +173,6 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       </h3>
       {children}
     </section>
-  );
-}
-
-function CodeBlock({ text }: { text: string }) {
-  return (
-    <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-bg p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
-      {text || <span className="text-muted">(empty)</span>}
-    </pre>
   );
 }
 
@@ -139,9 +199,15 @@ function AssertRow({ assert }: { assert: AssertResult }) {
       </div>
       <p className="mt-1.5 text-sm text-fg/90">{assert.reason}</p>
       {assert.details !== undefined ? (
-        <pre className="mt-2 overflow-auto rounded border border-border bg-bg p-2 font-mono text-[11px] text-muted">
-          {JSON.stringify(assert.details, null, 2)}
-        </pre>
+        typeof assert.details === "object" && assert.details !== null ? (
+          <JsonTree data={assert.details} className="mt-2 text-[11px]" />
+        ) : (
+          <RawText
+            text={outputToString(assert.details)}
+            wrap
+            className="mt-2 text-[11px]"
+          />
+        )
       ) : null}
     </div>
   );
