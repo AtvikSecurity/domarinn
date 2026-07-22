@@ -106,6 +106,14 @@ RUN curl -fsSL "https://github.com/lsh123/xmlsec/releases/download/${XMLSEC_VER}
       --disable-apps --disable-docs && \
     make -j"$(nproc)" && make install && cd .. && rm -rf "xmlsec1-${XMLSEC_VER}" xmlsec1.tar.gz
 
+# 4. Empty stub archives, mirroring upstream musl's install. musl folds
+#    libm/libdl/libpthread/librt into libc.a and ships empty stubs so stray
+#    `-lm` etc. resolve harmlessly. Our from-source prefix lacks them, and the
+#    builder stage links via the host *glibc* cc driver, so xmlsec1/libxml2's
+#    pkg-config `-lm` would otherwise fall through to glibc's static libm —
+#    undefined refs to _dl_x86_cpu_features/errno at link time.
+RUN for lib in m dl pthread rt; do ar rcs "${MUSL_PREFIX}/lib/lib${lib}.a"; done
+
 # ---------------------------------------------------------------------------
 # Stage 3: compile the static CLI/server binary against musl (glibc host).
 #
