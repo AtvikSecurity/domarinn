@@ -47,7 +47,7 @@ lefthook = "2.1.10"
 oxfmt = "0.60.0"
 # The shared pre-commit hooks run zizmor on staged workflow files and
 # shellcheck on staged *.sh files; pin both so the hooks resolve binaries.
-zizmor = "1.27.0"
+zizmor = "1.28.0"
 shellcheck = "0.11.0"
 
 # --- Tasks (ported 1:1 from the former justfile) ---------------------------
