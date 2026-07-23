@@ -99,11 +99,17 @@ then let it provision the pinned Rust, Node, and pnpm from `.mise/config.toml`:
 mise install    # install the pinned toolchain (Rust, Node, pnpm) + git hooks
 mise tasks      # list every available task
 
-mise run build  # pnpm build the web UI, then cargo build --release
-mise run test   # cargo test --workspace
-mise run lint   # clippy -D warnings + cargo fmt --check
-mise run dev    # run the server; run `pnpm -C web dev` alongside for the UI
-mise run ci     # every CI gate locally (lint, tests, drift checks, web, musl)
+mise run build       # pnpm build the web UI, then cargo build --release
+mise run build-cli   # fast release build of just the CLI (no web UI)
+mise run test        # cargo test --workspace
+mise run lint        # clippy -D warnings + cargo fmt --check
+mise run dev         # run the server; run `pnpm -C web dev` alongside for the UI
+mise run ci          # every CI gate locally (lint, tests, drift checks, web, musl)
+
+# install the `domarinn` binary into ~/.cargo/bin (on PATH):
+mise run install       # full binary with the web UI embedded (builds web first)
+mise run install-cli   # eval CLI only, no web UI (fast)
+mise run install-musl  # static x86_64-musl single binary (needs a musl C toolchain)
 ```
 
 `mise install` also installs the [lefthook](https://lefthook.dev) pre-commit

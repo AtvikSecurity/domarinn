@@ -13,6 +13,11 @@ cd domarinn
 cargo build --release            # binary at target/release/domarinn
 # with the web UI embedded (via mise — https://mise.jdx.dev):
 mise run build                   # builds web/dist, then the release binary
+
+# or install `domarinn` straight into ~/.cargo/bin (on your PATH):
+mise run install                 # full binary, web UI embedded
+mise run install-cli             # eval CLI only, no web UI (fast)
+mise run install-musl            # static musl single binary (needs a musl C toolchain)
 ```
 
 **Docker** (the server + embedded UI):

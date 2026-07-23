@@ -398,6 +398,7 @@ mod tests {
             cell,
             name: None,
             tags: vec![],
+            vars: Default::default(),
             status,
             score: 0.0,
             output: None,
@@ -633,6 +634,7 @@ mod tests {
                 weight: 1.0,
                 reason: String::new(),
                 details: None,
+                criteria: None,
                 cached: false,
             },
             AssertResult {
@@ -642,6 +644,7 @@ mod tests {
                 weight: 2.0,
                 reason: "response missed the apology".into(),
                 details: Some(serde_json::json!({"pass": false})),
+                criteria: None,
                 cached: false,
             },
         ];

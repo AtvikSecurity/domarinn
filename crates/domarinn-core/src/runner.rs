@@ -427,9 +427,13 @@ async fn run_cell(
                 test,
                 format!("rendering vars: {e}"),
                 None,
+                serde_json::Map::new(),
             )
         }
     };
+    // Persisted verbatim into `CaseResult.vars` (the UI's Input view). Cloned
+    // because `rendered_vars` is moved into the provider request below.
+    let case_vars = rendered_vars.clone();
     let var_ctx = render::context_with_env(&rendered_vars);
     let rendered_prompt = match prompt {
         Some(p) => match render_prompt(p, &var_ctx, engine, base_dir) {
@@ -442,6 +446,7 @@ async fn run_cell(
                     test,
                     format!("rendering prompt: {e}"),
                     None,
+                    case_vars,
                 )
             }
         },
@@ -482,7 +487,7 @@ async fn run_cell(
     {
         Ok(triple) => triple,
         Err(e) => {
-            return error_case(cell, case_key, name, test, e, rendered_prompt);
+            return error_case(cell, case_key, name, test, e, rendered_prompt, case_vars);
         }
     };
     let latency_ms = start.elapsed().as_millis() as u64;
@@ -522,6 +527,7 @@ async fn run_cell(
         case_key,
         name,
         tags: test.tags.clone(),
+        vars: case_vars,
         status,
         score: verdict.score,
         output: Some(response.output),
@@ -691,6 +697,23 @@ fn scored_of(assert: &Assert, outcome: &AssertOutcome) -> Scored {
     }
 }
 
+/// The assertion's authored definition, for the UI's Input view: the flattened
+/// `AssertKind` (its `type` tag plus the type-specific criteria — the `contains`
+/// substring, the `llm-rubric` rubric text + threshold, …) as a JSON object,
+/// with a `negate: true` entry added when the assertion is negated. `weight` is
+/// intentionally omitted (already carried by `AssertResult.weight`). Returns
+/// `None` only if the kind fails to serialize, which does not happen in practice
+/// (every `AssertKind` variant is an internally-tagged object).
+fn assert_criteria(assert: &Assert) -> Option<serde_json::Value> {
+    let mut value = serde_json::to_value(&assert.kind).ok()?;
+    if assert.negate {
+        if let serde_json::Value::Object(map) = &mut value {
+            map.insert("negate".to_string(), serde_json::Value::Bool(true));
+        }
+    }
+    Some(value)
+}
+
 fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus) -> AssertResult {
     AssertResult {
         kind: assert.kind.name(),
@@ -699,6 +722,7 @@ fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus)
         weight: assert.weight,
         reason: outcome.reason.clone(),
         details: outcome.details.clone(),
+        criteria: assert_criteria(assert),
         cached: false,
     }
 }
@@ -711,6 +735,7 @@ fn error_assert(assert: &Assert, reason: String) -> AssertResult {
         weight: assert.weight,
         reason,
         details: None,
+        criteria: assert_criteria(assert),
         cached: false,
     }
 }
@@ -723,6 +748,7 @@ fn skipped_result(assert: &Assert) -> AssertResult {
         weight: assert.weight,
         reason: "skipped: outcome already decided".into(),
         details: None,
+        criteria: assert_criteria(assert),
         cached: false,
     }
 }
@@ -750,12 +776,14 @@ fn error_case(
     test: &TestCase,
     error: String,
     prompt: Option<RenderedPrompt>,
+    vars: serde_json::Map<String, serde_json::Value>,
 ) -> CaseResult {
     CaseResult {
         cell,
         case_key,
         name,
         tags: test.tags.clone(),
+        vars,
         status: CaseStatus::Error,
         score: 0.0,
         output: None,

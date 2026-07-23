@@ -108,6 +108,13 @@ pub struct AssertResult {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
+    /// The assertion's definition — its type-specific criteria as authored (the
+    /// `contains` substring, the `llm-rubric` rubric text + threshold, …), plus
+    /// a `negate: true` entry when the assertion is negated. `weight` is omitted
+    /// (already a field above). Absent on pre-v2.1 stored blobs; presence-gated
+    /// by the web UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criteria: Option<serde_json::Value>,
     #[serde(default)]
     pub cached: bool,
 }
@@ -130,6 +137,13 @@ pub struct CaseResult {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// The rendered test variables that produced this cell (the substituted
+    /// `vars` map, environment excluded — the same values fed to the provider
+    /// request). Empty when the test had no vars, and absent on pre-v2.1 stored
+    /// blobs; presence-gated by the web UI. Marked optional in TS via ts-rs's
+    /// serde-aware fallback (`default` + `skip_serializing_if`), same as `tags`.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub vars: serde_json::Map<String, serde_json::Value>,
     pub status: CaseStatus,
     pub score: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -275,28 +289,38 @@ mod tests {
 
     #[test]
     fn v1_case_result_deserializes_with_absent_v2_fields_and_re_serializes_byte_stable() {
-        // A v1 result document has none of the v2 keys. It must deserialize with
-        // all three defaulting to `None`, and — because they carry
-        // `skip_serializing_if` — re-serialize without emitting any of them, so a
-        // stored-then-reloaded v1 document is byte-identical (the server's
-        // content-hash idempotency depends on absent fields staying absent).
+        // A v1 result document has none of the added optional keys. It must
+        // deserialize with each defaulting to its empty/`None` value, and —
+        // because they carry `skip_serializing_if` — re-serialize without
+        // emitting any of them, so a stored-then-reloaded v1 document is
+        // byte-identical (the server's content-hash idempotency depends on
+        // absent fields staying absent). This guards `prompt`/`stop_reason`/`raw`
+        // and the later-added `vars` (case level) and `criteria` (assert level).
         let v1 = r#"{
             "cell": {"provider_id": "p", "test_id": "t"},
             "case_key": "0011223344556677",
             "status": "pass",
             "score": 1.0,
             "output": "hello",
+            "asserts": [
+                {"kind": "contains", "status": "pass", "score": 1.0,
+                 "weight": 1.0, "reason": "ok", "cached": false}
+            ],
             "latency_ms": 12
         }"#;
         let case: CaseResult = serde_json::from_str(v1).unwrap();
         assert!(case.prompt.is_none());
         assert!(case.stop_reason.is_none());
         assert!(case.raw.is_none());
+        assert!(case.vars.is_empty());
+        assert!(case.asserts[0].criteria.is_none());
 
         let reserialized = serde_json::to_string(&case).unwrap();
         assert!(!reserialized.contains("prompt"));
         assert!(!reserialized.contains("stop_reason"));
         assert!(!reserialized.contains("\"raw\""));
+        assert!(!reserialized.contains("vars"));
+        assert!(!reserialized.contains("criteria"));
     }
 
     #[test]

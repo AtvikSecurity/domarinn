@@ -458,6 +458,7 @@ mod diff_tests {
             cell,
             name: Some(test.into()),
             tags: vec![],
+            vars: Default::default(),
             status,
             score,
             output: output.map(|o| Output::Text(o.into())),

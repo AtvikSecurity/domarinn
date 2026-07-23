@@ -488,6 +488,7 @@ mod tests {
             cell: cell(test),
             name: Some(test.into()),
             tags: vec![],
+            vars: Default::default(),
             status,
             score,
             output: None,

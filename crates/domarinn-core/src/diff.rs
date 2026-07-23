@@ -190,6 +190,7 @@ mod tests {
             case_key: key.into(),
             name: Some(key.into()),
             tags: vec![],
+            vars: Default::default(),
             status,
             score: if matches!(status, CaseStatus::Pass) {
                 1.0

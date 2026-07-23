@@ -12,6 +12,8 @@ import { cn } from "@/lib/cn";
 import { BaselineDiffSection } from "./BaselineDiffSection";
 import { CaseHistorySection } from "./CaseHistorySection";
 import {
+  AssertCriteria,
+  InputSection,
   PromptSection,
   RawMetadataSection,
   StopReasonChip,
@@ -115,6 +117,12 @@ export function CaseDrawer({
                   </div>
                 ) : null}
 
+                <InputSection cell={detail.data.cell} vars={detail.data.vars} />
+
+                {detail.data.prompt ? (
+                  <PromptSection prompt={detail.data.prompt} />
+                ) : null}
+
                 <Section title="Assertions">
                   <div className="space-y-2">
                     {detail.data.asserts.map((a, i) => (
@@ -129,10 +137,6 @@ export function CaseDrawer({
                 <Section title="Output">
                   <OutputViewer value={detail.data.output} />
                 </Section>
-
-                {detail.data.prompt ? (
-                  <PromptSection prompt={detail.data.prompt} />
-                ) : null}
 
                 {caseKey ? (
                   <BaselineDiffSection
@@ -197,6 +201,9 @@ function AssertRow({ assert }: { assert: AssertResult }) {
           score {assert.score.toFixed(2)} · weight {assert.weight.toFixed(2)}
         </span>
       </div>
+      {assert.criteria != null ? (
+        <AssertCriteria criteria={assert.criteria} />
+      ) : null}
       <p className="mt-1.5 text-sm text-fg/90">{assert.reason}</p>
       {assert.details !== undefined ? (
         typeof assert.details === "object" && assert.details !== null ? (

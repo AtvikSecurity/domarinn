@@ -6,6 +6,7 @@ import type { CellKey } from "./CellKey";
 import type { Output } from "./Output";
 import type { RenderedPrompt } from "./RenderedPrompt";
 import type { TokenUsage } from "./TokenUsage";
+import type { JsonValue } from "./serde_json/JsonValue";
 
 /**
  * The result of one matrix cell.
@@ -18,4 +19,12 @@ import type { TokenUsage } from "./TokenUsage";
  * though it is skipped when empty; without it, ts-rs's serde-aware fallback
  * (`default` + `skip_serializing_if`) marks `tags` optional too.
  */
-export type CaseResult = { cell: CellKey, case_key: CaseKey, name?: string, tags?: Array<string>, status: CaseStatus, score: number, output?: Output, prompt?: RenderedPrompt, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };
+export type CaseResult = { cell: CellKey, case_key: CaseKey, name?: string, tags?: Array<string>, 
+/**
+ * The rendered test variables that produced this cell (the substituted
+ * `vars` map, environment excluded — the same values fed to the provider
+ * request). Empty when the test had no vars, and absent on pre-v2.1 stored
+ * blobs; presence-gated by the web UI. Marked optional in TS via ts-rs's
+ * serde-aware fallback (`default` + `skip_serializing_if`), same as `tags`.
+ */
+vars?: { [key in string]: JsonValue }, status: CaseStatus, score: number, output?: Output, prompt?: RenderedPrompt, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };

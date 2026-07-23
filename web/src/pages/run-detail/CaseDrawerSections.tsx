@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import type { RenderedPrompt } from "@/api";
+import type { CellKey, RenderedPrompt } from "@/api";
 import { JsonTree, OutputViewer, RawText, outputToString } from "@/components/output";
 import { cn } from "@/lib/cn";
 
@@ -163,5 +163,138 @@ export function RawMetadataSection({ raw }: { raw: unknown }) {
         <RawText text={outputToString(raw)} wrap />
       )}
     </CollapsibleSection>
+  );
+}
+
+/**
+ * The "Input" section: what was fed into this matrix cell. Always shows the
+ * cell identity (which provider × prompt × test this row exercised); when the
+ * stored case carries rendered `vars` (schema ≥ v2.1), lists them as decomposed
+ * rows. Pre-v2.1 blobs without `vars` still get the identity — the variables
+ * block is presence-gated, so old runs simply gain the identity they never had.
+ */
+export function InputSection({
+  cell,
+  vars,
+}: {
+  cell: CellKey;
+  vars?: Record<string, unknown>;
+}) {
+  const varEntries = vars ? Object.entries(vars) : [];
+  const title = (
+    <>
+      Input
+      {varEntries.length > 0 ? (
+        <span className="font-normal normal-case tracking-normal text-muted/80">
+          {" "}
+          · {varEntries.length}{" "}
+          {varEntries.length === 1 ? "variable" : "variables"}
+        </span>
+      ) : null}
+    </>
+  );
+
+  return (
+    <CollapsibleSection title={title}>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt className="text-muted">provider</dt>
+        <dd className="break-all font-mono">{cell.provider_id}</dd>
+        {cell.prompt_id != null ? (
+          <>
+            <dt className="text-muted">prompt</dt>
+            <dd className="break-all font-mono">{cell.prompt_id}</dd>
+          </>
+        ) : null}
+        <dt className="text-muted">test</dt>
+        <dd className="break-all font-mono">{cell.test_id || "—"}</dd>
+        {cell.repeat > 0 ? (
+          <>
+            <dt className="text-muted">repeat</dt>
+            <dd className="font-mono tabular-nums">{cell.repeat}</dd>
+          </>
+        ) : null}
+      </dl>
+
+      {varEntries.length > 0 ? (
+        <div className="mt-3 space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted/80">
+            Variables
+          </div>
+          {varEntries.map(([name, value]) => (
+            <div key={name} className="rounded-lg border border-border p-2">
+              <div className="mb-1 break-all font-mono text-[11px] font-medium text-fg">
+                {name}
+              </div>
+              {typeof value === "object" && value !== null ? (
+                <JsonTree data={value} className="text-[11px]" />
+              ) : (
+                <RawText
+                  text={outputToString(value)}
+                  wrap
+                  className="text-[11px]"
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </CollapsibleSection>
+  );
+}
+
+/**
+ * The authored criteria for one assertion (its stored `criteria` blob): the
+ * type-specific fields of the assertion definition, minus the redundant `type`
+ * (already shown as the row's kind chip). A `negate: true` entry renders as a
+ * marker. A lone scalar criterion (e.g. the `contains` substring) shows inline;
+ * anything richer goes through `JsonTree` (decomposed rows, long strings
+ * truncated) — never a raw JSON dump. Renders nothing when there is nothing
+ * beyond the kind to show (e.g. `is-json`).
+ */
+export function AssertCriteria({ criteria }: { criteria: unknown }) {
+  if (
+    typeof criteria !== "object" ||
+    criteria === null ||
+    Array.isArray(criteria)
+  ) {
+    return (
+      <RawText
+        text={outputToString(criteria)}
+        wrap
+        className="mt-1.5 text-[11px]"
+      />
+    );
+  }
+
+  const obj = criteria as Record<string, unknown>;
+  const negated = obj.negate === true;
+  const restEntries = Object.entries(obj).filter(
+    ([k]) => k !== "type" && k !== "negate",
+  );
+  if (restEntries.length === 0 && !negated) return null;
+
+  const only = restEntries.length === 1 ? restEntries[0] : undefined;
+  const loneScalar =
+    only !== undefined && (typeof only[1] !== "object" || only[1] === null);
+
+  return (
+    <div className="mt-1.5 text-[11px]">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {restEntries.length > 0 ? <span className="text-muted">expects</span> : null}
+        {negated ? (
+          <span className="rounded bg-amber/12 px-1 py-0.5 font-medium text-amber">
+            negated
+          </span>
+        ) : null}
+        {loneScalar && only ? (
+          <span className="break-all font-mono text-fg/90">
+            {outputToString(only[1])}
+          </span>
+        ) : null}
+      </div>
+      {restEntries.length > 0 && !loneScalar ? (
+        <JsonTree data={Object.fromEntries(restEntries)} className="mt-1" />
+      ) : null}
+    </div>
   );
 }

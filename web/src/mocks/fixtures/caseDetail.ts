@@ -23,7 +23,7 @@ const V2_SUITE_KEY = "support-bot/tone-and-safety";
 function v2Fields(
   meta: RunMeta,
   row: MockCaseRow,
-): Pick<CaseResult, "prompt" | "stop_reason" | "raw"> {
+): Pick<CaseResult, "prompt" | "stop_reason" | "raw" | "vars"> {
   if (meta.suiteKey !== V2_SUITE_KEY || row.status === "skip") return {};
 
   const seed = row.seed;
@@ -66,7 +66,16 @@ function v2Fields(
     system_fingerprint: `fp_${hash(meta.suiteKey, seed, "fp").toString(16).slice(0, 8)}`,
   };
 
-  return { prompt, stop_reason, raw };
+  const vars = {
+    product: noun,
+    channel: pick(["email", "chat", "phone"], "channel", seed),
+    customer: {
+      tier: pick(["free", "pro", "enterprise"], "tier", seed),
+      request: `Please help me ${verb} my ${noun}.`,
+    },
+  };
+
+  return { prompt, stop_reason, raw, vars };
 }
 
 export function caseDetail(runId: string, caseKey: string): CaseResult | undefined {
@@ -74,7 +83,8 @@ export function caseDetail(runId: string, caseKey: string): CaseResult | undefin
   if (!meta) return undefined;
   const row = generateCases(runId).find((c) => c.case_key === caseKey);
   if (!row) return undefined;
-  const asserts = detailAsserts(meta, row.seed, row.status, row.asserts);
+  const isV2 = meta.suiteKey === V2_SUITE_KEY && row.status !== "skip";
+  const asserts = detailAsserts(meta, row.seed, row.status, row.asserts, isV2);
   const score =
     asserts.length === 0
       ? row.status === "pass"

@@ -56,6 +56,28 @@ shellcheck = "0.11.0"
 description = "Full release build: compile the web UI, then the Rust workspace in release mode (the server crate embeds web/dist, so the UI must build first)."
 run = ["pnpm -C web build", "cargo build --release"]
 
+[tasks.build-cli]
+description = "Fast release build of just the eval CLI (`domarinn`) at target/release/domarinn, skipping the web UI. The `server` subcommand serves a placeholder page until you build with the UI (`mise run build`)."
+run = "cargo build --release -p domarinn-cli"
+
+[tasks.install]
+description = "Install the full `domarinn` (server UI embedded) into ~/.cargo/bin: build web/dist first, then `cargo install` the CLI. Use this if you want the `server` subcommand's web UI."
+run = [
+  "pnpm -C web build",
+  "cargo install --path crates/domarinn-cli --locked --force",
+]
+
+[tasks.install-cli]
+description = "Install just the eval CLI (`domarinn`) into ~/.cargo/bin, skipping the web UI (fast). The `server` subcommand serves a placeholder page; use `mise run install` for the embedded UI."
+run = "cargo install --path crates/domarinn-cli --locked --force"
+
+[tasks.install-musl]
+description = "Install the static x86_64-musl `domarinn` (portable single binary, no web UI) into ~/.cargo/bin. Needs a musl C toolchain on the host (musl-gcc, e.g. Debian musl-tools) for rusqlite's bundled SQLite."
+run = [
+  "rustup target add x86_64-unknown-linux-musl",
+  "cargo install --path crates/domarinn-cli --target x86_64-unknown-linux-musl --locked --force",
+]
+
 [tasks.dev]
 description = "Run the results server + API on :8321 for local development (serves the embedded UI; run `pnpm -C web dev` alongside for live UI work)."
 run = "cargo run -p domarinn-cli -- server"

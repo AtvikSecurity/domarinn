@@ -6,4 +6,12 @@ import type { JsonValue } from "./serde_json/JsonValue";
 /**
  * The result of a single assertion.
  */
-export type AssertResult = { kind: AssertName, status: AssertStatus, score: number, weight: number, reason: string, details?: JsonValue, cached: boolean, };
+export type AssertResult = { kind: AssertName, status: AssertStatus, score: number, weight: number, reason: string, details?: JsonValue, 
+/**
+ * The assertion's definition — its type-specific criteria as authored (the
+ * `contains` substring, the `llm-rubric` rubric text + threshold, …), plus
+ * a `negate: true` entry when the assertion is negated. `weight` is omitted
+ * (already a field above). Absent on pre-v2.1 stored blobs; presence-gated
+ * by the web UI.
+ */
+criteria?: JsonValue, cached: boolean, };

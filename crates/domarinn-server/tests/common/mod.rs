@@ -293,6 +293,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
             weight: 1.0,
             reason: String::new(),
             details: None,
+            criteria: None,
             cached: false,
         })
         .collect();
@@ -301,6 +302,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         case_key,
         name: Some(format!("{}::{}", spec.provider, spec.test)),
         tags: spec.tags.iter().map(|t| t.to_string()).collect(),
+        vars: Default::default(),
         status: spec.status,
         score: if matches!(spec.status, CaseStatus::Pass) {
             1.0

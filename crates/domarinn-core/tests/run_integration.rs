@@ -619,6 +619,21 @@ async fn run_captures_prompt_stop_reason_and_raw() {
     assert_eq!(case.stop_reason.as_deref(), Some("end_turn"));
     let raw = case.raw.as_ref().expect("raw retained by default");
     assert_eq!(raw["stop_reason"], "end_turn");
+
+    // The rendered test variables are captured for the UI's Input view.
+    assert_eq!(
+        case.vars.get("name").and_then(|v| v.as_str()),
+        Some("world"),
+        "the rendered test vars must be captured on the case"
+    );
+    // Each assertion carries its authored criteria (its `type` plus the
+    // type-specific fields — here the `contains` substring).
+    let criteria = case.asserts[0]
+        .criteria
+        .as_ref()
+        .expect("assert criteria captured");
+    assert_eq!(criteria["type"], "contains");
+    assert_eq!(criteria["value"], "hi");
 }
 
 #[tokio::test]

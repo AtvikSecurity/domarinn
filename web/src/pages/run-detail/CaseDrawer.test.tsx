@@ -280,6 +280,8 @@ function v2Detail(fields: {
   prompt?: unknown;
   stop_reason?: string;
   raw?: unknown;
+  vars?: Record<string, unknown>;
+  asserts?: unknown[];
 }): CaseDetail {
   return {
     isPending: false,
@@ -392,6 +394,74 @@ describe("CaseDrawer schema-v2 sections", () => {
     expect(
       screen.getByRole("button", { name: "Collapse all" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows the Input section with cell identity and rendered variables", () => {
+    mockUseCaseDetail.mockReturnValue(
+      v2Detail({
+        vars: { topic: "billing refund", context: { plan: "pro" } },
+      }),
+    );
+    renderDrawer();
+
+    // Expanded by default; the header reports the variable count.
+    const toggle = screen.getByRole("button", { name: /Input/ });
+    expect(toggle).toHaveAccessibleName(/2 variables/);
+    // Cell identity is shown (provider row + value)...
+    expect(screen.getByText("provider")).toBeInTheDocument();
+    expect(screen.getByText("openai")).toBeInTheDocument();
+    // ...and each variable name + a scalar value is rendered.
+    expect(screen.getByText("topic")).toBeInTheDocument();
+    expect(screen.getByText(/billing refund/)).toBeInTheDocument();
+  });
+
+  it("renders an assertion's criteria inline, including a negated marker", () => {
+    mockUseCaseDetail.mockReturnValue(
+      v2Detail({
+        asserts: [
+          {
+            kind: "contains",
+            status: "pass",
+            score: 1,
+            weight: 1,
+            reason: "output contains the phrase",
+            cached: false,
+            criteria: { type: "contains", value: "refund policy", negate: true },
+          },
+        ],
+      }),
+    );
+    renderDrawer();
+
+    expect(screen.getByText("expects")).toBeInTheDocument();
+    expect(screen.getByText("refund policy")).toBeInTheDocument();
+    expect(screen.getByText("negated")).toBeInTheDocument();
+  });
+
+  it("omits the Variables block and assertion criteria when absent", () => {
+    mockUseCaseDetail.mockReturnValue(
+      v2Detail({
+        asserts: [
+          {
+            kind: "icontains",
+            status: "pass",
+            score: 1,
+            weight: 1,
+            reason: "matched",
+            cached: false,
+          },
+        ],
+      }),
+    );
+    renderDrawer();
+
+    // Identity is always present, but with no vars there is no count or block...
+    expect(screen.getByRole("button", { name: /Input/ })).toHaveAccessibleName(
+      /^Input$/,
+    );
+    expect(screen.queryByText("Variables")).not.toBeInTheDocument();
+    // ...and an assertion without criteria shows no "expects" line.
+    expect(screen.queryByText("expects")).not.toBeInTheDocument();
   });
 
   it("renders none of the v2 affordances for a v1 case", () => {
