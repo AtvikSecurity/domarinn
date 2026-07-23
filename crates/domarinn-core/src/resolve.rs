@@ -76,9 +76,7 @@ pub fn expand_tests(suite: &Suite, base_dir: &Path) -> Result<Expanded, ResolveE
     out.tests = swept;
 
     if let Some(defaults) = &suite.defaults {
-        for tc in &mut out.tests {
-            merge_defaults(tc, defaults);
-        }
+        apply_defaults(&mut out.tests, defaults);
     }
 
     // Sandboxed file-content vars (`{$file: …}` / `!file`) are resolved last, so
@@ -89,6 +87,15 @@ pub fn expand_tests(suite: &Suite, base_dir: &Path) -> Result<Expanded, ResolveE
     Ok(out)
 }
 
+/// Merge suite `defaults` into every case. Public because generator-produced
+/// cases resolve *after* [`expand_tests`] (the generator has to run first), so
+/// the runner must apply defaults to them separately.
+pub fn apply_defaults(tests: &mut [TestCase], defaults: &Defaults) {
+    for tc in tests {
+        merge_defaults(tc, defaults);
+    }
+}
+
 fn ensure_id(tc: &mut TestCase, default: impl FnOnce() -> String) {
     if tc.id.is_none() {
         tc.id = Some(default());
@@ -96,7 +103,8 @@ fn ensure_id(tc: &mut TestCase, default: impl FnOnce() -> String) {
 }
 
 /// Merge suite `defaults` into a test case: default vars fill gaps, default
-/// asserts prepend, default tags union, default threshold fills if unset.
+/// asserts prepend, default tags union, default threshold and cache salt fill
+/// if unset.
 fn merge_defaults(tc: &mut TestCase, defaults: &Defaults) {
     for (k, v) in &defaults.vars {
         tc.vars.entry(k.clone()).or_insert_with(|| v.clone());
@@ -113,6 +121,9 @@ fn merge_defaults(tc: &mut TestCase, defaults: &Defaults) {
     }
     if tc.threshold.is_none() {
         tc.threshold = defaults.threshold;
+    }
+    if tc.cache_salt.is_none() {
+        tc.cache_salt = defaults.cache_salt.clone();
     }
 }
 
@@ -247,7 +258,9 @@ fn parse_jsonl_tests(text: &str, path: &Path) -> Result<Vec<TestCase>, ResolveEr
 
 /// Delimited tables (CSV with `,`, TSV with `\t`): header names become var keys.
 /// Reserved columns: `id`, `description`, `tags` (comma-separated), `threshold`,
-/// `__assert` (a JSON assert list).
+/// `cache_salt`, `__assert` (a JSON assert list). `cache_salt` is reserved so a
+/// digest column keys the cache instead of silently becoming a var (which would
+/// both mis-key the entry and leak the digest to the provider).
 fn parse_delimited_tests(
     text: &str,
     path: &Path,
@@ -267,6 +280,7 @@ fn parse_delimited_tests(
                 "id" => tc.id = Some(field.to_string()),
                 "description" => tc.description = Some(field.to_string()),
                 "threshold" => tc.threshold = field.trim().parse().ok(),
+                "cache_salt" => tc.cache_salt = Some(field.to_string()),
                 "tags" => {
                     tc.tags = field
                         .split(',')
@@ -347,6 +361,50 @@ tests:
         // default assert prepends, so is-json is first, contains second.
         assert!(matches!(tc.assert[0].kind, AssertKind::IsJson));
         assert!(matches!(tc.assert[1].kind, AssertKind::Contains { .. }));
+    }
+
+    #[test]
+    fn defaults_fill_case_cache_salt() {
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+defaults:
+  cache_salt: "suite-wide"
+tests:
+  - {id: inherits, vars: {a: "1"}}
+  - {id: overrides, vars: {a: "2"}, cache_salt: "own"}
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, Path::new(".")).unwrap();
+        assert_eq!(expanded.tests[0].cache_salt.as_deref(), Some("suite-wide"));
+        assert_eq!(expanded.tests[1].cache_salt.as_deref(), Some("own"));
+    }
+
+    /// A `cache_salt` column must key the cache, not become a var — a var would
+    /// both mis-key the entry and forward the digest to the provider.
+    #[test]
+    fn csv_cache_salt_is_a_reserved_column() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "cases.csv",
+            "id,cache_salt,question\nq1,digest-1,what is 2+2\n",
+        );
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests: ["file://cases.csv"]
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, dir.path()).unwrap();
+        let tc = &expanded.tests[0];
+        assert_eq!(tc.cache_salt.as_deref(), Some("digest-1"));
+        assert!(!tc.vars.contains_key("cache_salt"));
+        assert!(tc.vars.contains_key("question"));
     }
 
     #[test]

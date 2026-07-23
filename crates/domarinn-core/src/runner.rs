@@ -123,6 +123,16 @@ impl RetryConfig {
 /// verdict — which the runner records as an `Error` (fail closed), distinct from
 /// a graded-and-failed assertion. When no grader is provided at all, deferred
 /// asserts likewise fail closed as errors.
+///
+/// **Verdicts are not cached.** Note the absence of a [`CacheBackend`] here:
+/// grading runs live on every call, so an LLM-graded suite re-pays its grader on
+/// every run even when every provider response was a cache hit. Only provider
+/// responses are cached. Do not assume otherwise — the caching happens in
+/// `call_with_cache`, which this trait is never routed through, and
+/// `DefaultGrader` talks to its endpoint over its own client. Adding verdict
+/// caching means threading a backend into `grade` and deriving a key from the
+/// grader fingerprint, the rendered rubric, and the output; pinned by
+/// `grader_verdicts_are_not_cached_today` in `tests/cache_integration.rs`.
 #[async_trait]
 pub trait AssertGrader: Send + Sync {
     async fn grade(
@@ -187,7 +197,32 @@ pub async fn run_with_progress(
     // Tests (files + inline + generators).
     let expanded = expand_tests(suite, base_dir)?;
     let mut tests = expanded.tests;
-    tests.extend(resolve_generators(&expanded.deferred_generators, base_dir).await?);
+    let mut generated = resolve_generators(&expanded.deferred_generators, base_dir).await?;
+    // Generators resolve after `expand_tests`, so their cases miss the defaults
+    // merge it performs. Apply it here or `defaults:` silently skips them.
+    if let Some(defaults) = &suite.defaults {
+        crate::resolve::apply_defaults(&mut generated, defaults);
+    }
+    tests.extend(generated);
+
+    // A per-case `cache_salt` only chooses the cache key; it never makes a
+    // provider cacheable. Warn when a suite sets one against a provider that
+    // does not cache at all, where the salt silently does nothing.
+    if tests.iter().any(|t| t.cache_salt.is_some()) {
+        let uncacheable: Vec<&str> = providers
+            .iter()
+            .filter(|p| !p.cacheable())
+            .map(|p| p.id())
+            .collect();
+        if !uncacheable.is_empty() {
+            tracing::warn!(
+                providers = %uncacheable.join(", "),
+                "tests set `cache_salt`, but these providers are not cacheable \
+                 (an `exec` provider needs its own `cache_salt` to be cached at \
+                 all) — the per-case salt has no effect for them"
+            );
+        }
+    }
 
     // Prompt slots: each prompt, or a single None slot when there are no prompts.
     let prompt_slots: Vec<Option<&crate::config::Prompt>> = if suite.prompts.is_empty() {
@@ -421,6 +456,8 @@ async fn run_cell(
             id: test_id.clone(),
             tags: test.tags.clone(),
         },
+        // Keys this case's cache entry only; never reaches the provider.
+        case_salt: test.cache_salt.clone(),
     };
 
     // Latency assertions must not observe a cached (near-zero) latency.

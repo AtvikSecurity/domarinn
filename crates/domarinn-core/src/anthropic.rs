@@ -181,6 +181,7 @@ mod tests {
             vars: BTreeMap::new(),
             params: serde_json::Map::new(),
             test: TestMeta::default(),
+            case_salt: None,
         }
     }
 
@@ -269,6 +270,7 @@ mod tests {
             vars: BTreeMap::new(),
             params: serde_json::Map::new(),
             test: TestMeta::default(),
+            case_salt: None,
         };
         assert!(matches!(
             p.call(&req, &CallCtx::default()).await,

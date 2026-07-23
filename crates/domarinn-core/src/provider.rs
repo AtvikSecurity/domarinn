@@ -16,7 +16,7 @@ pub struct TestMeta {
 }
 
 /// A single request to a provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ProviderRequest {
     /// The rendered prompt, or `None` when the provider builds its own input.
     pub prompt: Option<RenderedPrompt>,
@@ -25,6 +25,11 @@ pub struct ProviderRequest {
     /// Per-call parameter overrides, merged over the provider's own params.
     pub params: serde_json::Map<String, Json>,
     pub test: TestMeta,
+    /// The case's opaque cache salt ([`crate::config::TestCase::cache_salt`]).
+    /// Enters the cache key only when present, and never reaches the provider —
+    /// it exists so a suite can bust one case's entry when content domarinn
+    /// cannot see (the system under test's own prompt files) changes.
+    pub case_salt: Option<String>,
 }
 
 /// A provider's response.

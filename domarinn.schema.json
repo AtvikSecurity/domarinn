@@ -503,6 +503,13 @@
           ],
           "format": "double"
         },
+        "cache_salt": {
+          "description": "Opaque per-case cache-busting token, folded into this case's provider\ncache key. Use it when the system under test loads content domarinn\ncannot see (its own prompt files), so editing that content busts only\nthe cases that use it. Never sent to the provider. It does not make a\nprovider cacheable on its own — an `exec` provider still needs its own\n`cache_salt` for that.\n\nUsed **verbatim**, and deliberately not templated: a useful salt is a\ndigest of something domarinn cannot see, so it could only be derived from\nthe environment — and `env` is deliberately kept out of the request\nidentity (see [`crate::render`]) so that unrelated environment drift\nnever busts a shared cache. Keeping it a literal also means it can never\nfail to render and is never a template-injection surface. Compute the\ndigest outside the suite and write the value in.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "only_providers": {
           "type": "array",
           "items": {
@@ -1119,6 +1126,13 @@
             "null"
           ],
           "format": "double"
+        },
+        "cache_salt": {
+          "description": "Suite-wide fallback for [`TestCase::cache_salt`], used only by cases that\ndo not set their own. A *constant* value here busts the whole suite on\nevery change — it is a fallback, not the granularity mechanism. Note it\ndoes not reach generator-produced cases (they are appended after the\ndefaults merge).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

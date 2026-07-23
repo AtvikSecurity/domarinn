@@ -54,6 +54,17 @@ impl Provider for ExecProvider {
         })
     }
 
+    /// Keyed on the **provider** salt only, deliberately.
+    ///
+    /// Do *not* relax this to also accept a case's `cache_salt`. That is a
+    /// tempting "fix" when a suite sets case salts and sees no caching, but the
+    /// two salts answer different questions: this one is *"is this the same
+    /// build?"*, a case salt is only *"is this the same content?"*. A case salt
+    /// digests prompt content, which does not move when the binary behind
+    /// `command` is rebuilt — so accepting it here would serve stale output from
+    /// every entry after a rebuild, silently, and worst of all in CI. No caching
+    /// is the correct answer for a salted case with no provider salt; the runner
+    /// warns about that combination instead of papering over it.
     fn cacheable(&self) -> bool {
         self.cache_salt.is_some()
     }
@@ -64,6 +75,10 @@ impl Provider for ExecProvider {
         ctx: &CallCtx,
     ) -> Result<ProviderResponse, ProviderError> {
         let prompt_json = req.prompt.as_ref().map(rendered_prompt_json);
+        // `req.case_salt` is deliberately absent here: it is a cache-keying
+        // concern, and forwarding it would leak the suite's digest into the
+        // child's input (and change the SUT's payload). Do not "complete" this
+        // mapping by adding it.
         let request = ProviderReq {
             envelope: Envelope::new(Kind::Provider),
             prompt: prompt_json,
@@ -155,6 +170,7 @@ mod tests {
                 id: "t".into(),
                 tags: vec![],
             },
+            case_salt: None,
         }
     }
 
@@ -185,6 +201,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.output, Output::Text("hello".into()));
+    }
+
+    /// The per-case salt keys the cache entry; it must never reach the child's
+    /// stdin. Proved on the wire rather than structurally, so that "completing"
+    /// the `ProviderReq` mapping later fails loudly.
+    #[tokio::test]
+    async fn case_salt_is_not_sent_to_the_child() {
+        // Echo the received request back as the `output` value.
+        let provider = ExecProvider::new(
+            "p",
+            vec![
+                "sh".into(),
+                "-c".into(),
+                r#"printf '{"output":'; cat; printf '}'"#.into(),
+            ],
+            BTreeMap::new(),
+            Some(5000),
+            Some("salt".into()),
+        );
+        let mut req = request("x");
+        req.case_salt = Some("SENTINEL-DIGEST".into());
+        let resp = provider.call(&req, &CallCtx::default()).await.unwrap();
+        let seen = format!("{:?}", resp.output);
+        assert!(
+            seen.contains("user_input"),
+            "sanity: the child should have echoed the request back, got {seen}"
+        );
+        assert!(
+            !seen.contains("SENTINEL-DIGEST"),
+            "case_salt leaked into the child's request: {seen}"
+        );
     }
 
     #[tokio::test]

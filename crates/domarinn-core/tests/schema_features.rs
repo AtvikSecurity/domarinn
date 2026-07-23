@@ -58,6 +58,22 @@ fn test_case_matrix_fields_are_in_the_schema() {
 }
 
 #[test]
+fn test_case_and_defaults_expose_cache_salt() {
+    // A substring check would pass vacuously: "cache_salt" already appears in the
+    // schema for the `exec` provider. Assert against the specific definitions so
+    // this actually guards the per-case field.
+    let schema = serde_json::to_value(domarinn_core::config_schema()).unwrap();
+    let defs = schema.get("$defs").expect("schema carries a $defs block");
+    for def in ["TestCase", "Defaults"] {
+        assert!(
+            defs.pointer(&format!("/{def}/properties/cache_salt"))
+                .is_some(),
+            "{def} must advertise `cache_salt` in the config schema"
+        );
+    }
+}
+
+#[test]
 fn result_schema_is_versioned() {
     let schema = serde_json::to_string(&domarinn_core::result_schema()).unwrap();
     assert!(schema.contains("schema_version"));

@@ -1,7 +1,7 @@
 //! The `domarinn run` command: execute a suite and report results.
 
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Args;
 use domarinn_core::cache::CacheMode;
@@ -100,10 +100,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
     }
 
     let suite_file = domarinn_core::loader::resolve_suite_path(&args.path);
-    let base_dir = suite_file
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let base_dir = domarinn_core::loader::suite_base_dir(&suite_file);
 
     let cache_mode = if args.no_cache {
         CacheMode::Disabled

@@ -271,8 +271,8 @@ fn cmd_list(what: ListKind, path: &Path, json: bool) -> u8 {
             // Resolve inline + file globs; generators are listed as a count since
             // they only produce cases at run time.
             let file = domarinn_core::loader::resolve_suite_path(path);
-            let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
-            match domarinn_core::expand_tests(&suite, base_dir) {
+            let base_dir = domarinn_core::loader::suite_base_dir(&file);
+            match domarinn_core::expand_tests(&suite, &base_dir) {
                 Ok(expanded) => {
                     let ids: Vec<String> =
                         expanded.tests.iter().filter_map(|t| t.id.clone()).collect();

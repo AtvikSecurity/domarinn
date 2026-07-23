@@ -193,6 +193,7 @@ mod tests {
             vars,
             params: serde_json::Map::new(),
             test: TestMeta::default(),
+            case_salt: None,
         }
     }
 

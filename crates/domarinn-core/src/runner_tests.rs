@@ -148,6 +148,7 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
                 vars: std::collections::BTreeMap::new(),
                 params: serde_json::Map::new(),
                 test: TestMeta::default(),
+                case_salt: None,
             };
             let ctx = CallCtx::default();
             let cache = NoopCache;

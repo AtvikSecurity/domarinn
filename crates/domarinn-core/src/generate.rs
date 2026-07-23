@@ -2,8 +2,13 @@
 //!
 //! A generator command receives a `generate_tests` request and returns either a
 //! `{ "tests": [...] }` object or JSONL (one test object per line). Produced
-//! tests flow through the same defaults-merge and id pipeline as file/inline
-//! tests.
+//! tests get ids assigned here, and the runner merges the suite `defaults` into
+//! them via [`crate::resolve::apply_defaults`] — generators must run before
+//! their output can be merged, so that step cannot happen inside
+//! [`crate::resolve::expand_tests`] with the inline/file cases.
+//!
+//! Generated cases do **not** get matrix expansion or `file://` var resolution;
+//! both run inside `expand_tests`, before a generator has produced anything.
 
 use std::collections::BTreeMap;
 use std::path::Path;

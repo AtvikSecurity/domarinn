@@ -72,6 +72,13 @@ pub struct Defaults {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
+    /// Suite-wide fallback for [`TestCase::cache_salt`], used only by cases that
+    /// do not set their own. A *constant* value here busts the whole suite on
+    /// every change — it is a fallback, not the granularity mechanism. Note it
+    /// does not reach generator-produced cases (they are appended after the
+    /// defaults merge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
 }
 
 /// A system under test.
@@ -275,6 +282,22 @@ pub struct TestCase {
     /// otherwise it passes only if every assert passes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
+    /// Opaque per-case cache-busting token, folded into this case's provider
+    /// cache key. Use it when the system under test loads content domarinn
+    /// cannot see (its own prompt files), so editing that content busts only
+    /// the cases that use it. Never sent to the provider. It does not make a
+    /// provider cacheable on its own — an `exec` provider still needs its own
+    /// `cache_salt` for that.
+    ///
+    /// Used **verbatim**, and deliberately not templated: a useful salt is a
+    /// digest of something domarinn cannot see, so it could only be derived from
+    /// the environment — and `env` is deliberately kept out of the request
+    /// identity (see [`crate::render`]) so that unrelated environment drift
+    /// never busts a shared cache. Keeping it a literal also means it can never
+    /// fail to render and is never a template-injection surface. Compute the
+    /// digest outside the suite and write the value in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub only_providers: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

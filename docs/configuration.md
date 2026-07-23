@@ -155,7 +155,7 @@ escape hatch for testing anything you can run as a process.
 | `command` | list of strings | **yes** | argv; the program plus its arguments. |
 | `env` | map string→string | no | Extra environment variables for the child process. |
 | `timeout_ms` | int | no | Per-call timeout in milliseconds. |
-| `cache_salt` | string | no | Cache-busting token. **Without it, exec providers are not cached** — so a rebuilt binary is never served a stale response. Set it to a git SHA or a binary hash. |
+| `cache_salt` | string | no | **Provider-level** cache-busting token — a version pin for the program behind the command. **Without it, exec providers are not cached**, so a rebuilt binary is never served a stale response. Set it to a git SHA or a binary hash. Distinct from a test case's own [`cache_salt`](#inline-and-loaded-test-fields), which keys a single case; see [caching.md](./caching.md). |
 
 ```yaml
 providers:
@@ -340,8 +340,11 @@ Inline tests, and every test loaded from a file, share the same shape:
 | `tags` | list of strings | no | Labels for filtering / reporting. |
 | `description` | string | no | Human-readable note. |
 | `vars` | map name→value | no | Values substituted into prompts. Each value is a templatable [`Val`](#templating-and-the-raw-escape-hatch). |
+| `matrix` | map name→list | no | Parameter sweep: the case fans out over the cartesian product of its axes. See [Matrix / parameter sweeps](#matrix--parameter-sweeps). |
+| `matrix_id` | string | no | minijinja template for a matrix cell's id, rendered against the axis values. See [Matrix / parameter sweeps](#matrix--parameter-sweeps). |
 | `assert` | list | no | Assertions to run against the output. See [`assertions.md`](./assertions.md). |
 | `threshold` | float | no | If set, the case **passes when its weighted-mean assertion score ≥ `threshold`**. If unset, the case passes only when **every** assertion passes. |
+| `cache_salt` | string | no | Opaque per-case cache-busting token, folded into **this case's** cache key only. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. It does not by itself make a provider cacheable. See [caching.md](./caching.md#per-case-salts). |
 | `only_providers` | list of provider ids | no | Restrict this case to these providers. |
 | `skip_providers` | list of provider ids | no | Exclude these providers from this case. |
 
@@ -446,6 +449,7 @@ extension:
 | `description` | The test description. |
 | `tags` | Comma-separated tag list. |
 | `threshold` | Parsed as a float (ignored if it doesn't parse). |
+| `cache_salt` | The case's cache salt — reserved so a digest column keys the cache instead of becoming a var. |
 | `__assert` | A JSON array of assertions. |
 
 ```yaml
@@ -528,6 +532,7 @@ Values merged into **every** resolved test case, so you don't repeat yourself.
 | `assert` | list | **Prepended** to each test's own asserts (defaults run first). |
 | `tags` | list | **Unioned** — added if not already present. |
 | `threshold` | float | **Fills** the test's threshold only if the test hasn't set one. |
+| `cache_salt` | string | **Fills** the test's cache salt only if the test hasn't set one. |
 
 ```yaml
 defaults:
@@ -542,6 +547,10 @@ defaults:
 > to each test**, whereas across suites (`extends`/`imports`) a shared `assert`
 > sequence is **appended** (base then child). See
 > [Composition](#composition-with-extends-and-imports).
+
+Defaults are merged into generator-produced cases too. Those cases do **not**
+get matrix expansion or `file://` var resolution, which both run before a
+generator has produced anything.
 
 ---
 

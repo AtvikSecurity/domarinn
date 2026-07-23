@@ -244,6 +244,12 @@ providers:
     cache_salt: "v1"
 ```
 
+A test case may also set its own `cache_salt`. That one is purely a cache-keying
+concern and is deliberately **not** part of the wire payload — do not look for it
+in the request. Use it when your program resolves content domarinn cannot see
+(its own prompt files, say), so that editing that content busts only the affected
+cases. See [caching.md](./caching.md#per-case-salts).
+
 ## Versioning
 
 - `protocol: 1` is the current, stable wire version.

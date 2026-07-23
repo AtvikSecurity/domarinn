@@ -228,6 +228,19 @@ pub fn resolve_suite_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// The directory a suite's relative paths (and exec providers' working
+/// directory) resolve against.
+///
+/// `Path::parent` returns `Some("")` — not `None` — for a bare relative filename
+/// like `domarinn.yaml`, and an empty path is not a usable working directory:
+/// spawning a child with it fails with `ENOENT`. Normalize that to `.`.
+pub fn suite_base_dir(suite_file: &Path) -> PathBuf {
+    match suite_file.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
 /// Apply every YAML-level normalization pass.
 fn normalize(value: Yaml) -> Yaml {
     desugar_not_asserts(desugar_tags(value))
@@ -262,6 +275,34 @@ mod tests {
     use super::*;
     use crate::config::AssertKind;
     use crate::val::Val;
+
+    /// `Path::parent` yields `Some("")` for a bare filename, and an empty
+    /// working directory makes every exec provider fail to spawn with ENOENT —
+    /// so `domarinn run domarinn.yaml` errored while `run ./domarinn.yaml` and
+    /// `run .` worked.
+    #[test]
+    fn suite_base_dir_never_returns_an_empty_path() {
+        assert_eq!(
+            suite_base_dir(Path::new("domarinn.yaml")),
+            PathBuf::from(".")
+        );
+        assert_eq!(
+            suite_base_dir(Path::new("./domarinn.yaml")),
+            PathBuf::from(".")
+        );
+        assert_eq!(
+            suite_base_dir(Path::new("eval/domarinn.yaml")),
+            PathBuf::from("eval")
+        );
+        assert_eq!(
+            suite_base_dir(Path::new("/abs/eval/domarinn.yaml")),
+            PathBuf::from("/abs/eval")
+        );
+        // Whatever the input shape, the result must be a usable directory.
+        for input in ["domarinn.yaml", "./domarinn.yaml", "a/b.yaml"] {
+            assert!(!suite_base_dir(Path::new(input)).as_os_str().is_empty());
+        }
+    }
 
     const EXAMPLE_A: &str = r#"
 version: 1
