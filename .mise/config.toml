@@ -44,7 +44,7 @@ lefthook = "2.1.10"
 # `oxfmt` is distributed only via the npm backend (`mise registry oxfmt` →
 # `npm:oxfmt`); node is pinned above, so the npm backend always uses mise's
 # own node+npm rather than whatever is on PATH.
-oxfmt = "0.59.0"
+oxfmt = "0.60.0"
 # The shared pre-commit hooks run zizmor on staged workflow files and
 # shellcheck on staged *.sh files; pin both so the hooks resolve binaries.
 zizmor = "1.27.0"
