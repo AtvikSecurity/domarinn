@@ -35,6 +35,10 @@ export interface SuiteDef {
   featured?: boolean;
   /** When set, the suite is matrix-shaped (see `MatrixSpec`). */
   matrix?: MatrixSpec;
+  /** A healthy, unchanging suite: every case passes, and every CI re-run after
+   *  the first is fully cached — the "cached noise" the runs list hides by
+   *  default, kept deterministic here for the cached-filter UI and e2e. */
+  stable?: boolean;
 }
 
 export const SUITE_DEFS: SuiteDef[] = [
@@ -78,6 +82,16 @@ export const SUITE_DEFS: SuiteDef[] = [
     suite: "faq-accuracy",
     labels: ["contains", "similar", "llm-rubric"],
     runs: 6,
+  },
+  {
+    // The stable suite (see `SuiteDef.stable`): its run 01 is fresh, runs
+    // 02-07 are fully cached and all-pass, i.e. hidden by the default
+    // `cached=exclude` runs view.
+    project: "checkout-agent",
+    suite: "canary",
+    labels: ["contains", "latency"],
+    runs: 7,
+    stable: true,
   },
 ];
 

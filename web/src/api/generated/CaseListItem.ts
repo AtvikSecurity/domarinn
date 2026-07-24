@@ -18,4 +18,10 @@ provider_id: string | null, prompt_id: string | null, test_id: string | null,
 /**
  * DB column is `repeat_idx`; the wire name is `repeat`.
  */
-repeat: number | null, score: number | null, stop_reason: string | null, };
+repeat: number | null, score: number | null, stop_reason: string | null, 
+/**
+ * Whether the provider response was a cache hit (migration-6 `cases`
+ * column). `None` for legacy pre-backfill rows and failed-backfill rows
+ * carrying the -1 sentinel, which the list query maps to `None`.
+ */
+cached: boolean | null, };

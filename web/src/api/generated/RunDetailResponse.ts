@@ -20,4 +20,8 @@ uploaded_at: string, schema_version: number, git_branch: string | null, git_comm
  * `None` for legacy rows with no digest and for failed-backfill rows that
  * carry the empty-string sentinel, which the query maps to `None`.
  */
-config_digest: string | null, tags: Array<string>, assert_labels: Array<string>, };
+config_digest: string | null, 
+/**
+ * Provider-call cache counters (see [`RunListItem::cache_hits`]).
+ */
+cache_hits: number | null, cache_misses: number | null, tags: Array<string>, assert_labels: Array<string>, };

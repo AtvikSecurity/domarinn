@@ -42,6 +42,12 @@ pub struct RunListItem {
     pub completion_tokens: i64,
     pub cost_usd: Option<f64>,
     pub duration_ms: i64,
+    /// Provider-call cache counters (migration-6 `runs` columns, promoted from
+    /// `RunSummary`). `None` for legacy pre-backfill rows and for
+    /// failed-backfill rows carrying the -1 sentinel, which the query maps to
+    /// `None`. A run is "fully cached" when `cache_misses == 0 && cache_hits > 0`.
+    pub cache_hits: Option<i64>,
+    pub cache_misses: Option<i64>,
     pub tags: Vec<String>,
 }
 
@@ -50,6 +56,10 @@ pub struct RunListItem {
 pub struct RunListResponse {
     pub runs: Vec<RunListItem>,
     pub next_cursor: Option<String>,
+    /// How many runs `cached=exclude` suppressed across the whole filtered
+    /// set (not just this page). `None` unless the query was `cached=exclude`
+    /// with no cursor (i.e. the first page).
+    pub cached_hidden: Option<i64>,
 }
 
 /// `GET /runs/{id}` response: run metadata plus the tags and the distinct
@@ -84,6 +94,9 @@ pub struct RunDetailResponse {
     /// `None` for legacy rows with no digest and for failed-backfill rows that
     /// carry the empty-string sentinel, which the query maps to `None`.
     pub config_digest: Option<String>,
+    /// Provider-call cache counters (see [`RunListItem::cache_hits`]).
+    pub cache_hits: Option<i64>,
+    pub cache_misses: Option<i64>,
     pub tags: Vec<String>,
     pub assert_labels: Vec<String>,
 }
@@ -140,6 +153,8 @@ mod tests {
             completion_tokens: 20,
             cost_usd: Some(0.0025),
             duration_ms: 30000,
+            cache_hits: Some(1),
+            cache_misses: Some(1),
             tags: vec!["nightly".to_string()],
         };
         assert_eq!(
@@ -161,6 +176,8 @@ mod tests {
                 "completion_tokens": 20,
                 "cost_usd": 0.0025,
                 "duration_ms": 30000,
+                "cache_hits": 1,
+                "cache_misses": 1,
                 "tags": ["nightly"],
             })
         );
@@ -187,6 +204,8 @@ mod tests {
             completion_tokens: 0,
             cost_usd: None,
             duration_ms: 0,
+            cache_hits: None,
+            cache_misses: None,
             tags: vec![],
         };
         let v = serde_json::to_value(&dto).unwrap();
@@ -197,6 +216,8 @@ mod tests {
             "git_commit",
             "git_dirty",
             "cost_usd",
+            "cache_hits",
+            "cache_misses",
         ] {
             assert!(v.get(key).is_some(), "missing key {key}");
             assert!(
@@ -232,6 +253,8 @@ mod tests {
             content_hash: "sha256:deadbeef".to_string(),
             uploaded_by: Some("alice".to_string()),
             config_digest: Some("sha256:cfg".to_string()),
+            cache_hits: Some(1),
+            cache_misses: Some(0),
             tags: vec!["nightly".to_string()],
             assert_labels: vec!["contains".to_string(), "regex".to_string()],
         };
@@ -260,6 +283,8 @@ mod tests {
                 "content_hash": "sha256:deadbeef",
                 "uploaded_by": "alice",
                 "config_digest": "sha256:cfg",
+                "cache_hits": 1,
+                "cache_misses": 0,
                 "tags": ["nightly"],
                 "assert_labels": ["contains", "regex"],
             })
@@ -293,12 +318,16 @@ mod tests {
             content_hash: "sha256:deadbeef".to_string(),
             uploaded_by: None,
             config_digest: None,
+            cache_hits: None,
+            cache_misses: None,
             tags: vec![],
             assert_labels: vec![],
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert!(v.get("config_digest").is_some());
         assert!(v["config_digest"].is_null());
+        assert!(v["cache_hits"].is_null());
+        assert!(v["cache_misses"].is_null());
     }
 
     #[test]

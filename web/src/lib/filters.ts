@@ -9,6 +9,7 @@ export const RUNS_FILTER_KEYS = [
   "since",
   "until",
   "status",
+  "cached",
 ] as const;
 export type RunsFilterKey = (typeof RUNS_FILTER_KEYS)[number];
 export type RunsFilters = Partial<Record<RunsFilterKey, string>>;
@@ -26,6 +27,7 @@ export const CASE_FILTER_KEYS = [
   "q",
   "provider",
   "prompt",
+  "cached",
   "case",
   "sort",
   "view",
@@ -83,6 +85,22 @@ export function mergeParamsResetting(
 
 export function parseRunsFilters(sp: URLSearchParams): RunsFilters {
   return pickParams(sp, RUNS_FILTER_KEYS);
+}
+
+/**
+ * Map parsed runs-list URL state to the request's filter params. The URL's
+ * `cached` key means "what the user asked to see"; the request's means "what
+ * the server should return" — and the default (no `cached` in the URL) is to
+ * HIDE fully-cached passing runs, so absence maps to `cached=exclude`. An
+ * explicit `cached=all` reveal sends no param (the server's no-op default),
+ * `only` passes through, and junk values fall back to the hidden default
+ * instead of a server-side 400.
+ */
+export function runsRequestFilters(filters: RunsFilters): RunsFilters {
+  const { cached, ...rest } = filters;
+  if (cached === "all") return rest;
+  if (cached === "only") return { ...rest, cached };
+  return { ...rest, cached: "exclude" };
 }
 
 export function parseCaseFilters(sp: URLSearchParams): CaseFilters {

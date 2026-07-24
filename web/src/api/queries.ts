@@ -29,7 +29,7 @@ import type {
   UserListResponse,
   UserView,
 } from "@/api";
-import type { CaseFilters, RunsFilters } from "@/lib/filters";
+import { runsRequestFilters, type CaseFilters, type RunsFilters } from "@/lib/filters";
 
 export const qk = {
   meta: ["meta"] as const,
@@ -71,12 +71,16 @@ export function useMe() {
 }
 
 export function useRuns(filters: RunsFilters) {
+  // URL state → request params: the hidden-by-default `cached` mapping lives
+  // in `runsRequestFilters`; keying the query on the mapped value keeps the
+  // cache identity equal to the request identity.
+  const request = runsRequestFilters(filters);
   return useInfiniteQuery({
-    queryKey: qk.runs(filters),
+    queryKey: qk.runs(request),
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       apiRequest<RunListResponse>("/runs", {
-        params: { ...filters, limit: 50, cursor: pageParam },
+        params: { ...request, limit: 50, cursor: pageParam },
         signal,
       }),
     getNextPageParam: (last) => last.next_cursor ?? undefined,

@@ -9,4 +9,11 @@ export type RunListItem = { id: RunId, project: string | null, suite: string | n
 /**
  * RFC3339.
  */
-created_at: string, git_branch: string | null, git_commit: string | null, git_dirty: boolean | null, case_count: number, pass_count: number, fail_count: number, error_count: number, pass_rate: number, prompt_tokens: number, completion_tokens: number, cost_usd: number | null, duration_ms: number, tags: Array<string>, };
+created_at: string, git_branch: string | null, git_commit: string | null, git_dirty: boolean | null, case_count: number, pass_count: number, fail_count: number, error_count: number, pass_rate: number, prompt_tokens: number, completion_tokens: number, cost_usd: number | null, duration_ms: number, 
+/**
+ * Provider-call cache counters (migration-6 `runs` columns, promoted from
+ * `RunSummary`). `None` for legacy pre-backfill rows and for
+ * failed-backfill rows carrying the -1 sentinel, which the query maps to
+ * `None`. A run is "fully cached" when `cache_misses == 0 && cache_hits > 0`.
+ */
+cache_hits: number | null, cache_misses: number | null, tags: Array<string>, };

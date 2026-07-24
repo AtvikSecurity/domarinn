@@ -113,6 +113,11 @@ export function RunDetail() {
       replace: true,
     });
   }
+  function setCached(value: string) {
+    setParams(mergeParams(params, { cached: value || undefined }), {
+      replace: true,
+    });
+  }
   function setProvider(value: string) {
     setParams(mergeParams(params, { provider: value || undefined }), {
       replace: true,
@@ -140,6 +145,11 @@ export function RunDetail() {
   if (run.isError) return <ErrorState error={run.error} onRetry={() => run.refetch()} />;
 
   const r = run.data;
+  const cacheKnown = r.cache_hits != null && r.cache_misses != null;
+  const cacheTotal = (r.cache_hits ?? 0) + (r.cache_misses ?? 0);
+  // The fresh/cached case filter only means something when the run actually
+  // mixes both; on a fully-fresh or fully-cached run it would be a no-op chip.
+  const partiallyCached = (r.cache_hits ?? 0) > 0 && (r.cache_misses ?? 0) > 0;
   const siblingRuns = suiteRuns.data?.pages.flatMap((p) => p.runs) ?? [];
   // Older run in the suite = the default compare base for this run.
   // Undefined when `r` is the oldest loaded run in its suite — the real
@@ -215,7 +225,9 @@ export function RunDetail() {
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <div
+          className={`mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 ${cacheKnown ? "lg:grid-cols-7" : "lg:grid-cols-6"}`}
+        >
           <Stat label="Pass rate">
             <PassRateBadge
               pass={r.pass_count}
@@ -237,6 +249,18 @@ export function RunDetail() {
           </Stat>
           <Stat label="Cost">{formatCost(r.cost_usd)}</Stat>
           <Stat label="Duration">{formatDuration(r.duration_ms)}</Stat>
+          {cacheKnown ? (
+            <Stat label="Cache">
+              <span
+                className="tabular-nums"
+                title={`${r.cache_hits} cache hit${r.cache_hits === 1 ? "" : "s"} / ${r.cache_misses} miss${r.cache_misses === 1 ? "" : "es"}`}
+              >
+                {cacheTotal > 0
+                  ? `${Math.round(((r.cache_hits ?? 0) / cacheTotal) * 100)}% cached`
+                  : "—"}
+              </span>
+            </Stat>
+          ) : null}
         </div>
       </div>
 
@@ -266,6 +290,19 @@ export function RunDetail() {
               active={filters.status ?? ""}
               onSelect={setStatus}
             />
+
+            {/* Fresh/cached response filter — only for runs that mix both. */}
+            {partiallyCached ? (
+              <ChipGroup
+                label="Cached"
+                chips={[
+                  { value: "", label: "All" },
+                  { value: "false", label: "Fresh only" },
+                ]}
+                active={filters.cached ?? ""}
+                onSelect={setCached}
+              />
+            ) : null}
 
             {/* Provider / prompt chips appear only for matrix-shaped runs (>1
                 distinct value each); nothing renders while the matrix loads. */}

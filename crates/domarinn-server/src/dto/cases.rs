@@ -33,6 +33,10 @@ pub struct CaseListItem {
     pub repeat: Option<i64>,
     pub score: Option<f64>,
     pub stop_reason: Option<String>,
+    /// Whether the provider response was a cache hit (migration-6 `cases`
+    /// column). `None` for legacy pre-backfill rows and failed-backfill rows
+    /// carrying the -1 sentinel, which the list query maps to `None`.
+    pub cached: Option<bool>,
 }
 
 /// `GET /runs/{id}/cases` response.
@@ -79,6 +83,7 @@ mod tests {
             repeat: Some(0),
             score: Some(1.0),
             stop_reason: Some("stop".to_string()),
+            cached: Some(true),
         };
         assert_eq!(
             serde_json::to_value(&dto).unwrap(),
@@ -101,6 +106,7 @@ mod tests {
                 "repeat": 0,
                 "score": 1.0,
                 "stop_reason": "stop",
+                "cached": true,
             })
         );
     }
@@ -124,9 +130,11 @@ mod tests {
             repeat: None,
             score: None,
             stop_reason: None,
+            cached: None,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["asserts"], json!([]));
+        assert!(v["cached"].is_null());
         assert!(v["name"].is_null());
         assert_eq!(v["status"], "skip");
         // The migration-3 cell fields serialize as explicit `null`, never

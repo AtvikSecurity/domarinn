@@ -227,6 +227,18 @@ pub enum RunStatusFilter {
     Error,
 }
 
+/// Cache filter for `GET /runs?cached=`. `exclude` hides runs that were fully
+/// cached AND passing (grader verdicts are never cached, so a fully-cached run
+/// can still fail — those always stay visible); `only` returns fully-cached
+/// runs regardless of verdict; `all` is the explicit no-op default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum CachedFilter {
+    Exclude,
+    Only,
+    All,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

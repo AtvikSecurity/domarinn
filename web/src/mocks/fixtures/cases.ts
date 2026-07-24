@@ -38,6 +38,8 @@ export interface MockCaseRow {
   prompt_id: string | null;
   test_id: string;
   repeat: number;
+  /** Whether the provider response was a cache hit (migration-6 column). */
+  cached: boolean;
   /** Stable per-case RNG seed (the numeric idx for flat suites, a composite for
    *  matrix ones) so the full case-detail output stays coherent with the row. */
   seed: string | number;
@@ -62,6 +64,8 @@ export function outputRevision(suiteKey: string, seed: string | number, runIndex
 }
 
 function statusFor(meta: RunMeta, seed: string | number): CaseStatus {
+  // A stable suite never fails (see `SuiteDef.stable`).
+  if (meta.suiteDef.stable) return "pass";
   // Per-case intrinsic difficulty; harder cases fail more often.
   const difficulty = rand(meta.suiteKey, "diff", seed);
   // Slow quality improvement across the run series.
@@ -99,6 +103,36 @@ function leanAsserts(meta: RunMeta, seed: string | number, status: CaseStatus): 
   });
 }
 
+// ---------------------------------------------------------------------------
+// Per-run cache regime. CI re-runs of an unchanged suite are fully cached
+// (roughly 30% of runs), an edited suite is partially cached (~40%), and the
+// rest run fresh. Deterministic per run, like everything else here.
+// ---------------------------------------------------------------------------
+
+interface CacheRegime {
+  full: boolean;
+  hitRate: number;
+}
+
+function cacheRegime(meta: RunMeta): CacheRegime {
+  // A stable suite pays for its first run, then every re-run hits the cache.
+  if (meta.suiteDef.stable) {
+    return meta.runIndex === 0 ? { full: false, hitRate: 0 } : { full: true, hitRate: 1 };
+  }
+  const r = rand(meta.suiteKey, meta.runIndex, "cachereg");
+  if (r < 0.3) return { full: false, hitRate: 0 };
+  if (r < 0.7) {
+    return { full: false, hitRate: 0.4 + rand(meta.suiteKey, meta.runIndex, "hr") * 0.5 };
+  }
+  return { full: true, hitRate: 1 };
+}
+
+function caseCached(regime: CacheRegime, meta: RunMeta, seed: string | number): boolean {
+  if (regime.full) return true;
+  if (regime.hitRate === 0) return false;
+  return rand(meta.suiteKey, seed, "hit") < regime.hitRate;
+}
+
 export function generateCases(runId: string): MockCaseRow[] {
   const cached = CASE_CACHE.get(runId);
   if (cached) return cached;
@@ -115,6 +149,7 @@ export function generateCases(runId: string): MockCaseRow[] {
  *  constant provider, no prompt dimension, `test_id === case_key`, `repeat 0`. */
 function generateFlatCases(meta: RunMeta): MockCaseRow[] {
   const rows: MockCaseRow[] = [];
+  const regime = cacheRegime(meta);
   for (let i = 0; i < meta.caseCount; i++) {
     const status = statusFor(meta, i);
     const asserts = leanAsserts(meta, i, status);
@@ -140,6 +175,7 @@ function generateFlatCases(meta: RunMeta): MockCaseRow[] {
       prompt_id: null,
       test_id: caseKey,
       repeat: 0,
+      cached: caseCached(regime, meta, i),
       seed: i,
       output_hash: hash(
         meta.suiteKey,
@@ -160,6 +196,7 @@ function generateFlatCases(meta: RunMeta): MockCaseRow[] {
  *  signal). */
 function generateMatrixCases(meta: RunMeta, spec: MatrixSpec): MockCaseRow[] {
   const rows: MockCaseRow[] = [];
+  const regime = cacheRegime(meta);
   let idx = 0;
   for (let t = 0; t < spec.tests; t++) {
     const testId = `test-${String(t).padStart(3, "0")}`;
@@ -201,6 +238,7 @@ function generateMatrixCases(meta: RunMeta, spec: MatrixSpec): MockCaseRow[] {
             prompt_id: prompt,
             test_id: testId,
             repeat: rep,
+            cached: caseCached(regime, meta, seed),
             seed,
             output_hash: hash(meta.suiteKey, testId, provider, prompt, "out", rev).toString(16),
           });
@@ -394,5 +432,6 @@ export function toCaseListItem(c: MockCaseRow): CaseListItem {
     repeat: c.repeat,
     score: caseScore(c),
     stop_reason: null,
+    cached: c.cached,
   };
 }

@@ -36,6 +36,8 @@ export interface RunStats {
   duration_ms: number;
   content_hash: string;
   uploaded_by: string | null;
+  cache_hits: number;
+  cache_misses: number;
   tags: string[];
   assert_labels: string[];
 }
@@ -51,6 +53,8 @@ export function runStats(runId: string): RunStats {
   let completion_tokens = 0;
   let cost = 0;
   let duration = 0;
+  let cache_hits = 0;
+  let cache_misses = 0;
   for (const c of cases) {
     if (c.status === "pass") pass++;
     else if (c.status === "fail") fail++;
@@ -59,6 +63,8 @@ export function runStats(runId: string): RunStats {
     completion_tokens += c.completion_tokens;
     cost += c.cost_usd;
     duration += c.latency_ms;
+    if (c.cached) cache_hits++;
+    else cache_misses++;
   }
   const uploadDelayMs = 1500 + Math.floor(rand(meta.suiteKey, meta.runIndex, "upl") * 4000);
   return {
@@ -83,6 +89,8 @@ export function runStats(runId: string): RunStats {
     duration_ms: duration,
     content_hash: `sha256:${hash(meta.id, "hash").toString(16).padStart(16, "0")}`,
     uploaded_by: null,
+    cache_hits,
+    cache_misses,
     tags: meta.tags,
     assert_labels: [...new Set(meta.suiteDef.labels)],
   };
@@ -107,6 +115,8 @@ function toRunListItem(s: RunStats): RunListItem {
     completion_tokens: s.completion_tokens,
     cost_usd: s.cost_usd,
     duration_ms: s.duration_ms,
+    cache_hits: s.cache_hits,
+    cache_misses: s.cache_misses,
     tags: s.tags,
   };
 }
@@ -135,6 +145,8 @@ function toRunDetailResponse(s: RunStats): RunDetailResponse {
     content_hash: s.content_hash,
     uploaded_by: s.uploaded_by,
     config_digest: configDigest(s.id),
+    cache_hits: s.cache_hits,
+    cache_misses: s.cache_misses,
     tags: s.tags,
     assert_labels: s.assert_labels,
   };

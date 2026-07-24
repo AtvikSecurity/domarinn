@@ -38,6 +38,10 @@ pub struct CaseListFilter {
     pub prompt: Option<String>,
     pub test: Option<String>,
     pub stop_reason: Option<String>,
+    /// `Some(false)` = fresh (non-cached) responses only; `Some(true)` =
+    /// cache hits only. Legacy rows (NULL/sentinel `cached`) count as fresh —
+    /// never hide what we can't classify.
+    pub cached: Option<bool>,
     pub limit: i64,
     pub cursor: Option<i64>,
 }
@@ -47,7 +51,8 @@ impl CaseListFilter {
         let mut sql = String::from(
             "SELECT case_key, idx, name, status, output_preview, asserts,
                     prompt_tokens, completion_tokens, cost_microusd, latency_ms,
-                    provider_id, prompt_id, test_id, repeat_idx, score, stop_reason
+                    provider_id, prompt_id, test_id, repeat_idx, score, stop_reason,
+                    cached
              FROM cases WHERE run_id = ?1",
         );
         let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
@@ -85,6 +90,13 @@ impl CaseListFilter {
         if let Some(stop_reason) = &self.stop_reason {
             args.push(stop_reason.clone().into());
             sql.push_str(&format!(" AND stop_reason = ?{}", args.len()));
+        }
+        match self.cached {
+            // Cache hits are exactly the rows stamped 1; NULL (legacy) and the
+            // -1 sentinel are "unknown" and count as fresh on the other branch.
+            Some(true) => sql.push_str(" AND cached = 1"),
+            Some(false) => sql.push_str(" AND COALESCE(cached, 0) <> 1"),
+            None => {}
         }
         if let Some(cursor) = self.cursor {
             args.push(cursor.into());
@@ -127,6 +139,13 @@ impl CaseListFilter {
                     repeat: row.get::<_, Option<i64>>(13)?,
                     score: row.get::<_, Option<f64>>(14)?,
                     stop_reason: empty_to_none(row.get::<_, Option<String>>(15)?),
+                    // 1/0 → Some(true/false); NULL (legacy) and the -1
+                    // undecodable-blob sentinel → None.
+                    cached: row.get::<_, Option<i64>>(16)?.and_then(|v| match v {
+                        1 => Some(true),
+                        0 => Some(false),
+                        _ => None,
+                    }),
                 },
             ))
         })?;

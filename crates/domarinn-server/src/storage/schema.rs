@@ -206,6 +206,20 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         );
         "#,
         ),
+        // Migration 6: promote the cache facts out of the zstd blobs so the
+        // list endpoints can filter CI cache-noise at SQL level
+        // (`RunSummary.cache_hits/cache_misses` → `runs`, `CaseResult.cached`
+        // → `cases`). Ingest writes them going forward; `backfill` populates
+        // pre-existing rows on open. NULL = unknown (pre-backfill legacy);
+        // -1 = undecodable-blob sentinel (numeric cousin of migration 3's
+        // empty-string sentinel). Both must never be hidden by the filters.
+        M::up(
+            r#"
+        ALTER TABLE runs ADD COLUMN cache_hits INTEGER;
+        ALTER TABLE runs ADD COLUMN cache_misses INTEGER;
+        ALTER TABLE cases ADD COLUMN cached INTEGER;
+        "#,
+        ),
     ])
 }
 

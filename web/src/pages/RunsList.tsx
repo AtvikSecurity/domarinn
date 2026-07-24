@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useRuns, useSuites } from "@/api/queries";
 import type { RunListItem } from "@/api";
-import { parseRunsFilters } from "@/lib/filters";
+import { mergeParams, parseRunsFilters } from "@/lib/filters";
 import { suitePassRateSeries } from "@/lib/suites";
 import { previousRun } from "@/lib/compare";
 import {
@@ -35,6 +35,13 @@ function comparePair(
   const [older, newer] = sorted;
   if (!older || !newer) return null;
   return { baseId: older.id, headId: newer.id };
+}
+
+/** Mirrors the server's FULLY_CACHED predicate (storage/runs.rs): every
+ *  provider call in the run was a cache hit. Legacy rows (null counters)
+ *  never count as cached. */
+function isFullyCached(r: RunListItem): boolean {
+  return r.cache_misses === 0 && (r.cache_hits ?? 0) > 0;
 }
 
 interface Group {
@@ -78,7 +85,7 @@ function groupRuns(runs: RunListItem[]): Group[] {
 }
 
 export function RunsList() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const filters = parseRunsFilters(params);
   const q = useRuns(filters);
 
@@ -87,6 +94,9 @@ export function RunsList() {
     [q.data],
   );
   const groups = useMemo(() => groupRuns(runs), [runs]);
+  // Present only on the first page of the default (hidden) view; the reveal
+  // link keeps the suppression discoverable and one click away.
+  const cachedHidden = q.data?.pages[0]?.cached_hidden ?? 0;
 
   return (
     <div className="space-y-5">
@@ -98,6 +108,22 @@ export function RunsList() {
       </div>
 
       <RunsFilterBar />
+
+      {cachedHidden > 0 ? (
+        <p className="text-xs text-muted">
+          {cachedHidden} fully cached run{cachedHidden === 1 ? "" : "s"} hidden
+          {" · "}
+          <button
+            type="button"
+            className="font-medium text-accent hover:underline"
+            onClick={() =>
+              setParams(mergeParams(params, { cached: "all" }), { replace: true })
+            }
+          >
+            Show
+          </button>
+        </p>
+      ) : null}
 
       {q.isPending ? (
         <CenteredSpinner label="Loading runs…" />
@@ -233,10 +259,15 @@ function SuiteGroup({ group }: { group: Group }) {
               // real server has no route for a target-less compare, so the
               // link is hidden rather than pointing at one.
               const compareTarget = previousRun(group.runs, r.id);
+              const fullyCached = isFullyCached(r);
+              // Dim only cached AND passing rows: a cached run that failed is
+              // real signal (verdicts are never cached) and must read as such.
+              const dimmed =
+                fullyCached && r.fail_count === 0 && r.error_count === 0;
               return (
               <tr
                 key={r.id}
-                className="border-b border-border/60 last:border-0 hover:bg-surface-2"
+                className={`border-b border-border/60 last:border-0 hover:bg-surface-2${dimmed ? " opacity-60" : ""}`}
               >
                 <td className="px-3 py-2">
                   <input
@@ -262,6 +293,14 @@ function SuiteGroup({ group }: { group: Group }) {
                         title="Pinned comparison baseline for this suite"
                       >
                         baseline
+                      </span>
+                    ) : null}
+                    {fullyCached ? (
+                      <span
+                        className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted"
+                        title="Every provider call in this run was a cache hit"
+                      >
+                        cached
                       </span>
                     ) : null}
                   </span>

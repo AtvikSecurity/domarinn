@@ -25,6 +25,8 @@ function run(id: string, created_at: string): RunListItem {
     completion_tokens: 0,
     cost_usd: null,
     duration_ms: 0,
+    cache_hits: null,
+    cache_misses: null,
     tags: [],
   };
 }

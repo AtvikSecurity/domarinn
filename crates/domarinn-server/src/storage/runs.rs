@@ -10,7 +10,7 @@ use super::{
     compress, content_hash, decompress, empty_to_none, encode_cursor, from_microusd, ms_to_rfc3339,
     now_ms, sha256_hex, to_microusd, IngestOutcome, Storage,
 };
-use crate::domain::RunStatusFilter;
+use crate::domain::{CachedFilter, RunStatusFilter};
 use crate::dto::config::RunConfigResponse;
 use crate::dto::runs::{CaseAssertLean, RunDetailResponse, RunListItem};
 
@@ -104,6 +104,9 @@ struct PreparedCase {
     cost_microusd: Option<i64>,
     latency_ms: i64,
     detail: Vec<u8>,
+    // Migration-6 column: whether the provider response was a cache hit,
+    // promoted so the case list can filter to fresh responses at SQL level.
+    cached: bool,
     // Migration-3 cell columns, promoted out of the `detail` blob so the matrix
     // views can filter/join without decompressing every row.
     provider_id: String,
@@ -141,6 +144,10 @@ struct PreparedRun {
     content_hash: String,
     uploaded_by: Option<String>,
     config_digest: String,
+    // Migration-6 columns, promoted from `RunSummary` so the run list can
+    // filter fully-cached CI runs at SQL level.
+    cache_hits: i64,
+    cache_misses: i64,
     tags: Vec<String>,
     blob: Vec<u8>,
     cases: Vec<PreparedCase>,
@@ -196,6 +203,7 @@ impl PreparedRun {
                 cost_microusd: to_microusd(case.cost_usd),
                 latency_ms: case.latency_ms as i64,
                 detail,
+                cached: case.cached,
                 provider_id: case.cell.provider_id.clone(),
                 prompt_id: case.cell.prompt_id.clone(),
                 test_id: case.cell.test_id.clone(),
@@ -230,6 +238,8 @@ impl PreparedRun {
             content_hash,
             uploaded_by,
             config_digest: run.config_digest.clone(),
+            cache_hits: run.summary.cache_hits as i64,
+            cache_misses: run.summary.cache_misses as i64,
             tags: run.filters.tags.clone(),
             blob,
             cases,
@@ -259,13 +269,13 @@ impl PreparedRun {
                 git_branch, git_commit, git_dirty, ci_provider, ci_run_url,
                 case_count, pass_count, fail_count, error_count,
                 prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                content_hash, uploaded_by, config_digest
+                content_hash, uploaded_by, config_digest, cache_hits, cache_misses
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19, ?20,
-                ?21, ?22, ?23
+                ?21, ?22, ?23, ?24, ?25
             )",
             params![
                 self.id,
@@ -291,6 +301,8 @@ impl PreparedRun {
                 self.content_hash,
                 self.uploaded_by,
                 self.config_digest,
+                self.cache_hits,
+                self.cache_misses,
             ],
         )?;
 
@@ -312,10 +324,10 @@ impl PreparedRun {
                     run_id, case_key, idx, name, status, output_preview, output_text,
                     output_hash, asserts, prompt_tokens, completion_tokens, cost_microusd,
                     latency_ms, detail,
-                    provider_id, prompt_id, test_id, repeat_idx, score, stop_reason
+                    provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    ?15, ?16, ?17, ?18, ?19, ?20
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21
                 )",
                 params![
                     self.id,
@@ -338,6 +350,7 @@ impl PreparedRun {
                     case.repeat_idx,
                     case.score,
                     case.stop_reason,
+                    case.cached as i64,
                 ],
             )?;
             for tag in &case.tags {
@@ -395,6 +408,7 @@ pub struct RunListFilter {
     pub since_ms: Option<i64>,
     pub until_ms: Option<i64>,
     pub status: Option<RunStatusFilter>,
+    pub cached: Option<CachedFilter>,
     pub limit: i64,
     pub cursor: Option<(i64, RunId)>,
 }
@@ -403,14 +417,23 @@ pub struct RunListFilter {
 pub struct RunListPage {
     pub runs: Vec<RunListItem>,
     pub next_cursor: Option<String>,
+    /// How many runs the `cached=exclude` filter suppressed across the whole
+    /// filtered set. Computed only on the first page of an `exclude` query.
+    pub cached_hidden: Option<i64>,
 }
+
+/// A run whose every provider call was a cache hit. NULL-safe: legacy rows
+/// (NULL, pre-backfill) and the -1 undecodable-blob sentinel both fail the
+/// `= 0` / `> 0` checks, so "unknown" never counts as cached.
+const FULLY_CACHED: &str = "COALESCE(cache_misses, -1) = 0 AND COALESCE(cache_hits, 0) > 0";
 
 impl RunListFilter {
     fn query(self, conn: &Connection) -> anyhow::Result<RunListPage> {
         let mut sql = String::from(
             "SELECT id, project, suite, created_at, git_branch, git_commit, git_dirty,
                     case_count, pass_count, fail_count, error_count,
-                    prompt_tokens, completion_tokens, cost_microusd, duration_ms
+                    prompt_tokens, completion_tokens, cost_microusd, duration_ms,
+                    cache_hits, cache_misses
              FROM runs",
         );
         let mut clauses: Vec<String> = Vec::new();
@@ -451,6 +474,32 @@ impl RunListFilter {
             }
             None => {}
         }
+
+        // Only ever hide fully-cached runs that also PASSED: verdicts are not
+        // cached, so a fully-cached run can still carry a fresh regression.
+        let hidden_predicate = format!("({FULLY_CACHED} AND fail_count = 0 AND error_count = 0)");
+        // Count what `exclude` suppresses BEFORE the cached/cursor clauses land
+        // (first page only — the count spans the whole filtered set anyway).
+        let cached_hidden = if self.cached == Some(CachedFilter::Exclude) && self.cursor.is_none() {
+            let mut count_sql = format!("SELECT COUNT(*) FROM runs WHERE {hidden_predicate}");
+            for clause in &clauses {
+                count_sql.push_str(" AND ");
+                count_sql.push_str(clause);
+            }
+            let n: i64 =
+                conn.query_row(&count_sql, rusqlite::params_from_iter(args.iter()), |row| {
+                    row.get(0)
+                })?;
+            Some(n)
+        } else {
+            None
+        };
+        match self.cached {
+            Some(CachedFilter::Exclude) => clauses.push(format!("NOT {hidden_predicate}")),
+            Some(CachedFilter::Only) => clauses.push(format!("({FULLY_CACHED})")),
+            Some(CachedFilter::All) | None => {}
+        }
+
         if let Some((c_created, c_id)) = &self.cursor {
             clauses.push(format!(
                 "(created_at < ?{a} OR (created_at = ?{a} AND id < ?{b}))",
@@ -490,6 +539,8 @@ impl RunListFilter {
                 completion_tokens: row.get(12)?,
                 cost_microusd: row.get(13)?,
                 duration_ms: row.get(14)?,
+                cache_hits: row.get(15)?,
+                cache_misses: row.get(16)?,
             })
         })?;
         let mut collected: Vec<RunRow> = Vec::new();
@@ -516,6 +567,7 @@ impl RunListFilter {
         Ok(RunListPage {
             runs: out,
             next_cursor,
+            cached_hidden,
         })
     }
 }
@@ -536,6 +588,14 @@ struct RunRow {
     completion_tokens: i64,
     cost_microusd: Option<i64>,
     duration_ms: i64,
+    cache_hits: Option<i64>,
+    cache_misses: Option<i64>,
+}
+
+/// Map a stored cache counter to its wire value: NULL (legacy, pre-backfill)
+/// and the -1 undecodable-blob sentinel both surface as `None`.
+fn clean_cache_count(v: Option<i64>) -> Option<i64> {
+    v.filter(|n| *n >= 0)
 }
 
 impl RunRow {
@@ -562,6 +622,8 @@ impl RunRow {
             completion_tokens: self.completion_tokens,
             cost_usd: from_microusd(self.cost_microusd),
             duration_ms: self.duration_ms,
+            cache_hits: clean_cache_count(self.cache_hits),
+            cache_misses: clean_cache_count(self.cache_misses),
             tags,
         }
     }
@@ -584,7 +646,7 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     git_branch, git_commit, git_dirty, ci_provider, ci_run_url,
                     case_count, pass_count, fail_count, error_count,
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                    content_hash, uploaded_by, config_digest
+                    content_hash, uploaded_by, config_digest, cache_hits, cache_misses
              FROM runs WHERE id = ?1",
             params![id.as_str()],
             |row| {
@@ -612,6 +674,8 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     uploaded_by: row.get::<_, Option<String>>(20)?,
                     // Map the empty-string backfill sentinel to `None`.
                     config_digest: empty_to_none(row.get::<_, Option<String>>(21)?),
+                    cache_hits: clean_cache_count(row.get::<_, Option<i64>>(22)?),
+                    cache_misses: clean_cache_count(row.get::<_, Option<i64>>(23)?),
                     // Filled in below, after the row is loaded.
                     tags: Vec::new(),
                     assert_labels: Vec::new(),

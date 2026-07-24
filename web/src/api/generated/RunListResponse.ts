@@ -4,4 +4,10 @@ import type { RunListItem } from "./RunListItem";
 /**
  * `GET /runs` response.
  */
-export type RunListResponse = { runs: Array<RunListItem>, next_cursor: string | null, };
+export type RunListResponse = { runs: Array<RunListItem>, next_cursor: string | null, 
+/**
+ * How many runs `cached=exclude` suppressed across the whole filtered
+ * set (not just this page). `None` unless the query was `cached=exclude`
+ * with no cursor (i.e. the first page).
+ */
+cached_hidden: number | null, };

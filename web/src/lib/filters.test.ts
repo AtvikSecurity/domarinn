@@ -6,6 +6,7 @@ import {
   parseCaseFilters,
   parseRunsFilters,
   pickParams,
+  runsRequestFilters,
   toggleValue,
 } from "./filters";
 
@@ -43,6 +44,40 @@ describe("pickParams / parseRunsFilters", () => {
       provider: "gpt-5-mini",
       prompt: "cot-v2",
       status: "fail",
+    });
+  });
+
+  it("parses the cached key on both runs and case filters", () => {
+    expect(parseRunsFilters(sp("cached=all"))).toEqual({ cached: "all" });
+    expect(parseCaseFilters(sp("cached=false"))).toEqual({ cached: "false" });
+  });
+
+  it("counts an explicit cached value as an active runs filter", () => {
+    expect(activeRunsFilterCount(sp("cached=all"))).toBe(1);
+    expect(activeRunsFilterCount(sp(""))).toBe(0);
+  });
+});
+
+describe("runsRequestFilters", () => {
+  it("defaults to excluding cached runs when the URL says nothing", () => {
+    expect(runsRequestFilters({})).toEqual({ cached: "exclude" });
+    expect(runsRequestFilters({ project: "alpha" })).toEqual({
+      project: "alpha",
+      cached: "exclude",
+    });
+  });
+
+  it("sends no cached param when the URL explicitly shows all", () => {
+    expect(runsRequestFilters({ cached: "all" })).toEqual({});
+  });
+
+  it("passes only through", () => {
+    expect(runsRequestFilters({ cached: "only" })).toEqual({ cached: "only" });
+  });
+
+  it("sanitizes junk cached values back to the hidden default", () => {
+    expect(runsRequestFilters({ cached: "banana" })).toEqual({
+      cached: "exclude",
     });
   });
 });

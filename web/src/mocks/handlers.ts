@@ -95,6 +95,17 @@ function derivedRunStatus(r: RunListItem): string {
   return "pass";
 }
 
+/** Mirrors the server's FULLY_CACHED predicate (storage/runs.rs). */
+function fullyCached(r: RunListItem): boolean {
+  return r.cache_misses === 0 && (r.cache_hits ?? 0) > 0;
+}
+
+/** What `cached=exclude` hides: fully cached AND passing (verdicts are never
+ *  cached, so a fully-cached failing run always stays visible). */
+function hiddenByCachedExclude(r: RunListItem): boolean {
+  return fullyCached(r) && r.fail_count === 0 && r.error_count === 0;
+}
+
 function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
   const project = p.get("project");
   const suite = p.get("suite");
@@ -103,6 +114,7 @@ function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
   const since = p.get("since");
   const until = p.get("until");
   const status = p.get("status");
+  const cached = p.get("cached");
   return runs.filter((r) => {
     if (project && r.project !== project) return false;
     if (suite && r.suite !== suite) return false;
@@ -111,6 +123,8 @@ function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
     if (since && parseTimestamp(r.created_at) < Number(since)) return false;
     if (until && parseTimestamp(r.created_at) > Number(until)) return false;
     if (status && derivedRunStatus(r) !== status) return false;
+    if (cached === "exclude" && hiddenByCachedExclude(r)) return false;
+    if (cached === "only" && !fullyCached(r)) return false;
     return true;
   });
 }
@@ -124,12 +138,15 @@ function filterCases(cases: MockCaseRow[], p: URLSearchParams): MockCaseRow[] {
   const provider = p.get("provider");
   const prompt = p.get("prompt");
   const test = p.get("test");
+  const cached = p.get("cached");
   return cases.filter((c) => {
     if (status && c.status !== status) return false;
     if (tag && !c.tags.includes(tag)) return false;
     if (provider && c.provider_id !== provider) return false;
     if (prompt && c.prompt_id !== prompt) return false;
     if (test && c.test_id !== test) return false;
+    if (cached === "true" && !c.cached) return false;
+    if (cached === "false" && c.cached) return false;
     if (q) {
       const hay = `${c.name} ${c.output_preview} ${c.case_key}`.toLowerCase();
       if (!hay.includes(q)) return false;
@@ -270,9 +287,18 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
   if (seg[0] === "runs") {
     // GET /runs
     if (method === "GET" && seg.length === 1) {
-      const filtered = filterRuns(fx.allRunSummaries(), p);
+      const all = fx.allRunSummaries();
+      const filtered = filterRuns(all, p);
       const { page, next_cursor } = paginate(filtered, p);
-      const res: RunListResponse = { runs: page, next_cursor: next_cursor ?? null };
+      // Mirrors the server: the suppressed-run count is computed only on the
+      // first page of a `cached=exclude` query, over the whole filtered set.
+      let cached_hidden: number | null = null;
+      if (p.get("cached") === "exclude" && !p.get("cursor")) {
+        const params = new URLSearchParams(p);
+        params.delete("cached");
+        cached_hidden = filterRuns(all, params).filter(hiddenByCachedExclude).length;
+      }
+      const res: RunListResponse = { runs: page, next_cursor: next_cursor ?? null, cached_hidden };
       return json(res);
     }
     const runId = seg[1];

@@ -524,7 +524,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     use ts_rs::Config;
 
     use crate::accounts::{CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody};
-    use crate::domain::RunStatusFilter;
+    use crate::domain::{CachedFilter, RunStatusFilter};
     use crate::dto::accounts::{
         ApiKeyCreatedResponse, ApiKeyListResponse, AuthSessionResponse, MeResponse, OkResponse,
         UserListResponse,
@@ -575,6 +575,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     // Not reachable from any response/request-body root (see the module doc
     // above) but still part of the web-facing TypeScript contract.
     RunStatusFilter::export_all(&cfg)?;
+    CachedFilter::export_all(&cfg)?;
 
     Ok(())
 }

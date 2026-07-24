@@ -49,6 +49,14 @@ export function RunsFilterBar() {
     { value: "error", label: "Has errors" },
   ];
 
+  // Absent = the hidden default (see `runsRequestFilters`): fully-cached
+  // passing runs — CI noise — stay out of the list until explicitly shown.
+  const cachedOptions = [
+    { value: "", label: "Hidden (default)" },
+    { value: "all", label: "Shown" },
+    { value: "only", label: "Only cached" },
+  ];
+
   return (
     <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-surface/60 p-3">
       <Field label="Project">
@@ -154,6 +162,20 @@ export function RunsFilterBar() {
         </select>
       </Field>
 
+      <Field label="Cached runs">
+        <select
+          className={controlCls}
+          value={filters.cached ?? ""}
+          onChange={(e) => patch({ cached: e.target.value || undefined })}
+        >
+          {cachedOptions.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+
       {activeCount > 0 ? (
         <Button
           variant="ghost"
@@ -169,6 +191,7 @@ export function RunsFilterBar() {
                 since: undefined,
                 until: undefined,
                 status: undefined,
+                cached: undefined,
               }),
               { replace: true },
             )

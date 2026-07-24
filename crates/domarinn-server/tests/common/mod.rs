@@ -197,6 +197,7 @@ pub struct CaseSpec {
     pub latency_ms: u64,
     pub rendered_prompt: Option<&'static str>,
     pub error: Option<&'static str>,
+    pub cached: bool,
 }
 
 impl CaseSpec {
@@ -214,6 +215,7 @@ impl CaseSpec {
             latency_ms: 42,
             rendered_prompt: None,
             error: None,
+            cached: false,
         }
     }
 
@@ -267,6 +269,12 @@ impl CaseSpec {
     /// Override the per-case latency in ms (default: 42).
     pub fn latency(mut self, latency_ms: u64) -> Self {
         self.latency_ms = latency_ms;
+        self
+    }
+
+    /// Mark the case's provider response as a cache hit (default: false).
+    pub fn cached(mut self, cached: bool) -> Self {
+        self.cached = cached;
         self
     }
 }
@@ -323,7 +331,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         }),
         cost_usd: spec.cost_usd,
         latency_ms: spec.latency_ms,
-        cached: false,
+        cached: spec.cached,
         attempts: 1,
         error: spec.error.map(str::to_string),
     }
@@ -361,6 +369,13 @@ pub fn make_run(
         if let Some(u) = &c.usage {
             summary.prompt_tokens += u.input_tokens;
             summary.completion_tokens += u.output_tokens;
+        }
+        // Mirrors the runner's `summarize()`: every provider call is either a
+        // cache hit or a miss.
+        if c.cached {
+            summary.cache_hits += 1;
+        } else {
+            summary.cache_misses += 1;
         }
     }
 

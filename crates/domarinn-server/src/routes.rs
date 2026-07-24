@@ -21,7 +21,7 @@ use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::{CaseStatus, RunResult, RESULT_SCHEMA_VERSION};
 
 use crate::auth::{Admin, Read, Scoped, Write};
-use crate::domain::RunStatusFilter;
+use crate::domain::{CachedFilter, RunStatusFilter};
 use crate::dto::cache::PruneResponse;
 use crate::dto::meta::{MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
@@ -421,6 +421,7 @@ struct RunQuery {
     since: Option<String>,
     until: Option<String>,
     status: Option<RunStatusFilter>,
+    cached: Option<CachedFilter>,
     limit: Option<i64>,
     cursor: Option<String>,
 }
@@ -438,6 +439,7 @@ async fn list_runs(
         since_ms: q.since.as_deref().and_then(storage::parse_time_ms),
         until_ms: q.until.as_deref().and_then(storage::parse_time_ms),
         status: q.status,
+        cached: q.cached,
         limit: clamp_limit(q.limit),
         cursor: q.cursor.as_deref().and_then(storage::decode_cursor),
     };
@@ -445,6 +447,7 @@ async fn list_runs(
     Ok(Json(RunListResponse {
         runs: page.runs,
         next_cursor: page.next_cursor,
+        cached_hidden: page.cached_hidden,
     })
     .into_response())
 }
@@ -470,6 +473,7 @@ struct CaseQuery {
     prompt: Option<String>,
     test: Option<String>,
     stop_reason: Option<String>,
+    cached: Option<bool>,
     limit: Option<i64>,
     cursor: Option<String>,
 }
@@ -492,6 +496,7 @@ async fn list_cases(
         prompt: q.prompt,
         test: q.test,
         stop_reason: q.stop_reason,
+        cached: q.cached,
         limit: clamp_limit(q.limit),
         cursor: q.cursor.as_deref().and_then(|c| c.parse::<i64>().ok()),
     };

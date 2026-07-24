@@ -131,6 +131,14 @@ export function CaseGrid({
                     #{repeat}
                   </span>
                 ) : null}
+                {c.cached === true ? (
+                  <span
+                    className="shrink-0 rounded bg-surface-2 px-1 py-px text-[10px] text-muted"
+                    title="Provider response served from cache"
+                  >
+                    cached
+                  </span>
+                ) : null}
               </div>
               <div className="truncate font-mono text-[11px] text-muted">
                 {c.case_key}
