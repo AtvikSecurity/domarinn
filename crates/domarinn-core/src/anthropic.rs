@@ -11,7 +11,9 @@ use serde_json::{json, Value as Json};
 
 use crate::config::ParamMap;
 use crate::net::{api_key, http_client, parse_retry_after, status_error, transport_error};
-use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
+use crate::provider::{
+    http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
+};
 use crate::types::{ChatRole, Output, RenderedPrompt, TokenUsage};
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -63,6 +65,11 @@ impl AnthropicProvider {
             .or_insert_with(|| json!(DEFAULT_MAX_TOKENS));
         Json::Object(body)
     }
+
+    /// The Messages endpoint, trimmed the same way `call` trims it.
+    fn endpoint(&self) -> String {
+        format!("{}/v1/messages", self.base_url.trim_end_matches('/'))
+    }
 }
 
 #[async_trait]
@@ -90,7 +97,7 @@ impl Provider for AnthropicProvider {
         })?;
         let key = api_key(&self.api_key_env)?;
         let body = self.build_body(prompt);
-        let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
+        let url = self.endpoint();
 
         let response = self
             .client
@@ -111,6 +118,15 @@ impl Provider for AnthropicProvider {
 
         let payload: Json = response.json().await.map_err(transport_error)?;
         parse_messages_response(&payload)
+    }
+
+    fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
+        let prompt = req.prompt.as_ref()?;
+        Some(http_request_preview(
+            "POST",
+            &self.endpoint(),
+            self.build_body(prompt),
+        ))
     }
 }
 
@@ -211,6 +227,50 @@ mod tests {
         let (system, messages) = to_messages(&prompt);
         assert_eq!(system.as_deref(), Some("be nice"));
         assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn request_preview_reflects_the_anthropic_body_shape() {
+        // The load-bearing case for capturing this server-side: Anthropic lifts
+        // `system` out of the message list into a top-level field, so a preview
+        // reconstructed from the stored `RenderedPrompt` in the browser would
+        // show a system *message* that was never sent as one.
+        let p = AnthropicProvider::new("c", "claude-x", None, None, None);
+        let req = ProviderRequest {
+            prompt: Some(RenderedPrompt::Messages(vec![
+                crate::types::ChatMessage {
+                    role: ChatRole::System,
+                    content: "be nice".into(),
+                },
+                crate::types::ChatMessage {
+                    role: ChatRole::User,
+                    content: "hi".into(),
+                },
+            ])),
+            ..Default::default()
+        };
+
+        let preview = p.request_preview(&req).unwrap();
+        assert_eq!(preview["transport"], json!("http"));
+        assert_eq!(
+            preview["url"],
+            json!("https://api.anthropic.com/v1/messages")
+        );
+
+        let body = &preview["body"];
+        assert_eq!(body["system"], json!("be nice"));
+        assert_eq!(body["messages"], json!([{"role": "user", "content": "hi"}]));
+        // The API-required default is visible, not implied.
+        assert_eq!(body["max_tokens"], json!(DEFAULT_MAX_TOKENS));
+        assert!(preview.get("headers").is_none());
+    }
+
+    #[test]
+    fn request_preview_matches_the_body_actually_built() {
+        let p = AnthropicProvider::new("c", "claude-x", None, None, None);
+        let req = text_request();
+        let preview = p.request_preview(&req).unwrap();
+        assert_eq!(preview["body"], p.build_body(req.prompt.as_ref().unwrap()));
     }
 
     #[tokio::test]

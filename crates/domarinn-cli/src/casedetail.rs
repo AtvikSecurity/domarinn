@@ -403,6 +403,7 @@ mod tests {
             score: 0.0,
             output: None,
             prompt: None,
+            request: None,
             stop_reason: None,
             raw: None,
             asserts: vec![],

@@ -19,11 +19,17 @@ const V2_SUITE_KEY = "support-bot/tone-and-safety";
  * role-tagged system + user pair; ~1 in 4 non-error generations truncate
  * (`max_tokens`) rather than finishing cleanly (`end_turn`); errored ones carry
  * no clean stop reason.
+ *
+ * The `request` envelope mirrors what `OpenAiProvider::request_preview` really
+ * emits, key order included: caller params first, then `model`, then `messages`,
+ * with a text-style prompt folded into a single user turn. A fixture that
+ * invented its own shape here would let the drawer's Raw view drift from the one
+ * thing it promises to show verbatim.
  */
 function v2Fields(
   meta: RunMeta,
   row: MockCaseRow,
-): Pick<CaseResult, "prompt" | "stop_reason" | "raw" | "vars"> {
+): Pick<CaseResult, "prompt" | "stop_reason" | "raw" | "vars" | "request"> {
   if (meta.suiteKey !== V2_SUITE_KEY || row.status === "skip") return {};
 
   const seed = row.seed;
@@ -66,6 +72,21 @@ function v2Fields(
     system_fingerprint: `fp_${hash(meta.suiteKey, seed, "fp").toString(16).slice(0, 8)}`,
   };
 
+  const request = {
+    transport: "http",
+    method: "POST",
+    url: "https://api.openai.com/v1/chat/completions",
+    body: {
+      temperature: 0.2,
+      max_tokens: 512,
+      model: "gpt-4o-mini",
+      messages:
+        "messages" in prompt
+          ? prompt.messages
+          : [{ role: "user", content: prompt.text }],
+    },
+  };
+
   const vars = {
     product: noun,
     channel: pick(["email", "chat", "phone"], "channel", seed),
@@ -75,7 +96,7 @@ function v2Fields(
     },
   };
 
-  return { prompt, stop_reason, raw, vars };
+  return { prompt, stop_reason, raw, vars, request };
 }
 
 export function caseDetail(runId: string, caseKey: string): CaseResult | undefined {

@@ -1,23 +1,16 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useCaseDetail } from "@/api/queries";
 import type { AssertResult, CaseResult } from "@/api";
-import { StatusBadge } from "@/components/StatusBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { CopyButton } from "@/components/ui/CopyButton";
-import { Chip } from "@/components/ui/Chip";
 import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
 import { ErrorState } from "@/components/States";
-import { JsonTree, OutputViewer, RawText, outputToString } from "@/components/output";
-import { cn } from "@/lib/cn";
+import { OutputViewer } from "@/components/output";
 import { BaselineDiffSection } from "./BaselineDiffSection";
+import { CaseAssertRow } from "./CaseAssertRow";
+import { CaseInputSection } from "./CaseInputSection";
 import { CaseVerdictStrip } from "./CaseVerdictStrip";
-import {
-  AssertCriteria,
-  InputSection,
-  PromptSection,
-  RawMetadataSection,
-  reasoningNotice,
-} from "./CaseDrawerSections";
+import { RawMetadataSection, reasoningNotice } from "./CaseDrawerSections";
 
 export function CaseDrawer({
   runId,
@@ -106,7 +99,7 @@ export function CaseDrawer({
                   >
                     <div className="space-y-2">
                       {detail.data.asserts.map((a, i) => (
-                        <AssertRow
+                        <CaseAssertRow
                           key={`${a.kind}-${i}`}
                           assert={a}
                           showWeight={hasVaryingWeights(detail.data.asserts)}
@@ -137,11 +130,12 @@ export function CaseDrawer({
                     currentOutput={detail.data.output}
                   />
 
-                  {detail.data.prompt ? (
-                    <PromptSection prompt={detail.data.prompt} />
-                  ) : null}
-
-                  <InputSection cell={detail.data.cell} vars={detail.data.vars} />
+                  <CaseInputSection
+                    cell={detail.data.cell}
+                    vars={detail.data.vars}
+                    prompt={detail.data.prompt}
+                    request={detail.data.request}
+                  />
 
                   {detail.data.raw !== undefined ? (
                     <RawMetadataSection raw={detail.data.raw} />
@@ -206,63 +200,4 @@ function assertMeta(asserts: readonly AssertResult[]): string | undefined {
  */
 function hasVaryingWeights(asserts: readonly AssertResult[]): boolean {
   return asserts.some((a) => a.weight !== 1);
-}
-
-function AssertRow({
-  assert,
-  showWeight,
-}: {
-  assert: AssertResult;
-  showWeight: boolean;
-}) {
-  return (
-    <div
-      className={cn(
-        "rounded-lg border p-3",
-        assert.status === "pass"
-          ? "border-pass/25 bg-pass/5"
-          : assert.status === "error"
-            ? "border-error/25 bg-error/5"
-            : "border-fail/25 bg-fail/5",
-      )}
-    >
-      <div className="flex items-center gap-2">
-        <StatusBadge status={assert.status} size="xs" />
-        <Chip mono className="text-fg">
-          {assert.kind}
-        </Chip>
-        {/* A cached grader verdict means the assertion did NOT re-run. Editing
-            an llm-rubric and re-running otherwise looks like it took effect
-            when it didn't — this is a correctness signal, not a nicety. */}
-        {assert.cached ? (
-          <Chip
-            tone="neutral"
-            size="xs"
-            title="This verdict was served from cache — the assertion did not re-run"
-          >
-            cached
-          </Chip>
-        ) : null}
-        <span className="ml-auto text-xs tabular-nums text-muted">
-          score {assert.score.toFixed(2)}
-          {showWeight ? ` · weight ${assert.weight.toFixed(2)}` : ""}
-        </span>
-      </div>
-      {assert.criteria != null ? (
-        <AssertCriteria criteria={assert.criteria} />
-      ) : null}
-      <p className="mt-1.5 text-sm text-fg/90">{assert.reason}</p>
-      {assert.details !== undefined ? (
-        typeof assert.details === "object" && assert.details !== null ? (
-          <JsonTree data={assert.details} className="mt-2 text-[11px]/relaxed" />
-        ) : (
-          <RawText
-            text={outputToString(assert.details)}
-            wrap
-            className="mt-2 text-[11px]/relaxed"
-          />
-        )
-      ) : null}
-    </div>
-  );
 }

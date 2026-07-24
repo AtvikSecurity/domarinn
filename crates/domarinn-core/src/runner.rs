@@ -59,8 +59,10 @@ pub struct RunOptions {
     pub cache_mode: CacheMode,
     /// Max concurrent provider calls. `None` uses the suite's `runner.concurrency`.
     pub concurrency: Option<usize>,
-    /// Persist the provider's raw response metadata in each `CaseResult`. Default
-    /// `true`; disabled by `--no-raw` to keep result documents small.
+    /// Persist the provider's raw response metadata *and* the captured provider
+    /// request in each `CaseResult`. Default `true`; disabled by `--no-raw` to
+    /// keep result documents small. Both are bulky provenance rather than
+    /// results, and both are dropped whole above [`RAW_MAX_BYTES`].
     pub include_raw: bool,
 }
 
@@ -426,8 +428,7 @@ async fn run_cell(
                 name,
                 test,
                 format!("rendering vars: {e}"),
-                None,
-                serde_json::Map::new(),
+                CaseInputs::default(),
             )
         }
     };
@@ -445,8 +446,10 @@ async fn run_cell(
                     name,
                     test,
                     format!("rendering prompt: {e}"),
-                    None,
-                    case_vars,
+                    CaseInputs {
+                        vars: case_vars,
+                        ..Default::default()
+                    },
                 )
             }
         },
@@ -464,6 +467,12 @@ async fn run_cell(
         // Keys this case's cache entry only; never reaches the provider.
         case_salt: test.cache_salt.clone(),
     };
+
+    // What this provider will actually send, built by the provider itself from
+    // the same code path as the call. Captured *before* the call so a failed
+    // case still carries it — which is where it earns its keep: an HTTP 404
+    // explains itself the moment the model id in the request is visible.
+    let request = json_to_persist(include_raw, provider.request_preview(&req), "request");
 
     // Latency assertions must not observe a cached (near-zero) latency.
     let bypass_cache = has_latency_assert(&test.assert);
@@ -487,7 +496,18 @@ async fn run_cell(
     {
         Ok(triple) => triple,
         Err(e) => {
-            return error_case(cell, case_key, name, test, e, rendered_prompt, case_vars);
+            return error_case(
+                cell,
+                case_key,
+                name,
+                test,
+                e,
+                CaseInputs {
+                    prompt: rendered_prompt,
+                    vars: case_vars,
+                    request,
+                },
+            );
         }
     };
     let latency_ms = start.elapsed().as_millis() as u64;
@@ -532,8 +552,9 @@ async fn run_cell(
         score: verdict.score,
         output: Some(response.output),
         prompt: rendered_prompt,
+        request,
         stop_reason: response.stop_reason,
-        raw: raw_to_persist(include_raw, response.raw),
+        raw: json_to_persist(include_raw, response.raw, "raw"),
         asserts: assert_results,
         usage: response.usage,
         cost_usd: response.cost_usd,
@@ -769,25 +790,38 @@ fn has_latency_assert(asserts: &[Assert]) -> bool {
         .any(|a| matches!(a.kind, AssertKind::Latency { .. }))
 }
 
+/// Everything a case knows about its own inputs before a provider responds:
+/// what was rendered, and what was going to be sent.
+///
+/// Grouped so `error_case` can hand all of it to a failed case — an errored case
+/// that still shows its request is the difference between "HTTP 404" and "HTTP
+/// 404, and here is the model id we asked for".
+#[derive(Default)]
+struct CaseInputs {
+    prompt: Option<RenderedPrompt>,
+    vars: serde_json::Map<String, serde_json::Value>,
+    request: Option<Json>,
+}
+
 fn error_case(
     cell: CellKey,
     case_key: CaseKey,
     name: Option<String>,
     test: &TestCase,
     error: String,
-    prompt: Option<RenderedPrompt>,
-    vars: serde_json::Map<String, serde_json::Value>,
+    inputs: CaseInputs,
 ) -> CaseResult {
     CaseResult {
         cell,
         case_key,
         name,
         tags: test.tags.clone(),
-        vars,
+        vars: inputs.vars,
         status: CaseStatus::Error,
         score: 0.0,
         output: None,
-        prompt,
+        prompt: inputs.prompt,
+        request: inputs.request,
         stop_reason: None,
         raw: None,
         asserts: Vec::new(),
@@ -800,10 +834,11 @@ fn error_case(
     }
 }
 
-/// Apply the raw-metadata retention policy: keep the payload only when raw
-/// persistence is enabled and it fits within [`RAW_MAX_BYTES`]; otherwise drop
-/// it to `None` (an oversized blob is dropped whole — truncated JSON is useless).
-fn raw_to_persist(include_raw: bool, raw: Option<Json>) -> Option<Json> {
+/// Apply the retention policy for a bulky JSON provenance payload: keep it only
+/// when raw persistence is enabled and it fits within [`RAW_MAX_BYTES`];
+/// otherwise drop it to `None` (an oversized blob is dropped whole — truncated
+/// JSON is useless). `what` names the payload in the drop log.
+fn json_to_persist(include_raw: bool, raw: Option<Json>, what: &str) -> Option<Json> {
     if !include_raw {
         return None;
     }
@@ -813,13 +848,14 @@ fn raw_to_persist(include_raw: bool, raw: Option<Json>) -> Option<Json> {
             tracing::debug!(
                 raw_bytes = bytes.len(),
                 max_bytes = RAW_MAX_BYTES,
-                "dropping oversized raw provider metadata"
+                payload = what,
+                "dropping oversized provider payload"
             );
             None
         }
         Ok(_) => Some(raw),
         Err(e) => {
-            tracing::debug!(error = %e, "dropping unserializable raw provider metadata");
+            tracing::debug!(error = %e, payload = what, "dropping unserializable provider payload");
             None
         }
     }
@@ -879,7 +915,7 @@ fn response_to_entry(provider: &dyn Provider, response: &ProviderResponse) -> Ca
         // the shared cache. `--no-raw` intentionally does NOT strip the cache
         // copy: a later run without the flag replaying this entry should still
         // get the metadata.
-        raw: raw_to_persist(true, response.raw.clone()),
+        raw: json_to_persist(true, response.raw.clone(), "raw"),
         domarinn_version: crate::VERSION.to_string(),
     }
 }

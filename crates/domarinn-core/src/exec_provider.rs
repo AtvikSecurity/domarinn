@@ -8,7 +8,9 @@ use serde_json::Value as Json;
 
 use crate::exec::run_exec_json;
 use crate::exec_protocol::{Envelope, Kind, ProviderReq, TestRef};
-use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
+use crate::provider::{
+    exec_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
+};
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
@@ -74,22 +76,7 @@ impl Provider for ExecProvider {
         req: &ProviderRequest,
         ctx: &CallCtx,
     ) -> Result<ProviderResponse, ProviderError> {
-        let prompt_json = req.prompt.as_ref().map(rendered_prompt_json);
-        // `req.case_salt` is deliberately absent here: it is a cache-keying
-        // concern, and forwarding it would leak the suite's digest into the
-        // child's input (and change the SUT's payload). Do not "complete" this
-        // mapping by adding it.
-        let request = ProviderReq {
-            envelope: Envelope::new(Kind::Provider),
-            prompt: prompt_json,
-            vars: Json::Object(req.vars.clone().into_iter().collect()),
-            params: Json::Object(req.params.clone()),
-            test: TestRef {
-                id: req.test.id.clone(),
-                tags: req.test.tags.clone(),
-            },
-        };
-        let request = serde_json::to_value(&request)
+        let request = serde_json::to_value(protocol_request(req))
             .map_err(|e| ProviderError::Fatal(anyhow::anyhow!("serializing exec request: {e}")))?;
 
         let cwd = ctx.working_dir.as_deref();
@@ -107,6 +94,36 @@ impl Provider for ExecProvider {
             })?;
 
         parse_response(response)
+    }
+
+    /// The exec protocol document this provider writes to the child's stdin.
+    ///
+    /// Byte-identical to the real call: [`Envelope`] carries only a protocol
+    /// version and a kind, so nothing here is generated per invocation. The
+    /// provider's own `env` map is deliberately excluded — it is a credential
+    /// channel, and this value is persisted into a shareable run document.
+    fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
+        let stdin = serde_json::to_value(protocol_request(req)).ok()?;
+        let (command, args) = self.command.split_first()?;
+        Some(exec_request_preview(command, args, stdin))
+    }
+}
+
+/// Build the exec-protocol request for one provider call.
+///
+/// `req.case_salt` is deliberately absent: it is a cache-keying concern, and
+/// forwarding it would leak the suite's digest into the child's input (and
+/// change the SUT's payload). Do not "complete" this mapping by adding it.
+fn protocol_request(req: &ProviderRequest) -> ProviderReq {
+    ProviderReq {
+        envelope: Envelope::new(Kind::Provider),
+        prompt: req.prompt.as_ref().map(rendered_prompt_json),
+        vars: Json::Object(req.vars.clone().into_iter().collect()),
+        params: Json::Object(req.params.clone()),
+        test: TestRef {
+            id: req.test.id.clone(),
+            tags: req.test.tags.clone(),
+        },
     }
 }
 
@@ -158,6 +175,40 @@ fn parse_response(value: Json) -> Result<ProviderResponse, ProviderError> {
 mod tests {
     use super::*;
     use crate::provider::TestMeta;
+    use serde_json::json;
+
+    #[test]
+    fn request_preview_is_the_document_written_to_stdin() {
+        let p = ExecProvider::new(
+            "e",
+            vec!["./sut".into(), "--mode".into(), "eval".into()],
+            // A credential in the provider env — must not reach the preview,
+            // which is persisted into a shareable run document.
+            BTreeMap::from([("SUT_TOKEN".to_string(), "secret".to_string())]),
+            None,
+            None,
+        );
+        let req = request("hello");
+
+        let preview = p.request_preview(&req).unwrap();
+        assert_eq!(preview["transport"], json!("exec"));
+        assert_eq!(preview["command"], json!("./sut"));
+        assert_eq!(preview["args"], json!(["--mode", "eval"]));
+        // Byte-identical to what `call` serializes: `Envelope` carries only a
+        // protocol version and a kind, nothing per-invocation.
+        assert_eq!(
+            preview["stdin"],
+            serde_json::to_value(protocol_request(&req)).unwrap()
+        );
+        assert_eq!(preview["stdin"]["vars"]["user_input"], json!("hello"));
+        assert!(!preview.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn request_preview_is_absent_for_an_empty_command() {
+        let p = ExecProvider::new("e", Vec::new(), BTreeMap::new(), None, None);
+        assert!(p.request_preview(&request("hi")).is_none());
+    }
 
     fn request(user_input: &str) -> ProviderRequest {
         let mut vars = BTreeMap::new();

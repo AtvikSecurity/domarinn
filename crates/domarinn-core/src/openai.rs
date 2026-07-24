@@ -10,7 +10,9 @@ use serde_json::{json, Value as Json};
 
 use crate::config::ParamMap;
 use crate::net::{api_key, http_client, parse_retry_after, status_error, transport_error};
-use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
+use crate::provider::{
+    http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
+};
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -53,6 +55,11 @@ impl OpenAiProvider {
         body.insert("messages".into(), json!(messages));
         Json::Object(body)
     }
+
+    /// The chat-completions endpoint, trimmed the same way `call` trims it.
+    fn endpoint(&self) -> String {
+        format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+    }
 }
 
 #[async_trait]
@@ -80,7 +87,7 @@ impl Provider for OpenAiProvider {
         })?;
         let key = api_key(&self.api_key_env)?;
         let body = self.build_body(prompt);
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = self.endpoint();
 
         let response = self
             .client
@@ -100,6 +107,15 @@ impl Provider for OpenAiProvider {
 
         let payload: Json = response.json().await.map_err(transport_error)?;
         parse_completion_response(&payload)
+    }
+
+    fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
+        let prompt = req.prompt.as_ref()?;
+        Some(http_request_preview(
+            "POST",
+            &self.endpoint(),
+            self.build_body(prompt),
+        ))
     }
 }
 
@@ -256,6 +272,57 @@ mod tests {
             test: TestMeta::default(),
             case_salt: None,
         }
+    }
+
+    #[test]
+    fn request_preview_reports_the_exact_body_and_endpoint() {
+        let mut params = ParamMap::new();
+        params.insert("temperature".into(), json!(0.2));
+        params.insert("max_tokens".into(), json!(256));
+        let p = OpenAiProvider::new(
+            "g",
+            "gpt-x",
+            // Trailing slash on purpose: the preview must trim it the same way
+            // `call` does, or the two disagree about the URL.
+            Some("https://gw.example/v1/".into()),
+            None,
+            Some(params),
+        );
+
+        let preview = p.request_preview(&text_request()).unwrap();
+        assert_eq!(preview["transport"], json!("http"));
+        assert_eq!(preview["method"], json!("POST"));
+        assert_eq!(
+            preview["url"],
+            json!("https://gw.example/v1/chat/completions")
+        );
+
+        let body = &preview["body"];
+        assert_eq!(body["model"], json!("gpt-x"));
+        // Sampling params pass through verbatim — this is the whole point: a
+        // `max_tokens` visible next to a `length` stop reason explains a
+        // truncated case without leaving the drawer.
+        assert_eq!(body["temperature"], json!(0.2));
+        assert_eq!(body["max_tokens"], json!(256));
+        // A text prompt is folded into a single user message, exactly as sent.
+        assert_eq!(body["messages"], json!([{"role": "user", "content": "hi"}]));
+        // Never headers: that is where the API key lives.
+        assert!(preview.get("headers").is_none());
+    }
+
+    #[test]
+    fn request_preview_matches_the_body_actually_built() {
+        let p = OpenAiProvider::new("g", "m", None, None, None);
+        let req = text_request();
+        let preview = p.request_preview(&req).unwrap();
+        assert_eq!(preview["body"], p.build_body(req.prompt.as_ref().unwrap()));
+    }
+
+    #[test]
+    fn request_preview_is_absent_without_a_prompt() {
+        let p = OpenAiProvider::new("g", "m", None, None, None);
+        let req = ProviderRequest::default();
+        assert!(p.request_preview(&req).is_none());
     }
 
     #[tokio::test]

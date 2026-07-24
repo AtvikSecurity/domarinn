@@ -143,6 +143,20 @@ impl Provider for HttpProvider {
             raw: json_body,
         })
     }
+
+    // `request_preview` is deliberately left at its `None` default.
+    //
+    // This provider's url, headers, and body are templates rendered against
+    // `env` (see `render_context`), which is exactly how a suite supplies its
+    // credentials — `{"api_key": "{{ env.SUT_TOKEN }}"}` is the documented way
+    // to authenticate a black-box system under test. A rendered preview would
+    // bake that secret into `CaseResult`, which is persisted and uploaded by
+    // `--share`. The same reasoning is why `fingerprint` publishes the *unrendered*
+    // `self.body` and never the rendered one.
+    //
+    // If this is ever implemented, it needs a redaction pass over the rendered
+    // values, not a straight `render_val` — the drawer falls back to showing the
+    // rendered prompt, which leaks nothing, and that is the correct trade here.
 }
 
 fn render_context(req: &ProviderRequest) -> Json {
@@ -195,6 +209,24 @@ mod tests {
             test: TestMeta::default(),
             case_salt: None,
         }
+    }
+
+    #[test]
+    fn request_preview_is_withheld_because_templates_can_carry_secrets() {
+        // A regression guard for a deliberate omission, not a TODO. This
+        // provider's url/headers/body are rendered against `env`, which is the
+        // documented way to authenticate a black-box system under test — so a
+        // captured preview would persist that credential into a `--share`d run
+        // document. Implementing this needs a redaction pass first.
+        let p = HttpProvider::new(
+            "h",
+            "https://sut.example/v1?key={{ env.SUT_TOKEN }}",
+            None,
+            BTreeMap::new(),
+            Some(serde_json::json!({"api_key": "{{ env.SUT_TOKEN }}"})),
+            None,
+        );
+        assert!(p.request_preview(&request_with_var("q", "hi")).is_none());
     }
 
     #[tokio::test]

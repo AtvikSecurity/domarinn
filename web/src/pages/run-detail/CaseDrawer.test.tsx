@@ -316,7 +316,7 @@ describe("CaseDrawer schema-v2 sections", () => {
     setSuites(null);
   });
 
-  it("renders a messages-style prompt as role chips in order, expanded by default", () => {
+  it("renders a messages-style prompt as role chips in order, inside Input", () => {
     mockUseCaseDetail.mockReturnValue(
       v2Detail({
         prompt: {
@@ -329,9 +329,11 @@ describe("CaseDrawer schema-v2 sections", () => {
     );
     renderDrawer();
 
-    const toggle = screen.getByRole("button", { name: /Prompt/ });
-    // Header reflects the message count; the cards are visible immediately.
+    // "Prompt" and "Input" were two sections answering one question; the
+    // messages now sit under Input, whose header reports the message count.
+    const toggle = screen.getByRole("button", { name: /Input/ });
     expect(toggle).toHaveAccessibleName(/2 messages/);
+    expect(screen.getByText("Messages")).toBeInTheDocument();
 
     const sys = screen.getByText("system");
     const usr = screen.getByText("user");
@@ -352,9 +354,11 @@ describe("CaseDrawer schema-v2 sections", () => {
     );
     renderDrawer();
 
-    const toggle = screen.getByRole("button", { name: /Prompt/ });
-    // No message count on a text prompt; the body is visible immediately.
-    expect(toggle).toHaveAccessibleName(/^Prompt$/);
+    // No message count on a text prompt; the body is visible immediately, under
+    // a "Prompt" block label rather than a section of its own.
+    const toggle = screen.getByRole("button", { name: /Input/ });
+    expect(toggle).toHaveAccessibleName(/^Input$/);
+    expect(screen.getByText("Prompt")).toBeInTheDocument();
     expect(screen.getByText(/single flattened prompt body/)).toBeInTheDocument();
     expect(screen.queryByText("system")).not.toBeInTheDocument();
     expect(screen.queryByText("user")).not.toBeInTheDocument();
@@ -415,7 +419,7 @@ describe("CaseDrawer schema-v2 sections", () => {
     expect(screen.getByText(/billing refund/)).toBeInTheDocument();
   });
 
-  it("renders an assertion's criteria inline, including a negated marker", () => {
+  it("labels an assertion's criteria and verdict by provenance", () => {
     mockUseCaseDetail.mockReturnValue(
       v2Detail({
         asserts: [
@@ -433,9 +437,52 @@ describe("CaseDrawer schema-v2 sections", () => {
     );
     renderDrawer();
 
-    expect(screen.getByText("expects")).toBeInTheDocument();
+    // The authored criteria and the evaluation's reason are two similar-looking
+    // paragraphs from entirely different sources, so each says which it is.
+    expect(screen.getByText("Criteria")).toBeInTheDocument();
+    expect(screen.getByText("as authored in your suite")).toBeInTheDocument();
     expect(screen.getByText("refund policy")).toBeInTheDocument();
     expect(screen.getByText("negated")).toBeInTheDocument();
+    // A deterministic check is labelled plainly, with no provenance note.
+    expect(screen.getByText("Result")).toBeInTheDocument();
+    expect(screen.getByText("output contains the phrase")).toBeInTheDocument();
+  });
+
+  it("attributes an llm-rubric verdict to the grading model, and shows its threshold", () => {
+    mockUseCaseDetail.mockReturnValue(
+      v2Detail({
+        asserts: [
+          {
+            kind: "llm-rubric",
+            status: "pass",
+            score: 0.95,
+            weight: 1,
+            reason: "The response provides a fully self-contained spec.",
+            cached: false,
+            criteria: {
+              type: "llm-rubric",
+              value: "The response should describe a SELF-CONTAINED worker spec.",
+              threshold: 0.7,
+            },
+          },
+        ],
+      }),
+    );
+    renderDrawer();
+
+    // Without this label a grader's confident paragraph reads as measured fact.
+    expect(screen.getByText("Grader verdict")).toBeInTheDocument();
+    expect(
+      screen.getByText("written by the grading model, not measured"),
+    ).toBeInTheDocument();
+    // The threshold is lifted out of the criteria blob to sit beside the score
+    // it qualifies: "score 0.95" alone never said whether that passed.
+    expect(screen.getByText("needs ≥ 0.70")).toBeInTheDocument();
+    expect(screen.getByText("0.95")).toBeInTheDocument();
+    // The rubric text itself renders as prose, not as a JSON tree row.
+    expect(
+      screen.getByText(/describe a SELF-CONTAINED worker spec/),
+    ).toBeInTheDocument();
   });
 
   it("omits the Variables block and assertion criteria when absent", () => {
@@ -460,8 +507,8 @@ describe("CaseDrawer schema-v2 sections", () => {
       /^Input$/,
     );
     expect(screen.queryByText("Variables")).not.toBeInTheDocument();
-    // ...and an assertion without criteria shows no "expects" line.
-    expect(screen.queryByText("expects")).not.toBeInTheDocument();
+    // ...and an assertion without criteria shows no criteria block at all.
+    expect(screen.queryByText("Criteria")).not.toBeInTheDocument();
   });
 
   it("renders none of the v2 affordances for a v1 case", () => {

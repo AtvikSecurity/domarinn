@@ -152,6 +152,22 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub prompt: Option<RenderedPrompt>,
+    /// The request the provider actually sent — the payload the model received,
+    /// captured from the same code path that performs the call
+    /// ([`crate::provider::Provider::request_preview`]).
+    ///
+    /// `prompt` above is what domarinn rendered; this is what crossed the wire,
+    /// including the model id and every sampling parameter. The two differ in
+    /// ways that matter when debugging: a `max_tokens` visible here next to a
+    /// `length` stop reason explains a truncated case immediately.
+    ///
+    /// Absent when the provider declines to describe its request (the HTTP
+    /// provider does, to avoid persisting `env`-templated credentials) and on
+    /// stored blobs written before this field existed; presence-gated by the web
+    /// UI. Never contains headers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown")]
+    pub request: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub stop_reason: Option<String>,

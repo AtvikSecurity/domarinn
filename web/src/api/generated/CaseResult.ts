@@ -27,4 +27,20 @@ export type CaseResult = { cell: CellKey, case_key: CaseKey, name?: string, tags
  * blobs; presence-gated by the web UI. Marked optional in TS via ts-rs's
  * serde-aware fallback (`default` + `skip_serializing_if`), same as `tags`.
  */
-vars?: { [key in string]: JsonValue }, status: CaseStatus, score: number, output?: Output, prompt?: RenderedPrompt, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };
+vars?: { [key in string]: JsonValue }, status: CaseStatus, score: number, output?: Output, prompt?: RenderedPrompt, 
+/**
+ * The request the provider actually sent — the payload the model received,
+ * captured from the same code path that performs the call
+ * ([`crate::provider::Provider::request_preview`]).
+ *
+ * `prompt` above is what domarinn rendered; this is what crossed the wire,
+ * including the model id and every sampling parameter. The two differ in
+ * ways that matter when debugging: a `max_tokens` visible here next to a
+ * `length` stop reason explains a truncated case immediately.
+ *
+ * Absent when the provider declines to describe its request (the HTTP
+ * provider does, to avoid persisting `env`-templated credentials) and on
+ * stored blobs written before this field existed; presence-gated by the web
+ * UI. Never contains headers.
+ */
+request?: unknown, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };

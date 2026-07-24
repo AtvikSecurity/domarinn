@@ -323,6 +323,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         prompt: spec
             .rendered_prompt
             .map(|t| domarinn_core::types::RenderedPrompt::Text(t.to_string())),
+        request: None,
         stop_reason: None,
         raw: None,
         asserts,

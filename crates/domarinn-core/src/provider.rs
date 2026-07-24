@@ -70,6 +70,31 @@ pub enum ProviderError {
     Fatal(#[source] anyhow::Error),
 }
 
+/// Build the [`Provider::request_preview`] envelope for an HTTP-style provider.
+///
+/// `body` is the verbatim JSON payload — the thing a developer can lift straight
+/// into `curl`. Headers are deliberately absent: they carry the API key.
+pub fn http_request_preview(method: &str, url: &str, body: Json) -> Json {
+    serde_json::json!({
+        "transport": "http",
+        "method": method,
+        "url": url,
+        "body": body,
+    })
+}
+
+/// Build the [`Provider::request_preview`] envelope for a subprocess provider.
+///
+/// `stdin` is the provider-protocol document written to the child's stdin.
+pub fn exec_request_preview(command: &str, args: &[String], stdin: Json) -> Json {
+    serde_json::json!({
+        "transport": "exec",
+        "command": command,
+        "args": args,
+        "stdin": stdin,
+    })
+}
+
 /// Ambient context passed to a provider call (secrets, cwd, cancellation, etc.).
 #[derive(Debug, Clone, Default)]
 pub struct CallCtx {
@@ -98,5 +123,26 @@ pub trait Provider: Send + Sync {
     /// system under test, so a rebuilt binary is never served stale output.
     fn cacheable(&self) -> bool {
         true
+    }
+
+    /// The request this provider *would* send for `req` — the payload the model
+    /// actually receives, not a re-description of it.
+    ///
+    /// This exists because the wire body is the one thing the UI could not
+    /// honestly reconstruct: it is assembled per provider (the OpenAI shape
+    /// merges `params` and folds a text prompt into a single user message;
+    /// Anthropic lifts `system` out of the message list; the HTTP provider
+    /// renders a caller-authored template), so any client-side guess would be
+    /// wrong for three of the four providers while looking authoritative.
+    ///
+    /// Built from the same code path as [`Provider::call`] so the two cannot
+    /// drift, and pure, so a cache hit — where no HTTP request is made at all —
+    /// still reports the request the cached entry stands for. Must exclude
+    /// secrets: bodies only, never headers.
+    ///
+    /// `None` means "this provider does not describe its request", and the UI
+    /// falls back to showing the rendered prompt alone.
+    fn request_preview(&self, _req: &ProviderRequest) -> Option<Json> {
+        None
     }
 }

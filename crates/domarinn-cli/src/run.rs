@@ -73,7 +73,8 @@ pub struct RunArgs {
     #[arg(long)]
     pub share: bool,
 
-    /// Do not persist raw provider metadata in the result document.
+    /// Do not persist raw provider metadata or the provider request in the
+    /// result document.
     #[arg(long)]
     pub no_raw: bool,
 

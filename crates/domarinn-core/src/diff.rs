@@ -199,6 +199,7 @@ mod tests {
             },
             output: Some(Output::Text(output.into())),
             prompt: None,
+            request: None,
             stop_reason: None,
             raw: None,
             asserts: vec![],

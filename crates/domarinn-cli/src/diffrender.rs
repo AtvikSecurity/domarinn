@@ -463,6 +463,7 @@ mod diff_tests {
             score,
             output: output.map(|o| Output::Text(o.into())),
             prompt: None,
+            request: None,
             stop_reason: None,
             raw: None,
             asserts: vec![],

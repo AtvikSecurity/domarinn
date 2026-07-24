@@ -493,6 +493,7 @@ mod tests {
             score,
             output: None,
             prompt: None,
+            request: None,
             stop_reason: None,
             raw: None,
             asserts: vec![],

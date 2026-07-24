@@ -7,7 +7,7 @@ import {
 } from "./helpers";
 
 test.describe("Case drawer schema-v2 sections", () => {
-  test("shows the rendered prompt, stop reason, and provider metadata for a v2 case", async ({
+  test("shows the input, stop reason, and provider metadata for a v2 case", async ({
     page,
   }) => {
     // A run of the one v2-flavored suite; case-0000 carries a role-tagged
@@ -22,16 +22,33 @@ test.describe("Case drawer schema-v2 sections", () => {
     await expect(drawer.getByTitle("Provider stop reason")).toBeVisible();
     await expect(drawer.getByTitle("Provider stop reason")).toHaveText("end_turn");
 
-    // Prompt section is expanded by default: role-tagged cards are visible
-    // immediately, and the toggle can still tuck them away.
-    const promptToggle = drawer.getByRole("button", { name: /prompt/i });
-    await expect(promptToggle).toBeVisible();
-    await expect(promptToggle).toHaveAttribute("aria-expanded", "true");
+    // The Input section is expanded by default: role-tagged cards are visible
+    // immediately, and the toggle can still tuck them away. "Prompt" and "Input"
+    // used to be separate sections answering one question between them.
+    const inputToggle = drawer.getByRole("button", { name: /^Input/ });
+    await expect(inputToggle).toBeVisible();
+    await expect(inputToggle).toHaveAttribute("aria-expanded", "true");
 
     await expect(drawer.getByText("system", { exact: true })).toBeVisible();
     await expect(drawer.getByText("user", { exact: true })).toBeVisible();
     // The message content renders through the OutputViewer.
     await expect(drawer.getByText(/customer needs help/i)).toBeVisible();
+
+    // The model that answered is stated here rather than only inside the raw
+    // metadata dump: a provider id is a config alias, not a model.
+    await expect(drawer.getByText("gpt-4o-mini").first()).toBeVisible();
+
+    // Switching to Raw shows the captured provider payload verbatim — the
+    // sampling params included, which appear nowhere else in the drawer.
+    const inputView = drawer.getByRole("radiogroup", { name: "Input view" });
+    await inputView.getByRole("radio", { name: "Raw" }).click();
+    await expect(drawer.getByText(/"max_tokens"/)).toBeVisible();
+    await expect(drawer.getByText(/"temperature"/)).toBeVisible();
+    await expect(drawer.getByText(/chat\/completions/)).toBeVisible();
+
+    // ...and back, without losing the rendered turns.
+    await inputView.getByRole("radio", { name: "Rendered" }).click();
+    await expect(drawer.getByText("system", { exact: true })).toBeVisible();
 
     // Provider metadata section is expanded by default with its JSON tree.
     const rawToggle = drawer.getByRole("button", { name: /provider metadata/i });
@@ -68,7 +85,12 @@ test.describe("Case drawer schema-v2 sections", () => {
     // Confirm the drawer body loaded before asserting absence.
     await expect(drawer.getByRole("heading", { name: "Output" })).toBeVisible();
 
+    // No prompt section, and — because a v1 case has neither a captured request
+    // nor a rendered prompt — no Rendered/Raw toggle that would lead nowhere.
     await expect(drawer.getByRole("button", { name: /prompt/i })).toHaveCount(0);
+    await expect(
+      drawer.getByRole("radiogroup", { name: "Input view" }),
+    ).toHaveCount(0);
     await expect(
       drawer.getByRole("button", { name: /provider metadata/i }),
     ).toHaveCount(0);
