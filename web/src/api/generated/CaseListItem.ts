@@ -24,4 +24,12 @@ repeat: number | null, score: number | null, stop_reason: string | null,
  * column). `None` for legacy pre-backfill rows and failed-backfill rows
  * carrying the -1 sentinel, which the list query maps to `None`.
  */
-cached: boolean | null, };
+cached: boolean | null, 
+/**
+ * The failure reason for an errored case (migration-7 `cases` column).
+ * `output_preview` derives from `output`, which an errored case does not
+ * have, so without this the grid can only show that a row errored and not
+ * why. `None` for a case that did not error, and for legacy pre-backfill
+ * rows.
+ */
+error: string | null, };

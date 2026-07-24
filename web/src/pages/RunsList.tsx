@@ -7,6 +7,7 @@ import { suitePassRateSeries } from "@/lib/suites";
 import { previousRun } from "@/lib/compare";
 import {
   formatCost,
+  formatDateAbsolute,
   formatDuration,
   formatRelative,
   formatTokens,
@@ -20,6 +21,8 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
+import { Chip } from "@/components/ui/Chip";
+import { Tooltip } from "@/components/ui/Tooltip";
 
 /** From a pair of selected run ids, resolve which is base (older) / head (newer). */
 function comparePair(
@@ -270,13 +273,18 @@ function SuiteGroup({ group }: { group: Group }) {
                 className={`border-b border-border/60 last:border-0 hover:bg-surface-2${dimmed ? " opacity-60" : ""}`}
               >
                 <td className="px-3 py-2">
-                  <input
-                    type="checkbox"
-                    aria-label={`Select run ${r.id}`}
-                    checked={selected.includes(r.id)}
-                    onChange={() => toggle(r.id)}
-                    className="size-4 accent-[var(--color-accent)]"
-                  />
+                  {/* The label is the hit target: padding a parent does not
+                      extend an input's own 16px box, which is under WCAG 2.2's
+                      24px minimum. */}
+                  <label className="flex size-6 cursor-pointer items-center justify-center">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select run ${r.id}`}
+                      checked={selected.includes(r.id)}
+                      onChange={() => toggle(r.id)}
+                      className="size-4 accent-[var(--color-accent)]"
+                    />
+                  </label>
                 </td>
                 <td className="px-4 py-2">
                   <span className="flex items-center gap-1">
@@ -288,32 +296,35 @@ function SuiteGroup({ group }: { group: Group }) {
                     </Link>
                     <CopyButton value={r.id} label="Copy run id" iconOnly />
                     {r.id === baselineRunId ? (
-                      <span
-                        className="rounded bg-accent/12 px-1.5 py-0.5 text-[11px] font-medium text-accent"
+                      <Chip
+                        tone="accent"
                         title="Pinned comparison baseline for this suite"
                       >
                         baseline
-                      </span>
+                      </Chip>
                     ) : null}
                     {fullyCached ? (
-                      <span
-                        className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted"
-                        title="Every provider call in this run was a cache hit"
-                      >
+                      <Chip title="Every provider call in this run was a cache hit">
                         cached
-                      </span>
+                      </Chip>
                     ) : null}
                   </span>
                 </td>
                 <td className="px-3 py-2 text-muted">
-                  {formatRelative(r.created_at)}
+                  <Tooltip content={formatDateAbsolute(r.created_at)}>
+                    <time dateTime={r.created_at}>
+                      {formatRelative(r.created_at)}
+                    </time>
+                  </Tooltip>
                 </td>
                 <td className="px-3 py-2">
                   <span className="font-mono text-xs">{r.git_branch ?? "-"}</span>
                   {r.git_commit ? (
-                    <span className="ml-1 font-mono text-[11px] text-muted">
-                      @{r.git_commit}
-                    </span>
+                    <Tooltip content={r.git_commit}>
+                      <span className="ml-1 font-mono text-[11px] text-muted">
+                        @{r.git_commit.slice(0, 7)}
+                      </span>
+                    </Tooltip>
                   ) : null}
                 </td>
                 <td className="px-3 py-2">

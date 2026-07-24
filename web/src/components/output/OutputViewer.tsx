@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from "react";
+import { Suspense, lazy } from "react";
 import type { Output } from "@/api";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
@@ -7,6 +7,7 @@ import { detectContent, outputToString } from "./detect";
 import type { ContentType } from "./detect";
 import { JsonTree } from "./JsonTree";
 import { RawText } from "./RawText";
+import { setRawMode, setWrap, useOutputPrefs } from "./prefs";
 
 const MarkdownView = lazy(() => import("./MarkdownView"));
 const CodeView = lazy(() => import("./CodeView"));
@@ -14,29 +15,6 @@ const CodeView = lazy(() => import("./CodeView"));
 /** `code` is only reachable via an explicit `contentType`; detection yields
  *  json/markdown/text. */
 type ViewType = ContentType | "code";
-
-// Global (cross-viewer) view preferences, persisted like lib/theme.ts.
-const RAW_KEY = "domarinn.output.raw";
-const WRAP_KEY = "domarinn.output.wrap";
-
-function readBool(key: string, fallback: boolean): boolean {
-  try {
-    const v = localStorage.getItem(key);
-    if (v === "1") return true;
-    if (v === "0") return false;
-  } catch {
-    /* ignore */
-  }
-  return fallback;
-}
-
-function writeBool(key: string, value: boolean): void {
-  try {
-    localStorage.setItem(key, value ? "1" : "0");
-  } catch {
-    /* ignore */
-  }
-}
 
 const TYPE_LABEL: Record<ViewType, string> = {
   json: "json",
@@ -57,7 +35,6 @@ export function OutputViewer({
   contentType = "auto",
   langHint,
   maxHeight,
-  defaultRaw = false,
   className,
 }: {
   // Documented union kept as the pinned public API. `Output` is `string |
@@ -67,8 +44,13 @@ export function OutputViewer({
   value: Output | string | null | undefined;
   contentType?: "auto" | "markdown" | "json" | "code" | "text";
   langHint?: string;
+  /**
+   * Cap the content box and give it its own scrollbar. Opt-in: nesting a
+   * capped viewer inside an already-scrolling container (the case drawer) puts
+   * two scrollbars ~10px apart, and a four-message prompt produced five of them
+   * stacked inside one scrolling pane.
+   */
   maxHeight?: string;
-  defaultRaw?: boolean;
   className?: string;
 }) {
   const raw = outputToString(value);
@@ -79,8 +61,8 @@ export function OutputViewer({
   // text has no distinct rendered view — nothing to toggle to.
   const hasRendered = type !== "text";
 
-  const [rawMode, setRawMode] = useState(() => readBool(RAW_KEY, defaultRaw));
-  const [wrap, setWrap] = useState(() => readBool(WRAP_KEY, true));
+  // Shared across every mounted viewer, so two on screen never disagree.
+  const { raw: rawMode, wrap } = useOutputPrefs();
 
   const showRendered = hasRendered && !rawMode;
   // Soft-wrap only matters when a monospace `<pre>` is actually on screen: the
@@ -88,20 +70,14 @@ export function OutputViewer({
   // rendered markdown ignore it.
   const showWrap = !showRendered || type === "code";
 
-  const boxMaxHeight = maxHeight ?? "28rem";
+  const boxMaxHeight = maxHeight;
 
   function chooseView(next: "rendered" | "raw") {
-    const nextRaw = next === "raw";
-    setRawMode(nextRaw);
-    writeBool(RAW_KEY, nextRaw);
+    setRawMode(next === "raw");
   }
 
   function toggleWrap() {
-    setWrap((w) => {
-      const next = !w;
-      writeBool(WRAP_KEY, next);
-      return next;
-    });
+    setWrap(!wrap);
   }
 
   if (raw === "") {
@@ -171,15 +147,16 @@ function RenderedView({
   raw: string;
   hint?: string;
   wrap: boolean;
-  maxHeight: string;
+  maxHeight?: string;
 }) {
   const fallback = <RawText text={raw} wrap={wrap} maxHeight={maxHeight} />;
 
   if (type === "json") {
     const parsed = parseJson(value, raw);
     if (parsed.ok) {
+      // Only becomes its own scrollport when a cap was asked for.
       return (
-        <div style={{ maxHeight, overflow: "auto" }}>
+        <div style={maxHeight ? { maxHeight, overflow: "auto" } : undefined}>
           <JsonTree data={parsed.data} />
         </div>
       );
@@ -190,7 +167,7 @@ function RenderedView({
   if (type === "markdown") {
     return (
       <Suspense fallback={fallback}>
-        <div style={{ maxHeight, overflow: "auto" }}>
+        <div style={maxHeight ? { maxHeight, overflow: "auto" } : undefined}>
           <MarkdownView markdown={raw} />
         </div>
       </Suspense>

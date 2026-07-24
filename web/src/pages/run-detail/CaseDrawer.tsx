@@ -1,22 +1,22 @@
-import type { ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useCaseDetail } from "@/api/queries";
-import type { AssertResult } from "@/api";
+import type { AssertResult, CaseResult } from "@/api";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { Chip } from "@/components/ui/Chip";
+import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
 import { ErrorState } from "@/components/States";
 import { JsonTree, OutputViewer, RawText, outputToString } from "@/components/output";
-import { formatCost, formatLatency, formatTokens } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { BaselineDiffSection } from "./BaselineDiffSection";
-import { CaseHistorySection } from "./CaseHistorySection";
+import { CaseVerdictStrip } from "./CaseVerdictStrip";
 import {
   AssertCriteria,
   InputSection,
   PromptSection,
   RawMetadataSection,
-  StopReasonChip,
+  reasoningNotice,
 } from "./CaseDrawerSections";
 
 export function CaseDrawer({
@@ -67,78 +67,68 @@ export function CaseDrawer({
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-5 py-4">
-            {detail.isPending ? (
+          {detail.isPending ? (
+            <div className="flex-1 overflow-y-auto px-5 py-4">
               <CenteredSpinner label="Loading case…" />
-            ) : detail.isError ? (
+            </div>
+          ) : detail.isError ? (
+            <div className="flex-1 overflow-y-auto px-5 py-4">
               <ErrorState error={detail.error} onRetry={() => detail.refetch()} />
-            ) : detail.data ? (
-              <div className="space-y-5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <StatusBadge status={detail.data.status} />
-                  {(detail.data.tags ?? []).map((t) => (
-                    <span
-                      key={t}
-                      className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted"
-                    >
-                      {t}
-                    </span>
-                  ))}
-                  {detail.data.cached ? (
-                    <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-muted">
-                      cached
-                    </span>
-                  ) : null}
-                  {detail.data.attempts > 1 ? (
-                    <span className="rounded bg-amber/12 px-1.5 py-0.5 text-[11px] font-medium text-amber">
-                      {detail.data.attempts} attempts
-                    </span>
-                  ) : null}
-                  {detail.data.stop_reason ? (
-                    <StopReasonChip reason={detail.data.stop_reason} />
-                  ) : null}
-                  <span className="ml-auto text-xs tabular-nums text-muted">
-                    score {detail.data.score.toFixed(2)} ·{" "}
-                    {formatTokens(
-                      (detail.data.usage?.input_tokens ?? 0) +
-                        (detail.data.usage?.output_tokens ?? 0),
-                    )}{" "}
-                    tok · {formatCost(detail.data.cost_usd)} ·{" "}
-                    {formatLatency(detail.data.latency_ms)}
-                  </span>
-                </div>
+            </div>
+          ) : detail.data && caseKey ? (
+            <>
+              <CaseVerdictStrip
+                detail={detail.data}
+                project={project}
+                suite={suite}
+                runId={runId}
+                caseKey={caseKey}
+              />
 
-                {detail.data.error ? (
-                  <div className="rounded-lg border border-fail/25 bg-fail/5 p-3">
-                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-fail">
-                      Error
+              {/* Body order runs verdict-first: what went wrong, why, and what
+                  the model actually said — then the provenance. Prompt and
+                  Input are re-derivable from the suite config; the output is
+                  the only thing this run alone knows, so it leads. */}
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                <div className="space-y-5">
+                  {detail.data.error ? (
+                    <div className="rounded-lg border border-fail/25 bg-fail/5 p-3">
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-fail">
+                        Error
+                      </div>
+                      <p className="text-sm text-fail">{detail.data.error}</p>
                     </div>
-                    <p className="text-sm text-fail/90">{detail.data.error}</p>
-                  </div>
-                ) : null}
+                  ) : null}
 
-                <InputSection cell={detail.data.cell} vars={detail.data.vars} />
+                  <CollapsibleSection
+                    title="Assertions"
+                    meta={assertMeta(detail.data.asserts)}
+                  >
+                    <div className="space-y-2">
+                      {detail.data.asserts.map((a, i) => (
+                        <AssertRow
+                          key={`${a.kind}-${i}`}
+                          assert={a}
+                          showWeight={hasVaryingWeights(detail.data.asserts)}
+                        />
+                      ))}
+                      {detail.data.asserts.length === 0 ? (
+                        <p className="text-sm text-muted">
+                          No assertions were evaluated.
+                        </p>
+                      ) : null}
+                    </div>
+                  </CollapsibleSection>
 
-                {detail.data.prompt ? (
-                  <PromptSection prompt={detail.data.prompt} />
-                ) : null}
+                  {/* The one capped viewer in the drawer: the prompt messages
+                      and assert details scroll with the body, so this is the
+                      single inner scrollbar rather than one per block. */}
+                  <OutputSection
+                    output={detail.data.output}
+                    raw={detail.data.raw}
+                    stopReason={detail.data.stop_reason}
+                  />
 
-                <Section title="Assertions">
-                  <div className="space-y-2">
-                    {detail.data.asserts.map((a, i) => (
-                      <AssertRow key={`${a.kind}-${i}`} assert={a} />
-                    ))}
-                    {detail.data.asserts.length === 0 ? (
-                      <p className="text-sm text-muted">No assertions were evaluated.</p>
-                    ) : null}
-                  </div>
-                </Section>
-
-                <Section title="Output">
-                  <OutputViewer value={detail.data.output} />
-                </Section>
-
-                {caseKey ? (
                   <BaselineDiffSection
                     project={project}
                     suite={suite}
@@ -146,41 +136,85 @@ export function CaseDrawer({
                     caseKey={caseKey}
                     currentOutput={detail.data.output}
                   />
-                ) : null}
 
-                {caseKey ? (
-                  <CaseHistorySection
-                    project={project}
-                    suite={suite}
-                    runId={runId}
-                    caseKey={caseKey}
-                  />
-                ) : null}
+                  {detail.data.prompt ? (
+                    <PromptSection prompt={detail.data.prompt} />
+                  ) : null}
 
-                {detail.data.raw !== undefined ? (
-                  <RawMetadataSection raw={detail.data.raw} />
-                ) : null}
+                  <InputSection cell={detail.data.cell} vars={detail.data.vars} />
+
+                  {detail.data.raw !== undefined ? (
+                    <RawMetadataSection raw={detail.data.raw} />
+                  ) : null}
+                </div>
               </div>
-            ) : null}
-          </div>
+            </>
+          ) : null}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+/**
+ * The model's output — and, when what we scored is really its exposed
+ * reasoning, a plain statement of that. Without it the drawer shows a wall of
+ * "Thinking Process: …" as if it were the answer, or an "(empty)" box with the
+ * real text buried in the raw provider payload below.
+ *
+ * This is the one capped viewer in the drawer: the prompt messages and assert
+ * details scroll with the body, so there is a single inner scrollbar rather
+ * than one per block.
+ */
+function OutputSection({
+  output,
+  raw,
+  stopReason,
+}: {
+  output: CaseResult["output"];
+  raw: unknown;
+  stopReason: string | null | undefined;
+}) {
+  const notice = reasoningNotice(raw, stopReason);
   return (
-    <section>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-        {title}
-      </h3>
-      {children}
-    </section>
+    <CollapsibleSection
+      title="Output"
+      meta={notice ? "· reasoning, not a final answer" : undefined}
+    >
+      {notice ? (
+        <p className="mb-2 rounded-lg border border-amber/25 bg-amber/5 p-2.5 text-xs text-amber">
+          {notice}
+        </p>
+      ) : null}
+      <OutputViewer value={output} maxHeight="36rem" />
+    </CollapsibleSection>
   );
 }
 
-function AssertRow({ assert }: { assert: AssertResult }) {
+/** `· 2 of 5 failed`, or nothing when everything passed. */
+function assertMeta(asserts: readonly AssertResult[]): string | undefined {
+  if (asserts.length === 0) return undefined;
+  const failed = asserts.filter((a) => a.status !== "pass").length;
+  return failed === 0
+    ? `· all ${asserts.length} passed`
+    : `· ${failed} of ${asserts.length} failed`;
+}
+
+/**
+ * Weight is only meaningful when the case actually uses weighting; printing
+ * `weight 1.00` on every row (the overwhelming default) is noise.
+ */
+function hasVaryingWeights(asserts: readonly AssertResult[]): boolean {
+  return asserts.some((a) => a.weight !== 1);
+}
+
+function AssertRow({
+  assert,
+  showWeight,
+}: {
+  assert: AssertResult;
+  showWeight: boolean;
+}) {
   return (
     <div
       className={cn(
@@ -194,11 +228,24 @@ function AssertRow({ assert }: { assert: AssertResult }) {
     >
       <div className="flex items-center gap-2">
         <StatusBadge status={assert.status} size="xs" />
-        <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] font-medium text-fg">
+        <Chip mono className="text-fg">
           {assert.kind}
-        </span>
+        </Chip>
+        {/* A cached grader verdict means the assertion did NOT re-run. Editing
+            an llm-rubric and re-running otherwise looks like it took effect
+            when it didn't — this is a correctness signal, not a nicety. */}
+        {assert.cached ? (
+          <Chip
+            tone="neutral"
+            size="xs"
+            title="This verdict was served from cache — the assertion did not re-run"
+          >
+            cached
+          </Chip>
+        ) : null}
         <span className="ml-auto text-xs tabular-nums text-muted">
-          score {assert.score.toFixed(2)} · weight {assert.weight.toFixed(2)}
+          score {assert.score.toFixed(2)}
+          {showWeight ? ` · weight ${assert.weight.toFixed(2)}` : ""}
         </span>
       </div>
       {assert.criteria != null ? (
@@ -207,12 +254,12 @@ function AssertRow({ assert }: { assert: AssertResult }) {
       <p className="mt-1.5 text-sm text-fg/90">{assert.reason}</p>
       {assert.details !== undefined ? (
         typeof assert.details === "object" && assert.details !== null ? (
-          <JsonTree data={assert.details} className="mt-2 text-[11px]" />
+          <JsonTree data={assert.details} className="mt-2 text-[11px]/relaxed" />
         ) : (
           <RawText
             text={outputToString(assert.details)}
             wrap
-            className="mt-2 text-[11px]"
+            className="mt-2 text-[11px]/relaxed"
           />
         )
       ) : null}

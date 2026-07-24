@@ -24,7 +24,11 @@ export interface MockCaseRow {
   name: string;
   tags: string[];
   status: CaseStatus;
-  output_preview: string;
+  /** NULL for an errored case: the preview derives from the output, and an
+   *  errored case has none — same as the server. */
+  output_preview: string | null;
+  /** The failure reason, for `status === "error"` only (migration-7 column). */
+  error: string | null;
   asserts: CaseAssertLean[];
   prompt_tokens: number;
   completion_tokens: number;
@@ -166,6 +170,7 @@ function generateFlatCases(meta: RunMeta): MockCaseRow[] {
       tags,
       status,
       output_preview: outputPreview(meta, i, status),
+      error: caseError(status),
       asserts,
       prompt_tokens: pt,
       completion_tokens: ct,
@@ -229,6 +234,7 @@ function generateMatrixCases(meta: RunMeta, spec: MatrixSpec): MockCaseRow[] {
             tags,
             status,
             output_preview: matrixPreview(status, provider, name, rev),
+            error: caseError(status),
             asserts,
             prompt_tokens: pt,
             completion_tokens: ct,
@@ -250,9 +256,20 @@ function generateMatrixCases(meta: RunMeta, spec: MatrixSpec): MockCaseRow[] {
   return rows;
 }
 
-function outputPreview(meta: RunMeta, seed: string | number, status: CaseStatus): string {
+/** The failure reason an errored case carries instead of an output. */
+function caseError(status: CaseStatus): string | null {
+  return status === "error" ? "provider returned 502 after 3 retries" : null;
+}
+
+function outputPreview(
+  meta: RunMeta,
+  seed: string | number,
+  status: CaseStatus,
+): string | null {
   if (status === "skip") return "(skipped)";
-  if (status === "error") return "provider returned 502 after 3 retries";
+  // An errored case produced no output, so there is nothing to preview; the
+  // reason lives in `error` instead.
+  if (status === "error") return null;
   const rev = outputRevision(meta.suiteKey, seed, meta.runIndex);
   const verb = pick(VERBS, "verb", seed);
   const noun = pick(NOUNS, "noun", seed);
@@ -266,9 +283,9 @@ function matrixPreview(
   provider: string,
   name: string,
   rev: number,
-): string {
+): string | null {
   if (status === "skip") return "(skipped)";
-  if (status === "error") return "provider returned 502 after 3 retries";
+  if (status === "error") return null;
   return `${provider} ${name} → revision r${rev}.`;
 }
 
@@ -433,5 +450,6 @@ export function toCaseListItem(c: MockCaseRow): CaseListItem {
     score: caseScore(c),
     stop_reason: null,
     cached: c.cached,
+    error: c.error,
   };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createColumnHelper,
   flexRender,
@@ -12,41 +12,84 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { CaseListItem } from "@/api";
 import { AssertDot, StatusBadge } from "@/components/StatusBadge";
 import { Tooltip } from "@/components/ui/Tooltip";
-import { formatCost, formatLatency, formatTokens } from "@/lib/format";
+import { Spinner } from "@/components/ui/Spinner";
+import {
+  formatCaseCount,
+  formatCost,
+  formatLatency,
+  formatTokens,
+} from "@/lib/format";
+import {
+  ALWAYS_VISIBLE,
+  isAssertColumn,
+  isVisible,
+  loadColumnVisibility,
+  saveColumnVisibility,
+  type ColumnVisibility,
+} from "@/lib/gridColumns";
 import { compareStatus } from "@/lib/sort";
 import { cn } from "@/lib/cn";
+import { CaseColumnPicker, type PickableColumn } from "./CaseColumnPicker";
+
+/** Human labels for the non-assertion columns in the picker. */
+const COLUMN_LABEL: Record<string, string> = {
+  provider: "Provider",
+  prompt: "Prompt",
+  preview: "Preview",
+  asserts: "Asserts (combined)",
+  tokens: "Tokens",
+  cost: "Cost",
+  latency: "Latency",
+  score: "Score",
+};
 
 const STATUS_W = 84;
 const NAME_MIN = 240;
-const PREVIEW_MIN = 220;
-const ASSERT_W = 92;
-const NUM_W = 84;
-const IDENT_W = 132;
+const PREVIEW_MIN = 160;
+const ASSERT_W = 72;
+const ASSERTS_W = 116;
+const NUM_W = 76;
+const IDENT_W = 112;
 
-/** Right-aligned numeric columns (header justified to the right). */
-const NUMERIC_COLS = new Set(["tokens", "cost", "latency", "score"]);
-
-/** Grid-template width token for a column, keyed by its stable id. Driven off
- *  the live column set so the header/body track the same order the table
- *  renders (matrix-only provider/prompt columns shift everything after them). */
-function colWidth(id: string): string {
-  if (id === "status") return `${STATUS_W}px`;
-  if (id === "name") return `minmax(${NAME_MIN}px, 1.2fr)`;
-  if (id === "provider" || id === "prompt") return `${IDENT_W}px`;
-  if (id === "preview") return `minmax(${PREVIEW_MIN}px, 1.4fr)`;
-  if (id.startsWith("assert:")) return `${ASSERT_W}px`;
-  return `${NUM_W}px`;
+/**
+ * One row per column shape, replacing three parallel lookups (a width switch, a
+ * min-width switch, and a numeric-column set) that had to be kept in sync by
+ * hand. `sticky` pins a column against horizontal scroll.
+ */
+interface ColumnSpec {
+  /** grid-template-columns token. */
+  track: string;
+  /** px this column contributes to the grid's intrinsic width. */
+  min: number;
+  /** Right-align the header and cells. */
+  numeric?: boolean;
+  /** Pin against horizontal scroll. */
+  sticky?: boolean;
 }
 
-/** Min px a column contributes to the grid's intrinsic width. */
-function colMinWidth(id: string): number {
-  if (id === "status") return STATUS_W;
-  if (id === "name") return NAME_MIN;
-  if (id === "provider" || id === "prompt") return IDENT_W;
-  if (id === "preview") return PREVIEW_MIN;
-  if (id.startsWith("assert:")) return ASSERT_W;
-  return NUM_W;
+const COLUMN_SPEC: Record<string, ColumnSpec> = {
+  // Pinned: with 12+ columns nothing makes them all fit, so the verdict must
+  // stay put while you scroll right to read the numbers.
+  status: { track: `${STATUS_W}px`, min: STATUS_W, sticky: true },
+  name: { track: `minmax(${NAME_MIN}px, 1.2fr)`, min: NAME_MIN },
+  provider: { track: `${IDENT_W}px`, min: IDENT_W },
+  prompt: { track: `${IDENT_W}px`, min: IDENT_W },
+  preview: { track: `minmax(${PREVIEW_MIN}px, 1.4fr)`, min: PREVIEW_MIN },
+  asserts: { track: `${ASSERTS_W}px`, min: ASSERTS_W },
+  tokens: { track: `${NUM_W}px`, min: NUM_W, numeric: true },
+  cost: { track: `${NUM_W}px`, min: NUM_W, numeric: true },
+  latency: { track: `${NUM_W}px`, min: NUM_W, numeric: true },
+  score: { track: `${NUM_W}px`, min: NUM_W, numeric: true },
+};
+
+const ASSERT_SPEC: ColumnSpec = { track: `${ASSERT_W}px`, min: ASSERT_W };
+
+function spec(id: string): ColumnSpec {
+  return COLUMN_SPEC[id] ?? ASSERT_SPEC;
 }
+
+/** Horizontal padding the grid container adds around the tracks (`px-3`). */
+const GRID_INSET = 24;
 
 interface CaseGridProps {
   cases: CaseListItem[];
@@ -64,6 +107,9 @@ interface CaseGridProps {
   fetchNextPage?: () => void;
   isFetchingNextPage?: boolean;
   totalCount?: number;
+  /** A filter/search change is in flight and the rows shown are the previous
+   *  result. Without this the stale rows are fully opaque and interactive. */
+  busy?: boolean;
 }
 
 const col = createColumnHelper<CaseListItem>();
@@ -81,6 +127,7 @@ export function CaseGrid({
   fetchNextPage,
   isFetchingNextPage,
   totalCount,
+  busy = false,
 }: CaseGridProps) {
   const columns = useMemo(() => {
     const assertCols = assertLabels.map((label) =>
@@ -94,11 +141,21 @@ export function CaseGrid({
         cell: ({ row }) => {
           const a = row.original.asserts.find((x) => x.label === label);
           if (!a)
-            return <span className="text-muted/50" aria-hidden>–</span>;
+            return (
+              <>
+                <span className="sr-only">{label}: not evaluated</span>
+                <span className="text-muted/50" aria-hidden>
+                  –
+                </span>
+              </>
+            );
           return (
+            // The label lives in `aria-label`, not a native `title`: the dot is
+            // the only content in the cell, so this is the sole text a screen
+            // reader has to work with.
             <AssertDot
               passed={a.passed}
-              title={`${label} · ${a.kind} · ${a.passed ? "passed" : "failed"} (${a.score.toFixed(2)})`}
+              label={`${label} · ${a.kind} · ${a.passed ? "passed" : "failed"} (${a.score.toFixed(2)})`}
             />
           );
         },
@@ -169,8 +226,26 @@ export function CaseGrid({
         id: "preview",
         enableSorting: false,
         header: () => <span>Preview</span>,
-        cell: ({ getValue }) => {
-          const text = getValue()?.trim();
+        cell: ({ row }) => {
+          const c = row.original;
+          const text = c.output_preview?.trim();
+          // The error fills the gap rather than replacing the preview. A
+          // provider failure leaves no output at all, which used to render a
+          // bare dash on exactly the rows worth reading; but a case whose
+          // output arrived and whose *assertion* errored still has something
+          // worth showing, and the real text beats "one or more assertions
+          // errored".
+          const error = c.error?.trim();
+          if (!text && error) {
+            return (
+              <span
+                className="block truncate font-mono text-[11px] text-error"
+                title={error}
+              >
+                {error}
+              </span>
+            );
+          }
           if (!text)
             return <span className="text-muted/50" aria-hidden>–</span>;
           return (
@@ -180,6 +255,32 @@ export function CaseGrid({
             >
               {text}
             </span>
+          );
+        },
+      }),
+      // The combined strip: only this case's own assertions, so the cell is
+      // dense instead of a row of em-dashes. One column instead of N.
+      col.display({
+        id: "asserts",
+        header: () => <span>Asserts</span>,
+        cell: ({ row }) => {
+          const list = row.original.asserts;
+          if (list.length === 0)
+            return (
+              <span className="text-muted/50" aria-hidden>
+                –
+              </span>
+            );
+          return (
+            <div className="flex flex-wrap items-center gap-1">
+              {list.map((a, i) => (
+                <AssertDot
+                  key={`${a.label}-${i}`}
+                  passed={a.passed}
+                  label={`${a.label} · ${a.kind} · ${a.passed ? "passed" : "failed"} (${a.score.toFixed(2)})`}
+                />
+              ))}
+            </div>
           );
         },
       }),
@@ -226,9 +327,44 @@ export function CaseGrid({
     ];
   }, [assertLabels, showProvider, showPrompt]);
 
+  const [visibility, setVisibility] = useState<ColumnVisibility>(() =>
+    loadColumnVisibility(),
+  );
+
+  function setColumnVisible(id: string, visible: boolean) {
+    setVisibility((prev) => {
+      const next = { ...prev, [id]: visible };
+      saveColumnVisibility(next);
+      return next;
+    });
+  }
+
+  function resetColumns() {
+    setVisibility({});
+    saveColumnVisibility({});
+  }
+
+  const visibleColumns = useMemo(
+    () => columns.filter((c) => isVisible(c.id ?? "", visibility)),
+    [columns, visibility],
+  );
+
+  const pickable = useMemo<PickableColumn[]>(
+    () =>
+      columns
+        .map((c) => c.id ?? "")
+        .filter((id) => id && !ALWAYS_VISIBLE.has(id))
+        .map((id) => ({
+          id,
+          label: isAssertColumn(id) ? id.slice("assert:".length) : COLUMN_LABEL[id] ?? id,
+          group: isAssertColumn(id) ? ("assertions" as const) : ("columns" as const),
+        })),
+    [columns],
+  );
+
   const table = useReactTable({
     data: cases,
-    columns,
+    columns: visibleColumns,
     state: { sorting },
     onSortingChange,
     // Single-column sort, ascending-first for every column (so a numeric column
@@ -254,15 +390,17 @@ export function CaseGrid({
   // from the live column ids so provider/prompt columns (when present) shift
   // everything after them consistently.
   const columnIds = useMemo(
-    () => columns.map((c) => c.id ?? ""),
-    [columns],
+    () => visibleColumns.map((c) => c.id ?? ""),
+    [visibleColumns],
   );
   const gridTemplate = useMemo(
-    () => columnIds.map(colWidth).join(" "),
+    () => columnIds.map((id) => spec(id).track).join(" "),
     [columnIds],
   );
+  // + the container's own horizontal padding: without it the intrinsic width is
+  // under-reported and the last column is clipped rather than scrolled to.
   const minWidth = useMemo(
-    () => columnIds.reduce((sum, id) => sum + colMinWidth(id), 0),
+    () => columnIds.reduce((sum, id) => sum + spec(id).min, 0) + GRID_INSET,
     [columnIds],
   );
 
@@ -279,28 +417,74 @@ export function CaseGrid({
   }, [lastIndex, hasNextPage, isFetchingNextPage, rowCount, fetchNextPage]);
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-surface">
-      <div
-        ref={parentRef}
-        className="max-h-[68vh] overflow-auto"
-        role="grid"
-        aria-rowcount={totalCount ?? rows.length}
-      >
+    <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1">
+      {/* Above the grid, not in its footer: the count is unreachable at the
+          bottom of a 68vh scroller without scrolling past every row, and this
+          is also where the pending state belongs. */}
+      <div className="flex shrink-0 items-center justify-between gap-3">
+        <p
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-2 text-xs text-muted"
+        >
+          {formatCaseCount(rows.length, totalCount, hasNextPage ?? false)}
+          {hasNextPage ? (
+            <span className="text-muted/70">(sorted within loaded cases)</span>
+          ) : null}
+          {busy ? (
+            <span className="flex items-center gap-1.5">
+              <Spinner /> Updating…
+            </span>
+          ) : null}
+        </p>
+        <CaseColumnPicker
+          columns={pickable}
+          visibility={visibility}
+          onChange={setColumnVisible}
+          onReset={resetColumns}
+        />
+      </div>
+
+      <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-surface lg:min-h-0 lg:flex-1">
+        <div
+          ref={parentRef}
+          // Sized by the shell rather than by a guessed `vh` fraction: the
+          // page no longer scrolls behind this, so it can simply take what is
+          // left of the viewport.
+          className={cn(
+            // Bounded on short/narrow viewports (the page scrolls there);
+            // sized by the shell at `lg`, where the page does not.
+            "max-h-[70vh] overflow-auto overscroll-contain lg:max-h-none lg:min-h-0 lg:flex-1",
+            busy && "opacity-60 transition-opacity",
+          )}
+          role="grid"
+          aria-busy={busy}
+          // `-1` means "unknown" — required while more pages may follow, since
+          // the loaded count is not the total.
+          aria-rowcount={hasNextPage ? -1 : rows.length + 1}
+        >
         <div style={{ minWidth }}>
           {/* Header */}
           <div
-            className="sticky top-0 z-10 grid items-center border-b border-border bg-surface-2/95 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted backdrop-blur"
+            className="sticky top-0 z-20 grid items-center border-b border-border bg-surface-2 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted"
             style={{ gridTemplateColumns: gridTemplate }}
             role="row"
+            aria-rowindex={1}
           >
             {table.getFlatHeaders().map((header) => {
               const canSort = header.column.getCanSort();
               const sorted = header.column.getIsSorted(); // false | "asc" | "desc"
-              const numeric = NUMERIC_COLS.has(header.column.id);
+              const s = spec(header.column.id);
+              const numeric = s.numeric ?? false;
               return (
                 <div
                   key={header.id}
-                  className="min-w-0 px-1"
+                  className={cn(
+                    "min-w-0 px-1",
+                    // The pinned cell must carry its own background or the
+                    // columns scrolling underneath show through it.
+                    s.sticky && "sticky left-0 z-10 bg-surface-2",
+                  )}
                   role="columnheader"
                   aria-sort={
                     !canSort
@@ -355,6 +539,10 @@ export function CaseGrid({
                 <div
                   key={row.id}
                   role="row"
+                  // +2: 1-based, and the header occupies row 1. Required
+                  // alongside aria-rowcount — only ~20 of N rows exist in the
+                  // DOM, so position must be stated, not inferred.
+                  aria-rowindex={vi.index + 2}
                   aria-selected={selected}
                   tabIndex={0}
                   onClick={() => onSelect(c.case_key)}
@@ -366,7 +554,9 @@ export function CaseGrid({
                   }}
                   className={cn(
                     "absolute left-0 grid cursor-pointer items-center border-b border-border/50 px-3 text-sm outline-none",
-                    "hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    // An explicit base background is what lets the pinned cell
+                    // inherit something opaque.
+                    "bg-surface hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                     selected && "bg-accent/8 hover:bg-accent/10",
                   )}
                   style={{
@@ -378,7 +568,15 @@ export function CaseGrid({
                   }}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <div key={cell.id} className="min-w-0 px-1" role="gridcell">
+                    <div
+                      key={cell.id}
+                      className={cn(
+                        "min-w-0 px-1",
+                        spec(cell.column.id).sticky &&
+                          "sticky left-0 z-10 bg-inherit",
+                      )}
+                      role="gridcell"
+                    >
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </div>
                   ))}
@@ -387,16 +585,12 @@ export function CaseGrid({
             })}
           </div>
         </div>
-      </div>
-      <div className="flex items-center justify-between border-t border-border px-3 py-1.5 text-xs text-muted">
-        <span>
-          Showing {rows.length}
-          {totalCount != null && totalCount > rows.length ? ` of ${totalCount}+` : ""} cases
-          {hasNextPage ? (
-            <span className="text-muted/70"> (sorted within loaded cases)</span>
-          ) : null}
-        </span>
-        {isFetchingNextPage ? <span>Loading more…</span> : null}
+        </div>
+        {isFetchingNextPage ? (
+          <div className="border-t border-border px-3 py-1.5 text-xs text-muted">
+            Loading more…
+          </div>
+        ) : null}
       </div>
     </div>
   );

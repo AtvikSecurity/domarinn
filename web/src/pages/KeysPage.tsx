@@ -241,19 +241,20 @@ export function KeysPage() {
             ? `Revoke "${revoking.name}"? Any client using it will stop working.`
             : undefined
         }
-      >
-        <ModalActions
-          onCancel={() => setRevoking(null)}
-          confirmLabel="Revoke key"
-          confirmVariant="danger"
-          pending={revokeKey.isPending}
-          onConfirm={async () => {
-            if (!revoking) return;
-            await revokeKey.mutateAsync(revoking.id);
-            setRevoking(null);
-          }}
-        />
-      </Modal>
+        footer={
+          <ModalActions
+            onCancel={() => setRevoking(null)}
+            confirmLabel="Revoke key"
+            confirmVariant="danger"
+            pending={revokeKey.isPending}
+            onConfirm={async () => {
+              if (!revoking) return;
+              await revokeKey.mutateAsync(revoking.id);
+              setRevoking(null);
+            }}
+          />
+        }
+      />
     </div>
   );
 }

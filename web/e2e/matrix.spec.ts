@@ -118,12 +118,12 @@ test.describe("Matrix view (prompt × provider)", () => {
 test.describe("Single-provider run shows no matrix toggle", () => {
   test("MONEY_RUN never offers the List | Matrix toggle", async ({ page }) => {
     await page.goto(`/runs/${MONEY_RUN}`);
-    await expect(page.getByText(/Showing \d+ of 500\+ cases/)).toBeVisible();
+    await expect(page.getByText(/Showing first \d+ of 500\+ cases/)).toBeVisible();
     await expect(page.getByRole("radiogroup", { name: "View" })).toHaveCount(0);
 
     // Even a deep-linked ?view=matrix silently falls back to the list.
     await page.goto(`/runs/${MONEY_RUN}?view=matrix`);
-    await expect(page.getByText(/Showing \d+ of 500\+ cases/)).toBeVisible();
+    await expect(page.getByText(/Showing first \d+ of 500\+ cases/)).toBeVisible();
     await expect(
       page.getByRole("table", { name: "Prompt by provider matrix" }),
     ).toHaveCount(0);

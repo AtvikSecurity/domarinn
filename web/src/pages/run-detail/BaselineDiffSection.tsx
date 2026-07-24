@@ -4,11 +4,11 @@ import { useCaseDetail, useSuites } from "@/api/queries";
 import type { Output } from "@/api";
 import { outputToString } from "@/components/output";
 import { Spinner } from "@/components/ui/Spinner";
+import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { DiffView, type DiffMode } from "@/pages/compare/DiffView";
 import { resolveDiffGuard } from "@/pages/compare/diffGuard";
 import { shortRunId } from "@/lib/format";
-import { cn } from "@/lib/cn";
 
 /**
  * Collapsible "Diff vs baseline" section in the run-detail case drawer: diffs
@@ -62,67 +62,46 @@ export function BaselineDiffSection({
   if (!show) return null;
 
   return (
-    <section>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted hover:text-fg"
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          className={cn("shrink-0 transition-transform", expanded && "rotate-90")}
-          aria-hidden
-        >
-          <path d="M9 6l6 6-6 6" />
-        </svg>
-        <span className="normal-case tracking-normal">
-          Diff vs baseline{" "}
-          <span className="font-mono text-[11px] text-muted/80">
-            · {shortRunId(baselineRunId)}
-          </span>
-        </span>
-      </button>
-
-      {expanded ? (
-        <div className="mt-2 space-y-3">
-          {baseline.isPending ? (
-            <div className="flex items-center gap-2 p-3 text-xs text-muted">
-              <Spinner /> Loading baseline…
-            </div>
-          ) : baseline.isError ? (
-            <p className="text-sm text-muted">
-              This case does not exist in the baseline run.
-            </p>
-          ) : baseText === headText ? (
-            <p className="text-sm text-muted">Output identical to baseline.</p>
-          ) : (
-            <BaselineDiff
-              base={baseText}
-              head={headText}
-              mode={mode}
-              onModeChange={setMode}
-            />
-          )}
-
-          <div className="pt-0.5">
-            <Link
-              to={`/runs/${encodeURIComponent(baselineRunId)}/compare/${encodeURIComponent(
-                runId,
-              )}?case=${encodeURIComponent(caseKey)}`}
-              className="text-xs font-medium text-accent hover:underline"
-            >
-              Open full compare →
-            </Link>
+    <CollapsibleSection
+      title="Diff vs baseline"
+      meta={
+        <span className="font-mono">· {shortRunId(baselineRunId)}</span>
+      }
+      open={expanded}
+      onOpenChange={setExpanded}
+    >
+      <div className="space-y-3">
+        {baseline.isPending ? (
+          <div className="flex items-center gap-2 p-3 text-xs text-muted">
+            <Spinner /> Loading baseline…
           </div>
+        ) : baseline.isError ? (
+          <p className="text-sm text-muted">
+            This case does not exist in the baseline run.
+          </p>
+        ) : baseText === headText ? (
+          <p className="text-sm text-muted">Output identical to baseline.</p>
+        ) : (
+          <BaselineDiff
+            base={baseText}
+            head={headText}
+            mode={mode}
+            onModeChange={setMode}
+          />
+        )}
+
+        <div className="pt-0.5">
+          <Link
+            to={`/runs/${encodeURIComponent(baselineRunId)}/compare/${encodeURIComponent(
+              runId,
+            )}?case=${encodeURIComponent(caseKey)}`}
+            className="text-xs font-medium text-accent hover:underline"
+          >
+            Open full compare →
+          </Link>
         </div>
-      ) : null}
-    </section>
+      </div>
+    </CollapsibleSection>
   );
 }
 

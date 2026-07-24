@@ -37,6 +37,12 @@ pub struct CaseListItem {
     /// column). `None` for legacy pre-backfill rows and failed-backfill rows
     /// carrying the -1 sentinel, which the list query maps to `None`.
     pub cached: Option<bool>,
+    /// The failure reason for an errored case (migration-7 `cases` column).
+    /// `output_preview` derives from `output`, which an errored case does not
+    /// have, so without this the grid can only show that a row errored and not
+    /// why. `None` for a case that did not error, and for legacy pre-backfill
+    /// rows.
+    pub error: Option<String>,
 }
 
 /// `GET /runs/{id}/cases` response.
@@ -84,6 +90,7 @@ mod tests {
             score: Some(1.0),
             stop_reason: Some("stop".to_string()),
             cached: Some(true),
+            error: None,
         };
         assert_eq!(
             serde_json::to_value(&dto).unwrap(),
@@ -107,6 +114,7 @@ mod tests {
                 "score": 1.0,
                 "stop_reason": "stop",
                 "cached": true,
+                "error": null,
             })
         );
     }
@@ -131,6 +139,7 @@ mod tests {
             score: None,
             stop_reason: None,
             cached: None,
+            error: None,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["asserts"], json!([]));

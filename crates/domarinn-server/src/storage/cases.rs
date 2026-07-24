@@ -52,7 +52,7 @@ impl CaseListFilter {
             "SELECT case_key, idx, name, status, output_preview, asserts,
                     prompt_tokens, completion_tokens, cost_microusd, latency_ms,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason,
-                    cached
+                    cached, error
              FROM cases WHERE run_id = ?1",
         );
         let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
@@ -146,6 +146,9 @@ impl CaseListFilter {
                         0 => Some(false),
                         _ => None,
                     }),
+                    // '' means "known: no error"; NULL means "not backfilled
+                    // yet". Both read as `None` on the wire.
+                    error: empty_to_none(row.get::<_, Option<String>>(17)?),
                 },
             ))
         })?;

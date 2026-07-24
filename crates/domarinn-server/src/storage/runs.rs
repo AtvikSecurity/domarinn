@@ -119,6 +119,8 @@ struct PreparedCase {
     // Search-index text that has no `cases` column of its own (`cases_fts`
     // is written in the same transaction; see `storage::search`).
     prompt_text: Option<String>,
+    /// Also promoted to a `cases` column (migration 7), because an errored case
+    /// has no output and therefore no `output_preview` to show in the grid.
     error: Option<String>,
 }
 
@@ -324,10 +326,11 @@ impl PreparedRun {
                     run_id, case_key, idx, name, status, output_preview, output_text,
                     output_hash, asserts, prompt_tokens, completion_tokens, cost_microusd,
                     latency_ms, detail,
-                    provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached
+                    provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached,
+                    error
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    ?15, ?16, ?17, ?18, ?19, ?20, ?21
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
                 )",
                 params![
                     self.id,
@@ -351,6 +354,9 @@ impl PreparedRun {
                     case.score,
                     case.stop_reason,
                     case.cached as i64,
+                    // '' rather than NULL for "no error": NULL is reserved for
+                    // "not yet backfilled" (see storage::backfill).
+                    case.error.as_deref().unwrap_or_default(),
                 ],
             )?;
             for tag in &case.tags {

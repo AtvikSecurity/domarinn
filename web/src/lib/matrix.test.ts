@@ -102,7 +102,19 @@ describe("cellBucket", () => {
     expect(cellBucketClass(0.75)).toBe(CELL_BUCKET_CLASS.high);
     expect(cellBucketClass(1)).toBe(CELL_BUCKET_CLASS.full);
     // Every bucket maps to a distinct, purge-safe class string.
-    expect(new Set(Object.values(CELL_BUCKET_CLASS)).size).toBe(5);
+    expect(new Set(Object.values(CELL_BUCKET_CLASS)).size).toBe(6);
+  });
+
+  it("buckets an errored cell apart from a failing one", () => {
+    // An unreachable provider says nothing about output quality; tinting it the
+    // same fail-red made a not-pulled model look like a quality collapse.
+    expect(cellBucket(0, 2)).toBe("error");
+    expect(cellBucketClass(0, 2)).toBe(CELL_BUCKET_CLASS.error);
+    expect(cellBucketClass(0, 2)).not.toBe(CELL_BUCKET_CLASS.empty);
+    // Errors dominate: a partially-passing cell that also errored is unknown.
+    expect(cellBucket(0.5, 1)).toBe("error");
+    // No errors -> unchanged behaviour.
+    expect(cellBucket(0.5, 0)).toBe("half");
   });
 });
 

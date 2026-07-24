@@ -11,36 +11,93 @@ test.describe("Run detail", () => {
     ).toBeVisible();
     await expect(page.getByText("Pass rate")).toBeVisible();
 
-    // The grid renders with its assert-label columns and data rows.
+    // The grid renders with data rows, the numeric columns, and the combined
+    // assert strip. Per-assertion columns are opt-in (see the picker test):
+    // as a union across the run they are mostly empty per row, and they used to
+    // push tokens/cost/latency/score off the right edge of every screen.
     const grid = page.getByRole("grid");
     await expect(grid).toBeVisible();
     await expect(
-      page.getByRole("columnheader", { name: "contains" }),
+      page.getByRole("columnheader", { name: "Asserts" }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("columnheader", { name: "Latency" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("columnheader", { name: "contains" }),
+    ).toHaveCount(0);
 
     const dataRows = grid.getByRole("row").filter({ has: page.getByRole("gridcell") });
     expect(await dataRows.count()).toBeGreaterThan(5);
 
-    // Footer reports the 500-case total.
-    await expect(page.getByText(/Showing \d+ of 500\+ cases/)).toBeVisible();
+    await expect(page.getByText(/Showing first \d+ of 500\+ cases/)).toBeVisible();
+  });
+
+  test("the column picker restores a per-assertion column and persists it", async ({
+    page,
+  }) => {
+    await page.goto(`/runs/${MONEY_RUN}`);
+    await expect(page.getByRole("grid")).toBeVisible();
+    await expect(
+      page.getByRole("columnheader", { name: "contains" }),
+    ).toHaveCount(0);
+
+    await page.getByRole("button", { name: /Columns/ }).click();
+    await page.getByRole("checkbox", { name: "contains" }).check();
+    await page.keyboard.press("Escape");
+
+    await expect(
+      page.getByRole("columnheader", { name: "contains" }),
+    ).toBeVisible();
+
+    // The choice is a viewing habit, so it survives a reload (localStorage)
+    // without polluting the shareable URL.
+    await page.reload();
+    await expect(
+      page.getByRole("columnheader", { name: "contains" }),
+    ).toBeVisible();
+    expect(new URL(page.url()).search).not.toContain("contains");
+
+    // Reset puts the defaults back.
+    await page.getByRole("button", { name: /Columns/ }).click();
+    await page.getByRole("button", { name: "Reset" }).click();
+    await page.keyboard.press("Escape");
+    await expect(
+      page.getByRole("columnheader", { name: "contains" }),
+    ).toHaveCount(0);
+  });
+
+  test("the status column stays pinned while the grid scrolls right", async ({
+    page,
+  }) => {
+    await page.goto(`/runs/${MONEY_RUN}`);
+    const grid = page.getByRole("grid");
+    await expect(grid).toBeVisible();
+
+    const status = page.getByRole("columnheader", { name: "Status" });
+    const before = await status.boundingBox();
+    await grid.evaluate((el) => el.scrollBy(400, 0));
+    await expect
+      .poll(async () => (await status.boundingBox())?.x)
+      .toBe(before?.x);
   });
 
   test("the output search box filters the grid", async ({ page }) => {
     await page.goto(`/runs/${MONEY_RUN}`);
-    await expect(page.getByText(/Showing \d+ of 500\+ cases/)).toBeVisible();
+    await expect(page.getByText(/Showing first \d+ of 500\+ cases/)).toBeVisible();
 
     // Search narrows to a single deterministic case and reflects into ?q=.
     await page.getByRole("searchbox", { name: "Search cases" }).fill("case-0000");
     await expect(page).toHaveURL(/[?&]q=case-0000/);
 
-    await expect(page.getByText("Showing 1 of 500+ cases")).toBeVisible();
+    await expect(page.getByText("Showing 1 case")).toBeVisible();
     await expect(page.getByText("case-0000")).toBeVisible();
     await expect(page.getByText("case-0002")).toHaveCount(0);
   });
 
   test("surfaces each case's output preview in the grid", async ({ page }) => {
     await page.goto(`/runs/${MONEY_RUN}`);
-    await expect(page.getByText(/Showing \d+ of 500\+ cases/)).toBeVisible();
+    await expect(page.getByText(/Showing first \d+ of 500\+ cases/)).toBeVisible();
 
     // The Preview column exists...
     await expect(
@@ -51,7 +108,7 @@ test.describe("Run detail", () => {
     // deterministic case; its preview is one of the three fixture shapes
     // (pass/fail text, an error line, or "(skipped)").
     await page.getByRole("searchbox", { name: "Search cases" }).fill("case-0000");
-    await expect(page.getByText("Showing 1 of 500+ cases")).toBeVisible();
+    await expect(page.getByText("Showing 1 case")).toBeVisible();
     await expect(
       page
         .getByText(/produced revision r\d+|provider returned 502|\(skipped\)/)
@@ -63,7 +120,7 @@ test.describe("Run detail", () => {
     page,
   }) => {
     await page.goto(`/runs/${MONEY_RUN}`);
-    await expect(page.getByText(/Showing \d+ of 500\+ cases/)).toBeVisible();
+    await expect(page.getByText(/Showing first \d+ of 500\+ cases/)).toBeVisible();
 
     const grid = page.getByRole("grid");
     const firstRowKey = () =>
@@ -100,7 +157,7 @@ test.describe("Run detail", () => {
 
   test("deep-loads a sort from the URL", async ({ page }) => {
     await page.goto(`/runs/${MONEY_RUN}?sort=-latency`);
-    await expect(page.getByText(/Showing \d+ of 500\+ cases/)).toBeVisible();
+    await expect(page.getByText(/Showing first \d+ of 500\+ cases/)).toBeVisible();
     await expect(
       page.getByRole("columnheader", { name: /Latency/ }),
     ).toHaveAttribute("aria-sort", "descending");

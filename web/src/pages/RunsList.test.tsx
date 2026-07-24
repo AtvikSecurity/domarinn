@@ -3,15 +3,21 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
+import { TooltipProvider } from "@/components/ui/Tooltip";
 import { RunsList } from "./RunsList";
 
 function renderRunsList() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
+    // `TooltipProvider` mirrors the app root: the run rows use real tooltips for
+    // the absolute timestamp and the full commit sha, and Radix throws without
+    // a provider ancestor.
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={["/"]}>
-        <RunsList />
-      </MemoryRouter>
+      <TooltipProvider>
+        <MemoryRouter initialEntries={["/"]}>
+          <RunsList />
+        </MemoryRouter>
+      </TooltipProvider>
     </QueryClientProvider>,
   );
 }

@@ -2,9 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { OutputViewer } from "./OutputViewer";
+import { __resetOutputPrefs } from "./prefs";
 
 beforeEach(() => {
   localStorage.clear();
+  // The Rendered/Raw + wrap preferences are a module-level store shared by
+  // every mounted viewer (that is the point — see prefs.ts), so it outlives an
+  // unmount and has to be reset between cases.
+  __resetOutputPrefs();
 });
 
 describe("OutputViewer", () => {
@@ -15,6 +20,31 @@ describe("OutputViewer", () => {
 
     render(<OutputViewer value={"# Heading\n\nbody"} />);
     expect(screen.getByText("markdown")).toBeInTheDocument();
+  });
+
+  it("keeps two simultaneously-mounted viewers in agreement", async () => {
+    // The case drawer renders one viewer per prompt message plus one for the
+    // output. Reading the shared preference once at mount left them disagreeing
+    // on screen until something happened to remount.
+    const user = userEvent.setup();
+    render(
+      <>
+        <div data-testid="a">
+          <OutputViewer value={'{"a":1}'} />
+        </div>
+        <div data-testid="b">
+          <OutputViewer value={'{"b":2}'} />
+        </div>
+      </>,
+    );
+
+    const rawToggles = screen.getAllByRole("radio", { name: "Raw" });
+    expect(rawToggles).toHaveLength(2);
+    await user.click(rawToggles[0]!);
+
+    for (const toggle of screen.getAllByRole("radio", { name: "Raw" })) {
+      expect(toggle).toHaveAttribute("aria-checked", "true");
+    }
   });
 
   it("hides the Rendered|Raw toggle for plain text (nothing to render)", () => {

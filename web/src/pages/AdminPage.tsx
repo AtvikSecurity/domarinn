@@ -224,25 +224,26 @@ export function AdminPage() {
             ? `Permanently delete "${deleting.username}"? This cannot be undone.`
             : undefined
         }
-      >
-        <ModalActions
-          onCancel={() => setDeleting(null)}
-          confirmLabel="Delete user"
-          confirmVariant="danger"
-          pending={deleteUser.isPending}
-          onConfirm={async () => {
-            if (!deleting) return;
-            setBanner(null);
-            try {
-              await deleteUser.mutateAsync(deleting.id);
-              setDeleting(null);
-            } catch (err) {
-              setDeleting(null);
-              setBanner(errorMessage(err, "Could not delete the user."));
-            }
-          }}
-        />
-      </Modal>
+        footer={
+          <ModalActions
+            onCancel={() => setDeleting(null)}
+            confirmLabel="Delete user"
+            confirmVariant="danger"
+            pending={deleteUser.isPending}
+            onConfirm={async () => {
+              if (!deleting) return;
+              setBanner(null);
+              try {
+                await deleteUser.mutateAsync(deleting.id);
+                setDeleting(null);
+              } catch (err) {
+                setDeleting(null);
+                setBanner(errorMessage(err, "Could not delete the user."));
+              }
+            }}
+          />
+        }
+      />
     </div>
   );
 }

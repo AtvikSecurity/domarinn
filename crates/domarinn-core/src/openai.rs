@@ -113,17 +113,38 @@ fn to_messages(prompt: &RenderedPrompt) -> Vec<Json> {
     }
 }
 
+/// Fields a reasoning model may use instead of `content` when it exposes its
+/// chain of thought. `reasoning` is what ollama emits; `reasoning_content` is
+/// the DeepSeek / vLLM spelling.
+const REASONING_FIELDS: [&str; 2] = ["reasoning", "reasoning_content"];
+
 fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, ProviderError> {
     let choice = payload
         .get("choices")
         .and_then(|c| c.as_array())
         .and_then(|c| c.first());
-    let text = choice
-        .and_then(|c| c.get("message"))
+    let message = choice.and_then(|c| c.get("message"));
+
+    let content = message
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_str())
-        .unwrap_or_default()
-        .to_string();
+        .filter(|s| !s.trim().is_empty());
+
+    // Reasoning models routinely return their whole answer in `reasoning` and
+    // leave `content` empty — especially when `max_tokens` cuts them off before
+    // they emit the final message. Scoring the empty string then fails every
+    // assertion with nothing on any screen explaining why, so fall back to the
+    // reasoning text rather than silently evaluating "".
+    let reasoning = message.and_then(|m| {
+        REASONING_FIELDS
+            .iter()
+            .find_map(|f| m.get(*f))
+            .and_then(|r| r.as_str())
+            .filter(|s| !s.trim().is_empty())
+    });
+
+    let text = content.or(reasoning).unwrap_or_default().to_string();
+
     let stop_reason = choice
         .and_then(|c| c.get("finish_reason"))
         .and_then(|s| s.as_str())
@@ -138,12 +159,25 @@ fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, Provide
         cache_read_tokens: None,
     });
 
+    // Record which field the scored text came from, so the UI can label an
+    // answer that is really exposed reasoning instead of presenting it as the
+    // model's final output.
+    let mut raw = payload.clone();
+    if content.is_none() && reasoning.is_some() {
+        if let Some(obj) = raw.as_object_mut() {
+            obj.insert(
+                "domarinn_output_source".into(),
+                Json::String("reasoning".into()),
+            );
+        }
+    }
+
     Ok(ProviderResponse {
         output: Output::Text(text),
         usage,
         cost_usd: None,
         stop_reason,
-        raw: Some(payload.clone()),
+        raw: Some(raw),
     })
 }
 
@@ -154,6 +188,65 @@ mod tests {
     use std::collections::BTreeMap;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn prefers_content_when_present() {
+        let resp = parse_completion_response(&json!({
+            "choices": [{"message": {"content": "the answer", "reasoning": "thinking…"}}]
+        }))
+        .unwrap();
+        assert_eq!(resp.output, Output::Text("the answer".into()));
+        assert!(resp.raw.unwrap().get("domarinn_output_source").is_none());
+    }
+
+    #[test]
+    fn falls_back_to_reasoning_when_content_is_empty() {
+        // ollama's reasoning models put the whole answer here and leave
+        // `content` empty, especially when cut off by max_tokens.
+        let resp = parse_completion_response(&json!({
+            "choices": [{
+                "message": {"content": "", "reasoning": "Thinking: the capital is Paris."},
+                "finish_reason": "length"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            resp.output,
+            Output::Text("Thinking: the capital is Paris.".into())
+        );
+        assert_eq!(
+            resp.raw.unwrap().get("domarinn_output_source"),
+            Some(&json!("reasoning"))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_reasoning_content_spelling() {
+        let resp = parse_completion_response(&json!({
+            "choices": [{"message": {"reasoning_content": "deepseek style"}}]
+        }))
+        .unwrap();
+        assert_eq!(resp.output, Output::Text("deepseek style".into()));
+    }
+
+    #[test]
+    fn treats_whitespace_only_content_as_absent() {
+        let resp = parse_completion_response(&json!({
+            "choices": [{"message": {"content": "   \n", "reasoning": "real text"}}]
+        }))
+        .unwrap();
+        assert_eq!(resp.output, Output::Text("real text".into()));
+    }
+
+    #[test]
+    fn yields_empty_text_when_the_message_carries_nothing() {
+        let resp = parse_completion_response(&json!({
+            "choices": [{"message": {}}]
+        }))
+        .unwrap();
+        assert_eq!(resp.output, Output::Text(String::new()));
+        assert!(resp.raw.unwrap().get("domarinn_output_source").is_none());
+    }
 
     fn text_request() -> ProviderRequest {
         ProviderRequest {

@@ -220,6 +220,23 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE cases ADD COLUMN cached INTEGER;
         "#,
         ),
+        // Migration 7: promote the failure reason out of the zstd blob.
+        // `output_preview` is derived from `output`, and an errored case has no
+        // output — so the preview is NULL for exactly the rows a reader most
+        // wants to skim, and every error row had to be opened individually to
+        // learn anything. Ingest writes it going forward; `backfill` populates
+        // pre-existing rows on open.
+        //
+        // Tri-state, following migration 3's empty-string sentinel: NULL =
+        // not yet backfilled (unknown), '' = known to have no error, non-empty
+        // = the message. It cannot be a plain nullable column, because NULL is
+        // also the honest value for every passing case and the backfill
+        // predicate would then rescan the whole table forever.
+        M::up(
+            r#"
+        ALTER TABLE cases ADD COLUMN error TEXT;
+        "#,
+        ),
     ])
 }
 

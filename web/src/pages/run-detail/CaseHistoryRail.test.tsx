@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
-import { CaseHistorySection } from "./CaseHistorySection";
+import { CaseHistoryRail } from "./CaseHistoryRail";
 import { useCaseHistory } from "@/api/queries";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import type { CaseHistoryPoint, CaseHistoryResponse } from "@/api";
@@ -55,7 +55,7 @@ function renderSection() {
   return render(
     <TooltipProvider>
       <MemoryRouter initialEntries={[`/runs/${CURRENT}?case=${CASE}`]}>
-        <CaseHistorySection
+        <CaseHistoryRail
           project={PROJECT}
           suite={SUITE}
           runId={CURRENT}
@@ -73,12 +73,12 @@ function squareRunIds(): string[] {
   );
 }
 
-describe("CaseHistorySection", () => {
+describe("CaseHistoryRail", () => {
   beforeEach(() => {
     mockUseCaseHistory.mockReset();
   });
 
-  it("fetches immediately (expanded by default) and disables when tucked away", async () => {
+  it("fetches whenever the drawer is open, and keeps fetching when collapsed", async () => {
     const user = userEvent.setup();
     mockUseCaseHistory.mockReturnValue({
       isPending: true,
@@ -96,11 +96,13 @@ describe("CaseHistorySection", () => {
 
     await user.click(toggle);
 
-    // Collapsed: content unmounts and the query is disabled, not refetching.
+    // Collapsing hides the rail, but the query stays enabled: the rail now
+    // lives in the drawer's fixed strip rather than in the scrolling body, so
+    // gating the fetch on expansion would defeat having it above the fold.
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(squareRunIds()).toHaveLength(0);
     const lastCall = mockUseCaseHistory.mock.calls.at(-1)!;
-    expect(lastCall[3]?.enabled).toBe(false);
+    expect(lastCall[3]?.enabled).toBe(true);
   });
 
   it("renders squares oldest→newest, reversing the newest-first payload", () => {
@@ -210,7 +212,11 @@ describe("CaseHistorySection", () => {
     );
     renderSection();
 
-    expect(screen.getByText("3 runs · 2 output changes")).toBeInTheDocument();
+    // The summary rides on the section header, so it is readable while the
+    // rail is collapsed too.
+    expect(
+      screen.getByRole("button", { name: /History/ }),
+    ).toHaveAccessibleName(/3 runs · 2 changes/);
   });
 
   it("shows a muted message on error", () => {

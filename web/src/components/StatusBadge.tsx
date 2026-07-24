@@ -53,22 +53,30 @@ export function StatusBadge({
   );
 }
 
-/** A small square dot used inside dense assert-grid cells. */
+/**
+ * A small square dot used inside dense assert-grid cells.
+ *
+ * `role="img"` is required, not decorative: `aria-label` is ignored on a
+ * role-less generic element, so without it the grid's entire assert area is
+ * announced as nothing at all and pass/fail is conveyed by colour alone.
+ * `label` should carry the full description (assertion name and outcome), since
+ * this is the only text a screen reader gets for the cell.
+ */
 export function AssertDot({
   passed,
-  title,
+  label,
 }: {
   passed: boolean;
-  title?: string;
+  label?: string;
 }) {
   return (
     <span
-      title={title}
+      role="img"
+      aria-label={label ?? (passed ? "passed" : "failed")}
       className={cn(
         "inline-block size-2.5 rounded-[3px] ring-1 ring-inset",
         passed ? "bg-pass/70 ring-pass/40" : "bg-fail/70 ring-fail/40",
       )}
-      aria-label={passed ? "passed" : "failed"}
     />
   );
 }

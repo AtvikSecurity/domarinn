@@ -13,11 +13,16 @@
   --border-strong: #cfd5de;
   --accent: #4f46e5;
   --accent-fg: #ffffff;
-  --pass: #15a34a;
-  --fail: #dc2626;
-  --error: #ea580c;
-  --skip: #64748b;
-  --amber: #d97706;
+  /* Semantic tones. These are painted as 11-12px TEXT on their own tint
+   * (`bg-<tone>/12`, and `/15` in DiffView), not on bare white, so they are
+   * chosen to clear WCAG AA 4.5:1 against that mix — one to two steps deeper
+   * on the same hue ramp than the plain 600 values they replace. The
+   * self-mix ratios are asserted in `lib/contrast.test.ts`. */
+  --pass: #13742f;
+  --fail: #b91c1c;
+  --error: #b23b0b;
+  --skip: #5a6675;
+  --amber: #a54c08;
   --ring: #6366f1;
 }
 
@@ -32,9 +37,11 @@
   --accent: #6366f1;
   --accent-fg: #ffffff;
   --pass: #22c55e;
-  --fail: #f05252;
-  --error: #f59e0b;
-  --skip: #7c8798;
+  --fail: #f56a6a;
+  /* `--error` was byte-identical to `--amber` (#f59e0b), which made an error
+   * status badge indistinguishable from a truncation/flake marker. */
+  --error: #fb923c;
+  --skip: #8c96a6;
   --amber: #f59e0b;
   --ring: #818cf8;
 }
@@ -68,6 +75,12 @@ html,
 body,
 #root {
   height: 100%;
+  /* The app shell owns the viewport (`Layout` is an `h-dvh` flex column), so
+   * the document must never scroll: exactly one scroller is on screen at a
+   * time — `<main>`, or a filling page's own container. Without this the
+   * viewport keeps a scrollable area of its own and the header can be dragged
+   * off-screen into blank space. */
+  overflow: hidden;
 }
 
 body {

@@ -1,8 +1,7 @@
-import { useState } from "react";
-import type { ReactNode } from "react";
 import type { CellKey, RenderedPrompt } from "@/api";
 import { JsonTree, OutputViewer, RawText, outputToString } from "@/components/output";
-import { cn } from "@/lib/cn";
+import { Chip, type ChipTone } from "@/components/ui/Chip";
+import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
 
 /**
  * Schema-v2 case-drawer sections — the rendered prompt, the provider stop
@@ -11,16 +10,15 @@ import { cn } from "@/lib/cn";
  * renders none of them, so the drawer degrades to exactly its pre-v2 shape.
  */
 
-// Role → chip tint (from the plan): system reads as the accent, user as a plain
-// surface chip, assistant as the pass tint, and any tool turn as amber. Unknown
-// roles fall back to the neutral surface chip.
-const ROLE_TINT: Record<string, string> = {
-  system: "bg-accent/12 text-accent",
-  user: "bg-surface-2 text-muted",
-  assistant: "bg-pass/12 text-pass",
-  tool: "bg-amber/12 text-amber",
+// Role → chip tone: system reads as the accent, user as a plain surface chip,
+// assistant as the pass tint, and any tool turn as amber. Unknown roles fall
+// back to the neutral surface chip.
+const ROLE_TONE: Record<string, ChipTone> = {
+  system: "accent",
+  user: "neutral",
+  assistant: "pass",
+  tool: "amber",
 };
-const ROLE_TINT_FALLBACK = "bg-surface-2 text-muted";
 
 // stop_reason values that indicate the model was cut off rather than finishing
 // on its own; matched case-insensitively. Truncation gets an amber chip.
@@ -31,58 +29,15 @@ function isTruncationStop(reason: string): boolean {
 }
 
 /**
- * A collapsible drawer section: an uppercase header button with a rotating
- * chevron (the drawer's dominant `Section` convention). Open by default —
- * the drawer shows everything it has; the toggle is for tucking sections away.
+ * A single chat-turn role chip: mono, lowercase, tinted per {@link ROLE_TONE}.
+ * Named for the chat role specifically — `Layout` has its own `AuthRoleChip`
+ * for the very different concept of a user's permission role.
  */
-function CollapsibleSection({
-  title,
-  defaultOpen = true,
-  children,
-}: {
-  title: ReactNode;
-  defaultOpen?: boolean;
-  children: ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
+function ChatRoleChip({ role }: { role: string }) {
   return (
-    <section>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted hover:text-fg"
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          className={cn("shrink-0 transition-transform", open && "rotate-90")}
-          aria-hidden
-        >
-          <path d="M9 6l6 6-6 6" />
-        </svg>
-        <span>{title}</span>
-      </button>
-      {open ? <div className="mt-2">{children}</div> : null}
-    </section>
-  );
-}
-
-/** A single role chip: mono, lowercase, tinted per {@link ROLE_TINT}. */
-function RoleChip({ role }: { role: string }) {
-  return (
-    <span
-      className={cn(
-        "rounded px-1.5 py-0.5 font-mono text-[11px] font-medium lowercase",
-        ROLE_TINT[role] ?? ROLE_TINT_FALLBACK,
-      )}
-    >
+    <Chip tone={ROLE_TONE[role] ?? "neutral"} mono className="lowercase">
       {role}
-    </span>
+    </Chip>
   );
 }
 
@@ -95,20 +50,16 @@ function RoleChip({ role }: { role: string }) {
 export function PromptSection({ prompt }: { prompt: RenderedPrompt }) {
   const messages = "messages" in prompt ? prompt.messages : null;
   const text = "messages" in prompt ? null : prompt.text;
-  const title = (
-    <>
-      Prompt
-      {messages ? (
-        <span className="font-normal normal-case tracking-normal text-muted/80">
-          {" "}
-          · {messages.length} {messages.length === 1 ? "message" : "messages"}
-        </span>
-      ) : null}
-    </>
-  );
 
   return (
-    <CollapsibleSection title={title}>
+    <CollapsibleSection
+      title="Prompt"
+      meta={
+        messages
+          ? `· ${messages.length} ${messages.length === 1 ? "message" : "messages"}`
+          : undefined
+      }
+    >
       {messages ? (
         <div className="space-y-2">
           {messages.map((m, i) => (
@@ -117,7 +68,7 @@ export function PromptSection({ prompt }: { prompt: RenderedPrompt }) {
               className="rounded-lg border border-border p-3"
             >
               <div className="mb-2">
-                <RoleChip role={m.role} />
+                <ChatRoleChip role={m.role} />
               </div>
               <OutputViewer value={m.content} />
             </div>
@@ -136,18 +87,39 @@ export function PromptSection({ prompt }: { prompt: RenderedPrompt }) {
  * muted otherwise.
  */
 export function StopReasonChip({ reason }: { reason: string }) {
-  const truncated = isTruncationStop(reason);
   return (
-    <span
+    <Chip
+      // Kept as a native title deliberately: several specs assert on it, and it
+      // labels a chip whose text ("max_tokens") is otherwise unexplained.
       title="Provider stop reason"
-      className={cn(
-        "rounded px-1.5 py-0.5 font-mono text-[11px] font-medium",
-        truncated ? "bg-amber/12 text-amber" : "bg-surface-2 text-muted",
-      )}
+      tone={isTruncationStop(reason) ? "amber" : "neutral"}
+      mono
     >
       {reason}
-    </span>
+    </Chip>
   );
+}
+
+/**
+ * Detects that the scored text is really the model's exposed reasoning.
+ *
+ * Reasoning models return their answer in `message.reasoning` (ollama) or
+ * `message.reasoning_content` (DeepSeek/vLLM) and leave `content` empty. The
+ * provider now falls back to that text so the case is scored on something real
+ * — but the reader must be told, because "the model reasoned about the answer"
+ * and "the model answered" are very different things, and a `length` stop
+ * reason usually means it never got to the answer at all.
+ */
+export function reasoningNotice(
+  raw: unknown,
+  stopReason: string | null | undefined,
+): string | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const source = (raw as Record<string, unknown>).domarinn_output_source;
+  if (source !== "reasoning") return null;
+  return stopReason && isTruncationStop(stopReason)
+    ? "This model returned no final message — it was cut off mid-reasoning, so the text below is its reasoning, not an answer. Raise max_tokens."
+    : "This model returned its reasoning instead of a final message, so the text below is what it was thinking, not an answer.";
 }
 
 /**
@@ -181,21 +153,16 @@ export function InputSection({
   vars?: Record<string, unknown>;
 }) {
   const varEntries = vars ? Object.entries(vars) : [];
-  const title = (
-    <>
-      Input
-      {varEntries.length > 0 ? (
-        <span className="font-normal normal-case tracking-normal text-muted/80">
-          {" "}
-          · {varEntries.length}{" "}
-          {varEntries.length === 1 ? "variable" : "variables"}
-        </span>
-      ) : null}
-    </>
-  );
 
   return (
-    <CollapsibleSection title={title}>
+    <CollapsibleSection
+      title="Input"
+      meta={
+        varEntries.length > 0
+          ? `· ${varEntries.length} ${varEntries.length === 1 ? "variable" : "variables"}`
+          : undefined
+      }
+    >
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         <dt className="text-muted">provider</dt>
         <dd className="break-all font-mono">{cell.provider_id}</dd>
@@ -226,12 +193,12 @@ export function InputSection({
                 {name}
               </div>
               {typeof value === "object" && value !== null ? (
-                <JsonTree data={value} className="text-[11px]" />
+                <JsonTree data={value} className="text-[11px]/relaxed" />
               ) : (
                 <RawText
                   text={outputToString(value)}
                   wrap
-                  className="text-[11px]"
+                  className="text-[11px]/relaxed"
                 />
               )}
             </div>
@@ -261,7 +228,7 @@ export function AssertCriteria({ criteria }: { criteria: unknown }) {
       <RawText
         text={outputToString(criteria)}
         wrap
-        className="mt-1.5 text-[11px]"
+        className="mt-1.5 text-[11px]/relaxed"
       />
     );
   }

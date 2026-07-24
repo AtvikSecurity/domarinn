@@ -24,7 +24,11 @@
     // exactOptionalPropertyTypes intentionally omitted: with the generated-type
     // policy it buys no runtime safety and forces pervasive `| undefined` churn.
 
-    "types": ["vite/client", "vitest/globals"],
+    // "node" is here only for the colocated `*.test.ts` files that read project
+    // source off disk (e.g. lib/contrast.test.ts parses index.css, since vitest
+    // stubs CSS imports). App code must not use node APIs; eslint gives browser
+    // globals to `src/**` and node globals only to test files.
+    "types": ["vite/client", "vitest/globals", "node"],
 
     "baseUrl": ".",
     "paths": {

@@ -1,22 +1,26 @@
-//! One-shot, idempotent backfill of the migration-3 and migration-6 columns
-//! from the stored zstd blobs.
+//! One-shot, idempotent backfill of the migration-3, -6 and -7 columns from
+//! the stored zstd blobs.
 //!
 //! Migration 3 adds `provider_id`/`prompt_id`/`test_id`/`repeat_idx`/`score`/
 //! `stop_reason` to `cases` and `config_digest` to `runs`; migration 6 adds
-//! `cached` to `cases` and `cache_hits`/`cache_misses` to `runs`. A schema
+//! `cached` to `cases` and `cache_hits`/`cache_misses` to `runs`; migration 7
+//! adds `error` to `cases`. A schema
 //! migration cannot decode the compressed blobs to fill them, so pre-existing
 //! rows land with those columns NULL. This runs once on every open (right after
 //! `to_latest`) and populates any still-NULL rows from `cases.detail` and
 //! `run_blobs.body`.
 //!
 //! It is idempotent by construction: the driving predicates are `provider_id IS
-//! NULL OR cached IS NULL` / `config_digest IS NULL OR cache_hits IS NULL`, so
+//! NULL OR cached IS NULL OR error IS NULL` / `config_digest IS NULL OR
+//! cache_hits IS NULL`, so
 //! a fully-backfilled database (and every fresh database, whose rows are
 //! written already-populated by ingest) selects zero rows and the loops exit
 //! immediately. A row whose blob cannot be decompressed or parsed is stamped
 //! with a sentinel (empty string on text columns, -1 on the numeric cache
 //! columns) so it is never rescanned — the alternative (leaving it NULL) would
-//! spin forever.
+//! spin forever. `error` is a tri-state for the same reason: NULL means "not
+//! yet backfilled", and a case with no error is stamped `''` rather than left
+//! NULL, which would make it eligible for every subsequent pass.
 
 use anyhow::Context;
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -47,7 +51,8 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
         let chunk: Vec<(i64, Option<Vec<u8>>)> = {
             let mut stmt = conn.prepare(
                 "SELECT rowid, detail FROM cases
-                 WHERE provider_id IS NULL OR cached IS NULL LIMIT ?1",
+                 WHERE provider_id IS NULL OR cached IS NULL OR error IS NULL
+                 LIMIT ?1",
             )?;
             let rows = stmt.query_map(params![CASE_CHUNK], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
@@ -66,8 +71,9 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
                     tx.execute(
                         "UPDATE cases
                          SET provider_id = ?1, prompt_id = ?2, test_id = ?3,
-                             repeat_idx = ?4, score = ?5, stop_reason = ?6, cached = ?7
-                         WHERE rowid = ?8",
+                             repeat_idx = ?4, score = ?5, stop_reason = ?6, cached = ?7,
+                             error = ?8
+                         WHERE rowid = ?9",
                         params![
                             case.cell.provider_id,
                             case.cell.prompt_id,
@@ -76,6 +82,9 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
                             case.score,
                             case.stop_reason,
                             case.cached as i64,
+                            // '' = "decoded, and there was no error" — distinct
+                            // from NULL, which means "not yet looked at".
+                            case.error.as_deref().unwrap_or_default(),
                             rowid,
                         ],
                     )?;
@@ -87,7 +96,8 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
                         "backfill: undecodable case detail; stamping sentinel"
                     );
                     tx.execute(
-                        "UPDATE cases SET provider_id = '', cached = -1 WHERE rowid = ?1",
+                        "UPDATE cases SET provider_id = '', cached = -1, error = ''
+                         WHERE rowid = ?1",
                         params![rowid],
                     )?;
                 }

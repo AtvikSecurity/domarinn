@@ -10,6 +10,7 @@ mod common;
 use std::path::Path;
 
 use common::*;
+use domarinn_core::ids::RunId;
 use domarinn_core::result::CaseStatus;
 use domarinn_server::storage::Storage;
 use rusqlite::Connection;
@@ -240,6 +241,127 @@ async fn backfill_repopulates_columns_nulled_after_ingest() {
         )
         .unwrap();
     assert_eq!(digest, "sha256:deadbeef");
+}
+
+#[tokio::test]
+async fn migration_adds_the_case_error_column() {
+    let dir = TempDir::new().unwrap();
+    let _storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    let conn = raw(dir.path());
+    assert!(
+        table_columns(&conn, "cases").contains(&"error".to_string()),
+        "cases missing error"
+    );
+}
+
+#[tokio::test]
+async fn ingest_promotes_the_case_error_out_of_the_blob() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(
+            make_run(
+                "run-err",
+                Some("proj"),
+                Some("suite"),
+                vec![],
+                Some("main"),
+                0,
+                &[
+                    CaseSpec::new("openai", "t1", CaseStatus::Error)
+                        .error("provider returned 502 after 3 retries"),
+                    CaseSpec::new("openai", "t2", CaseStatus::Pass),
+                ],
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let cases = storage
+        .list_cases(default_case_filter(RunId::new("run-err")))
+        .await
+        .unwrap();
+
+    let errored = cases
+        .cases
+        .iter()
+        .find(|c| c.status == CaseStatus::Error)
+        .expect("the errored case");
+    assert_eq!(
+        errored.error.as_deref(),
+        Some("provider returned 502 after 3 retries"),
+        "an errored case must carry its reason: it has no output, so the grid \
+         has nothing else to show"
+    );
+
+    let passed = cases
+        .cases
+        .iter()
+        .find(|c| c.status == CaseStatus::Pass)
+        .expect("the passing case");
+    assert_eq!(
+        passed.error, None,
+        "the '' sentinel written for 'no error' must read back as None"
+    );
+}
+
+#[tokio::test]
+async fn backfill_repopulates_the_case_error_for_pre_migration_rows() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(
+            make_run(
+                "run-bf-err",
+                Some("proj"),
+                Some("suite"),
+                vec![],
+                Some("main"),
+                0,
+                &[
+                    CaseSpec::new("openai", "t1", CaseStatus::Error).error("boom"),
+                    CaseSpec::new("openai", "t2", CaseStatus::Pass),
+                ],
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    drop(storage);
+
+    // Simulate rows written before migration 7.
+    {
+        let conn = raw(dir.path());
+        conn.execute_batch("UPDATE cases SET error = NULL;")
+            .unwrap();
+    }
+
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    let cases = storage
+        .list_cases(default_case_filter(RunId::new("run-bf-err")))
+        .await
+        .unwrap();
+    assert_eq!(
+        cases
+            .cases
+            .iter()
+            .find(|c| c.status == CaseStatus::Error)
+            .and_then(|c| c.error.as_deref()),
+        Some("boom"),
+    );
+    drop(storage);
+
+    // Every row is now stamped, so a second open selects nothing: a case with
+    // no error must land as '' rather than NULL or the backfill would rescan
+    // the whole table on every startup.
+    let conn = raw(dir.path());
+    let unstamped: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cases WHERE error IS NULL", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(unstamped, 0, "backfill must stamp every row, error or not");
 }
 
 #[tokio::test]

@@ -14,6 +14,7 @@ import { cn } from "@/lib/cn";
 import { Button } from "./ui/Button";
 import { SearchBar } from "./SearchBar";
 import { ThemeToggleButton } from "./ThemeToggle";
+import { FillViewportProvider, useFillViewportState } from "./AppShell";
 
 /**
  * Router-scoped bridge from the app-wide 401 signal to a login redirect.
@@ -71,7 +72,12 @@ function Logo() {
   );
 }
 
-function RoleChip({ role }: { role: string }) {
+/**
+ * The signed-in user's permission role (admin / viewer). Distinct from the chat
+ * turn's `ChatRoleChip` in the case drawer — same word, unrelated concept, so
+ * they stay visually distinct on purpose: pill, uppercase, ringed.
+ */
+function AuthRoleChip({ role }: { role: string }) {
   return (
     <span
       className={cn(
@@ -112,6 +118,8 @@ export function Layout() {
   const meta = useMeta();
   const { view } = useAuth();
   const location = useLocation();
+  // A page can claim the shell's remaining height instead of scrolling in it.
+  const { fill, setFill } = useFillViewportState();
 
   // Turn any unhandled 401 into a redirect to /login (all auth modes).
   useUnauthorizedRedirect();
@@ -136,14 +144,27 @@ export function Layout() {
   if (!chromeOnly) nav.push({ to: "/settings", label: "Settings" });
 
   return (
-    <div className="flex min-h-full flex-col">
-      <header className="sticky top-0 z-30 border-b border-border bg-surface/85 backdrop-blur supports-[backdrop-filter]:bg-surface/70">
-        <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-4 px-4 sm:px-6">
-          <NavLink to="/" className="flex items-center gap-2 font-semibold">
+    // `h-dvh` + a non-scrolling root: the shell owns the viewport, so a page
+    // that fills it (see `useFillViewport`) can hand its own scroller the exact
+    // remaining height instead of nesting one scrollport inside another.
+    <div className="flex h-dvh flex-col overflow-hidden">
+      <header className="z-30 shrink-0 border-b border-border bg-surface/85 backdrop-blur supports-[backdrop-filter]:bg-surface/70">
+        {/* `min-w-0` on the flex children plus a scrollable nav: with neither,
+            the nav and the right-hand cluster refused to shrink and pushed the
+            document to 508px wide at a 390px viewport — the one place the page
+            body itself scrolled sideways. */}
+        <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-3 px-4 sm:gap-4 sm:px-6">
+          <NavLink
+            to="/"
+            className="flex shrink-0 items-center gap-2 font-semibold"
+          >
             <Logo />
-            <span className="tracking-tight">domarinn</span>
+            <span className="hidden tracking-tight sm:inline">domarinn</span>
           </NavLink>
-          <nav className="flex items-center gap-1" aria-label="Primary">
+          <nav
+            className="flex min-w-0 items-center gap-1 overflow-x-auto"
+            aria-label="Primary"
+          >
             {nav.map((item) => (
               <NavLink
                 key={item.to}
@@ -151,7 +172,7 @@ export function Layout() {
                 end={item.end}
                 className={({ isActive }) =>
                   cn(
-                    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                    "shrink-0 whitespace-nowrap rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:px-3",
                     isActive
                       ? "bg-surface-2 text-fg"
                       : "text-muted hover:bg-surface-2 hover:text-fg",
@@ -163,7 +184,7 @@ export function Layout() {
             ))}
           </nav>
           {chromeOnly ? null : <SearchBar />}
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
             {isMockEnabled() ? (
               <span className="rounded-full bg-amber/12 px-2 py-0.5 text-[11px] font-medium text-amber ring-1 ring-inset ring-amber/25">
                 mock data
@@ -180,7 +201,7 @@ export function Layout() {
                   <span className="font-medium text-fg">
                     {view.user?.username ?? "user"}
                   </span>
-                  {view.role ? <RoleChip role={view.role} /> : null}
+                  {view.role ? <AuthRoleChip role={view.role} /> : null}
                 </span>
                 {view.hasRealSession ? (
                   <LogoutButton />
@@ -205,8 +226,21 @@ export function Layout() {
           </div>
         </div>
       </header>
-      <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-6 sm:px-6">
-        <Outlet />
+      <main
+        className={cn(
+          "mx-auto w-full max-w-[1600px] min-h-0 flex-1 px-4 py-6 sm:px-6",
+          // Filling pages manage their own scrolling; everything else scrolls
+          // here, in exactly one place. Below `lg` the fill is dropped: the
+          // run header stacks into three rows of tiles there and would leave
+          // the grid no height, with no page scroll to reach it.
+          fill
+            ? "overflow-y-auto lg:flex lg:flex-col lg:overflow-hidden"
+            : "overflow-y-auto",
+        )}
+      >
+        <FillViewportProvider value={setFill}>
+          <Outlet />
+        </FillViewportProvider>
       </main>
     </div>
   );

@@ -13,11 +13,13 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use domarinn_core::asserts::AssertName;
+use domarinn_core::ids::RunId;
 use domarinn_core::result::{
     AssertResult, AssertStatus, CaseResult, CaseStatus, CellKey, CiMeta, FilterSpec, GitMeta,
     RunResult, RunSummary,
 };
 use domarinn_core::types::{Output, TokenUsage};
+use domarinn_server::storage::CaseListFilter;
 use domarinn_server::{build_app, ServerConfig, Settings};
 
 /// Build a router backed by a fresh temp data dir. Returns the router and the
@@ -407,6 +409,24 @@ pub fn make_run(
 }
 
 /// A tiny run with a single passing case.
+/// An unfiltered `CaseListFilter` for a run — the storage-level equivalent of
+/// `GET /runs/{id}/cases` with no query params.
+pub fn default_case_filter(run_id: RunId) -> CaseListFilter {
+    CaseListFilter {
+        run_id,
+        status: None,
+        tag: None,
+        q: None,
+        provider: None,
+        prompt: None,
+        test: None,
+        stop_reason: None,
+        cached: None,
+        limit: 200,
+        cursor: None,
+    }
+}
+
 pub fn simple_run(run_id: &str) -> RunResult {
     make_run(
         run_id,

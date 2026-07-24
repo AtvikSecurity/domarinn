@@ -76,11 +76,24 @@ export function formatPercent(ratio: number | null, digits = 1): string {
   return `${(ratio * 100).toFixed(digits)}%`;
 }
 
+// Dense form for table rows and tooltips-within-tooltips: no year, no zone.
 const dateFmt = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
+});
+
+// Unambiguous form, for anywhere a reader needs to know *exactly* when. CI runs
+// in UTC and the browser renders local, so the zone is not optional; and a run
+// from last March rendered "Mar 3, 02:15" without a year.
+const dateAbsoluteFmt = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZoneName: "short",
 });
 
 /**
@@ -120,5 +133,36 @@ export function formatRelative(
   if (abs < hour) return `${Math.round(abs / min)}m ${suffix}`;
   if (abs < day) return `${Math.round(abs / hour)}h ${suffix}`;
   if (abs < 30 * day) return `${Math.round(abs / day)}d ${suffix}`;
-  return formatDate(iso);
+  // Past the relative window the reader needs the year and the zone — this is
+  // the fallback that used to render a bare, year-less "Mar 3, 02:15".
+  return formatDateAbsolute(iso);
+}
+
+/** Full date with year and time zone. Use in tooltips and `title`s. */
+export function formatDateAbsolute(iso: string | undefined | null): string {
+  if (!iso) return "-";
+  const ms = parseTimestamp(iso);
+  if (Number.isNaN(ms)) return "-";
+  return dateAbsoluteFmt.format(new Date(ms));
+}
+
+/**
+ * The grid's row-count summary.
+ *
+ * There is no server-side filtered total — `CaseListResponse` carries only the
+ * page and a cursor — so the honest statement depends on whether more pages
+ * exist. With a filter applied and no next page, the loaded count IS the total,
+ * and the old "Showing 48 of 144+ cases" was simply wrong.
+ */
+export function formatCaseCount(
+  loaded: number,
+  total: number | null | undefined,
+  hasNextPage: boolean,
+): string {
+  const noun = loaded === 1 ? "case" : "cases";
+  if (!hasNextPage) return `Showing ${loaded} ${noun}`;
+  if (total != null && total > loaded) {
+    return `Showing first ${loaded} of ${total}+ ${noun}`;
+  }
+  return `Showing first ${loaded} ${noun}`;
 }

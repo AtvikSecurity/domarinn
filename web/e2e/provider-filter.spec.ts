@@ -38,7 +38,7 @@ test.describe("Provider / prompt filters + columns (matrix-shaped run)", () => {
     // Server filter -> URL + a smaller, deterministic result set (48 = 2 prompts
     // × 12 tests × 2 repeats).
     await expect(page).toHaveURL(/[?&]provider=gpt-5-mini/);
-    await expect(page.getByText("Showing 48 of 144+ cases")).toBeVisible();
+    await expect(page.getByText("Showing 48 cases")).toBeVisible();
 
     // Reset via the group's "All" chip restores the full list.
     await page
@@ -62,12 +62,12 @@ test.describe("Provider / prompt filters + columns (matrix-shaped run)", () => {
 
     // 72 = 3 providers × 12 tests × 2 repeats.
     await expect(page).toHaveURL(/[?&]prompt=baseline/);
-    await expect(page.getByText("Showing 72 of 144+ cases")).toBeVisible();
+    await expect(page.getByText("Showing 72 cases")).toBeVisible();
   });
 
   test("deep-loads a provider filter from the URL", async ({ page }) => {
     await page.goto(`/runs/${MATRIX_RUN}?provider=llama-70b`);
-    await expect(page.getByText("Showing 48 of 144+ cases")).toBeVisible();
+    await expect(page.getByText("Showing 48 cases")).toBeVisible();
     // The active chip reflects the URL.
     await expect(
       page.getByRole("group", { name: "Provider" }).getByRole("button", { name: "llama-70b" }),
@@ -78,7 +78,7 @@ test.describe("Provider / prompt filters + columns (matrix-shaped run)", () => {
 test.describe("Single-provider run (MONEY_RUN) shows no matrix affordances", () => {
   test("renders neither provider/prompt chips nor columns", async ({ page }) => {
     await page.goto(`/runs/${MONEY_RUN}`);
-    await expect(page.getByText(/Showing \d+ of 500\+ cases/)).toBeVisible();
+    await expect(page.getByText(/Showing first \d+ of 500\+ cases/)).toBeVisible();
 
     await expect(page.getByRole("group", { name: "Provider" })).toHaveCount(0);
     await expect(page.getByRole("group", { name: "Prompt" })).toHaveCount(0);

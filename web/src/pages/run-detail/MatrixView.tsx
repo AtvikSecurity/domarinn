@@ -64,8 +64,15 @@ export function MatrixView({
     return <EmptyState title="No matrix data for this run" />;
   }
 
+  // `overflow-x-auto` computes `overflow-y` to `auto`, which makes this
+  // container the scrollport that `position: sticky` resolves against — so a
+  // `top-14` offset for the app header would do nothing, and the column headers
+  // only stick once the container has a height of its own.
+  //
+  // `border-collapse` stays: the row separators are declared on `<tr>`, which
+  // does not paint under `border-separate`.
   return (
-    <div className="overflow-x-auto rounded-xl border border-border bg-surface">
+    <div className="max-h-[70vh] overflow-auto overscroll-contain rounded-xl border border-border bg-surface lg:max-h-none lg:min-h-0 lg:flex-1">
       <table
         className="w-full border-collapse text-sm"
         aria-label="Prompt by provider matrix"
@@ -77,7 +84,7 @@ export function MatrixView({
                 <th
                   rowSpan={2}
                   scope="col"
-                  className="sticky left-0 z-20 bg-surface-2/95 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted backdrop-blur"
+                  className="sticky left-0 top-0 z-30 bg-surface-2 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted"
                 >
                   Test
                 </th>
@@ -86,7 +93,7 @@ export function MatrixView({
                     key={g.promptId ?? "∅"}
                     scope="colgroup"
                     colSpan={g.columns.length}
-                    className="border-l border-border bg-surface-2/95 px-2 py-1.5 text-center font-mono text-[11px] font-semibold text-fg"
+                    className="sticky top-0 z-20 h-8 border-l border-border bg-surface-2 px-2 py-1.5 text-center font-mono text-[11px] font-semibold text-fg"
                   >
                     {g.promptId ?? "—"}
                   </th>
@@ -98,7 +105,7 @@ export function MatrixView({
                     key={`${c.colIndex}-${i}`}
                     scope="col"
                     className={cn(
-                      "bg-surface-2/95 px-2 py-1.5 text-center font-mono text-[11px] text-muted",
+                      "sticky top-8 z-20 h-7 bg-surface-2 px-2 py-1.5 text-center font-mono text-[11px] text-muted",
                       i > 0 && c.promptId !== displayCols[i - 1]?.promptId
                         ? "border-l border-border"
                         : "",
@@ -113,7 +120,7 @@ export function MatrixView({
             <tr className="border-b border-border">
               <th
                 scope="col"
-                className="sticky left-0 z-20 bg-surface-2/95 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted backdrop-blur"
+                className="sticky left-0 top-0 z-30 bg-surface-2 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted"
               >
                 Test
               </th>
@@ -121,7 +128,7 @@ export function MatrixView({
                 <th
                   key={`${c.colIndex}-${i}`}
                   scope="col"
-                  className="bg-surface-2/95 px-2 py-1.5 text-center font-mono text-[11px] text-muted"
+                  className="sticky top-0 z-20 bg-surface-2 px-2 py-1.5 text-center font-mono text-[11px] text-muted"
                 >
                   {c.providerId}
                 </th>
@@ -225,12 +232,16 @@ function MatrixCellView({
   }
 
   const single = cell.total === 1;
-  const flake = cell.distinct_outputs > 1 && cell.pass_fraction >= 1;
+  // Flakiness was previously only marked on cells that also passed everything,
+  // which hid it exactly where it matters most — a cell that is both flaky and
+  // failing.
+  const flake = cell.distinct_outputs > 1;
   const label =
     `${testLabel}, ${providerId}${promptId != null ? ` · ${promptId}` : ""}: ` +
     (single
       ? singleCellStatus(cell)
-      : `${cell.passed} of ${cell.total} passed`);
+      : `${cell.passed} of ${cell.total} passed` +
+        (cell.errored > 0 ? `, ${cell.errored} errored` : ""));
 
   const trigger = (
     <button
@@ -240,7 +251,7 @@ function MatrixCellView({
       className={cn(
         "flex min-h-[2.25rem] w-full flex-col items-center justify-center gap-0 rounded px-1 py-1 text-xs font-medium tabular-nums transition-shadow",
         "hover:ring-2 hover:ring-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        single ? "" : cellBucketClass(cell.pass_fraction),
+        single ? "" : cellBucketClass(cell.pass_fraction, cell.errored),
       )}
     >
       {single ? (

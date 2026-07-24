@@ -116,7 +116,9 @@ export function ProviderCompare({
   const title = showPrompt && promptId != null ? `${testLabel} · ${promptId}` : testLabel;
 
   return (
-    <Modal open={open} onOpenChange={onOpenChange} title={title} size="lg">
+    // `xl`: three provider panels side by side in a 38rem dialog left ~190px
+    // each, which the OutputViewer toolbar alone wraps onto three lines.
+    <Modal open={open} onOpenChange={onOpenChange} title={title} size="xl">
       <div className="space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1">

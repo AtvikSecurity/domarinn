@@ -31,4 +31,66 @@ describe("Sparkline", () => {
     const { container } = render(<Sparkline values={[]} />);
     expect(container.querySelector("path")).toBeNull();
   });
+
+  it("renders a single point as a dot, not an invisible one-command path", () => {
+    // A lone `M x y` path draws nothing, so a brand-new suite used to show an
+    // empty box.
+    const { container } = render(<Sparkline values={[0.42]} />);
+    expect(container.querySelector("circle")).toBeInTheDocument();
+    expect(container.querySelector("path")).toBeNull();
+  });
+
+  it("does not claim a trend from a single point", () => {
+    const { container } = render(<Sparkline values={[0.42]} />);
+    // Neutral, not pass-green: one point is not "up".
+    expect(container.querySelector("circle")).toHaveAttribute(
+      "fill",
+      "var(--color-skip)",
+    );
+  });
+
+  it("centres an all-equal series instead of pinning it to the floor", () => {
+    // A 100%-passing suite is the common case here; on the floor it reads as 0%.
+    const { container } = render(
+      <Sparkline values={[1, 1, 1, 1]} height={26} />,
+    );
+    const line = container.querySelectorAll("path")[1] ?? container.querySelector("path");
+    // height 26, pad 2 -> inner height 22 -> centre y = 2 + 11 = 13
+    expect(line?.getAttribute("d")).toContain("13.0");
+  });
+
+  it("inverts the trend colour when lower is better", () => {
+    const rising = [100, 200, 400];
+    const good = render(<Sparkline values={rising} />);
+    expect(good.container.querySelector("circle")).toHaveAttribute(
+      "fill",
+      "var(--color-pass)",
+    );
+    good.unmount();
+
+    // Same rising series, but it is latency: rising is a regression.
+    const bad = render(<Sparkline values={rising} higherIsBetter={false} />);
+    expect(bad.container.querySelector("circle")).toHaveAttribute(
+      "fill",
+      "var(--color-fail)",
+    );
+  });
+
+  it("breaks the line at a null instead of dropping the slot", () => {
+    const { container } = render(<Sparkline values={[0.9, null, 0.5]} />);
+    const d = container.querySelector("path")?.getAttribute("d") ?? "";
+    // Two subpaths -> two move commands, and no area fill under a gapped line.
+    expect(d.match(/M/g)).toHaveLength(2);
+    expect(container.querySelectorAll("path")).toHaveLength(1);
+  });
+
+  it("keeps x-positions tied to the index when a value is missing", () => {
+    // The last point must sit at the far right even though the middle is null,
+    // so the chart still lines up with anything rendered above it.
+    const { container } = render(
+      <Sparkline values={[0.9, null, 0.5]} width={96} />,
+    );
+    // width 96, pad 2 -> inner width 92, step 46 -> last x = 2 + 92 = 94
+    expect(container.querySelector("circle")).toHaveAttribute("cx", "94");
+  });
 });

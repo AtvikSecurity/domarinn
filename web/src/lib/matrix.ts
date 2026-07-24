@@ -48,7 +48,7 @@ export function distinctPrompts(m: MatrixResponse | undefined): string[] {
 // ---------------------------------------------------------------------------
 
 /** Pass-fraction band for a repeated cell's background intensity. */
-export type CellBucket = "empty" | "low" | "half" | "high" | "full";
+export type CellBucket = "empty" | "low" | "half" | "high" | "full" | "error";
 
 /**
  * Bucket a repeated cell's `pass_fraction` into one of five bands:
@@ -56,7 +56,14 @@ export type CellBucket = "empty" | "low" | "half" | "high" | "full";
  * Written so out-of-range or `NaN` input still resolves (to `empty`), since the
  * value is server-derived and only trusted to be a number.
  */
-export function cellBucket(passFraction: number): CellBucket {
+export function cellBucket(
+  passFraction: number,
+  errored = 0,
+): CellBucket {
+  // Errors are not failures: a provider that never answered says nothing about
+  // the model's output, and tinting both the same fail-red made a run against a
+  // model that isn't pulled look like a catastrophic quality regression.
+  if (errored > 0) return "error";
   // `!(x > 0)` catches 0, negatives, and NaN in one guard.
   if (!(passFraction > 0)) return "empty";
   if (passFraction < 0.5) return "low";
@@ -77,11 +84,14 @@ export const CELL_BUCKET_CLASS: Record<CellBucket, string> = {
   half: "bg-amber/20",
   high: "bg-pass/15",
   full: "bg-pass/30",
+  // Distinct from every pass/fail tint: an errored cell is "we don't know",
+  // not "the model was wrong".
+  error: "bg-error/25",
 };
 
 /** Convenience: the background class for a cell's pass fraction. */
-export function cellBucketClass(passFraction: number): string {
-  return CELL_BUCKET_CLASS[cellBucket(passFraction)];
+export function cellBucketClass(passFraction: number, errored = 0): string {
+  return CELL_BUCKET_CLASS[cellBucket(passFraction, errored)];
 }
 
 /**
