@@ -6,6 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value as Json;
 
+use crate::empty::EmptyReason;
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
 /// Metadata about the test a call belongs to (exec providers receive this).
@@ -41,6 +42,14 @@ pub struct ProviderResponse {
     pub stop_reason: Option<String>,
     /// Raw payload, retained for `--verbose` / the UI.
     pub raw: Option<Json>,
+    /// The model's reasoning/thinking text, when it exposed any.
+    ///
+    /// A separate field rather than an [`Output`] variant on purpose: `Output`
+    /// is `#[serde(untagged)]`, so anything structured added as a variant would
+    /// be silently swallowed by `Output::Json`.
+    pub reasoning: Option<String>,
+    /// Why [`Self::output`] has nothing gradeable in it, when it does not.
+    pub empty_reason: Option<EmptyReason>,
 }
 
 impl ProviderResponse {
@@ -51,6 +60,8 @@ impl ProviderResponse {
             cost_usd: None,
             stop_reason: None,
             raw: None,
+            reasoning: None,
+            empty_reason: None,
         }
     }
 }
@@ -144,5 +155,24 @@ pub trait Provider: Send + Sync {
     /// falls back to showing the rendered prompt alone.
     fn request_preview(&self, _req: &ProviderRequest) -> Option<Json> {
         None
+    }
+
+    /// Why this response has nothing gradeable in it, if it does not.
+    ///
+    /// A trait method rather than logic inlined in each parse function so a new
+    /// provider — most plausibly an `exec` child rather than a new Rust module —
+    /// gets the provider-agnostic baseline for free and can override it with
+    /// vendor specifics. Sits alongside [`Provider::cacheable`] and
+    /// [`Provider::request_preview`], the other per-provider policy hooks.
+    ///
+    /// Providers that can say more should set
+    /// [`ProviderResponse::empty_reason`] at parse time, while the evidence
+    /// (finish reasons, block types) is still in hand; this default only runs
+    /// when they did not.
+    fn classify_empty(&self, response: &ProviderResponse) -> Option<EmptyReason> {
+        response
+            .empty_reason
+            .clone()
+            .or_else(|| crate::empty::classify_blank(&response.output))
     }
 }

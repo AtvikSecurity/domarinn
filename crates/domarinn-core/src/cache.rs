@@ -118,6 +118,28 @@ pub struct CacheEntry {
     /// this field existed (they replay with no raw, as they always did).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw: Option<Json>,
+    /// Attempts the original call took. Replayed so a cached case reports what
+    /// actually happened rather than a sentinel — a hit used to report `0`,
+    /// which rendered as the nonsense "0 attempts". Absent on entries written
+    /// before this field existed; such a hit reports no attempt count at all,
+    /// which is honest, where `0` was not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<u32>,
+    /// How long the original provider call took, excluding retry backoff.
+    ///
+    /// Without this a cache hit reports the *cache read* time as the model's
+    /// latency — near-zero for a local store, but not for `remote_http` or
+    /// `s3`, where it is simply a different measurement wearing the same name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_latency_ms: Option<u64>,
+    /// Reasoning/thinking text from the original call. Without this a cache hit
+    /// replays with no reasoning and no explanation for an empty output — and a
+    /// hit is the common path, so the diagnostic would be present on the first
+    /// run and gone on every run after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_reason: Option<crate::empty::EmptyReason>,
     pub domarinn_version: String,
 }
 

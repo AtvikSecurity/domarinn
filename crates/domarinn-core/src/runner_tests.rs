@@ -6,7 +6,6 @@ use super::*;
 use crate::cache::{CacheError, CacheStats, PurgeFilter};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 /// A cache that never hits and never fails — the retry path under test uses
 /// `CacheMode::Disabled`, so these are inert, but the signature requires one.
@@ -63,6 +62,14 @@ impl Provider for FlakyProvider {
     }
 }
 
+/// Stats for fixtures that do not exercise the retry loop itself.
+fn test_stats() -> crate::retry::RetryStats {
+    crate::retry::RetryStats {
+        attempts: 1,
+        in_flight: std::time::Duration::from_millis(0),
+    }
+}
+
 /// Cached replays must carry the same raw provider metadata a fresh call
 /// would — the drawer's "Provider metadata" section disappeared for every
 /// cached case because `CacheEntry` silently dropped `raw`.
@@ -78,12 +85,64 @@ fn cache_entries_preserve_raw_provider_metadata() {
         cost_usd: None,
         stop_reason: Some("stop".to_string()),
         raw: Some(raw.clone()),
+        reasoning: None,
+        empty_reason: None,
     };
 
-    let entry = response_to_entry(&provider, &response);
+    let entry = response_to_entry(&provider, &response, test_stats());
     assert_eq!(entry.raw, Some(raw.clone()));
     let replayed = entry_to_response(entry);
     assert_eq!(replayed.raw, Some(raw));
+}
+
+/// Every field on [`ProviderResponse`] must survive the cache round-trip.
+///
+/// The destructuring below is deliberate: adding a field to `ProviderResponse`
+/// makes this test **fail to compile**, forcing you to decide whether it needs
+/// a `CacheEntry` counterpart. A field without one silently replays as `None`
+/// on every cache hit — which is the common path, not the rare one — so the
+/// diagnostic is present on the first run and gone on every run after.
+/// `cache_entries_preserve_raw_provider_metadata` above records the time that
+/// shipped; this generalizes the guard so the next field cannot repeat it.
+#[test]
+fn cache_round_trip_preserves_every_response_field() {
+    let provider = FlakyProvider {
+        calls: AtomicU32::new(0),
+    };
+    let original = ProviderResponse {
+        output: crate::types::Output::Text("answer".to_string()),
+        usage: Some(crate::types::TokenUsage {
+            input_tokens: 11,
+            output_tokens: 7,
+            cache_read_tokens: Some(3),
+        }),
+        cost_usd: Some(0.0125),
+        stop_reason: Some("end_turn".to_string()),
+        raw: Some(serde_json::json!({ "id": "resp_1", "model": "m" })),
+        reasoning: Some("let me work through this".to_string()),
+        empty_reason: Some(crate::empty::EmptyReason::new(
+            crate::empty::EmptyReason::THINKING_ONLY,
+        )),
+    };
+
+    let replayed = entry_to_response(response_to_entry(&provider, &original, test_stats()));
+
+    let ProviderResponse {
+        output,
+        usage,
+        cost_usd,
+        stop_reason,
+        raw,
+        reasoning,
+        empty_reason,
+    } = replayed;
+    assert_eq!(output, original.output);
+    assert_eq!(usage, original.usage);
+    assert_eq!(cost_usd, original.cost_usd);
+    assert_eq!(stop_reason, original.stop_reason);
+    assert_eq!(raw, original.raw);
+    assert_eq!(reasoning, original.reasoning);
+    assert_eq!(empty_reason, original.empty_reason);
 }
 
 /// Entries written before the `raw` field existed keep deserializing (and
@@ -153,12 +212,13 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
             let ctx = CallCtx::default();
             let cache = NoopCache;
             // initial_ms = 1 keeps the single backoff sleep sub-millisecond.
-            let retry_cfg = RetryConfig {
+            let retry_cfg = RetryPolicy {
                 max: 1,
                 initial_ms: 1,
                 max_ms: 1,
+                ..Default::default()
             };
-            let (_resp, cached, attempts) = call_with_cache(
+            let outcome = call_with_cache(
                 &provider,
                 &req,
                 &ctx,
@@ -169,8 +229,8 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
             )
             .await
             .expect("second attempt succeeds");
-            assert!(!cached);
-            assert_eq!(attempts, 2);
+            assert!(!outcome.cached);
+            assert_eq!(outcome.attempts, Some(2));
         });
     });
 
@@ -182,32 +242,5 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
     assert!(
         logged.contains("\"delay_ms\""),
         "retry warn must record a `delay_ms` field; got: {logged}"
-    );
-}
-
-#[test]
-fn backoff_grows_and_caps() {
-    let cfg = RetryConfig {
-        max: 5,
-        initial_ms: 100,
-        max_ms: 1000,
-    };
-    assert_eq!(cfg.backoff(1, None), Duration::from_millis(100));
-    assert_eq!(cfg.backoff(2, None), Duration::from_millis(200));
-    assert_eq!(cfg.backoff(3, None), Duration::from_millis(400));
-    // Caps at max_ms.
-    assert_eq!(cfg.backoff(10, None), Duration::from_millis(1000));
-}
-
-#[test]
-fn backoff_honors_retry_after_hint() {
-    let cfg = RetryConfig {
-        max: 5,
-        initial_ms: 100,
-        max_ms: 1000,
-    };
-    assert_eq!(
-        cfg.backoff(1, Some(Duration::from_secs(7))),
-        Duration::from_secs(7)
     );
 }

@@ -197,6 +197,10 @@ mod tests {
             cost_usd: None,
             stop_reason: None,
             raw: None,
+            reasoning: None,
+            empty_reason: None,
+            attempts: None,
+            provider_latency_ms: None,
             domarinn_version: "test".into(),
         }
     }

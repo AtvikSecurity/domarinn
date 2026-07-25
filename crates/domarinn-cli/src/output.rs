@@ -249,6 +249,11 @@ fn stats_line(s: &RunSummary) -> String {
     if s.cache_hits > 0 {
         segments.push(format!("{} cache hits", s.cache_hits));
     }
+    // Retries otherwise leave no trace but a longer wall-clock — the run looks
+    // clean while having paid for three calls on some cases.
+    if s.retried_cases > 0 {
+        segments.push(format!("{} retried", s.retried_cases));
+    }
     segments.join(" · ")
 }
 
@@ -500,6 +505,9 @@ mod tests {
             usage: None,
             cost_usd: None,
             latency_ms: 10,
+            wall_ms: None,
+            reasoning: None,
+            empty_reason: None,
             cached: false,
             attempts: 1,
             error: None,

@@ -34,5 +34,15 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     css: false,
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // Vitest defaults to one worker per core, and each worker builds a full
+    // jsdom — the profile puts environment setup an order of magnitude above
+    // the tests themselves. That is free on a dev box, but CI shares one
+    // self-hosted runner with the concurrent cargo jobs, and the unbounded fan
+    // out exhausted it: the `web-test` step never reached a conclusion, the job
+    // was killed after ~14 minutes, and no log blob was ever uploaded.
+    //
+    // Capping workers under CI trades a little wall-clock for a run that fits
+    // in the machine it actually runs on. Local runs are untouched.
+    ...(process.env.CI ? { maxWorkers: 2, minWorkers: 1 } : {}),
   },
 });

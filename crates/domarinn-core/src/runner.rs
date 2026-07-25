@@ -32,6 +32,7 @@ use crate::result::{
     AssertResult, AssertStatus, CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary,
     RESULT_SCHEMA_VERSION,
 };
+use crate::retry::{with_retry, RetryPolicy, RetryStats};
 use crate::scoring::{case_verdict, remaining_can_change_outcome, Scored};
 use crate::template::TemplateEngine;
 use crate::types::{Output, RenderedPrompt};
@@ -59,6 +60,12 @@ pub struct RunOptions {
     pub cache_mode: CacheMode,
     /// Max concurrent provider calls. `None` uses the suite's `runner.concurrency`.
     pub concurrency: Option<usize>,
+    /// Retry budget override. `None` uses the suite's `runner.retries.max`.
+    ///
+    /// A run option rather than a suite mutation on purpose: `config_digest` is
+    /// derived from the serialized suite, so editing the suite here would show a
+    /// spurious config drift in every `--against` comparison.
+    pub retries: Option<u32>,
     /// Persist the provider's raw response metadata *and* the captured provider
     /// request in each `CaseResult`. Default `true`; disabled by `--no-raw` to
     /// keep result documents small. Both are bulky provenance rather than
@@ -73,48 +80,9 @@ impl Default for RunOptions {
             repeat: 1,
             cache_mode: CacheMode::ReadWrite,
             concurrency: None,
+            retries: None,
             include_raw: true,
         }
-    }
-}
-
-/// Retry/backoff settings derived from the suite `runner.retries`.
-#[derive(Debug, Clone, Copy)]
-struct RetryConfig {
-    max: u32,
-    initial_ms: u64,
-    max_ms: u64,
-}
-
-impl RetryConfig {
-    fn from_suite(suite: &Suite) -> Self {
-        match suite.runner.as_ref().and_then(|r| r.retries.as_ref()) {
-            Some(r) => RetryConfig {
-                max: r.max,
-                initial_ms: r.initial_ms.unwrap_or(500),
-                max_ms: r.max_ms.unwrap_or(8_000),
-            },
-            None => RetryConfig {
-                max: 0,
-                initial_ms: 500,
-                max_ms: 8_000,
-            },
-        }
-    }
-
-    /// Backoff before attempt `attempt` (1-based), honoring a server hint.
-    fn backoff(
-        &self,
-        attempt: u32,
-        retry_after: Option<std::time::Duration>,
-    ) -> std::time::Duration {
-        if let Some(hint) = retry_after {
-            return hint;
-        }
-        let exp = self
-            .initial_ms
-            .saturating_mul(1u64 << attempt.min(16).saturating_sub(1));
-        std::time::Duration::from_millis(exp.min(self.max_ms))
     }
 }
 
@@ -237,7 +205,10 @@ pub async fn run_with_progress(
     let ctx = CallCtx {
         working_dir: Some(base_dir.to_path_buf()),
     };
-    let retry_cfg = RetryConfig::from_suite(suite);
+    let mut retry_cfg = RetryPolicy::from_suite(suite);
+    if let Some(max) = opts.retries {
+        retry_cfg.max = max;
+    }
     let concurrency = opts
         .concurrency
         .or_else(|| suite.runner.as_ref().and_then(|r| r.concurrency))
@@ -403,7 +374,7 @@ async fn run_cell(
     base_dir: &Path,
     cache_mode: CacheMode,
     include_raw: bool,
-    retry_cfg: &RetryConfig,
+    retry_cfg: &RetryPolicy,
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
     let cell = CellKey {
@@ -427,7 +398,8 @@ async fn run_cell(
                 case_key,
                 name,
                 test,
-                format!("rendering vars: {e}"),
+                CallFailure::before_any_attempt(format!("rendering vars: {e}")),
+                0,
                 CaseInputs::default(),
             )
         }
@@ -445,7 +417,8 @@ async fn run_cell(
                     case_key,
                     name,
                     test,
-                    format!("rendering prompt: {e}"),
+                    CallFailure::before_any_attempt(format!("rendering prompt: {e}")),
+                    0,
                     CaseInputs {
                         vars: case_vars,
                         ..Default::default()
@@ -483,7 +456,7 @@ async fn run_cell(
     };
 
     let start = Instant::now();
-    let (response, cached, attempts) = match call_with_cache(
+    let outcome = match call_with_cache(
         provider,
         &req,
         ctx,
@@ -494,14 +467,15 @@ async fn run_cell(
     )
     .await
     {
-        Ok(triple) => triple,
-        Err(e) => {
+        Ok(outcome) => outcome,
+        Err(failure) => {
             return error_case(
                 cell,
                 case_key,
                 name,
                 test,
-                e,
+                failure,
+                start.elapsed().as_millis() as u64,
                 CaseInputs {
                     prompt: rendered_prompt,
                     vars: case_vars,
@@ -510,7 +484,24 @@ async fn run_cell(
             );
         }
     };
-    let latency_ms = start.elapsed().as_millis() as u64;
+    let CallOutcome {
+        response,
+        cached,
+        attempts,
+        provider_latency_ms,
+    } = outcome;
+    let attempts = attempts.unwrap_or(0);
+    let wall_ms = start.elapsed().as_millis() as u64;
+    // Provider time, never wall time: `latency` assertions read this, and
+    // charging retry backoff to it fails them on a model that answered fast.
+    // Entries written before the field existed fall back to wall time, which is
+    // what they always reported.
+    let latency_ms = provider_latency_ms.unwrap_or(wall_ms);
+    // After the cache read, so a replayed hit carries the same diagnosis a
+    // fresh call would. Keyed on the reason being present, never on the output
+    // looking empty.
+    let empty_reason = provider.classify_empty(&response);
+    let reasoning = response.reasoning.clone();
 
     let metrics = MetricCtx {
         latency_ms,
@@ -559,14 +550,49 @@ async fn run_cell(
         usage: response.usage,
         cost_usd: response.cost_usd,
         latency_ms,
+        wall_ms: Some(wall_ms),
         cached,
         attempts,
         error: any_error.then(|| "one or more assertions errored".to_string()),
+        reasoning,
+        empty_reason,
+    }
+}
+
+/// One provider call's result, plus how it was obtained.
+struct CallOutcome {
+    response: ProviderResponse,
+    cached: bool,
+    /// `None` only for a cache hit on an entry written before entries recorded
+    /// attempts — honest about not knowing, where the old `0` sentinel was not.
+    attempts: Option<u32>,
+    /// In-flight provider time, excluding retry backoff. On a cache hit this is
+    /// the *original* call's latency replayed from the entry, not the cache-read
+    /// time.
+    provider_latency_ms: Option<u64>,
+}
+
+/// A failed provider call. Carries the attempt count so an errored case can
+/// report what it actually spent instead of a hardcoded `1`.
+#[derive(Debug)]
+struct CallFailure {
+    message: String,
+    attempts: u32,
+}
+
+impl CallFailure {
+    /// A failure that never reached the provider (cache read error, cache-only
+    /// miss) — no attempt was made against the system under test.
+    fn before_any_attempt(message: String) -> Self {
+        CallFailure {
+            message,
+            attempts: 0,
+        }
     }
 }
 
 /// Call a provider, consulting the cache per `mode` and retrying retriable
-/// errors with backoff. Returns `(response, cached, attempts)`.
+/// errors with backoff.
 #[tracing::instrument(name = "provider_call", skip_all, fields(provider = %provider.id()))]
 async fn call_with_cache(
     provider: &dyn Provider,
@@ -575,8 +601,8 @@ async fn call_with_cache(
     cache: &dyn CacheBackend,
     mode: CacheMode,
     repeat: u32,
-    retry_cfg: &RetryConfig,
-) -> Result<(ProviderResponse, bool, u32), String> {
+    retry_cfg: &RetryPolicy,
+) -> Result<CallOutcome, CallFailure> {
     let use_cache = mode != CacheMode::Disabled && provider.cacheable();
     let key = use_cache.then(|| provider_cache_key(&provider.fingerprint(), req, repeat));
 
@@ -584,54 +610,62 @@ async fn call_with_cache(
         match cache.get(key).await {
             Ok(Some(entry)) => {
                 tracing::debug!(%key, "cache hit");
-                return Ok((entry_to_response(entry), true, 0));
+                let attempts = entry.attempts;
+                let provider_latency_ms = entry.provider_latency_ms;
+                return Ok(CallOutcome {
+                    response: entry_to_response(entry),
+                    cached: true,
+                    attempts,
+                    provider_latency_ms,
+                });
             }
             Ok(None) => {
                 tracing::debug!(%key, "cache miss");
                 if mode == CacheMode::ReadOnlyStrict {
-                    return Err(format!("cache-only: miss for key {key}"));
+                    return Err(CallFailure::before_any_attempt(format!(
+                        "cache-only: miss for key {key}"
+                    )));
                 }
             }
-            Err(e) => return Err(format!("cache read error: {e}")),
+            Err(e) => {
+                return Err(CallFailure::before_any_attempt(format!(
+                    "cache read error: {e}"
+                )))
+            }
         }
     }
 
-    let mut attempt = 0u32;
-    loop {
-        attempt += 1;
-        match provider.call(req, ctx).await {
-            Ok(response) => {
-                if let Some(key) = &key {
-                    if mode == CacheMode::ReadWrite {
-                        let entry = response_to_entry(provider, &response);
-                        // A cache write failure must not fail the run.
-                        if let Err(e) = cache.put(key, &entry).await {
-                            tracing::warn!(error = %e, "cache write failed");
-                        }
+    let (result, stats) = with_retry(retry_cfg, |_attempt| provider.call(req, ctx)).await;
+
+    match result {
+        Ok(response) => {
+            if let Some(key) = &key {
+                if mode == CacheMode::ReadWrite {
+                    let entry = response_to_entry(provider, &response, stats);
+                    // A cache write failure must not fail the run.
+                    if let Err(e) = cache.put(key, &entry).await {
+                        tracing::warn!(error = %e, "cache write failed");
                     }
                 }
-                return Ok((response, false, attempt));
             }
-            Err(ProviderError::Retriable {
-                source,
-                retry_after,
-            }) => {
-                if attempt > retry_cfg.max {
-                    return Err(format!(
-                        "provider error after {attempt} attempt(s): {source}"
-                    ));
-                }
-                let delay = retry_cfg.backoff(attempt, retry_after);
-                tracing::warn!(
-                    attempt,
-                    delay_ms = delay.as_millis() as u64,
-                    error = %source,
-                    "retriable provider error; retrying"
-                );
-                tokio::time::sleep(delay).await;
-            }
-            Err(ProviderError::Fatal(e)) => return Err(format!("provider error: {e}")),
+            Ok(CallOutcome {
+                response,
+                cached: false,
+                attempts: Some(stats.attempts),
+                provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
+            })
         }
+        Err(ProviderError::Retriable { source, .. }) => Err(CallFailure {
+            message: format!(
+                "provider error after {} attempt(s): {source}",
+                stats.attempts
+            ),
+            attempts: stats.attempts,
+        }),
+        Err(ProviderError::Fatal(e)) => Err(CallFailure {
+            message: format!("provider error: {e}"),
+            attempts: stats.attempts,
+        }),
     }
 }
 
@@ -808,7 +842,8 @@ fn error_case(
     case_key: CaseKey,
     name: Option<String>,
     test: &TestCase,
-    error: String,
+    failure: CallFailure,
+    wall_ms: u64,
     inputs: CaseInputs,
 ) -> CaseResult {
     CaseResult {
@@ -827,10 +862,15 @@ fn error_case(
         asserts: Vec::new(),
         usage: None,
         cost_usd: None,
+        // 0 when the call never reached the provider (a cache-only miss or a
+        // cache read error): there is no provider latency to report.
         latency_ms: 0,
+        wall_ms: Some(wall_ms),
         cached: false,
-        attempts: 1,
-        error: Some(error),
+        attempts: failure.attempts,
+        error: Some(failure.message),
+        reasoning: None,
+        empty_reason: None,
     }
 }
 
@@ -888,6 +928,11 @@ fn summarize(cases: &[CaseResult]) -> RunSummary {
         } else {
             s.cache_misses += 1;
         }
+        // A cached case replays the original attempt count, so counting it here
+        // would re-report a retry that happened on some earlier run.
+        if !c.cached && c.attempts > 1 {
+            s.retried_cases += 1;
+        }
     }
     s.cost_usd = any_cost.then_some(cost);
     s
@@ -900,10 +945,16 @@ fn entry_to_response(entry: CacheEntry) -> ProviderResponse {
         cost_usd: entry.cost_usd,
         stop_reason: entry.stop_reason,
         raw: entry.raw,
+        reasoning: entry.reasoning,
+        empty_reason: entry.empty_reason,
     }
 }
 
-fn response_to_entry(provider: &dyn Provider, response: &ProviderResponse) -> CacheEntry {
+fn response_to_entry(
+    provider: &dyn Provider,
+    response: &ProviderResponse,
+    stats: RetryStats,
+) -> CacheEntry {
     CacheEntry {
         created_at: Utc::now(),
         provider_fingerprint: provider.fingerprint(),
@@ -911,6 +962,10 @@ fn response_to_entry(provider: &dyn Provider, response: &ProviderResponse) -> Ca
         usage: response.usage.clone(),
         cost_usd: response.cost_usd,
         stop_reason: response.stop_reason.clone(),
+        attempts: Some(stats.attempts),
+        provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
+        reasoning: response.reasoning.clone(),
+        empty_reason: response.empty_reason.clone(),
         // Same size cap as persistence, so a pathological payload can't bloat
         // the shared cache. `--no-raw` intentionally does NOT strip the cache
         // copy: a later run without the flag replaying this entry should still

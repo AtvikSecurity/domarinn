@@ -1211,8 +1211,18 @@
           "minimum": 0
         },
         "jitter": {
+          "description": "Spread concurrent retries so rate-limited cells do not all wake at once.",
           "type": "boolean",
           "default": false
+        },
+        "retry_after_max_ms": {
+          "description": "Largest server-supplied `Retry-After` to honor, in milliseconds\n(default 120000).\n\nSeparate from `max_ms` on purpose: `max_ms` caps domarinn's own\nexponential growth, whereas `Retry-After` is a directive describing the\nserver's rate window. A hint above this ceiling errors the case rather\nthan retrying early, which would only earn another 429.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         }
       },
       "additionalProperties": false,

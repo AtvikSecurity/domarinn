@@ -601,3 +601,237 @@ tests:
         "known gap: the verdict is re-graded even though the response was cached"
     );
 }
+
+// ── Retry × cache ────────────────────────────────────────────────────────────
+
+/// A child that reports a **retriable** protocol error on its first call and
+/// succeeds on every later one. The marker lives beside the script (`$0`), so
+/// statefulness needs no extra plumbing through the suite.
+fn write_flaky_child(dir: &Path) -> String {
+    let path = dir.join("flaky.sh");
+    std::fs::write(
+        &path,
+        r#"cat >/dev/null
+if [ -f "$0.marker" ]; then
+  printf '{"output":"ok"}'
+else
+  : > "$0.marker"
+  printf '{"output":null,"error":{"message":"429 from upstream","retriable":true}}'
+fi
+"#,
+    )
+    .unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// A child that is retriable forever — used to prove an exhausted retry writes
+/// nothing.
+fn write_always_retriable_child(dir: &Path) -> String {
+    let path = dir.join("always-429.sh");
+    std::fs::write(
+        &path,
+        r#"cat >/dev/null
+printf '{"output":null,"error":{"message":"429 from upstream","retriable":true}}'
+"#,
+    )
+    .unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// One cacheable exec case backed by `script`, optionally with retries enabled.
+/// Backoff is deliberately tiny so the test does not sleep for real.
+fn script_suite(script: &str, retries: Option<u32>) -> String {
+    script_suite_with_backoff(script, retries, 1)
+}
+
+/// As [`script_suite`], with an explicit backoff so a test can make the sleep
+/// large enough to observe.
+fn script_suite_with_backoff(script: &str, retries: Option<u32>, initial_ms: u64) -> String {
+    let runner = match retries {
+        Some(max) => format!(
+            "\nrunner: {{retries: {{max: {max}, initial_ms: {initial_ms}, max_ms: {initial_ms}}}}}"
+        ),
+        None => String::new(),
+    };
+    format!(
+        r#"
+version: 1
+project: test
+suite: cache
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "{script}"]
+    cache_salt: "v1"
+tests:
+  - id: case-a
+    vars: {{x: "a"}}{runner}
+"#
+    )
+}
+
+#[tokio::test]
+async fn a_retried_call_caches_the_successful_attempt_exactly_once() {
+    // The failed attempt must leave no trace: one entry, holding the response
+    // that actually succeeded.
+    let dir = tempfile::tempdir().unwrap();
+    let yaml = script_suite(&write_flaky_child(dir.path()), Some(2));
+    let cache = MemCache::default();
+
+    let first = run_default(&yaml, &cache).await;
+    assert_eq!(
+        first.cases[0].attempts, 2,
+        "the first attempt failed retriably, the second succeeded"
+    );
+    assert_eq!(first.cases[0].output.as_ref().unwrap().as_text(), "ok");
+    assert_eq!(
+        cache.entries(),
+        1,
+        "exactly one entry, from the good attempt"
+    );
+
+    let second = run_default(&yaml, &cache).await;
+    assert_eq!(second.summary.cache_hits, 1);
+    assert!(second.cases[0].cached);
+    assert_eq!(second.cases[0].output.as_ref().unwrap().as_text(), "ok");
+    assert_eq!(
+        second.cases[0].attempts, 2,
+        "a hit replays what the original call actually cost, not a 0 sentinel"
+    );
+    assert_eq!(cache.entries(), 1);
+}
+
+#[tokio::test]
+async fn an_exhausted_retry_caches_nothing() {
+    // A poisoned entry would be worse than the failure itself: every later run
+    // would fail *from cache*, with no recovery but --no-cache.
+    let dir = tempfile::tempdir().unwrap();
+    let yaml = script_suite(&write_always_retriable_child(dir.path()), Some(1));
+    let cache = MemCache::default();
+
+    let result = run_default(&yaml, &cache).await;
+    assert_eq!(result.cases[0].status, CaseStatus::Error);
+    assert_eq!(cache.entries(), 0, "a failed call must never be cached");
+}
+
+#[tokio::test]
+async fn an_empty_output_is_cached_and_replayed_like_any_other() {
+    // Deliberately documents today's behavior: an empty response is a
+    // *successful* response, so it is cached and replayed forever. That is what
+    // makes a transient empty sticky, and it is the constraint `empty_output_mode`
+    // has to reckon with — a mode of `error` must refuse to cache, not cache an
+    // error. When that lands, this test should change alongside it.
+    let yaml = suite_with(Some("v1"), "", &[Case::new("case-a", "a")]);
+    let cache = MemCache::default();
+
+    let first = run_default(&yaml, &cache).await;
+    assert_eq!(first.cases[0].output.as_ref().unwrap().as_text(), "");
+    assert_eq!(cache.entries(), 1);
+
+    let second = run_default(&yaml, &cache).await;
+    assert_eq!(second.summary.cache_hits, 1);
+    assert_eq!(second.cases[0].output.as_ref().unwrap().as_text(), "");
+}
+
+#[test]
+fn an_entry_written_by_a_newer_domarinn_still_deserializes() {
+    // A shared S3/server cache is read by whatever version each teammate or CI
+    // job happens to be running (docs/ci.md). An entry written by a newer
+    // binary carries fields this one has never heard of; skipping them must be
+    // a no-op, not a hard error that fails the whole run.
+    let from_the_future = json!({
+        "created_at": "2026-01-01T00:00:00Z",
+        "provider_fingerprint": {"type": "exec"},
+        "output": "hi",
+        "domarinn_version": "99.0.0",
+        "empty_reason": "thinking_only",
+        "reasoning": "let me work through this",
+        "a_field_invented_after_this_binary_shipped": {"nested": true}
+    });
+
+    let entry: CacheEntry = serde_json::from_value(from_the_future).unwrap();
+    assert_eq!(entry.output.as_text(), "hi");
+    assert_eq!(entry.domarinn_version, "99.0.0");
+}
+
+#[tokio::test]
+async fn latency_excludes_retry_backoff_but_wall_time_includes_it() {
+    // `AssertKind::Latency` reads `latency_ms` directly, so charging retry
+    // backoff to it fails `{type: latency, max: N}` on a model that answered
+    // fast — the moment one 429 fires. With retries on by default that is not a
+    // corner case, it is every rate-limited suite.
+    let dir = tempfile::tempdir().unwrap();
+    let script = write_flaky_child(dir.path());
+    // 300 ms is comfortably larger than a subprocess spawn, so the two numbers
+    // are unambiguously distinguishable.
+    let yaml = script_suite_with_backoff(&script, Some(2), 300);
+    let cache = MemCache::default();
+
+    let result = run_default(&yaml, &cache).await;
+    let case = &result.cases[0];
+
+    assert_eq!(case.attempts, 2, "one retriable failure, then success");
+    let wall = case.wall_ms.expect("wall time is recorded");
+    assert!(
+        wall >= 300,
+        "wall time must include the backoff sleep, was {wall}ms"
+    );
+    assert!(
+        case.latency_ms < 250,
+        "latency_ms must exclude the backoff, was {}ms",
+        case.latency_ms
+    );
+}
+
+#[tokio::test]
+async fn a_run_option_overrides_the_suites_retry_budget() {
+    // `--no-retries` has to win over a suite that asks for five, and it must do
+    // so as a run option rather than by editing the suite: `config_digest` is
+    // derived from the serialized suite, so mutating it would show a spurious
+    // config drift in every `--against` comparison.
+    let dir = tempfile::tempdir().unwrap();
+    let yaml = script_suite(&write_always_retriable_child(dir.path()), Some(5));
+    let cache = MemCache::default();
+
+    let with_override = run_suite(
+        &yaml,
+        RunOptions {
+            retries: Some(0),
+            ..Default::default()
+        },
+        &cache,
+    )
+    .await;
+    assert_eq!(
+        with_override.cases[0].attempts, 1,
+        "--no-retries wins over the suite's runner.retries.max"
+    );
+
+    let from_suite = run_default(&yaml, &cache).await;
+    assert_eq!(
+        from_suite.cases[0].attempts, 6,
+        "5 retries plus the first try"
+    );
+
+    assert_eq!(
+        with_override.config_digest, from_suite.config_digest,
+        "a retry override must not perturb the config digest"
+    );
+}
+
+#[tokio::test]
+async fn retries_are_on_by_default() {
+    // No `runner:` block at all. Before this default existed a single transient
+    // failure scored the case 0.
+    let dir = tempfile::tempdir().unwrap();
+    let yaml = script_suite(&write_flaky_child(dir.path()), None);
+    let cache = MemCache::default();
+
+    let result = run_default(&yaml, &cache).await;
+    assert_eq!(
+        result.cases[0].attempts, 2,
+        "the transient failure is retried without any configuration"
+    );
+    assert_eq!(result.cases[0].output.as_ref().unwrap().as_text(), "ok");
+    assert_eq!(result.summary.retried_cases, 1, "and the run says so");
+}

@@ -120,6 +120,10 @@ jobs:
   web:
     name: web (lint + build + vitest)
     runs-on: ubuntu-24.04
+    # The suite takes seconds; anything approaching this is a hang, not slowness.
+    # Without a bound a wedged run burned ~14 minutes and still produced no logs,
+    # which is the worst of both — slow *and* undiagnosable.
+    timeout-minutes: 10
     env:
       # `mise run` auto-installs every tool in .mise/config.toml, which would
       # pull in the Rust toolchain this job never uses — skip it.

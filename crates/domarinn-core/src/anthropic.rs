@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
 use crate::config::ParamMap;
+use crate::empty::EmptyReason;
 use crate::net::{api_key, http_client, parse_retry_after, status_error, transport_error};
 use crate::provider::{
     http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
@@ -150,36 +151,85 @@ fn to_messages(prompt: &RenderedPrompt) -> (Option<String>, Vec<Json>) {
     }
 }
 
+/// Join every block of `kind`, reading its same-named payload field.
+fn join_blocks(blocks: &[Json], kind: &str) -> String {
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some(kind))
+        .filter_map(|b| b.get(kind).and_then(|t| t.as_str()))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn has_block(blocks: &[Json], kind: &str) -> bool {
+    blocks
+        .iter()
+        .any(|b| b.get("type").and_then(|t| t.as_str()) == Some(kind))
+}
+
 fn parse_messages_response(payload: &Json) -> Result<ProviderResponse, ProviderError> {
-    let text = payload
-        .get("content")
-        .and_then(|c| c.as_array())
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
+    let blocks = payload.get("content").and_then(|c| c.as_array());
+
+    let text = blocks.map(|b| join_blocks(b, "text")).unwrap_or_default();
+
+    // `content` is a heterogeneous block array, not a string: a response made
+    // entirely of `thinking` blocks joins to "" here and returns Ok. Capturing
+    // the thinking separately is what turns that from an unexplained zero into
+    // a diagnosis.
+    let reasoning = blocks
+        .map(|b| join_blocks(b, "thinking"))
+        .filter(|s| !s.trim().is_empty());
+    // `redacted_thinking` carries no readable text — only its presence is
+    // information.
+    let redacted = blocks
+        .map(|b| has_block(b, "redacted_thinking"))
+        .unwrap_or(false);
+
+    let stop_reason = payload
+        .get("stop_reason")
+        .and_then(|s| s.as_str())
+        .map(String::from);
+
+    let empty_reason = if text.trim().is_empty() {
+        let mut candidates = Vec::new();
+        match stop_reason.as_deref() {
+            Some("refusal") => candidates.push(EmptyReason::new(EmptyReason::REFUSAL)),
+            Some("max_tokens") => candidates.push(EmptyReason::new(EmptyReason::TRUNCATED)),
+            _ => {}
+        }
+        match blocks {
+            None => candidates.push(EmptyReason::new(EmptyReason::NO_CONTENT_BLOCKS)),
+            Some(b) if b.is_empty() => {
+                candidates.push(EmptyReason::new(EmptyReason::NO_CONTENT_BLOCKS))
+            }
+            Some(b) => {
+                if has_block(b, "tool_use") {
+                    candidates.push(EmptyReason::new(EmptyReason::TOOL_USE_ONLY));
+                }
+                if reasoning.is_some() || redacted {
+                    candidates.push(EmptyReason::new(EmptyReason::THINKING_ONLY));
+                }
+            }
+        }
+        candidates.push(EmptyReason::new(EmptyReason::BLANK));
+        crate::empty::most_specific(&candidates)
+    } else {
+        None
+    };
 
     let usage = payload.get("usage").map(|u| TokenUsage {
         input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
         output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
         cache_read_tokens: u.get("cache_read_input_tokens").and_then(|v| v.as_u64()),
     });
-    let stop_reason = payload
-        .get("stop_reason")
-        .and_then(|s| s.as_str())
-        .map(String::from);
-
     Ok(ProviderResponse {
         output: Output::Text(text),
         usage,
         cost_usd: None,
         stop_reason,
         raw: Some(payload.clone()),
+        reasoning,
+        empty_reason,
     })
 }
 
@@ -190,6 +240,24 @@ mod tests {
     use std::collections::BTreeMap;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// The fingerprint is a member of every cache key (`cache_key.rs:42`), so
+    /// changing it invalidates **every** entry in every disk, S3, and server
+    /// store at once — the failure `cache_key.rs:10-12` warns about, one level
+    /// up. A test that pins only `provider_cache_key` cannot catch this,
+    /// because it holds the fingerprint fixed.
+    ///
+    /// If this fails, you have a cache migration to plan. New members belong
+    /// here **conditionally**, only when configured, mirroring the `case_salt`
+    /// discipline at `cache_key.rs:48-55`.
+    #[test]
+    fn fingerprint_is_stable_for_default_config() {
+        let p = AnthropicProvider::new("p", "claude-x", None, None, None);
+        assert_eq!(
+            crate::cache::canonical_json(&p.fingerprint()),
+            r#"{"base_url":"https://api.anthropic.com","model":"claude-x","params":{},"type":"anthropic"}"#
+        );
+    }
 
     fn text_request() -> ProviderRequest {
         ProviderRequest {
@@ -336,5 +404,116 @@ mod tests {
             p.call(&req, &CallCtx::default()).await,
             Err(ProviderError::Fatal(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod empty_classification_tests {
+    use super::*;
+
+    fn reason_of(payload: Json) -> Option<String> {
+        parse_messages_response(&payload)
+            .unwrap()
+            .empty_reason
+            .map(|r| r.as_str().to_string())
+    }
+
+    /// The bug that started this: `content` is a block array, so a response made
+    /// only of `thinking` joins to "" and returns Ok. It used to score 0 with
+    /// nothing anywhere explaining why.
+    #[test]
+    fn a_thinking_only_response_is_diagnosed_and_its_reasoning_captured() {
+        let payload = json!({
+            "content": [{"type": "thinking", "thinking": "let me work through this"}],
+            "stop_reason": "end_turn"
+        });
+        let resp = parse_messages_response(&payload).unwrap();
+
+        assert_eq!(resp.output, Output::Text(String::new()));
+        assert_eq!(resp.reasoning.as_deref(), Some("let me work through this"));
+        assert_eq!(
+            resp.empty_reason.unwrap().as_str(),
+            EmptyReason::THINKING_ONLY
+        );
+    }
+
+    /// Truncation outranks thinking-only: they point at opposite fixes ("raise
+    /// max_tokens" vs "capture the reasoning"), and truncation explains *why*
+    /// only thinking came back.
+    #[test]
+    fn truncation_outranks_thinking_only() {
+        let payload = json!({
+            "content": [{"type": "thinking", "thinking": "half a thought"}],
+            "stop_reason": "max_tokens"
+        });
+        assert_eq!(reason_of(payload).as_deref(), Some(EmptyReason::TRUNCATED));
+    }
+
+    #[test]
+    fn a_refusal_is_named_as_such() {
+        let payload = json!({"content": [], "stop_reason": "refusal"});
+        assert_eq!(reason_of(payload).as_deref(), Some(EmptyReason::REFUSAL));
+    }
+
+    #[test]
+    fn a_tool_only_response_is_not_a_blank_answer() {
+        let payload = json!({
+            "content": [{"type": "tool_use", "name": "search", "input": {}}],
+            "stop_reason": "tool_use"
+        });
+        assert_eq!(
+            reason_of(payload).as_deref(),
+            Some(EmptyReason::TOOL_USE_ONLY)
+        );
+    }
+
+    #[test]
+    fn redacted_thinking_counts_even_though_it_carries_no_text() {
+        let payload = json!({
+            "content": [{"type": "redacted_thinking", "data": "opaque"}],
+            "stop_reason": "end_turn"
+        });
+        let resp = parse_messages_response(&payload).unwrap();
+        assert!(resp.reasoning.is_none(), "there is no readable text");
+        assert_eq!(
+            resp.empty_reason.unwrap().as_str(),
+            EmptyReason::THINKING_ONLY
+        );
+    }
+
+    #[test]
+    fn a_missing_content_array_is_a_protocol_fault_not_a_blank_answer() {
+        assert_eq!(
+            reason_of(json!({"stop_reason": "end_turn"})).as_deref(),
+            Some(EmptyReason::NO_CONTENT_BLOCKS)
+        );
+    }
+
+    #[test]
+    fn a_normal_answer_has_no_empty_reason() {
+        let payload = json!({
+            "content": [{"type": "text", "text": "the answer is 42"}],
+            "stop_reason": "end_turn"
+        });
+        let resp = parse_messages_response(&payload).unwrap();
+        assert_eq!(resp.output, Output::Text("the answer is 42".into()));
+        assert!(resp.empty_reason.is_none());
+    }
+
+    /// Text and thinking together: the answer is graded, the reasoning is kept
+    /// alongside it rather than replacing it.
+    #[test]
+    fn reasoning_is_captured_alongside_a_real_answer() {
+        let payload = json!({
+            "content": [
+                {"type": "thinking", "thinking": "6 times 7"},
+                {"type": "text", "text": "42"}
+            ],
+            "stop_reason": "end_turn"
+        });
+        let resp = parse_messages_response(&payload).unwrap();
+        assert_eq!(resp.output, Output::Text("42".into()));
+        assert_eq!(resp.reasoning.as_deref(), Some("6 times 7"));
+        assert!(resp.empty_reason.is_none());
     }
 }

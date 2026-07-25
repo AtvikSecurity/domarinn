@@ -433,8 +433,18 @@ pub struct RetryCfg {
     pub initial_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ms: Option<u64>,
+    /// Spread concurrent retries so rate-limited cells do not all wake at once.
     #[serde(default)]
     pub jitter: bool,
+    /// Largest server-supplied `Retry-After` to honor, in milliseconds
+    /// (default 120000).
+    ///
+    /// Separate from `max_ms` on purpose: `max_ms` caps domarinn's own
+    /// exponential growth, whereas `Retry-After` is a directive describing the
+    /// server's rate window. A hint above this ceiling errors the case rather
+    /// than retrying early, which would only earn another 429.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_max_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

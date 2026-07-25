@@ -140,6 +140,8 @@ impl Provider for HttpProvider {
             usage: None,
             cost_usd: None,
             stop_reason: None,
+            reasoning: None,
+            empty_reason: None,
             raw: json_body,
         })
     }
@@ -198,6 +200,24 @@ mod tests {
     use crate::provider::TestMeta;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// See the matching test in `anthropic.rs`: the fingerprint feeds every
+    /// cache key, so an unconditional change invalidates every cached entry.
+    #[test]
+    fn fingerprint_is_stable_for_default_config() {
+        let p = HttpProvider::new(
+            "p",
+            "https://example.test/v1",
+            None,
+            BTreeMap::new(),
+            None,
+            None,
+        );
+        assert_eq!(
+            crate::cache::canonical_json(&p.fingerprint()),
+            r#"{"body":null,"method":"POST","output_expr":null,"type":"http","url":"https://example.test/v1"}"#
+        );
+    }
 
     fn request_with_var(key: &str, value: &str) -> ProviderRequest {
         let mut vars = BTreeMap::new();

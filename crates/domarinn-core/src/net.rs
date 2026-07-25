@@ -48,11 +48,29 @@ pub fn status_error(
     }
 }
 
-/// Parse a `Retry-After` header (delta-seconds form).
+/// Parse a `Retry-After` header.
+///
+/// RFC 9110 §10.2.3 permits two forms and real providers use both: delta-seconds
+/// (`120`) and an HTTP-date (`Wed, 21 Oct 2015 07:28:00 GMT`). Handling only the
+/// first silently yields `None` for the second, which reads as "no hint" and
+/// drops the caller back to blind exponential backoff against a server that just
+/// told it exactly when to return.
 pub fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    let value = headers.get(reqwest::header::RETRY_AFTER)?;
-    let secs: u64 = value.to_str().ok()?.trim().parse().ok()?;
-    Some(Duration::from_secs(secs))
+    let raw = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+
+    // HTTP-date form: the delay is the remainder from now. A date already in
+    // the past means "retry immediately", not a negative wait.
+    let when = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+    let delta = when.timestamp() - chrono::Utc::now().timestamp();
+    Some(Duration::from_secs(delta.max(0) as u64))
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -71,4 +89,58 @@ pub fn api_key(env_name: &str) -> Result<String, ProviderError> {
             "API key environment variable '{env_name}' is not set"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+    fn headers_with(retry_after: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(RETRY_AFTER, HeaderValue::from_str(retry_after).unwrap());
+        h
+    }
+
+    #[test]
+    fn parses_the_delta_seconds_form() {
+        assert_eq!(
+            parse_retry_after(&headers_with("120")),
+            Some(Duration::from_secs(120))
+        );
+    }
+
+    /// RFC 9110 §10.2.3 permits an HTTP-date, and providers use it. Returning
+    /// `None` here reads as "no hint" and drops the caller back to blind
+    /// exponential backoff against a server that just said when to return.
+    #[test]
+    fn parses_the_http_date_form() {
+        let when = chrono::Utc::now() + chrono::Duration::seconds(90);
+        let header = when.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+
+        let parsed = parse_retry_after(&headers_with(&header)).expect("an HTTP-date is a hint");
+        // Allow a second of slack for the clock ticking between the two calls.
+        assert!(
+            parsed.as_secs() >= 88 && parsed.as_secs() <= 90,
+            "expected ~90s, got {}s",
+            parsed.as_secs()
+        );
+    }
+
+    /// A date already in the past means "retry now", not a negative wait that
+    /// would underflow into an enormous delay.
+    #[test]
+    fn an_http_date_in_the_past_is_zero_not_negative() {
+        let when = chrono::Utc::now() - chrono::Duration::seconds(300);
+        let header = when.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        assert_eq!(
+            parse_retry_after(&headers_with(&header)),
+            Some(Duration::from_secs(0))
+        );
+    }
+
+    #[test]
+    fn an_unparseable_value_is_no_hint() {
+        assert_eq!(parse_retry_after(&headers_with("soon-ish")), None);
+    }
 }

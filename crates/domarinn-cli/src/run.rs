@@ -53,6 +53,15 @@ pub struct RunArgs {
     #[arg(short = 'j', long)]
     pub concurrency: Option<usize>,
 
+    /// Retry transient provider failures this many times (overrides the suite's
+    /// runner.retries.max).
+    #[arg(long, conflicts_with = "no_retries")]
+    pub retries: Option<u32>,
+
+    /// Do not retry transient provider failures.
+    #[arg(long)]
+    pub no_retries: bool,
+
     /// Output format(s) (repeatable): table, json, jsonl, junit, md.
     #[arg(long = "format", value_enum)]
     pub format: Vec<Format>,
@@ -121,6 +130,11 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         repeat: args.repeat.max(1),
         cache_mode,
         concurrency: args.concurrency,
+        retries: if args.no_retries {
+            Some(0)
+        } else {
+            args.retries
+        },
         include_raw: !args.no_raw,
     };
 

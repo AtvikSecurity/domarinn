@@ -167,6 +167,8 @@ fn parse_response(value: Json) -> Result<ProviderResponse, ProviderError> {
         usage,
         cost_usd: resp.cost_usd,
         stop_reason: None,
+        reasoning: None,
+        empty_reason: None,
         raw: resp.metadata,
     })
 }
@@ -176,6 +178,17 @@ mod tests {
     use super::*;
     use crate::provider::TestMeta;
     use serde_json::json;
+
+    /// See the matching test in `anthropic.rs`: the fingerprint feeds every
+    /// cache key, so an unconditional change invalidates every cached entry.
+    #[test]
+    fn fingerprint_is_stable_for_default_config() {
+        let p = ExecProvider::new("p", vec!["./sut".into()], BTreeMap::new(), None, None);
+        assert_eq!(
+            crate::cache::canonical_json(&p.fingerprint()),
+            r#"{"cache_salt":null,"command":["./sut"],"type":"exec"}"#
+        );
+    }
 
     #[test]
     fn request_preview_is_the_document_written_to_stdin() {

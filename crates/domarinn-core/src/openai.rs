@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
 use crate::config::ParamMap;
+use crate::empty::EmptyReason;
 use crate::net::{api_key, http_client, parse_retry_after, status_error, transport_error};
 use crate::provider::{
     http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
@@ -188,12 +189,42 @@ fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, Provide
         }
     }
 
+    let finish_reason = payload
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|c| c.first())
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(|f| f.as_str());
+
+    let empty_reason = if text.trim().is_empty() {
+        let mut candidates = Vec::new();
+        match finish_reason {
+            Some("length") => candidates.push(EmptyReason::new(EmptyReason::TRUNCATED)),
+            Some("content_filter") => {
+                candidates.push(EmptyReason::new(EmptyReason::CONTENT_FILTER))
+            }
+            Some("tool_calls") => candidates.push(EmptyReason::new(EmptyReason::TOOL_USE_ONLY)),
+            _ => {}
+        }
+        if message.is_none() {
+            candidates.push(EmptyReason::new(EmptyReason::NO_CONTENT_BLOCKS));
+        } else if reasoning.is_some() {
+            candidates.push(EmptyReason::new(EmptyReason::THINKING_ONLY));
+        }
+        candidates.push(EmptyReason::new(EmptyReason::BLANK));
+        crate::empty::most_specific(&candidates)
+    } else {
+        None
+    };
+
     Ok(ProviderResponse {
         output: Output::Text(text),
         usage,
         cost_usd: None,
         stop_reason,
         raw: Some(raw),
+        reasoning: reasoning.map(str::to_string),
+        empty_reason,
     })
 }
 
@@ -204,6 +235,18 @@ mod tests {
     use std::collections::BTreeMap;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// See the matching test in `anthropic.rs` for why this is load-bearing:
+    /// the fingerprint feeds every cache key, so an unconditional change here
+    /// invalidates every cached entry in every store.
+    #[test]
+    fn fingerprint_is_stable_for_default_config() {
+        let p = OpenAiProvider::new("p", "gpt-x", None, None, None);
+        assert_eq!(
+            crate::cache::canonical_json(&p.fingerprint()),
+            r#"{"base_url":"https://api.openai.com/v1","model":"gpt-x","params":{},"type":"openai"}"#
+        );
+    }
 
     #[test]
     fn prefers_content_when_present() {
@@ -371,5 +414,68 @@ mod tests {
             }
             other => panic!("expected retriable, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod empty_classification_tests {
+    use super::*;
+
+    fn reason_of(payload: Json) -> Option<String> {
+        parse_completion_response(&payload)
+            .unwrap()
+            .empty_reason
+            .map(|r| r.as_str().to_string())
+    }
+
+    #[test]
+    fn a_length_finish_is_reported_as_truncation() {
+        let payload = json!({
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}]
+        });
+        assert_eq!(reason_of(payload).as_deref(), Some(EmptyReason::TRUNCATED));
+    }
+
+    #[test]
+    fn a_content_filter_finish_is_named_as_such() {
+        let payload = json!({
+            "choices": [{"message": {"content": ""}, "finish_reason": "content_filter"}]
+        });
+        assert_eq!(
+            reason_of(payload).as_deref(),
+            Some(EmptyReason::CONTENT_FILTER)
+        );
+    }
+
+    #[test]
+    fn a_missing_choices_array_is_a_protocol_fault() {
+        assert_eq!(
+            reason_of(json!({})).as_deref(),
+            Some(EmptyReason::NO_CONTENT_BLOCKS)
+        );
+    }
+
+    /// Reasoning is now a first-class field, not only a substitution into
+    /// `output` recorded via a marker buried in `raw`.
+    #[test]
+    fn reasoning_is_captured_as_a_field_even_when_substituted_into_output() {
+        let payload = json!({
+            "choices": [{"message": {"content": "", "reasoning": "thinking aloud"}}]
+        });
+        let resp = parse_completion_response(&payload).unwrap();
+        assert_eq!(resp.reasoning.as_deref(), Some("thinking aloud"));
+        // Existing substitution behavior is preserved, so nothing regresses.
+        assert_eq!(resp.output, Output::Text("thinking aloud".into()));
+    }
+
+    #[test]
+    fn a_normal_answer_has_no_empty_reason() {
+        let payload = json!({
+            "choices": [{"message": {"content": "42"}, "finish_reason": "stop"}]
+        });
+        assert!(parse_completion_response(&payload)
+            .unwrap()
+            .empty_reason
+            .is_none());
     }
 }

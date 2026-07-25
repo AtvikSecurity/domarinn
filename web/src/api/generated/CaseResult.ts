@@ -3,6 +3,7 @@ import type { AssertResult } from "./AssertResult";
 import type { CaseKey } from "./CaseKey";
 import type { CaseStatus } from "./CaseStatus";
 import type { CellKey } from "./CellKey";
+import type { EmptyReason } from "./EmptyReason";
 import type { Output } from "./Output";
 import type { RenderedPrompt } from "./RenderedPrompt";
 import type { TokenUsage } from "./TokenUsage";
@@ -43,4 +44,28 @@ vars?: { [key in string]: JsonValue }, status: CaseStatus, score: number, output
  * stored blobs written before this field existed; presence-gated by the web
  * UI. Never contains headers.
  */
-request?: unknown, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, latency_ms: number, cached: boolean, attempts: number, error?: string, };
+request?: unknown, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, 
+/**
+ * Time the provider itself took, excluding retry backoff and (on a cache
+ * hit) replayed from the entry rather than measured against the cache read.
+ *
+ * This is what `latency` assertions grade. Keeping backoff out of it is
+ * not cosmetic: with retries enabled, a single 429 would otherwise fail
+ * `{type: latency, max: 2000}` on a model that answered in 30 ms.
+ */
+latency_ms: number, 
+/**
+ * Total wall time for the cell, *including* retry backoff and cache I/O.
+ * Absent on blobs written before this field existed.
+ */
+wall_ms?: number, cached: boolean, attempts: number, error?: string, 
+/**
+ * The model's reasoning/thinking text, when it exposed any.
+ */
+reasoning?: string, 
+/**
+ * Why `output` has nothing gradeable in it. Set whenever the output is
+ * empty, including when reasoning was substituted for it — renderers must
+ * key on this being present, never on the output looking empty.
+ */
+empty_reason?: EmptyReason, };

@@ -182,7 +182,18 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub cost_usd: Option<f64>,
+    /// Time the provider itself took, excluding retry backoff and (on a cache
+    /// hit) replayed from the entry rather than measured against the cache read.
+    ///
+    /// This is what `latency` assertions grade. Keeping backoff out of it is
+    /// not cosmetic: with retries enabled, a single 429 would otherwise fail
+    /// `{type: latency, max: 2000}` on a model that answered in 30 ms.
     pub latency_ms: u64,
+    /// Total wall time for the cell, *including* retry backoff and cache I/O.
+    /// Absent on blobs written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wall_ms: Option<u64>,
     #[serde(default)]
     pub cached: bool,
     #[serde(default)]
@@ -190,6 +201,16 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
+    /// The model's reasoning/thinking text, when it exposed any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning: Option<String>,
+    /// Why `output` has nothing gradeable in it. Set whenever the output is
+    /// empty, including when reasoning was substituted for it — renderers must
+    /// key on this being present, never on the output looking empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub empty_reason: Option<crate::empty::EmptyReason>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
@@ -210,6 +231,11 @@ pub struct RunSummary {
     pub cache_hits: u64,
     #[serde(default)]
     pub cache_misses: u64,
+    /// Cases that needed more than one attempt. Distinct from `errored`: a
+    /// retried case usually *succeeded*, and without this the only trace of the
+    /// cost is a longer wall-clock.
+    #[serde(default)]
+    pub retried_cases: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
