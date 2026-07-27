@@ -1,46 +1,48 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# Attach the static musl binaries to a published GitHub Release.
+#
+# Release Please owns the release itself (version, tag, changelog body) — see
+# release-please.yml. This workflow only builds artifacts and uploads them, so
+# it must never generate release notes of its own or it would clobber the
+# changelog Release Please just wrote.
+#
+# The container image is built separately by docker.yml, which also triggers on
+# `release: published`.
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
-# Read-only by default; the `release` job alone elevates to contents: write to
-# create the Release + upload assets. The container image is built and pushed
-# to the Gitea registry by .github/workflows/docker.yml, which also triggers
-# on v* tags.
 permissions:
   contents: read
 
-# --- Action pinning policy: see .github/workflows/ci.yml. `# vX` comments
-# mark the version to pin each action to a full commit SHA for hardening. ---
-
 env:
   CARGO_TERM_COLOR: always
-  # Same self-hosted runner rustup EXDEV workaround as ci.yml; drop when the runner
-  # image mounts all of .rustup on one filesystem.
-  RUSTUP_HOME: ${{ github.workspace }}/../rustup
 
 jobs:
   # ---------------------------------------------------------------------------
   # 1. Build the static musl binaries and stage them as workflow artifacts.
+  #    Both targets build natively — no `cross`, no QEMU — because GitHub
+  #    provides arm64 runners free to public repositories. That also means
+  #    neither leg is allowed to fail: an aarch64 binary is a shipped artifact,
+  #    not a best-effort extra.
   # ---------------------------------------------------------------------------
   binaries:
     name: build ${{ matrix.target }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            cross: false
+            runner: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
-            cross: true
-    # A cross-toolchain hiccup on the aarch64 leg must not block the release of
-    # the x86_64 binary; the `release` job attaches whichever binaries built.
-    continue-on-error: ${{ matrix.cross }}
+            runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -57,65 +59,58 @@ jobs:
       - run: pnpm -C web install --frozen-lockfile
       - run: pnpm -C web build
 
-      # mise's rust delegates to rustup, so the native leg adds its cross target
-      # the usual way. The cross leg (aarch64) uses `cross`, which supplies the
-      # target toolchain inside its own container.
-      # No rust-cache here (unlike ci.yml): release artifacts build from a
-      # cold cache so a poisoned cache entry can never reach a shipped binary.
-      - name: Add target
-        if: ${{ !matrix.cross }}
-        run: rustup target add ${{ matrix.target }}
-
+      # musl-tools gives the C toolchain rusqlite's bundled SQLite (and the
+      # rustls crypto backend) need; cmake is a hedge for crypto backends.
       - name: Install musl toolchain
-        if: ${{ !matrix.cross }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools cmake
 
-      - name: Build (native)
-        if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p domarinn-cli
-
-      - name: Install cross
-        if: ${{ matrix.cross }}
-        run: cargo install cross --locked
-
-      - name: Build (cross)
-        if: ${{ matrix.cross }}
-        run: cross build --release --target ${{ matrix.target }} -p domarinn-cli
+      # The `musl-build` task adds the rustup target itself and then builds;
+      # same command locally and in CI. No rust-cache here (unlike ci.yml):
+      # release artifacts build from a cold cache.
+      - name: Build
+        env:
+          MUSL_TARGET: ${{ matrix.target }}
+        run: mise run musl-build
 
       - name: Stage artifact
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
+          set -euo pipefail
           mkdir -p dist
-          bin="target/${{ matrix.target }}/release/domarinn"
-          out="dist/domarinn-${{ matrix.target }}"
-          cp "$bin" "$out"
+          out="dist/domarinn-${TARGET}"
+          cp "target/${TARGET}/release/domarinn" "$out"
           sha256sum "$out" > "$out.sha256"
+          file "$out"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 # pin to SHA
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: domarinn-${{ matrix.target }}
           path: dist/*
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 2. Publish a GitHub Release with the binaries attached.
+  # 2. Attach the binaries to the release Release Please already published.
   # ---------------------------------------------------------------------------
-  release:
-    name: github release
+  upload:
+    name: upload release assets
     needs: binaries
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1 # pin to SHA
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
-      - name: Publish release
-        # The action (vs a `gh release create` script step) buys us note
-        # generation + idempotent asset replacement in one pinned step.
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2 # pin to SHA # zizmor: ignore[superfluous-actions]
-        with:
-          generate_release_notes: true
-          files: |
-            dist/domarinn-*
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          GH_REPO: ${{ github.repository }}
+        # --clobber so re-running the workflow on an existing release replaces
+        # the assets instead of erroring out.
+        run: gh release upload "$TAG" dist/domarinn-* --clobber

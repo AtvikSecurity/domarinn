@@ -5,7 +5,7 @@
 # gates the job on the CLI's exit code.
 #
 # Usage:
-#   - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@v1
+#   - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@0.1.0
 #     with:
 #       config: eval/domarinn.yaml
 #       server-url: https://domarinn.example.com   # optional (enables --share)
@@ -34,7 +34,7 @@ inputs:
     default: ""
   version:
     description: >-
-      Release tag to download the binary from (e.g. "v0.1.0"), or "latest".
+      Release tag to download the binary from (e.g. "0.1.0"), or "latest".
       Used only when `binary-path` is empty. If the download fails, the action
       falls back to building/installing from source with cargo.
     required: false

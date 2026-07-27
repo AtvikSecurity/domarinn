@@ -1,0 +1,131 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# Release Please keeps a standing "chore(main): release X.Y.Z" pull request in
+# sync with the conventional commits landing on main. Merging that PR is what
+# cuts a release: it writes CHANGELOG.md, bumps the version, tags the merge
+# commit, and publishes a GitHub Release. `release.yml` and `docker.yml` then
+# attach binaries and images to it.
+#
+# Tags are bare semver (`0.2.0`, not `v0.2.0`) — see release-please-config.json.
+#
+# --- Why a GitHub App token and not GITHUB_TOKEN --------------------------
+# GitHub deliberately does not fire workflow events for anything the default
+# GITHUB_TOKEN creates, to prevent runaway recursion. With GITHUB_TOKEN the
+# release PR would show zero checks and the release it publishes would start
+# nothing. The App token sidesteps all three problems, and doubles as the
+# credential for the lockfile push below.
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never cancel: a half-created release (tag pushed, release not yet
+  # published) is far worse than a redundant run.
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      prs_created: ${{ steps.release.outputs.prs_created }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      branch: ${{ steps.branch.outputs.name }}
+    steps:
+      - name: Generate token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ secrets.BOT_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Release Please
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Expose the release branch
+        id: branch
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          PR: ${{ steps.release.outputs.pr }}
+        run: echo "name=$(jq --raw-output '.headBranchName' <<<"$PR")" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Release Please cannot bump Cargo.lock for this repo.
+  #
+  # Its `rust` strategy refuses a virtual workspace manifest outright (the
+  # CargoToml updater throws when there is no [package] section), and the
+  # cargo-workspace plugin rejects members whose [package.version] is
+  # `version.workspace = true` rather than a literal. So the version is written
+  # by a TOML extra-file updater targeting $.workspace.package.version, which
+  # leaves the six member entries in Cargo.lock pointing at the old version.
+  #
+  # That is not cosmetic: `--locked` is used by all three `mise run install*`
+  # tasks and by the domarinn-eval action's build-from-source fallback, and
+  # every one of them fails against a stale lockfile. Sync it on the release
+  # branch before anyone merges.
+  # ---------------------------------------------------------------------------
+  sync-lockfile:
+    name: Sync Cargo.lock
+    needs: release-please
+    if: ${{ needs.release-please.outputs.prs_created == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Generate token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ secrets.BOT_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.branch }}
+          persist-credentials: false
+
+      - uses: jdx/mise-action@f10502fc09dadecfefb962fff68ce77213930204 # v4.2.2
+        with:
+          install_args: rust
+
+      - name: Sync and push
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ needs.release-please.outputs.branch }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # --workspace restricts the update to this repo's own crates, so no
+          # third-party dependency can change as a side effect of a release.
+          cargo update --workspace
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock is already in sync."
+            exit 0
+          fi
+          git config user.name "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore: sync Cargo.lock with the released version"
+          git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
