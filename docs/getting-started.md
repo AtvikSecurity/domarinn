@@ -26,6 +26,33 @@ domarinn --version
 Substitute a tag (e.g. `.../releases/download/0.2.0/...`) for a pinned version.
 Note that release tags are bare semver — `0.2.0`, not `v0.2.0`.
 
+### Verifying a download
+
+Every release artifact is signed with [cosign](https://docs.sigstore.dev/) using
+keyless signing — there is no public key to fetch, because the signing identity
+*is* the GitHub Actions workflow that built it. The `.sigstore.json` bundle
+carries the certificate, the signature and the transparency-log entry together:
+
+```sh
+curl -fsSLO "$base/domarinn-$target.sigstore.json"
+
+cosign verify-blob \
+  --bundle "domarinn-$target.sigstore.json" \
+  --certificate-identity-regexp '^https://github\.com/AtvikSecurity/domarinn/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "domarinn-$target"
+```
+
+Keep the `--certificate-identity-regexp`. Without it cosign will accept a
+signature from *any* identity, which verifies that the file was signed by
+someone rather than that it was signed by this project.
+
+Each release also publishes an SPDX SBOM — `domarinn-<target>.sbom.json`, itself
+signed — cataloguing the Rust and npm dependency graphs that went into the
+binary. Note that it is generated from `Cargo.lock` and `web/pnpm-lock.yaml`
+rather than from the shipped binary: release builds are stripped, so scanning
+the binary would report almost nothing.
+
 **With cargo.** domarinn is not published to crates.io, so `cargo install
 domarinn-cli` will not find it. Install from git instead:
 

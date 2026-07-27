@@ -280,8 +280,40 @@ action's from-source fallback) would fail against the released tag.
 
 | Job          | What it does |
 |--------------|--------------|
-| **binaries** | Builds the web UI, then the static musl binary for `x86_64` (on `ubuntu-24.04`) and `aarch64` (natively on `ubuntu-24.04-arm`); stages each as `domarinn-<target>` with a `.sha256`. Neither leg may fail. |
-| **upload**   | Downloads the staged binaries and attaches them to the published release with `gh release upload --clobber`. It does **not** generate release notes — Release Please owns the release body. |
+| **binaries** | Catalogues dependencies into an SBOM, builds the web UI, then the static musl binary for `x86_64` (on `ubuntu-24.04`) and `aarch64` (natively on `ubuntu-24.04-arm`). Neither leg may fail. |
+| **upload**   | Signs every artifact with keyless cosign, then attaches them to the published release with `gh release upload --clobber`. It does **not** generate release notes — Release Please owns the release body. |
+
+### What a release publishes
+
+Per target (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`):
+
+| Asset | Notes |
+|---|---|
+| `domarinn-<target>` | Fully static musl binary, web UI embedded |
+| `domarinn-<target>.sha256` | Bare filename inside, so `sha256sum --check` works from any directory |
+| `domarinn-<target>.sbom.json` | SPDX, ~890 packages across the Rust and npm graphs |
+| `*.sigstore.json` | A cosign bundle for each of the three above |
+
+Filenames deliberately carry **no version**. That is what makes
+`releases/latest/download/domarinn-x86_64-unknown-linux-musl` a stable URL for
+READMEs, Dockerfiles, and the `domarinn-eval` action — which constructs exactly
+that path. Adding a version would break all three.
+
+Two decisions worth knowing if you touch this workflow:
+
+- **The SBOM is generated right after checkout, before anything is built.**
+  `[profile.release] strip = true`, so scanning the shipped binary yields *one*
+  package instead of ~890 — the dependency graph only survives in the
+  lockfiles. Scanning post-build would also crawl `target/` and `node_modules/`,
+  taking far longer for a worse result.
+- **The checksum is generated from inside `dist/`.** `sha256sum` records the
+  path exactly as given, so running it from the repo root bakes in a `dist/`
+  prefix that does not exist for whoever downloads the release, and their
+  `sha256sum --check` fails. This shipped broken in `0.1.1`.
+
+Signing is keyless: the OIDC identity of the workflow is the signer, so there is
+no key to manage or rotate. See [getting-started](./getting-started.md#verifying-a-download)
+for the verification commands.
 
 ---
 
