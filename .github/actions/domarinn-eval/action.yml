@@ -113,31 +113,51 @@ runs:
           exit 0
         fi
 
-        arch="$(uname -m)"
-        case "$arch" in
-          x86_64)  target="x86_64-unknown-linux-musl" ;;
-          aarch64|arm64) target="aarch64-unknown-linux-musl" ;;
-          *) echo "::error::unsupported arch $arch"; exit 3 ;;
+        # `arch` is what the released filename uses; `legacy_target` is the Rust
+        # triple 0.1.3 and earlier were named after.
+        machine="$(uname -m)"
+        case "$machine" in
+          x86_64)  arch=amd64; legacy_target=x86_64-unknown-linux-musl ;;
+          aarch64|arm64) arch=arm64; legacy_target=aarch64-unknown-linux-musl ;;
+          *) echo "::error::unsupported arch $machine"; exit 3 ;;
         esac
 
-        ver="${INPUT_VERSION}"
         base="https://github.com/AtvikSecurity/domarinn/releases"
+        ver="${INPUT_VERSION}"
         if [ "$ver" = "latest" ]; then
-          url="${base}/latest/download/domarinn-${target}"
-        else
-          url="${base}/download/${ver}/domarinn-${target}"
+          # Asset names carry the version, so "latest" has to become a concrete
+          # tag before a URL exists — GitHub has no wildcard in
+          # /releases/latest/download/. It does redirect /releases/latest to
+          # /releases/tag/<tag>, and reading that needs no token and is not
+          # rate-limited the way unauthenticated api.github.com is.
+          ver="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${base}/latest" | sed 's#.*/tag/##')"
+          if [ -z "$ver" ] || [ "$ver" = "latest" ]; then
+            echo "::error::could not resolve the latest domarinn release tag"
+            exit 3
+          fi
+          echo "Resolved latest to ${ver}"
         fi
+        ver="${ver#v}"
 
-        echo "Downloading $url"
-        if curl -fsSL "$url" -o domarinn; then
-          chmod +x domarinn
-          echo "path=$(pwd)/domarinn" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
+        # Second URL covers 0.1.3 and earlier, which named assets after the Rust
+        # target triple and carried no version. Without it, pinning an older
+        # release would silently fall through to a much slower source build.
+        urls=(
+          "${base}/download/${ver}/domarinn_${ver}_linux_${arch}"
+          "${base}/download/${ver}/domarinn-${legacy_target}"
+        )
+        for url in "${urls[@]}"; do
+          echo "Downloading $url"
+          if curl -fsSL "$url" -o domarinn; then
+            chmod +x domarinn
+            echo "path=$(pwd)/domarinn" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        done
 
         # Fallback: build from source. Prefer a local checkout of this repo;
         # otherwise install straight from git. Requires a Rust toolchain.
-        echo "::warning::release download failed for $url; building domarinn from source"
+        echo "::warning::no release asset for ${ver} on ${arch}; building domarinn from source"
         if ! command -v cargo >/dev/null 2>&1; then
           echo "::error::no prebuilt binary available and cargo is not installed (add dtolnay/rust-toolchain before this action)"
           exit 3

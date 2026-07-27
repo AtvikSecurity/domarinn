@@ -38,9 +38,14 @@ domarinn inverts that:
 `x86_64` and `aarch64`, so they run on any Linux distro:
 
 ```sh
-curl -fsSLO https://github.com/AtvikSecurity/domarinn/releases/latest/download/domarinn-x86_64-unknown-linux-musl
-chmod +x domarinn-x86_64-unknown-linux-musl
-sudo mv domarinn-x86_64-unknown-linux-musl /usr/local/bin/domarinn
+# Asset names carry the version, so resolve the newest tag first. GitHub
+# redirects /releases/latest to /releases/tag/<tag>; no API token needed.
+rel=https://github.com/AtvikSecurity/domarinn/releases
+ver=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$rel/latest" | sed 's#.*/tag/##')
+
+curl -fsSLO "$rel/download/$ver/domarinn_${ver}_linux_amd64"   # or linux_arm64
+chmod +x "domarinn_${ver}_linux_amd64"
+sudo mv "domarinn_${ver}_linux_amd64" /usr/local/bin/domarinn
 ```
 
 **With cargo** — domarinn is not published to crates.io, so install from git:
