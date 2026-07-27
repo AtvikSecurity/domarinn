@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2](https://github.com/AtvikSecurity/domarinn/compare/0.1.1...0.1.2) (2026-07-27)
+
+
+### Features
+
+* **release:** sign binaries and publish an SBOM, and fix the checksum files ([007df97](https://github.com/AtvikSecurity/domarinn/commit/007df9739b8cbc8fabff26351da19f3822675d01))
+
+
+### Bug Fixes
+
+* **examples:** make the offline examples run for anyone who installed domarinn ([4f39910](https://github.com/AtvikSecurity/domarinn/commit/4f39910c9753ef728c85332e40055b7f56204ce1))
+
 ## [0.1.1](https://github.com/AtvikSecurity/domarinn/compare/0.1.0...0.1.1) (2026-07-27)
 
 
