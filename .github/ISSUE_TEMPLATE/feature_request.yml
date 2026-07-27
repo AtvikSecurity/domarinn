@@ -1,0 +1,55 @@
+---
+name: Feature request
+description: Suggest a capability domarinn does not have yet
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues first — and note the
+        [AI usage policy](https://github.com/AtvikSecurity/domarinn/blob/main/CONTRIBUTING.md#ai-usage-policy):
+        write the request in your own words.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: >-
+        Describe the situation you are stuck in, not the solution you have in
+        mind. This is the part we most need — a clear problem often has a better
+        solution than the one that prompted the request.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like domarinn to do?
+      description: If you have a concrete design or config shape in mind, sketch it.
+      placeholder: |
+        ```yaml
+        assertions:
+          - type: my-new-assertion
+            ...
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried instead?
+      description: >-
+        Existing assertions, an `exec` provider, post-processing the JSON
+        output — knowing what falls short helps size the gap.
+
+  - type: dropdown
+    id: contributing
+    attributes:
+      label: Would you be willing to implement this?
+      options:
+        - "Yes, if the design is agreed first"
+        - "Maybe, with guidance"
+        - "No"
+    validations:
+      required: true

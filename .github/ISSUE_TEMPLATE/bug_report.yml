@@ -1,0 +1,91 @@
+---
+name: Bug report
+description: Something in domarinn behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this.
+
+        Two things before you start:
+
+        - **Not a security issue?** If it is, close this and use
+          [private reporting](https://github.com/AtvikSecurity/domarinn/security/advisories/new) instead.
+        - Please read the
+          [AI usage policy](https://github.com/AtvikSecurity/domarinn/blob/main/CONTRIBUTING.md#ai-usage-policy) —
+          in short, write the report yourself.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: >-
+        The smallest suite and command that shows the problem. Without one we
+        usually cannot tell a domarinn bug from a model being a model, and the
+        issue will likely be closed as unreproducible.
+      placeholder: |
+        domarinn.yaml:
+        ```yaml
+        version: 1
+        suite: repro
+        ...
+        ```
+
+        Command:
+        ```sh
+        domarinn run repro/
+        ```
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: >-
+        Run with `-v` (or `RUST_LOG=debug`) if you can. Redact any API keys —
+        this is a public tracker.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: domarinn version
+      description: Output of `domarinn --version`.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Prebuilt release binary
+        - Container image (ghcr.io)
+        - Built from source
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider(s) involved
+      description: Which provider type(s), and the model if relevant.
+      placeholder: "openai (gpt-4o-mini), exec"
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: "Ubuntu 24.04, x86_64"

@@ -34,6 +34,17 @@ domarinn inverts that:
 
 ## Quick start
 
+Grab a static binary (no toolchain required) — or build from source:
+
+```sh
+curl -fsSLO https://github.com/AtvikSecurity/domarinn/releases/latest/download/domarinn-x86_64-unknown-linux-musl
+chmod +x domarinn-x86_64-unknown-linux-musl
+sudo mv domarinn-x86_64-unknown-linux-musl /usr/local/bin/domarinn
+```
+
+See [docs/getting-started.md](docs/getting-started.md) for `aarch64`, checksum
+verification, Docker, and installing from source.
+
 ```sh
 cargo build --release        # or: mise run build   (builds the web UI too)
 
@@ -122,13 +133,29 @@ excluded — CI verifies them byte-for-byte against their generators.
 
 Every source file is kept under 1000 lines (enforced by a ratchet test), and CI
 runs fmt, clippy `-D warnings`, the Rust and web (vitest) test suites, the web
-lint, a musl static build, and schema/type drift checks — each gate is a mise
-task invoked by name in `ci.yml`, so `mise run ci` reproduces the whole matrix
-locally. The Playwright e2e suite is not part of CI; run it locally with
-`mise run e2e`.
+lint, musl static builds for x86_64 and aarch64, schema/type drift checks, and a
+zizmor workflow lint — each gate is a mise task invoked by name in `ci.yml`, so
+`mise run ci` reproduces the whole matrix locally. The Playwright e2e suite is
+not part of CI; run it locally with `mise run e2e`.
+
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) — it
+covers the setup, the single `mise run ci` gate, and the
+[Conventional Commit PR title](CONTRIBUTING.md#naming-a-pull-request) that
+drives releases. Participation is governed by our
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+Releases are automated with
+[Release Please](https://github.com/googleapis/release-please): merging a
+`feat:` or `fix:` PR opens a release PR, and merging that publishes the tag,
+the binaries, and the container image. See [docs/ci.md](docs/ci.md#releases).
+
+Found a security issue? Please report it privately — see
+[SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT.
+[MIT](LICENSE) © Atvik Security and domarinn contributors.
 
 [minijinja]: https://docs.rs/minijinja
