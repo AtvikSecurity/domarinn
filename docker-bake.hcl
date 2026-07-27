@@ -1,9 +1,13 @@
-// Buildx bake definition, mirroring the per-app docker-bake.hcl layout in
-// AtvikSecurity/containers. CI (.github/workflows/docker.yml) drives the
-// `image` target and injects tags/labels via docker/metadata-action; the
-// `docker-metadata-action` target below is the empty hook it overrides.
+// Buildx bake definition for local and ad-hoc builds.
+//
+// CI does NOT use this file: .github/workflows/docker.yml delegates to Docker's
+// reusable build workflow, which drives the Dockerfile directly and derives its
+// own tags, labels and annotations. This exists so `docker buildx bake` gives a
+// developer the same image locally without reproducing that pipeline by hand.
 //
 // Local build: `docker buildx bake` (defaults to image-local -> domarinn:local).
+// Multi-arch:  `docker buildx bake image-all` (needs a buildx builder with
+//              QEMU/binfmt or a remote arm64 node).
 
 target "docker-metadata-action" {}
 
@@ -36,6 +40,6 @@ target "image-all" {
   inherits = ["image"]
   platforms = [
     "linux/amd64",
-    // "linux/arm64"  // Disabled - no arm64 runners available
+    "linux/arm64",
   ]
 }
