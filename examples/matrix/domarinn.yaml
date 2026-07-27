@@ -6,7 +6,7 @@
 #
 # The two axes below (2 styles x 2 temperatures) expand to four cases with
 # deterministic ids — stable across runs, so diffing lines cells up cell-by-cell.
-# No API key required: the system under test is the testkit fake provider, which
+# No API key required: the system under test is ../echo-provider.py, which
 # (with no `user_input` var set) echoes the whole vars map — so the swept axis
 # values show up directly in the output.
 version: 1
@@ -16,13 +16,13 @@ suite: matrix
 providers:
   - id: echo
     type: exec
-    command: ["fake-provider"]
+    command: ["python3", "../echo-provider.py"]
     cache_salt: "dev"
 
 tests:
   # Default ids: greet[style=terse,temperature=0], greet[style=terse,temperature=1],
   # greet[style=warm,temperature=0], greet[style=warm,temperature=1].
-  # Each axis value lands in `vars`; the fake provider echoes the map, so every
+  # Each axis value lands in `vars`; the echo provider echoes the map, so every
   # cell's output is valid JSON carrying its own `style`/`temperature`.
   - id: greet
     matrix:

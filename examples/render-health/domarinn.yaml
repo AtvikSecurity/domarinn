@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=../../domarinn.schema.json
 #
-# A render-health suite: it exercises an external "system under test" (here the
-# testkit fake provider) and grades its output with deterministic, zero-LLM
-# assertions. No API key required.
+# A render-health suite: it exercises an external "system under test" (here
+# ../echo-provider.py) and grades its output with deterministic, zero-LLM
+# assertions. No API key and no toolchain required — just python3.
 version: 1
 project: examples
 suite: render-health
@@ -10,7 +10,7 @@ suite: render-health
 providers:
   - id: renderer
     type: exec
-    command: ["fake-provider"]
+    command: ["python3", "../echo-provider.py"]
     timeout_ms: 30000
     # A rebuilt binary should not serve stale cache; bump this to a git SHA / hash.
     cache_salt: "dev"

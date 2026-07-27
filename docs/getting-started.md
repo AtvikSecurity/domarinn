@@ -26,6 +26,23 @@ domarinn --version
 Substitute a tag (e.g. `.../releases/download/0.2.0/...`) for a pinned version.
 Note that release tags are bare semver — `0.2.0`, not `v0.2.0`.
 
+**With cargo.** domarinn is not published to crates.io, so `cargo install
+domarinn-cli` will not find it. Install from git instead:
+
+```sh
+cargo install --git https://github.com/AtvikSecurity/domarinn --locked domarinn-cli
+
+# or pin to a published release tag (bare semver, no leading v)
+cargo install --git https://github.com/AtvikSecurity/domarinn --tag <version> --locked domarinn-cli
+```
+
+This builds the CLI only. The eval engine is complete, but the binary does not
+embed the web UI, so `domarinn server` serves a placeholder page — use the
+prebuilt binary, the container, or `mise run install` if you want the UI.
+
+Keep `--locked`: it makes the build use the exact dependency versions the
+release was tested with.
+
 **From source** (needs a recent Rust toolchain):
 
 ```sh

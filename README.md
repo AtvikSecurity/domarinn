@@ -32,9 +32,10 @@ domarinn inverts that:
 - **Structured logging** — human-readable on a terminal, JSON one-object-per-line
   in a container (or when requested), with per-request ids on the server.
 
-## Quick start
+## Install
 
-Grab a static binary (no toolchain required) — or build from source:
+**Prebuilt binary** — no toolchain, no runtime. Fully static musl builds for
+`x86_64` and `aarch64`, so they run on any Linux distro:
 
 ```sh
 curl -fsSLO https://github.com/AtvikSecurity/domarinn/releases/latest/download/domarinn-x86_64-unknown-linux-musl
@@ -42,13 +43,32 @@ chmod +x domarinn-x86_64-unknown-linux-musl
 sudo mv domarinn-x86_64-unknown-linux-musl /usr/local/bin/domarinn
 ```
 
-See [docs/getting-started.md](docs/getting-started.md) for `aarch64`, checksum
-verification, Docker, and installing from source.
+**With cargo** — domarinn is not published to crates.io, so install from git:
 
 ```sh
-cargo build --release        # or: mise run build   (builds the web UI too)
+cargo install --git https://github.com/AtvikSecurity/domarinn --locked domarinn-cli
+```
 
-# Run a suite offline (no API key) and see it pass
+**With Docker** — the server and web UI, multi-arch (`amd64` + `arm64`):
+
+```sh
+docker run -p 8321:8321 -v domarinn-data:/data ghcr.io/atviksecurity/domarinn:rolling
+```
+
+> The prebuilt binary and the container embed the web UI. The cargo install does
+> **not** — it builds the CLI only, so `domarinn server` will serve a placeholder
+> page. Build the UI first (`mise run install`) if you want it.
+
+See [docs/getting-started.md](docs/getting-started.md) for `aarch64`, checksum
+verification, pinned versions, and building from source.
+
+## Quick start
+
+```sh
+git clone https://github.com/AtvikSecurity/domarinn && cd domarinn
+
+# Run a suite offline - no API key, no model, no network. Needs python3,
+# which is all the example's system under test (examples/echo-provider.py) is.
 domarinn run examples/render-health
 
 # Print the config JSON Schema for editor completion
