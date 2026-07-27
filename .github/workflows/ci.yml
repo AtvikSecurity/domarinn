@@ -26,14 +26,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # WORKAROUND for the self-hosted runner: its persistent /home/runner/.rustup has
-  # toolchains/ and tmp/ on different filesystems, so every rustup
-  # install/update dies with EXDEV ("Invalid cross-device link"). Keeping
-  # RUSTUP_HOME beside the checkout (one filesystem, and `runner.temp` is not
-  # a valid context in workflow-level env) sidesteps that at the cost of a
-  # fresh toolchain download per job. Drop this once the runner image mounts
-  # all of .rustup on one filesystem.
-  RUSTUP_HOME: ${{ github.workspace }}/../rustup
 
 jobs:
   fmt:
@@ -66,26 +58,17 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04
-    # Runs in the rust:bookworm container (like the saml job) rather than
-    # directly on the runner: the bare runner's cold compile of the new SSO
-    # crypto dependency tree was slow/heavy enough to get the job killed
-    # before it finished (and before rust-cache could save, so every rerun
-    # stayed cold). The container has a warm toolchain + reliable caching.
-    container: rust:1-bookworm
-    env:
-      # The workflow-level EXDEV workaround points RUSTUP_HOME outside this
-      # container; use the image's own rustup install instead.
-      RUSTUP_HOME: /usr/local/rustup
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
           persist-credentials: false
+      - uses: jdx/mise-action@f10502fc09dadecfefb962fff68ce77213930204 # v4.2.2
+        with:
+          install_args: rust
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
         with:
           key: test
-      # Equivalent to `mise run test` (== `cargo test --workspace`) without
-      # pulling mise's toolchain into the container.
-      - run: cargo test --workspace
+      - run: mise run test
 
   saml:
     name: saml (feature-gated tests)
@@ -93,11 +76,6 @@ jobs:
     # rust:bookworm brings its own toolchain + the apt packages samael's
     # xmlsec backend needs at build time; mise is not used here.
     container: rust:1-bookworm
-    env:
-      # The workflow-level EXDEV workaround points RUSTUP_HOME at the
-      # runner's workspace; inside this container the image's own rustup
-      # install is the right one.
-      RUSTUP_HOME: /usr/local/rustup
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
@@ -186,15 +164,35 @@ jobs:
       - name: Fail on generated-type drift
         run: mise run gen-types-check
 
+  workflow-lint:
+    name: workflows pass zizmor
+    runs-on: ubuntu-24.04
+    # .lefthook.toml runs zizmor on staged workflow files pre-commit, but a
+    # fork PR never runs our hooks — on a public repo this job is the only
+    # thing standing between a malicious workflow edit and a merge.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f10502fc09dadecfefb962fff68ce77213930204 # v4.2.2
+        with:
+          install_args: zizmor
+      - run: mise run workflow-lint
+
   musl-build:
     name: static musl build (${{ matrix.target }})
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        # CI proves the static build links on x86_64. aarch64 is verified at
-        # release time (see release.yml), where a cross toolchain is set up.
-        target: [x86_64-unknown-linux-musl]
+        # Both shipped targets build natively on a GitHub-hosted runner, so CI
+        # proves the static link for each one release.yml will publish. No
+        # cross-compilation and no QEMU: the aarch64 leg is a real arm64 host.
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
@@ -215,7 +213,11 @@ jobs:
 
       # The `musl-build` task adds the rustup target itself (mise's rust
       # delegates to rustup) and then builds; same command locally and in CI.
+      # MUSL_TARGET defaults to the x86_64 triple, so a bare `mise run
+      # musl-build` on a dev machine keeps working unchanged.
       - name: Build
+        env:
+          MUSL_TARGET: ${{ matrix.target }}
         run: mise run musl-build
 
       - name: Confirm the binary is static

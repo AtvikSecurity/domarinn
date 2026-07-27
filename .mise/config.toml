@@ -180,14 +180,18 @@ depends = ["web-install"]
 run = "pnpm -C web test"
 
 [tasks.musl-build]
-description = "Static x86_64 musl release build of the CLI (the CI musl-build job). Needs a musl C toolchain on the host (musl-gcc, e.g. Debian musl-tools) for rusqlite's bundled SQLite."
+description = "Static musl release build of the CLI (the CI musl-build job). Defaults to x86_64; set MUSL_TARGET to build another triple (CI builds aarch64 natively on an arm64 runner). Needs a musl C toolchain on the host (musl-gcc, e.g. Debian musl-tools) for rusqlite's bundled SQLite."
 run = [
-  "rustup target add x86_64-unknown-linux-musl",
-  "cargo build --release --target x86_64-unknown-linux-musl -p domarinn-cli",
+  "rustup target add ${MUSL_TARGET:-x86_64-unknown-linux-musl}",
+  "cargo build --release --target ${MUSL_TARGET:-x86_64-unknown-linux-musl} -p domarinn-cli",
 ]
 
+[tasks.workflow-lint]
+description = "Static-analyse the GitHub Actions workflows with zizmor (the CI workflow-lint job). Offline, so it matches the pre-commit hook in .lefthook.toml byte for byte."
+run = "zizmor --offline .github/workflows/*.yml .github/actions/*/action.yml"
+
 [tasks.ci]
-description = "Run every CI gate locally: clippy, fmt-check, tests, schema/type drift checks, the web pipeline, and the static musl build."
+description = "Run every CI gate locally: clippy, fmt-check, tests, schema/type drift checks, the web pipeline, the static musl build, and the workflow lint."
 depends = [
   "clippy",
   "fmt-check",
@@ -198,6 +202,7 @@ depends = [
   "web-build",
   "web-test",
   "musl-build",
+  "workflow-lint",
 ]
 
 [tasks.docker-build]
@@ -205,7 +210,7 @@ description = "Build the container image locally (multi-stage; produces the dist
 run = 'docker build -t "${DOMARINN_IMAGE:-ghcr.io/atviksecurity/domarinn}:${DOMARINN_TAG:-dev}" .'
 
 [tasks.docker-push]
-description = "Push the locally built image (requires `docker login ghcr.io`)."
+description = "Push the locally built image (requires `docker login ghcr.io`). Releases are published by CI; this is for ad-hoc images only."
 depends = ["docker-build"]
 run = 'docker push "${DOMARINN_IMAGE:-ghcr.io/atviksecurity/domarinn}:${DOMARINN_TAG:-dev}"'
 

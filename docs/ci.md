@@ -11,7 +11,7 @@ and uploading CI runs to a shared server.
 - [The reusable action](#the-reusable-action)
 - [Uploading CI runs to a shared server](#uploading-ci-runs-to-a-shared-server)
 - [This repo's CI (`ci.yml`)](#this-repos-ci-ciyml)
-- [Releases (`release.yml`)](#releases-releaseyml)
+- [Releases](#releases)
 - [Container image (`docker.yml`)](#container-image-dockeryml)
 
 ---
@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@v1
+      - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@0.1.0
         with:
           config: eval/domarinn.yaml
           against: latest
@@ -115,7 +115,7 @@ jobs:
 |----------------------|---------------------|---------|
 | `config`             | `domarinn.yaml`   | Suite file, or a directory containing `domarinn.yaml`. |
 | `binary-path`        | `""`                | Path to a prebuilt `domarinn`. When set, binary resolution stops here (no download, no build). |
-| `version`            | `latest`            | Release tag to download the binary from (e.g. `v0.1.0`), or `latest`. Used only when `binary-path` is empty. |
+| `version`            | `latest`            | Release tag to download the binary from (e.g. `0.1.0`), or `latest`. Used only when `binary-path` is empty. |
 | `server-url`         | `""`                | Results server base URL. When set, the run is uploaded with `--share` (exported as `DOMARINN_SERVER_URL`). |
 | `token`              | `""`                | Bearer token for the results server (exported as `DOMARINN_TOKEN`). Pass a **secret**, never a literal. |
 | `against`            | `""`                | Baseline to diff against (`latest`, a run id, or a `result.json` path). Empty disables the diff. A regression makes the CLI exit 1. |
@@ -161,7 +161,7 @@ jobs:
 ### Advanced usage
 
 ```yaml
-- uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@v1
+- uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@0.1.0
   with:
     config: eval/
     against: latest
@@ -215,7 +215,8 @@ those tasks — so `mise run <task>` locally runs byte-for-byte what CI runs, an
 | **web**          | `mise run web-install`, `web-lint`, `web-build`, `web-test` | The web UI installs from the frozen lockfile, lints (`--max-warnings=0`), builds, and its vitest suite passes. |
 | **schema-check** | `mise run schema-check` | The checked-in JSON Schema hasn't drifted (run `mise run schema` to fix). |
 | **gen-types-check** | `mise run gen-types-check` | Generated TypeScript types are current. Hard-fails if the dir is missing/uncommitted or drifts (run `mise run gen-types` and commit). |
-| **musl-build**   | `mise run musl-build` | The fully static binary links on x86_64 (needs a musl C toolchain on the host). aarch64 is not built here — it's verified at release time (see `release.yml`), where the cross toolchain is set up. |
+| **musl-build**   | `mise run musl-build` | The fully static binary links, on both shipped targets. Runs twice: `x86_64-unknown-linux-musl` on `ubuntu-24.04` and `aarch64-unknown-linux-musl` natively on `ubuntu-24.04-arm` — no cross-compiler, no QEMU. Set `MUSL_TARGET` to pick a triple locally (needs a musl C toolchain on the host). |
+| **workflow-lint** | `mise run workflow-lint` | The workflows pass [zizmor](https://github.com/zizmorcore/zizmor). The same check runs pre-commit via lefthook, but a fork PR never runs our hooks — this job is what gates one. |
 
 Every job installs its toolchain with [mise](https://mise.jdx.dev) via
 [`jdx/mise-action`](https://github.com/jdx/mise-action) (pinned to a commit SHA),
@@ -225,42 +226,95 @@ so local and CI builds share one pinned toolchain. Rust compile caching stays on
 
 ---
 
-## Releases (`release.yml`)
+## Releases
 
-[`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on tags
-matching `v*` and produces the release binaries. (The container image is built
-separately — see [`docker.yml`](#container-image-dockeryml) below.)
+Releases are automated end to end. Nobody edits a version number by hand, and
+nobody pushes a tag by hand.
+
+### How a release happens
+
+1. You merge a PR whose **title** is a conventional commit (`feat: …`,
+   `fix: …`, `refactor!: …`). The title matters because the repo squash-merges,
+   so the PR title becomes the commit on `main`.
+2. [`release-please.yml`](../.github/workflows/release-please.yml) sees the new
+   commit and opens (or updates) a standing **`chore(main): release X.Y.Z`**
+   pull request containing the `CHANGELOG.md` entry and the version bump.
+3. You merge that PR when you want to ship. Release Please tags the merge
+   commit and publishes the GitHub Release.
+4. [`release.yml`](../.github/workflows/release.yml) and
+   [`docker.yml`](#container-image-dockeryml) both fire on
+   `release: published` and attach the binaries and images.
+
+Versions are **bare semver** — the tag is `0.2.0`, not `v0.2.0`.
+
+While the project is pre-`1.0`, `feat` and `fix` bump the patch and a breaking
+change (`!`) bumps the minor, per `bump-minor-pre-major` /
+`bump-patch-for-minor-pre-major` in
+[`release-please-config.json`](../release-please-config.json).
+
+> **Dependency bumps do not cut releases.** Renovate is configured
+> ([`renovate.json5`](../renovate.json5)) to emit `chore(deps)` / `ci(...)` and
+> never a `!` marker, so its commits ride along in the next human-authored
+> release. To ship one urgently, land a hand-written `fix(deps): …` commit.
+
+### Where the version actually lives
+
+`Cargo.toml`'s `[workspace.package] version` is the single source of truth; all
+six crates inherit it with `version.workspace = true`, and
+`domarinn_core::VERSION` (`env!("CARGO_PKG_VERSION")`) carries it to `--version`,
+the `/api/v1/meta` endpoint, the web UI footer, and every cache entry.
+
+Release Please updates it through a **TOML extra-file updater** aimed at
+`$.workspace.package.version`, not through its built-in `rust` release type.
+That is not a stylistic choice: the `rust` strategy throws on a virtual
+workspace manifest (no `[package]` section), and the `cargo-workspace` plugin
+rejects members whose version is inherited rather than literal.
+
+The consequence is that `Cargo.lock` is not updated by Release Please, so a
+second job in `release-please.yml` runs `cargo update --workspace` on the
+release branch and pushes the result. Without it, every `--locked` build
+(`mise run install`, `install-cli`, `install-musl`, and the `domarinn-eval`
+action's from-source fallback) would fail against the released tag.
+
+### `release.yml`
 
 | Job          | What it does |
 |--------------|--------------|
-| **binaries** | Builds the web UI, then the static musl binary for `x86_64` (native) and `aarch64` (via `cross`); stages each as `domarinn-<target>` with a `.sha256`. aarch64 is `continue-on-error`. |
-| **release**  | Downloads the staged binaries and publishes a GitHub Release with auto-generated notes and the `domarinn-*` assets attached. |
+| **binaries** | Builds the web UI, then the static musl binary for `x86_64` (on `ubuntu-24.04`) and `aarch64` (natively on `ubuntu-24.04-arm`); stages each as `domarinn-<target>` with a `.sha256`. Neither leg may fail. |
+| **upload**   | Downloads the staged binaries and attaches them to the published release with `gh release upload --clobber`. It does **not** generate release notes — Release Please owns the release body. |
 
 ---
 
 ## Container image (`docker.yml`)
 
-[`.github/workflows/docker.yml`](../.github/workflows/docker.yml) builds the
-container image and pushes it to the Gitea registry as
-`ghcr.io/atviksecurity/domarinn`, mirroring the
-bake/digest/merge pipeline from the AtvikSecurity/containers repo. The build
-itself is described by [`docker-bake.hcl`](../docker-bake.hcl); the Dockerfile
-is self-contained (it builds the UI + binary internally).
+[`.github/workflows/docker.yml`](../.github/workflows/docker.yml) publishes the
+container image to GHCR as `ghcr.io/atviksecurity/domarinn`.
 
-| Job       | What it does |
-|-----------|--------------|
-| **plan**  | Derives tags/labels once with `docker/metadata-action` and stages the resulting bake file as an artifact. |
-| **build** | One leg per platform (currently `linux/amd64`): `docker/bake-action` builds the `image` target and pushes it **by digest** (untagged), with a registry-backed build cache at `ghcr.io/atviksecurity/build_cache:domarinn-<arch>`. |
-| **merge** | Stitches the per-platform digests into one tagged manifest list with `docker buildx imagetools create`. |
+The workflow itself is thin: it delegates to
+[`docker/github-builder`](https://github.com/docker/github-builder)'s reusable
+`build.yml`, which splits the platform list across runners (its default mapping
+sends `linux/arm64` to `ubuntu-24.04-arm`), merges the per-platform digests into
+one manifest list, generates an SBOM, and signs the result with keyless cosign.
+The Dockerfile is self-contained — it builds the UI and the binary internally.
 
-It runs on pushes to `main`, on `v*` tags, and via `workflow_dispatch`.
-Registry auth uses the `GITEA_USERNAME` / `GITEA_TOKEN` repo secrets, so the
-workflow token stays read-only.
+It runs on pushes to `main`, on published releases, and via `workflow_dispatch`.
+Registry auth is the built-in `GITHUB_TOKEN`, so **no registry secrets are
+needed**; the job requests `packages: write` to push and `id-token: write` so
+cosign can mint an OIDC identity.
 
 Image tags come from `docker/metadata-action`: `rolling` tracks `main`, and a
-`v*` tag produces `{{version}}` (e.g. `1.2.3`), `{{major}}.{{minor}}` (e.g.
-`1.2`), and `{{major}}` (e.g. `1`). There is **no `latest` tag** — track
+published release produces `{{version}}` (e.g. `1.2.3`), `{{major}}.{{minor}}`
+(e.g. `1.2`), and `{{major}}` (e.g. `1`). There is **no `latest` tag** — track
 `rolling` for the tip of main or a semver tag for releases.
+
+Both `linux/amd64` and `linux/arm64` are published. Verify a pull with:
+
+```console
+$ docker buildx imagetools inspect ghcr.io/atviksecurity/domarinn:rolling
+```
+
+[`docker-bake.hcl`](../docker-bake.hcl) is **not** used by CI — it exists so
+`docker buildx bake` reproduces the image locally.
 
 Consume the image as described in [`./deploy.md`](./deploy.md):
 
