@@ -1,0 +1,153 @@
+{
+  // Renovate configuration for domarinn.
+  //
+  // This is deliberately self-contained. It used to be one line extending a
+  // private org preset (`local>AtvikSecurity/renovate-config`), which no fork
+  // and no outside contributor can resolve — so it is inlined here instead.
+  // The behaviour below is the same policy, with one intentional divergence
+  // documented under "Commit types" that exists to keep Renovate from cutting
+  // releases. Written as JSON5 because the reasoning matters more than the
+  // brevity.
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    "config:recommended",
+    // Container base images should offer major bumps too; the Dockerfile pins
+    // node/rust/debian tags that would otherwise go stale forever.
+    "docker:enableMajor",
+    // Actions are pinned to commit SHAs (see the workflows); this keeps the
+    // trailing `# vX.Y.Z` comment accurate when the SHA moves.
+    "helpers:pinGitHubActionDigestsToSemver",
+    // Branch-based automerge: Renovate runs the update on a temporary branch
+    // and, once checks pass, pushes straight to the base branch. It does not
+    // use GitHub's native auto-merge, so it needs no "Allow auto-merge"
+    // setting and no branch-protection rule — but it does require the default
+    // branch to permit direct pushes by the Renovate app.
+    ":automergeBranch",
+    ":dependencyDashboard",
+    ":disableRateLimiting",
+  ],
+
+  dependencyDashboardTitle: "Renovate Dashboard 🤖",
+
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["before 3am on the first day of the month"],
+  },
+
+  // Track plain version strings marked with an inline `# renovate:` annotation,
+  // e.g. the pinned OPENSSL_VER / LIBXML2_VER / XMLSEC_VER ARGs in the
+  // Dockerfile:
+  //   # renovate: datasource=github-releases depName=foo/bar
+  //   FOOBAR_VERSION=v1.0.0
+  customManagers: [
+    {
+      customType: "regex",
+      description: "Process annotated dependencies",
+      managerFilePatterns: ["/\\.env(?:\\.j2)?$/", "/\\.sh(?:\\.j2)?$/", "/\\.yaml(?:\\.j2)?$/"],
+      matchStrings: [
+        "datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n.+(:\\s|=)(&\\S+\\s)?[\"']?(?<currentValue>[^\"'\\s]+)[\"']?",
+      ],
+      datasourceTemplate: "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
+    },
+  ],
+
+  packageRules: [
+    // --- Commit types -----------------------------------------------------
+    //
+    // IMPORTANT: none of these may produce `feat`, `fix`, or a `!` breaking
+    // marker. release-please parses the commits on `main` to decide the next
+    // version, and it treats `!` as breaking regardless of the type. The org
+    // preset this file replaces mapped major bumps to `feat(deps)!:`, which
+    // would have made every major dependency bump cut a release — git history
+    // shows 15 `feat(deps)!` and 10 `ci(github-action)!` commits that each
+    // would have done so.
+    //
+    // Dependency bumps therefore ride along in the next human-authored
+    // release. To ship one urgently (a CVE, say), land a hand-written
+    // `fix(deps): ...` commit or run the Release Please workflow manually.
+    {
+      description: "Dependency updates never drive a release version bump",
+      matchUpdateTypes: ["major", "minor", "patch", "digest", "pin", "lockFileMaintenance"],
+      semanticCommitType: "chore",
+    },
+    {
+      matchUpdateTypes: ["major"],
+      commitMessageExtra: "({{currentVersion}} → {{newVersion}})",
+    },
+    {
+      matchUpdateTypes: ["minor", "patch"],
+      commitMessageExtra: "({{currentVersion}} → {{newVersion}})",
+    },
+    {
+      matchUpdateTypes: ["digest"],
+      commitMessageExtra: "({{currentDigestShort}} → {{newDigestShort}})",
+    },
+
+    // --- Scopes -----------------------------------------------------------
+    {
+      matchDatasources: ["docker"],
+      semanticCommitScope: "container",
+      commitMessageTopic: "image {{depName}}",
+    },
+    {
+      matchManagers: ["github-actions"],
+      // `ci` is a non-releasing type in release-please's changelog config.
+      semanticCommitType: "ci",
+      semanticCommitScope: "github-action",
+      commitMessageTopic: "action {{depName}}",
+    },
+    {
+      matchDatasources: ["github-releases"],
+      semanticCommitType: "chore",
+      semanticCommitScope: "github-release",
+      commitMessageTopic: "release {{depName}}",
+    },
+    {
+      matchManagers: ["mise"],
+      semanticCommitType: "chore",
+      semanticCommitScope: "mise",
+      commitMessageTopic: "tool {{depName}}",
+    },
+
+    // --- Labels -----------------------------------------------------------
+    { matchUpdateTypes: ["major"], labels: ["type/major"] },
+    { matchUpdateTypes: ["minor"], labels: ["type/minor"] },
+    { matchUpdateTypes: ["patch"], labels: ["type/patch"] },
+    { matchUpdateTypes: ["digest"], labels: ["type/digest"] },
+
+    // --- Automerge --------------------------------------------------------
+    {
+      description: "Auto-merge GitHub Actions",
+      matchManagers: ["github-actions"],
+      matchUpdateTypes: ["minor", "patch", "digest"],
+      automerge: true,
+      automergeType: "branch",
+      minimumReleaseAge: "3 days",
+      ignoreTests: true,
+    },
+    {
+      description: "Auto-merge trusted GitHub Actions without the soak period",
+      matchManagers: ["github-actions"],
+      matchPackageNames: ["/^actions\\//", "/^docker\\//", "/^googleapis\\//", "/^sigstore\\//"],
+      matchUpdateTypes: ["minor", "patch", "digest"],
+      automerge: true,
+      automergeType: "branch",
+      minimumReleaseAge: "1 minute",
+      ignoreTests: true,
+    },
+    {
+      description: "Auto-merge patch + digest updates after a 3-day soak",
+      matchUpdateTypes: ["patch", "digest"],
+      minimumReleaseAge: "3 days",
+      automerge: true,
+    },
+
+    // --- Manager quirks ---------------------------------------------------
+    {
+      description: "Bump the manifest range (package.json), not just the lockfile, so both update together. npm's default rangeStrategy ('replace') leaves a caret range untouched when the new version still satisfies it, so in-range minor/patch updates would otherwise only change the lockfile.",
+      matchManagers: ["npm"],
+      rangeStrategy: "bump",
+    },
+  ],
+}
