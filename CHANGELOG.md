@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/AtvikSecurity/domarinn/compare/0.1.3...0.2.0) (2026-07-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **release:** `releases/latest/download/domarinn-<target>` no longer resolves. GitHub has no wildcard in that path, so a versioned filename cannot have a fixed URL. Consumers resolve the tag first:
+
+### Features
+
+* **release:** name assets domarinn_&lt;version&gt;_linux_&lt;arch&gt; ([#17](https://github.com/AtvikSecurity/domarinn/issues/17)) ([107f586](https://github.com/AtvikSecurity/domarinn/commit/107f586babec573801a5c3e775390d7cf802137c))
+
 ## [0.1.3](https://github.com/AtvikSecurity/domarinn/compare/0.1.2...0.1.3) (2026-07-27)
 
 
