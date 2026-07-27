@@ -30,7 +30,10 @@
     // globals to `src/**` and node globals only to test files.
     "types": ["vite/client", "vitest/globals", "node"],
 
-    "baseUrl": ".",
+    // No `baseUrl`: it is deprecated in TS 6 (a hard error without
+    // `ignoreDeprecations`) and removed in TS 7. It is not needed here — the
+    // `paths` entries below are relative (`./src/*`), so they resolve against
+    // this file's directory on their own. Do not re-add it.
     "paths": {
       "@/*": ["./src/*"]
     }
