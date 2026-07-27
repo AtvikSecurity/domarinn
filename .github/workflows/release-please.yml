@@ -126,10 +126,17 @@ jobs:
             exit 0
           fi
           # Attribute the commit to the app, not to whoever merged the PR that
-          # triggered this run.
-          bot_id="$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)"
+          # triggered this run. The numeric id only makes the commit link to
+          # the bot's profile, so a failed lookup must not fail the job: losing
+          # the lockfile sync would let the release merge with a stale
+          # Cargo.lock and break every --locked build.
           git config user.name "${APP_SLUG}[bot]"
-          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          if bot_id="$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id 2>/dev/null)" && [ -n "$bot_id" ]; then
+            git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          else
+            echo "::warning::could not resolve ${APP_SLUG}[bot] user id; commit will not link to the bot profile"
+            git config user.email "${APP_SLUG}[bot]@users.noreply.github.com"
+          fi
           git add Cargo.lock
           git commit -m "chore: sync Cargo.lock with the released version"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
