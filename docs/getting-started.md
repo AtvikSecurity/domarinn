@@ -15,8 +15,13 @@ target=x86_64-unknown-linux-musl
 base=https://github.com/AtvikSecurity/domarinn/releases/latest/download
 
 curl -fsSLO "$base/domarinn-$target"
-curl -fsSLO "$base/domarinn-$target.sha256"
-sha256sum --check "domarinn-$target.sha256"
+curl -fsSLO "$base/checksums.txt"
+
+# --ignore-missing because checksums.txt covers every artifact in the release
+# and you only downloaded one; without it sha256sum reports the others as
+# missing and exits non-zero. It still fails loudly if nothing matched at all,
+# so this cannot silently verify zero files.
+sha256sum --ignore-missing --check checksums.txt
 
 chmod +x "domarinn-$target"
 sudo mv "domarinn-$target" /usr/local/bin/domarinn
@@ -47,11 +52,15 @@ Keep the `--certificate-identity-regexp`. Without it cosign will accept a
 signature from *any* identity, which verifies that the file was signed by
 someone rather than that it was signed by this project.
 
-Each release also publishes an SPDX SBOM — `domarinn-<target>.sbom.json`, itself
-signed — cataloguing the Rust and npm dependency graphs that went into the
-binary. Note that it is generated from `Cargo.lock` and `web/pnpm-lock.yaml`
-rather than from the shipped binary: release builds are stripped, so scanning
-the binary would report almost nothing.
+The same command verifies `checksums.txt` and the SBOM — substitute either
+filename for `domarinn-$target` in both the `--bundle` and the final argument.
+
+Each release also publishes an SPDX SBOM — `domarinn.spdx.json`, itself signed —
+cataloguing the Rust and npm dependency graphs that went into the binary. There
+is one per release, not one per architecture: it is generated from `Cargo.lock`
+and `web/pnpm-lock.yaml`, which say nothing about the target triple. Note that
+it does not come from the shipped binary either — release builds are stripped,
+so scanning the binary would report almost nothing.
 
 **With cargo.** domarinn is not published to crates.io, so `cargo install
 domarinn-cli` will not find it. Install from git instead:
@@ -90,6 +99,11 @@ mise run install-musl            # static musl single binary (needs a musl C too
 ```sh
 docker run -p 8321:8321 -v domarinn-data:/data ghcr.io/atviksecurity/domarinn:rolling
 ```
+
+`rolling` tracks the tip of `main`. Releases also publish semver tags — `0.1.2`,
+`0.1`, `0` — so pin one of those for anything you care about staying still.
+There is deliberately no `latest`, precisely so an unpinned tag cannot silently
+jump a major.
 
 Put `target/release/domarinn` on your `PATH`, or invoke it directly.
 

@@ -280,36 +280,46 @@ action's from-source fallback) would fail against the released tag.
 
 | Job          | What it does |
 |--------------|--------------|
-| **binaries** | Catalogues dependencies into an SBOM, builds the web UI, then the static musl binary for `x86_64` (on `ubuntu-24.04`) and `aarch64` (natively on `ubuntu-24.04-arm`). Neither leg may fail. |
-| **upload**   | Signs every artifact with keyless cosign, then attaches them to the published release with `gh release upload --clobber`. It does **not** generate release notes — Release Please owns the release body. |
+| **binaries** | Builds the web UI, then the static musl binary for `x86_64` (on `ubuntu-24.04`) and `aarch64` (natively on `ubuntu-24.04-arm`). Neither leg may fail. |
+| **sbom**     | Catalogues the dependency graph into one SPDX document for the whole release. |
+| **upload**   | Writes `checksums.txt`, signs every artifact with keyless cosign, then attaches them to the published release with `gh release upload --clobber`. It does **not** generate release notes — Release Please owns the release body. |
 
 ### What a release publishes
 
-Per target (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`):
+Eight assets, whatever the number of targets:
 
 | Asset | Notes |
 |---|---|
-| `domarinn-<target>` | Fully static musl binary, web UI embedded |
-| `domarinn-<target>.sha256` | Bare filename inside, so `sha256sum --check` works from any directory |
-| `domarinn-<target>.sbom.json` | SPDX, ~890 packages across the Rust and npm graphs |
-| `*.sigstore.json` | A cosign bundle for each of the three above |
+| `domarinn-<target>` | Fully static musl binary, web UI embedded. One per target (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) |
+| `domarinn.spdx.json` | SPDX, ~890 packages across the Rust and npm graphs. **One per release, not per target** |
+| `checksums.txt` | Covers every artifact above. Bare filenames inside, so `sha256sum --check` works from any directory |
+| `*.sigstore.json` | A cosign bundle for each of the above — the bundles are not themselves checksummed, since each carries its own integrity |
 
 Filenames deliberately carry **no version**. That is what makes
 `releases/latest/download/domarinn-x86_64-unknown-linux-musl` a stable URL for
 READMEs, Dockerfiles, and the `domarinn-eval` action — which constructs exactly
-that path. Adding a version would break all three.
+that path. Adding a version would break all three. The version instead appears
+*inside* the SBOM, as its SPDX document `name`.
 
-Two decisions worth knowing if you touch this workflow:
+Four decisions worth knowing if you touch this workflow:
 
-- **The SBOM is generated right after checkout, before anything is built.**
-  `[profile.release] strip = true`, so scanning the shipped binary yields *one*
-  package instead of ~890 — the dependency graph only survives in the
-  lockfiles. Scanning post-build would also crawl `target/` and `node_modules/`,
-  taking far longer for a worse result.
-- **The checksum is generated from inside `dist/`.** `sha256sum` records the
+- **The SBOM has a job of its own, on an unbuilt checkout.** Not fussiness —
+  two things force it. `[profile.release] strip = true`, so scanning the shipped
+  binary yields *one* package instead of ~890; the graph only survives in the
+  lockfiles. And syft on a built tree would additionally crawl `target/` and
+  `node_modules/`, taking far longer for a worse result. A separate job makes
+  "nothing has been built here" structural rather than a comment to respect.
+- **One SBOM, not one per target.** It is generated from `Cargo.lock` and
+  `web/pnpm-lock.yaml`, neither of which mentions a target triple — so the old
+  per-leg copies were the same 890-package document under two names, implying a
+  per-target dependency graph that does not exist.
+- **The checksums are generated from inside `dist/`.** `sha256sum` records the
   path exactly as given, so running it from the repo root bakes in a `dist/`
   prefix that does not exist for whoever downloads the release, and their
   `sha256sum --check` fails. This shipped broken in `0.1.1`.
+- **The operands are listed, not globbed.** `checksums.txt` must not appear in
+  its own manifest, and `shopt -s failglob` turns a missing artifact into a
+  failed release rather than a silently short manifest.
 
 Signing is keyless: the OIDC identity of the workflow is the signer, so there is
 no key to manage or rotate. See [getting-started](./getting-started.md#verifying-a-download)
@@ -338,6 +348,16 @@ Image tags come from `docker/metadata-action`: `rolling` tracks `main`, and a
 published release produces `{{version}}` (e.g. `1.2.3`), `{{major}}.{{minor}}`
 (e.g. `1.2`), and `{{major}}` (e.g. `1`). There is **no `latest` tag** — track
 `rolling` for the tip of main or a semver tag for releases.
+
+One thing the workflow cannot do for you: **GHCR package visibility is a
+setting on the package, not a workflow permission.** A package is private when
+it is first pushed and stays that way until someone flips it in
+`Packages → domarinn → Package settings → Change visibility`, no matter that the
+repository is public and `packages: write` is granted. While it is private,
+every `docker pull` in this documentation returns `401 UNAUTHORIZED` for anyone
+outside the org — including the versioned tags, which are pushed regardless.
+Check with `curl -s "https://ghcr.io/token?scope=repository:atviksecurity/domarinn:pull&service=ghcr.io"`:
+a token means public, `UNAUTHORIZED` means private.
 
 Both `linux/amd64` and `linux/arm64` are published. Verify a pull with:
 
