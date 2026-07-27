@@ -48,7 +48,7 @@ jobs:
       # .mise/mise.lock, the single source of toolchain versions for both CI
       # and releases. Caching is off: this workflow publishes artifacts, and a
       # poisoned cache entry must never be able to reach a shipped binary.
-      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+      - uses: jdx/mise-action@f10502fc09dadecfefb962fff68ce77213930204 # v4.2.2
         with:
           install_args: node pnpm rust
           cache: false
