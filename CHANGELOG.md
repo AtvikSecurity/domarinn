@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/AtvikSecurity/domarinn/compare/0.1.2...0.1.3) (2026-07-27)
+
+
+### Bug Fixes
+
+* **release:** one checksums.txt and one SBOM, instead of a per-target set ([#14](https://github.com/AtvikSecurity/domarinn/issues/14)) ([b0ed56b](https://github.com/AtvikSecurity/domarinn/commit/b0ed56b062e3f27eeba16a3623b0fd9f287d198a))
+
 ## [0.1.2](https://github.com/AtvikSecurity/domarinn/compare/0.1.1...0.1.2) (2026-07-27)
 
 
