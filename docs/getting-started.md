@@ -10,26 +10,33 @@ fully static musl binary for `x86_64` and `aarch64`, so it runs on any Linux
 distro with no shared-library requirements:
 
 ```sh
-# pick your arch: x86_64-unknown-linux-musl or aarch64-unknown-linux-musl
-target=x86_64-unknown-linux-musl
-base=https://github.com/AtvikSecurity/domarinn/releases/latest/download
+arch=amd64            # or arm64
+rel=https://github.com/AtvikSecurity/domarinn/releases
 
-curl -fsSLO "$base/domarinn-$target"
-curl -fsSLO "$base/checksums.txt"
+# Asset names carry the version, so there is no fixed "latest" URL to curl.
+# GitHub redirects /releases/latest to /releases/tag/<tag>, which is enough to
+# learn the tag without an API token or a JSON parser. Set `ver` by hand
+# instead — `ver=0.2.0` — to pin.
+ver=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$rel/latest" | sed 's#.*/tag/##')
 
-# --ignore-missing because checksums.txt covers every artifact in the release
+bin="domarinn_${ver}_linux_${arch}"
+curl -fsSLO "$rel/download/$ver/$bin"
+curl -fsSLO "$rel/download/$ver/domarinn_${ver}_checksums.txt"
+
+# --ignore-missing because the manifest covers every artifact in the release
 # and you only downloaded one; without it sha256sum reports the others as
 # missing and exits non-zero. It still fails loudly if nothing matched at all,
 # so this cannot silently verify zero files.
-sha256sum --ignore-missing --check checksums.txt
+sha256sum --ignore-missing --check "domarinn_${ver}_checksums.txt"
 
-chmod +x "domarinn-$target"
-sudo mv "domarinn-$target" /usr/local/bin/domarinn
+chmod +x "$bin"
+sudo mv "$bin" /usr/local/bin/domarinn
 domarinn --version
 ```
 
-Substitute a tag (e.g. `.../releases/download/0.2.0/...`) for a pinned version.
-Note that release tags are bare semver — `0.2.0`, not `v0.2.0`.
+Release tags are bare semver — `0.2.0`, not `v0.2.0` — and the same string
+appears in every asset name, so a downloaded file always says which release it
+came from.
 
 ### Verifying a download
 
@@ -39,28 +46,28 @@ keyless signing — there is no public key to fetch, because the signing identit
 carries the certificate, the signature and the transparency-log entry together:
 
 ```sh
-curl -fsSLO "$base/domarinn-$target.sigstore.json"
+curl -fsSLO "$rel/download/$ver/$bin.sigstore.json"
 
 cosign verify-blob \
-  --bundle "domarinn-$target.sigstore.json" \
+  --bundle "$bin.sigstore.json" \
   --certificate-identity-regexp '^https://github\.com/AtvikSecurity/domarinn/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  "domarinn-$target"
+  "$bin"
 ```
 
 Keep the `--certificate-identity-regexp`. Without it cosign will accept a
 signature from *any* identity, which verifies that the file was signed by
 someone rather than that it was signed by this project.
 
-The same command verifies `checksums.txt` and the SBOM — substitute either
-filename for `domarinn-$target` in both the `--bundle` and the final argument.
+The same command verifies the checksum manifest and the SBOM — substitute either
+filename for `$bin` in both the `--bundle` and the final argument.
 
-Each release also publishes an SPDX SBOM — `domarinn.spdx.json`, itself signed —
-cataloguing the Rust and npm dependency graphs that went into the binary. There
-is one per release, not one per architecture: it is generated from `Cargo.lock`
-and `web/pnpm-lock.yaml`, which say nothing about the target triple. Note that
-it does not come from the shipped binary either — release builds are stripped,
-so scanning the binary would report almost nothing.
+Each release also publishes an SPDX SBOM — `domarinn_<version>.spdx.json`, itself
+signed — cataloguing the Rust and npm dependency graphs that went into the
+binary. There is one per release, not one per architecture: it is generated from
+`Cargo.lock` and `web/pnpm-lock.yaml`, which say nothing about the target
+triple. Note that it does not come from the shipped binary either — release
+builds are stripped, so scanning the binary would report almost nothing.
 
 **With cargo.** domarinn is not published to crates.io, so `cargo install
 domarinn-cli` will not find it. Install from git instead:

@@ -10,6 +10,25 @@
 #
 # The container image is built separately by docker.yml, which also triggers on
 # `release: published`.
+#
+# Asset naming — `domarinn_<version>_linux_<arch>`, e.g.
+# `domarinn_0.2.0_linux_amd64`. Three properties are deliberate:
+#
+#   * The version is always the second underscore-separated field, so a
+#     downloaded file identifies itself. Nothing else in a release does: the
+#     binary was previously named only for its target, and a file sitting in
+#     ~/Downloads was unidentifiable.
+#   * `linux_amd64`, not the Rust triple `x86_64-unknown-linux-musl`. The triple
+#     puts the literal word "unknown" (it is the *vendor* field) exactly where a
+#     reader expects the version. `musl` is not in the name either — that these
+#     are fully static is a documented property, not a filename.
+#   * Underscores, matching the GoReleaser convention this project's assets are
+#     read against, even though it does not use GoReleaser (see 007df97 for why).
+#
+# Because the names carry a version, `releases/latest/download/<name>` is no
+# longer constructible — GitHub has no wildcard there. Consumers resolve the tag
+# first via the `/releases/latest` redirect; README.md, docs/getting-started.md
+# and .github/actions/domarinn-eval/action.yml all do this.
 name: Release
 
 on:
@@ -37,9 +56,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `target` is the Rust triple the compiler needs; `arch` is the name
+          # the world uses, and the one that reaches the released filename.
           - target: x86_64-unknown-linux-musl
+            arch: amd64
             runner: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
+            arch: arm64
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,21 +97,28 @@ jobs:
           MUSL_TARGET: ${{ matrix.target }}
         run: mise run musl-build
 
-      # Only the binary. Checksums are a single release-wide `checksums.txt`
-      # written by the upload job, because a per-target file cannot cover the
-      # artifacts that do not belong to any one target.
+      # Only the binary. Checksums are a single release-wide manifest written by
+      # the upload job, because a per-target file cannot cover the artifacts
+      # that do not belong to any one target.
       - name: Stage artifact
         env:
           TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
+          # Release Please tags bare semver (`0.2.0`, not `v0.2.0`), so this
+          # normally strips nothing — it is here so a future tag-format change
+          # cannot silently ship `domarinn_v0.2.0_linux_amd64`.
+          version="${TAG#v}"
           mkdir -p dist
-          cp "target/${TARGET}/release/domarinn" "dist/domarinn-${TARGET}"
-          file "dist/domarinn-${TARGET}"
+          name="domarinn_${version}_linux_${ARCH}"
+          cp "target/${TARGET}/release/domarinn" "dist/${name}"
+          file "dist/${name}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: domarinn-${{ matrix.target }}
+          name: binary-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
 
@@ -140,9 +170,16 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
+          version="${TAG#v}"
           mkdir -p dist
-          jq --arg name "domarinn-${TAG}" '.name = $name' sbom.spdx.json > dist/domarinn.spdx.json
-          jq -r '"\(.name): \(.spdxVersion), \(.packages | length) packages"' dist/domarinn.spdx.json
+          # -c because syft writes compact JSON and this step should change one
+          # field, not the whole encoding. Without it jq re-indents all 900-odd
+          # packages and the shipped asset grows ~28% (2.03 MB -> 2.60 MB in
+          # 0.1.3) for nothing a machine reads.
+          jq -c --arg name "domarinn-${version}" '.name = $name' sbom.spdx.json \
+            > "dist/domarinn_${version}.spdx.json"
+          jq -r '"\(.name): \(.spdxVersion), \(.packages | length) packages"' \
+            "dist/domarinn_${version}.spdx.json"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -170,7 +207,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # One checksums.txt for the release, the convention every other Go/Rust
+      # One checksum manifest for the release, the convention every other Go/Rust
       # project ships. Generated from inside dist/ because sha256sum records the
       # path exactly as given: doing this from the repo root would bake in a
       # `dist/` prefix that does not exist for whoever downloads the release,
@@ -178,16 +215,20 @@ jobs:
       # directory". That shipped broken in 0.1.1.
       #
       # Operands are listed explicitly rather than globbed as `*` for two
-      # reasons: checksums.txt must not end up inside its own manifest, and
-      # `failglob` turns a missing artifact into a failed release instead of a
-      # silently short manifest.
+      # reasons: the manifest must not end up inside itself, and `failglob`
+      # turns a missing artifact into a failed release instead of a silently
+      # short manifest.
       - name: Generate checksums
+        env:
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           shopt -s failglob
+          version="${TAG#v}"
           cd dist
-          sha256sum -- domarinn-*-unknown-linux-musl domarinn.spdx.json > checksums.txt
-          cat checksums.txt
+          sha256sum -- "domarinn_${version}_linux_"* "domarinn_${version}.spdx.json" \
+            > "domarinn_${version}_checksums.txt"
+          cat "domarinn_${version}_checksums.txt"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2

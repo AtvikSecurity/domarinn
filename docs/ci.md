@@ -282,7 +282,7 @@ action's from-source fallback) would fail against the released tag.
 |--------------|--------------|
 | **binaries** | Builds the web UI, then the static musl binary for `x86_64` (on `ubuntu-24.04`) and `aarch64` (natively on `ubuntu-24.04-arm`). Neither leg may fail. |
 | **sbom**     | Catalogues the dependency graph into one SPDX document for the whole release. |
-| **upload**   | Writes `checksums.txt`, signs every artifact with keyless cosign, then attaches them to the published release with `gh release upload --clobber`. It does **not** generate release notes — Release Please owns the release body. |
+| **upload**   | Writes the checksum manifest, signs every artifact with keyless cosign, then attaches them to the published release with `gh release upload --clobber`. It does **not** generate release notes — Release Please owns the release body. |
 
 ### What a release publishes
 
@@ -290,16 +290,40 @@ Eight assets, whatever the number of targets:
 
 | Asset | Notes |
 |---|---|
-| `domarinn-<target>` | Fully static musl binary, web UI embedded. One per target (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) |
-| `domarinn.spdx.json` | SPDX, ~890 packages across the Rust and npm graphs. **One per release, not per target** |
-| `checksums.txt` | Covers every artifact above. Bare filenames inside, so `sha256sum --check` works from any directory |
+| `domarinn_<version>_linux_<arch>` | Fully static musl binary, web UI embedded. One per arch (`amd64`, `arm64`) |
+| `domarinn_<version>.spdx.json` | SPDX, ~900 packages across the Rust and npm graphs. **One per release, not per arch** |
+| `domarinn_<version>_checksums.txt` | Covers every artifact above. Bare filenames inside, so `sha256sum --check` works from any directory |
 | `*.sigstore.json` | A cosign bundle for each of the above — the bundles are not themselves checksummed, since each carries its own integrity |
 
-Filenames deliberately carry **no version**. That is what makes
-`releases/latest/download/domarinn-x86_64-unknown-linux-musl` a stable URL for
-READMEs, Dockerfiles, and the `domarinn-eval` action — which constructs exactly
-that path. Adding a version would break all three. The version instead appears
-*inside* the SBOM, as its SPDX document `name`.
+So for `0.2.0`:
+
+```
+domarinn_0.2.0_linux_amd64          domarinn_0.2.0_linux_amd64.sigstore.json
+domarinn_0.2.0_linux_arm64          domarinn_0.2.0_linux_arm64.sigstore.json
+domarinn_0.2.0.spdx.json            domarinn_0.2.0.spdx.json.sigstore.json
+domarinn_0.2.0_checksums.txt        domarinn_0.2.0_checksums.txt.sigstore.json
+```
+
+**The version is always the second underscore-separated field**, so a file in
+`~/Downloads` identifies itself. The arch is `amd64`/`arm64` rather than the
+Rust triple: `x86_64-unknown-linux-musl` puts the literal word *unknown* — the
+vendor field — exactly where a reader looks for a version. `musl` is not in the
+name either; that these are fully static is a documented property, not a
+filename.
+
+The cost is that `releases/latest/download/<name>` no longer exists, because
+GitHub has no wildcard there. Consumers resolve the tag first:
+
+```sh
+ver=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+  https://github.com/AtvikSecurity/domarinn/releases/latest | sed 's#.*/tag/##')
+```
+
+That redirect needs no API token and is not rate-limited the way unauthenticated
+`api.github.com` is. `README.md`, [`getting-started`](./getting-started.md) and
+[`domarinn-eval`](../.github/actions/domarinn-eval/action.yml) all do this; the
+action additionally falls back to the old unversioned asset name so pinning
+`0.1.3` or earlier still downloads rather than rebuilding from source.
 
 Four decisions worth knowing if you touch this workflow:
 
@@ -317,9 +341,9 @@ Four decisions worth knowing if you touch this workflow:
   path exactly as given, so running it from the repo root bakes in a `dist/`
   prefix that does not exist for whoever downloads the release, and their
   `sha256sum --check` fails. This shipped broken in `0.1.1`.
-- **The operands are listed, not globbed.** `checksums.txt` must not appear in
-  its own manifest, and `shopt -s failglob` turns a missing artifact into a
-  failed release rather than a silently short manifest.
+- **The operands are listed, not globbed.** The manifest must not appear inside
+  itself, and `shopt -s failglob` turns a missing artifact into a failed release
+  rather than a silently short manifest.
 
 Signing is keyless: the OIDC identity of the workflow is the signer, so there is
 no key to manage or rotate. See [getting-started](./getting-started.md#verifying-a-download)
