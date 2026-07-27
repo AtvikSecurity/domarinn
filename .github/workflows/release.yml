@@ -46,27 +46,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # Catalogue dependencies from the lockfiles, deliberately BEFORE anything
-      # is built. Two reasons:
-      #   * `[profile.release] strip = true` (Cargo.toml), so scanning the
-      #     shipped binary would yield an almost empty SBOM. The dependency
-      #     graph is the real answer, and it lives in Cargo.lock.
-      #   * On a pristine tree syft sees only Cargo.lock and web/pnpm-lock.yaml.
-      #     After the build it would also crawl target/ and node_modules/ —
-      #     gigabytes of build output, for a worse result.
-      # Both lockfiles matter: the binary embeds the built web UI, so the npm
-      # graph is genuinely part of what ships.
-      - name: Generate SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: .
-          format: spdx-json
-          output-file: sbom.spdx.json
-          # This workflow owns what reaches the release; the action must not
-          # attach assets or artifacts of its own.
-          upload-artifact: false
-          upload-release-assets: false
-
       # mise installs the pinned Rust/Node/pnpm from .mise/config.toml +
       # .mise/mise.lock, the single source of toolchain versions for both CI
       # and releases. Caching is off: this workflow publishes artifacts, and a
@@ -95,26 +74,17 @@ jobs:
           MUSL_TARGET: ${{ matrix.target }}
         run: mise run musl-build
 
+      # Only the binary. Checksums are a single release-wide `checksums.txt`
+      # written by the upload job, because a per-target file cannot cover the
+      # artifacts that do not belong to any one target.
       - name: Stage artifact
         env:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          name="domarinn-${TARGET}"
-          cp "target/${TARGET}/release/domarinn" "dist/${name}"
-          # Generate the checksum from inside dist/ so the file records a bare
-          # filename. sha256sum writes the path exactly as given, so doing this
-          # from the repo root would bake in a `dist/` prefix that does not
-          # exist for whoever downloads the release, and `sha256sum --check`
-          # would fail for them with "No such file or directory".
-          (cd dist && sha256sum "$name" > "${name}.sha256")
-          # Ship the SBOM beside the binary it describes. Its contents are the
-          # same on both matrix legs (one source graph, two targets); naming it
-          # per target just means every download has a matching set.
-          mv sbom.spdx.json "dist/${name}.sbom.json"
-          file "dist/${name}"
-          cat "dist/${name}.sha256"
+          cp "target/${TARGET}/release/domarinn" "dist/domarinn-${TARGET}"
+          file "dist/domarinn-${TARGET}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -123,11 +93,70 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 2. Attach the binaries to the release Release Please already published.
+  # 2. Catalogue the dependency graph, once for the whole release.
+  #
+  #    This is a job of its own rather than a step in the matrix above, and the
+  #    separation is the point: the SBOM is generated from Cargo.lock and
+  #    web/pnpm-lock.yaml, which say nothing about the target triple, so the two
+  #    matrix legs used to produce the same 890-package document twice and ship
+  #    it under two names — implying a per-target dependency graph that does not
+  #    exist. One release, one SBOM.
+  #
+  #    An empty checkout is also exactly what syft wants. On a pristine tree it
+  #    sees only the two lockfiles; after a build it would additionally crawl
+  #    target/ and node_modules/ — gigabytes of build output, for a worse
+  #    result. And `[profile.release] strip = true` (Cargo.toml) means scanning
+  #    the shipped binary would report 1 package where the lockfiles report 890.
+  #
+  #    Both lockfiles matter: the binary embeds the built web UI, so the npm
+  #    graph is genuinely part of what ships.
+  # ---------------------------------------------------------------------------
+  sbom:
+    name: catalogue dependencies
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+          # This workflow owns what reaches the release; the action must not
+          # attach assets or artifacts of its own.
+          upload-artifact: false
+          upload-release-assets: false
+
+      # `.spdx.json`, not `.sbom.json`: the extension is how a consumer tells
+      # SPDX from CycloneDX without parsing 1.9 MB of JSON. syft also names the
+      # document after the directory it scanned — literally "." — so stamp the
+      # release onto it, which is where the version belongs given the filename
+      # deliberately carries none (see the upload job).
+      - name: Name the document
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          jq --arg name "domarinn-${TAG}" '.name = $name' sbom.spdx.json > dist/domarinn.spdx.json
+          jq -r '"\(.name): \(.spdxVersion), \(.packages | length) packages"' dist/domarinn.spdx.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: dist/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3. Checksum, sign, and attach everything to the release Release Please
+  #    already published.
   # ---------------------------------------------------------------------------
   upload:
     name: upload release assets
-    needs: binaries
+    needs: [binaries, sbom]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -141,13 +170,33 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # One checksums.txt for the release, the convention every other Go/Rust
+      # project ships. Generated from inside dist/ because sha256sum records the
+      # path exactly as given: doing this from the repo root would bake in a
+      # `dist/` prefix that does not exist for whoever downloads the release,
+      # and their `sha256sum --check` would fail with "No such file or
+      # directory". That shipped broken in 0.1.1.
+      #
+      # Operands are listed explicitly rather than globbed as `*` for two
+      # reasons: checksums.txt must not end up inside its own manifest, and
+      # `failglob` turns a missing artifact into a failed release instead of a
+      # silently short manifest.
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          shopt -s failglob
+          cd dist
+          sha256sum -- domarinn-*-unknown-linux-musl domarinn.spdx.json > checksums.txt
+          cat checksums.txt
+
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      # Sign every artifact, binaries and SBOMs alike, so a consumer can verify
-      # provenance without trusting the download path. Bundles are self-contained
-      # (certificate + signature + Rekor entry), so verification needs no
-      # keyserver — only `cosign verify-blob --bundle`.
+      # Sign every artifact — binaries, SBOM, and the checksum manifest alike —
+      # so a consumer can verify provenance without trusting the download path.
+      # Bundles are self-contained (certificate + signature + Rekor entry), so
+      # verification needs no keyserver, only `cosign verify-blob --bundle`.
+      # They are not themselves checksummed: a bundle carries its own integrity.
       - name: Sign artifacts
         run: |
           set -euo pipefail
@@ -176,4 +225,4 @@ jobs:
           GH_REPO: ${{ github.repository }}
         # --clobber so re-running the workflow on an existing release replaces
         # the assets instead of erroring out.
-        run: gh release upload "$TAG" dist/domarinn-* --clobber
+        run: gh release upload "$TAG" dist/* --clobber
