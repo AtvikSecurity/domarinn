@@ -33,6 +33,10 @@
   lockFileMaintenance: {
     enabled: true,
     schedule: ["before 3am on the first day of the month"],
+    // Covered by the blanket automerge policy below; set here too because
+    // lockFileMaintenance reads its own config object rather than inheriting
+    // from a packageRules match.
+    automerge: true,
   },
 
   // Track plain version strings marked with an inline `# renovate:` annotation,
@@ -117,30 +121,71 @@
     { matchUpdateTypes: ["digest"], labels: ["type/digest"] },
 
     // --- Automerge --------------------------------------------------------
+    //
+    // Policy: automerge everything, in every manager, at every update type —
+    // gated only on CI going green. This replaces the previous arrangement,
+    // where only patch/digest bumps and GitHub Actions automerged and
+    // everything else waited for a human.
+    //
+    // Two things make that safe enough to be worth it:
+    //
+    //   1. CI is the gate. `:automergeBranch` (see extends) runs the update on
+    //      a temporary branch, waits for that branch's checks, and only then
+    //      fast-forwards the base branch. If anything fails, Renovate opens a
+    //      normal PR instead and it sits there for a human — a red update can
+    //      never land. Note this means `ignoreTests` must stay off everywhere;
+    //      the old GitHub Actions rules set it to true, which skipped checks
+    //      entirely, and that is exactly what this policy must not do.
+    //
+    //   2. The soak below. A malicious or broken publish is usually yanked
+    //      within hours, so waiting keeps the worst of it out of the tree.
+    //
+    // The soak ALSO has to stay >= pnpm's own `minimumReleaseAge`, which is
+    // enforced at install time and defaults to ~1 day in pnpm 11. When
+    // Renovate is the faster of the two it opens npm PRs whose lockfile pnpm
+    // then refuses, and CI fails with ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION
+    // rather than anything to do with the code (this happened to the
+    // jsdom 30.0.0 PR). 3 days clears the 1-day floor with room to spare.
     {
-      description: "Auto-merge GitHub Actions",
-      matchManagers: ["github-actions"],
-      matchUpdateTypes: ["minor", "patch", "digest"],
+      description: "Automerge everything that passes CI, after a 3-day soak",
+      matchUpdateTypes: ["major", "minor", "patch", "digest", "pin", "lockFileMaintenance"],
       automerge: true,
-      automergeType: "branch",
       minimumReleaseAge: "3 days",
-      ignoreTests: true,
+    },
+
+    // --- Version constraints ----------------------------------------------
+    //
+    // typescript-eslint throws at module load on TypeScript 7 — its peer range
+    // is `typescript >=4.8.4 <6.1.0`, and TS 7 support is tracked upstream for
+    // TS >=7.1 in typescript-eslint/typescript-eslint#10940. So the plain
+    // `typescript` dep, which is the one the linter resolves, is capped below
+    // 6.1 on purpose. Without this cap Renovate would keep proposing 7.x for
+    // it, the web lint job would keep failing, and — under the automerge
+    // policy above — the update would never land and simply accumulate as
+    // noise.
+    //
+    // The compiler is NOT capped: web/package.json aliases `typescript-7` to
+    // the real TypeScript 7 and type-checks with that, so `tsc -b` tracks
+    // latest normally. See the `//typescript` key there for the unwind.
+    // Lift this cap when typescript-eslint ships TS 7 support.
+    {
+      description: "Hold `typescript` below 6.1 while typescript-eslint rejects TS 7",
+      matchManagers: ["npm"],
+      matchDepNames: ["typescript"],
+      allowedVersions: "<6.1.0",
     },
     {
-      description: "Auto-merge trusted GitHub Actions without the soak period",
-      matchManagers: ["github-actions"],
-      matchPackageNames: ["/^actions\\//", "/^docker\\//", "/^googleapis\\//", "/^sigstore\\//"],
-      matchUpdateTypes: ["minor", "patch", "digest"],
-      automerge: true,
-      automergeType: "branch",
-      minimumReleaseAge: "1 minute",
-      ignoreTests: true,
-    },
-    {
-      description: "Auto-merge patch + digest updates after a 3-day soak",
-      matchUpdateTypes: ["patch", "digest"],
-      minimumReleaseAge: "3 days",
-      automerge: true,
+      // Belt and braces. For an aliased dep (`"typescript-7":
+      // "npm:typescript@^7.0.2"`) Renovate keys depName off the alias and
+      // resolves packageName to the real package — so the cap above should not
+      // reach this one. Restating the bound here means that even if the match
+      // above were to catch the alias, the compiler still tracks 7.x rather
+      // than silently freezing at 7.0.2. This rule comes second on purpose:
+      // later packageRules win.
+      description: "The aliased TS 7 compiler tracks latest 7.x",
+      matchManagers: ["npm"],
+      matchDepNames: ["typescript-7"],
+      allowedVersions: "<8.0.0",
     },
 
     // --- Manager quirks ---------------------------------------------------
