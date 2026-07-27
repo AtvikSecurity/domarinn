@@ -10,6 +10,10 @@ web/dist/
 # Local editor / OS noise
 .DS_Store
 .superpowers/
+.claude/
+
+# Runtime data dir created by `domarinn server` / docker-compose
+data/
 
 # mise local overrides (per-developer env, e.g. smoke-test endpoints)
 .mise/config.local.toml

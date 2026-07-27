@@ -15,7 +15,7 @@ edition = "2021"
 rust-version = "1.83"
 license = "MIT"
 repository = "https://github.com/AtvikSecurity/domarinn"
-authors = ["perfectra1n"]
+authors = ["Atvik Security"]
 
 [workspace.dependencies]
 domarinn-core = { path = "crates/domarinn-core" }

@@ -5,6 +5,27 @@ you from install to a graded, shareable run in a few minutes.
 
 ## Install
 
+**Prebuilt binary** (fastest; no toolchain needed). Each release publishes a
+fully static musl binary for `x86_64` and `aarch64`, so it runs on any Linux
+distro with no shared-library requirements:
+
+```sh
+# pick your arch: x86_64-unknown-linux-musl or aarch64-unknown-linux-musl
+target=x86_64-unknown-linux-musl
+base=https://github.com/AtvikSecurity/domarinn/releases/latest/download
+
+curl -fsSLO "$base/domarinn-$target"
+curl -fsSLO "$base/domarinn-$target.sha256"
+sha256sum --check "domarinn-$target.sha256"
+
+chmod +x "domarinn-$target"
+sudo mv "domarinn-$target" /usr/local/bin/domarinn
+domarinn --version
+```
+
+Substitute a tag (e.g. `.../releases/download/0.2.0/...`) for a pinned version.
+Note that release tags are bare semver — `0.2.0`, not `v0.2.0`.
+
 **From source** (needs a recent Rust toolchain):
 
 ```sh

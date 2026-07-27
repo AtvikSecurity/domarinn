@@ -1,0 +1,21 @@
+# gitleaks configuration
+#
+# Scanners are meant to be loud, so this file stays deliberately small: it
+# allowlists exactly one path, and that path has a README next to it explaining
+# why. If this list ever grows, treat that as a signal to look at what is being
+# committed rather than at what is being suppressed.
+#
+# Note that this only helps contributors (and other CI) running gitleaks.
+# GitHub's own secret scanning does not read this file — the alert it raises on
+# the OIDC test key is expected and gets dismissed as "used in tests".
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test-only fixtures that are supposed to look like credentials."
+paths = [
+  # Throwaway RSA key for the in-process mock OIDC IdP. See the README beside
+  # it: crates/domarinn-server/tests/fixtures/oidc/README.md
+  '''crates/domarinn-server/tests/fixtures/oidc/test-idp-signing-key\.pem''',
+]

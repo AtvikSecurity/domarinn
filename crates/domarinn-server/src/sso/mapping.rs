@@ -69,9 +69,9 @@ mod tests {
 
     fn mapping() -> RoleMapping {
         RoleMapping {
-            admin_groups: vec!["platform-admins".into()],
-            admin_emails: vec!["ops@atviksecurity.com".into()],
-            allowed_email_domains: vec!["atviksecurity.com".into()],
+            admin_groups: vec!["sso-admins".into()],
+            admin_emails: vec!["ops@example.com".into()],
+            allowed_email_domains: vec!["example.com".into()],
         }
     }
 
@@ -85,10 +85,10 @@ mod tests {
     #[test]
     fn domain_allowlist_is_case_insensitive_and_rejects_missing_email() {
         let m = mapping();
-        assert!(m.check_allowed(Some("jon@atviksecurity.com")).is_ok());
-        assert!(m.check_allowed(Some("jon@ATVIKSECURITY.COM")).is_ok());
+        assert!(m.check_allowed(Some("jon@example.com")).is_ok());
+        assert!(m.check_allowed(Some("jon@EXAMPLE.COM")).is_ok());
         assert!(matches!(
-            m.check_allowed(Some("jon@evil.com")),
+            m.check_allowed(Some("jon@elsewhere.example")),
             Err(SsoError::EmailNotAllowed)
         ));
         assert!(matches!(
@@ -107,19 +107,19 @@ mod tests {
         let m = mapping();
         // Group membership -> admin (exact, case-sensitive).
         assert_eq!(
-            m.role_for(Some("a@atviksecurity.com"), &["platform-admins".into()]),
+            m.role_for(Some("a@example.com"), &["sso-admins".into()]),
             Role::Admin
         );
         assert_eq!(
-            m.role_for(None, &["Platform-Admins".into()]),
+            m.role_for(None, &["SSO-Admins".into()]),
             Role::Member,
             "group names match exactly"
         );
         // Admin email -> admin (case-insensitive), regardless of groups.
-        assert_eq!(m.role_for(Some("OPS@atviksecurity.com"), &[]), Role::Admin);
+        assert_eq!(m.role_for(Some("OPS@example.com"), &[]), Role::Admin);
         // Neither -> member.
         assert_eq!(
-            m.role_for(Some("dev@atviksecurity.com"), &["devs".into()]),
+            m.role_for(Some("dev@example.com"), &["devs".into()]),
             Role::Member
         );
         // No mapping configured at all -> everyone is a member.

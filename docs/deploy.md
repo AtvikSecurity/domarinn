@@ -284,5 +284,9 @@ service is stopped.
 Pull the new image tag and restart the single pod/container (`Recreate` on
 Kubernetes handles the ordering). Because the schema migrations run at startup
 and there is only ever one writer, upgrades are a stop-start with a backup taken
-first. Image tags (`latest`, `{{version}}`, `{{major}}.{{minor}}`) are published
-by the release workflow — see [`./ci.md`](./ci.md#releases-releaseyml).
+first.
+
+Published tags are `rolling` (tracks `main`), plus `{{version}}`,
+`{{major}}.{{minor}}` and `{{major}}` for each release. There is deliberately
+**no `latest`** — pin a version, or track `rolling` if you want the tip of main.
+See [`./ci.md`](./ci.md#container-image-dockeryml).
