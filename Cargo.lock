@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-cache"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -898,7 +898,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anstream",
  "anstyle",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-logging"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -965,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1003,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-testkit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "domarinn-core",
