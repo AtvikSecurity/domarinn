@@ -146,8 +146,10 @@ function filterCases(cases: MockCaseRow[], p: URLSearchParams): MockCaseRow[] {
   const prompt = p.get("prompt");
   const test = p.get("test");
   const cached = p.get("cached");
+  const errorClass = p.get("error_class");
   return cases.filter((c) => {
     if (status && c.status !== status) return false;
+    if (errorClass && c.error_class !== errorClass) return false;
     if (tag && !c.tags.includes(tag)) return false;
     if (provider && c.provider_id !== provider) return false;
     if (prompt && c.prompt_id !== prompt) return false;

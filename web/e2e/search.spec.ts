@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test.describe("Global search", () => {
   test("dropdown shows grouped hits and quick-jumps to a run", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/runs");
 
     const input = page.getByRole("combobox", { name: "Search runs and cases" });
     await input.fill("checkout");
@@ -15,7 +15,7 @@ test.describe("Global search", () => {
   });
 
   test("Enter opens /search; a case hit opens the run's case drawer", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/runs");
 
     const input = page.getByRole("combobox", { name: "Search runs and cases" });
     // "coupon" comes from the fixture case vocabulary (names/outputs).

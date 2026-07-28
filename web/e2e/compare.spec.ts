@@ -11,7 +11,7 @@ test.describe("Compare view", () => {
   test("reached from the runs list, the compare page labels the older run as base", async ({
     page,
   }) => {
-    await page.goto("/");
+    await page.goto("/runs");
     await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
 
     // Select the baseline (older) and money (newer) runs and follow the
@@ -247,7 +247,12 @@ test.describe("Compare view", () => {
     await page.goto(`/runs/${MONEY_RUN_BASELINE}/compare/${MONEY_RUN}`);
     await expect(page.getByRole("heading", { name: "Compare" })).toBeVisible();
 
-    const chip = page.getByRole("button", { name: "Config changed" });
+    // The chip now names the component that moved rather than saying "config
+    // changed" — the same answer a prompt rewrite and a typo in a description
+    // used to get. The mock drifts the prompts.
+    // Exact, not a regex: the delta filter row also has a chip ending in
+    // "changed" ("Output changed"), so a loose match is ambiguous.
+    const chip = page.getByRole("button", { name: "prompts changed", exact: true });
     await expect(chip).toBeVisible();
 
     // No panel until the chip is clicked.

@@ -136,7 +136,8 @@ export function Layout() {
   const nav: NavItem[] = chromeOnly
     ? []
     : [
-        { to: "/", label: "Runs", end: true },
+        { to: "/", label: "Overview", end: true },
+        { to: "/runs", label: "Runs" },
         { to: "/cache", label: "Cache" },
       ];
   if (!chromeOnly && !view.promptLogin) nav.push({ to: "/keys", label: "API keys" });

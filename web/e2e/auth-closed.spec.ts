@@ -66,7 +66,7 @@ test.describe("Closed-mode auth gating", () => {
     await page.getByLabel("Username").fill("admin");
     await page.getByLabel("Password").fill("admin");
     await page.getByRole("button", { name: "Sign in" }).click();
-    await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 
     await page.getByRole("button", { name: "Log out" }).click();
     await expect(page).toHaveURL(/\/login$/);

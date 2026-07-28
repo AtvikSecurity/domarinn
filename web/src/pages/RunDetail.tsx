@@ -32,6 +32,7 @@ import { cn } from "@/lib/cn";
 import { useFillViewport } from "@/components/AppShell";
 import { CaseGrid } from "./run-detail/CaseGrid";
 import { CaseDrawer } from "./run-detail/CaseDrawer";
+import { ErrorBreakdown } from "./run-detail/ErrorBreakdown";
 import { MatrixView } from "./run-detail/MatrixView";
 
 const STATUS_CHIPS: { value: string; label: string }[] = [
@@ -72,6 +73,9 @@ export function RunDetail() {
   const baseline = useSetBaseline(run.data?.project ?? "", run.data?.suite ?? "");
   const auth = useAuthView();
   const deleteRun = useDeleteRun();
+  // Its own query, unfiltered by whatever the grid is showing: the breakdown
+  // describes the *run*, so it must not change when someone narrows the grid.
+  const erroredCases = useRunCases(id, { status: "error" });
   const [confirmDelete, setConfirmDelete] = useState(false);
   const navigate = useNavigate();
   // Scoped to the run that was actually pinned: `isSuccess` alone never resets,
@@ -199,7 +203,7 @@ export function RunDetail() {
         <div className="flex flex-wrap items-start gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <Link to="/" className="text-sm text-muted hover:text-fg">
+              <Link to="/runs" className="text-sm text-muted hover:text-fg">
                 Runs
               </Link>
               <span className="text-muted">/</span>
@@ -342,6 +346,18 @@ export function RunDetail() {
           ) : null}
         </div>
       </div>
+
+      {/* Only when there is something to break down, and fetched separately
+          from the grid: the grid is filtered and paginated, so counting its
+          loaded rows would report whatever happens to be on screen. */}
+      {r.error_count > 0 ? (
+        <div className="shrink-0">
+          <ErrorBreakdown
+            cases={erroredCases.data?.pages.flatMap((p) => p.cases) ?? []}
+            totalCases={r.case_count}
+          />
+        </div>
+      ) : null}
 
       {/* Filters */}
       <div className="flex shrink-0 flex-wrap items-center gap-3">

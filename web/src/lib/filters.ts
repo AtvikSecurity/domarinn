@@ -35,6 +35,9 @@ export const CASE_FILTER_KEYS = [
   "provider",
   "prompt",
   "cached",
+  // Also a SERVER filter (migration 10): narrows the grid to one kind of
+  // failure, which is how the error breakdown's rows drill in.
+  "error_class",
   "case",
   "sort",
   "view",

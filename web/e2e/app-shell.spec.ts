@@ -15,7 +15,10 @@ test.describe("App shell scrolling", () => {
   for (const [label, path] of [
     ["run detail", `/runs/${MONEY_RUN}`],
     ["matrix", `/runs/${MATRIX_RUN}?view=matrix`],
-    ["runs list", "/"],
+    ["runs list", "/runs"],
+    // The status surface is a normal page — it does not claim the viewport —
+    // so it has to obey the same one-scroller rule as everything else.
+    ["overview", "/"],
   ] as const) {
     test(`${label}: the header stays put and only one element scrolls`, async ({
       page,

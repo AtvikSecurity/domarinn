@@ -59,8 +59,12 @@ function buildRunMetas(): RunMeta[] {
         created_at,
         git_branch: branch,
         git_commit: hash(suiteKey, i, "sha").toString(16).padStart(8, "0").slice(0, 7),
+        // CI runs on the default branch; feature branches are developer
+        // iteration. Previously these were independent coin flips, which made
+        // "canonical = the latest CI run on main" unrepresentable — the
+        // Overview had no coherent fixture to render against.
         ci_run_url:
-          rand(suiteKey, i, "ci") > 0.3
+          branch === "main"
             ? `https://ci.example.com/${def.project}/${1000 + i}`
             : undefined,
         tags,

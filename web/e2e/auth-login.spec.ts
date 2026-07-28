@@ -29,7 +29,7 @@ test.describe("Login", () => {
     await page.getByRole("button", { name: "Sign in" }).click();
 
     // Redirected to the runs list.
-    await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
     await expect(page).toHaveURL(/\/$/);
 
     // The session now rides the mock "cookie" (localStorage stand-in), not a
@@ -68,7 +68,7 @@ test.describe("First-run setup", () => {
     await page.getByRole("button", { name: /Create admin/ }).click();
 
     // Setup completes, logs in, and lands on the runs list.
-    await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
     await expect(page.getByText("founder")).toBeVisible();
     await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
   });

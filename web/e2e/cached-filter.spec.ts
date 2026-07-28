@@ -13,7 +13,7 @@ test.describe("Cached-runs filter", () => {
   test("hides fully cached passing runs by default, with a reveal affordance", async ({
     page,
   }) => {
-    await page.goto("/");
+    await page.goto("/runs");
 
     // The suppression is announced, never silent.
     await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
@@ -38,7 +38,7 @@ test.describe("Cached-runs filter", () => {
   });
 
   test("the filter bar select narrows to only cached runs", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/runs");
 
     await page
       .getByRole("combobox", { name: "Cached runs" })

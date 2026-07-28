@@ -9,7 +9,7 @@ test.describe("Delete run", () => {
   test("is admin-only, confirms first, and navigates away on success", async ({
     page,
   }) => {
-    await page.goto("/?cached=all");
+    await page.goto("/runs?cached=all");
     await page.locator("tbody tr td:nth-child(2) a").first().click();
     await expect(page).toHaveURL(/\/runs\//);
 
@@ -27,7 +27,7 @@ test.describe("Delete run", () => {
   });
 
   test("cancelling leaves the run alone", async ({ page }) => {
-    await page.goto("/?cached=all");
+    await page.goto("/runs?cached=all");
     await page.locator("tbody tr td:nth-child(2) a").first().click();
     const runUrl = page.url();
 
