@@ -88,11 +88,18 @@ pub(super) async fn evaluate_asserts(
             let outcome =
                 evaluate_local(assert, output, &eval).expect("local assert yields an outcome");
             scored.push(scored_of(assert, &outcome));
-            results[i] = Some(assert_result(
-                assert,
-                &outcome,
-                AssertStatus::from_pass(outcome.passed),
-            ));
+            // An assertion that could not be *evaluated* — a schema that will
+            // not compile, a regex that will not parse — is the suite author's
+            // problem, not a statement about the output. Reporting it as a plain
+            // failure buries a config error among genuine ones, and reading the
+            // score as a judgement of the model is exactly wrong.
+            let status = if outcome.unevaluable {
+                classes.push(ErrorClass::new(ErrorClass::ASSERT_FAILED));
+                AssertStatus::Error
+            } else {
+                AssertStatus::from_pass(outcome.passed)
+            };
+            results[i] = Some(assert_result(assert, &outcome, status));
         } else {
             deferred_indices.push(i);
         }
@@ -194,9 +201,22 @@ async fn graded_verdict(
     vars: &Json,
 ) -> Result<(Graded, bool), crate::errors::GraderError> {
     let key = (ctx.grader_cache && ctx.cache_mode != CacheMode::Disabled)
-        .then(|| grader.grading_fingerprint(assert))
+        .then(|| grader.grading_fingerprint(assert, Some(ctx.base_dir)))
         .flatten()
-        .map(|fp| grader_cache_key(&fp, &graded_payload(assert, output), ctx.repeat));
+        .zip(graded_payload(ctx, assert, output, vars))
+        .map(|(fp, payload)| grader_cache_key(&fp, &payload, ctx.repeat));
+
+    // A `--cache-only` run that reached a live judge would be lying about being
+    // offline. The miss branch below covers the case where a key exists; this
+    // covers the case where there is none to look up at all — `cache.grader:
+    // false`, `--no-grader-cache`, or an assertion that opted out of caching.
+    if key.is_none() && ctx.cache_mode == CacheMode::ReadOnlyStrict {
+        return Err(crate::errors::GraderError::Transport(format!(
+            "cache-only: '{}' assertions are not verdict-cached in this run, so \
+             there is nothing to replay",
+            assert.kind.name().as_str()
+        )));
+    }
 
     if let Some(key) = &key {
         match ctx.cache.get(key).await {
@@ -250,7 +270,7 @@ async fn graded_verdict(
 
     if let Some(key) = &key {
         if ctx.cache_mode == CacheMode::ReadWrite {
-            let entry = verdict_entry(grader, assert, &graded);
+            let entry = verdict_entry(grader, ctx, assert, &graded);
             // A cache write failure must not fail the run.
             if let Err(e) = ctx.cache.put(key, &entry).await {
                 tracing::warn!(error = %e, "grader cache write failed");
@@ -261,23 +281,51 @@ async fn graded_verdict(
 }
 
 /// What was graded — the half of the key that varies per case.
-fn graded_payload(assert: &Assert, output: &Output) -> Json {
+///
+/// `None` opts this grading out of the cache. That happens only when a rubric or
+/// reference fails to render, where the alternative would be keying on the
+/// unrendered template and replaying one case's verdict for another's.
+///
+/// Everything the grader is *given* has to be here, because the other half of
+/// the key ([`AssertGrader::grading_fingerprint`]) describes the judge, not the
+/// question. That is more than the output:
+///
+/// - the **rendered** rubric/reference, not the template. `grade_llm_rubric`
+///   renders `{{ country }}` itself, *after* this runs, so hashing the raw
+///   template collapses every case of a matrix onto one entry — and any case
+///   whose output happened to match replays a verdict about a different
+///   question entirely.
+/// - `vars`, `test` and `provider` for `exec`, which this branch started
+///   sending to the child instead of the empty stubs it used to get. A child
+///   that judges output *against the case's inputs* now has inputs, so two
+///   cells with equal output are no longer the same question.
+fn graded_payload(
+    ctx: &AssertCtx<'_>,
+    assert: &Assert,
+    output: &Output,
+    vars: &Json,
+) -> Option<Json> {
     let output = output
         .as_json()
         .unwrap_or_else(|| Json::String(output.as_text().into_owned()));
     match &assert.kind {
-        // The rubric is *rendered* before it reaches here, so a var that can
-        // move the verdict has already moved this.
         AssertKind::LlmRubric { value, .. } => {
-            serde_json::json!({"assert": "llm-rubric", "rubric": value, "output": output})
+            let rubric = ctx.engine.render_str(value, vars).ok()?;
+            Some(serde_json::json!({"assert": "llm-rubric", "rubric": rubric, "output": output}))
         }
         AssertKind::Similar { value, .. } => {
-            serde_json::json!({"assert": "similar", "reference": value, "output": output})
+            let reference = ctx.engine.render_val(value, vars).ok()?;
+            Some(serde_json::json!({"assert": "similar", "reference": reference, "output": output}))
         }
-        AssertKind::Exec { config, .. } => {
-            serde_json::json!({"assert": "exec", "config": config, "output": output})
-        }
-        other => serde_json::json!({"assert": other.name().as_str(), "output": output}),
+        AssertKind::Exec { config, .. } => Some(serde_json::json!({
+            "assert": "exec",
+            "config": config,
+            "output": output,
+            "vars": vars,
+            "test": {"id": ctx.test_id, "tags": ctx.test_tags},
+            "provider": {"id": ctx.provider_id},
+        })),
+        other => Some(serde_json::json!({"assert": other.name().as_str(), "output": output})),
     }
 }
 
@@ -287,13 +335,16 @@ fn graded_payload(assert: &Assert, output: &Output) -> Json {
 /// a replayed verdict reports it rather than silently dropping to nothing.
 fn verdict_entry(
     grader: &dyn AssertGrader,
+    ctx: &AssertCtx<'_>,
     assert: &Assert,
     graded: &Graded,
 ) -> crate::cache::CacheEntry {
     let reason = graded.verdict.to_outcome(None).reason;
     crate::cache::CacheEntry {
         created_at: chrono::Utc::now(),
-        provider_fingerprint: grader.grading_fingerprint(assert).unwrap_or(Json::Null),
+        provider_fingerprint: grader
+            .grading_fingerprint(assert, Some(ctx.base_dir))
+            .unwrap_or(Json::Null),
         output: Output::Text(reason),
         usage: graded.usage.clone(),
         cost_usd: graded.cost_usd,

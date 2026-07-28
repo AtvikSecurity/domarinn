@@ -317,15 +317,38 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
     }
 
     // Exit code: infra errors win over everything, then an unresolved baseline
-    // (the gate could not do its job, so its silence means nothing), then
-    // assertion failures and regressions.
+    // (the gate could not do its job, so its silence means nothing), then a run
+    // that graded nothing, then assertion failures and regressions.
     if result.summary.errored > 0 {
         exit::INFRA
     } else if baseline_unresolved {
+        exit::USAGE
+    } else if graded_nothing(&result.summary) {
+        eprintln!(
+            "run error: all {} cases were skipped, so nothing was graded — a green \
+             gate here would mean the suite ran, not that it passed. Check \
+             `runner.skip_on_empty_reason` and why every response matched it.",
+            result.summary.total
+        );
         exit::USAGE
     } else if result.summary.failed > 0 || regressed {
         exit::ASSERT_FAIL
     } else {
         exit::OK
     }
+}
+
+/// Every case was skipped, so the run reached the end without grading anything.
+///
+/// The same hole `RunError::NothingToRun` closes one layer up, at the other end
+/// of the pipeline: there the *cells* were empty, here they were populated and
+/// then every response matched a `skip_on_empty_reason`. Falling through to
+/// `exit::OK` on zero passes reports a green gate for a run that formed no
+/// opinion — which is how a model regression that empties every response ships.
+///
+/// A run with no cases at all is deliberately not this: reaching here with
+/// `total == 0` means `--allow-empty` was passed, and that flag exists to say
+/// "grading nothing is expected".
+fn graded_nothing(summary: &domarinn_core::result::RunSummary) -> bool {
+    summary.total > 0 && summary.skipped == summary.total
 }

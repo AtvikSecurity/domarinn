@@ -288,9 +288,12 @@ fn stats_line(s: &RunSummary, run_cases: &[domarinn_core::result::CaseResult]) -
     if let Some(p1) = pass_at_1(run_cases) {
         segments.push(format!("pass@1 {:.1}%", p1 * 100.0));
     }
+    // A breakdown of the `in` figure above, not an addition to it: the cached
+    // span is part of the prompt that was sent, billed at a different rate.
+    // Reading these two segments as summands would double-count it.
     if s.cache_read_tokens > 0 || s.cache_write_tokens > 0 {
         segments.push(format!(
-            "{} cache-read / {} cache-write tokens",
+            "{} of that cache-read / {} cache-write tokens",
             humanize_count(s.cache_read_tokens),
             humanize_count(s.cache_write_tokens),
         ));

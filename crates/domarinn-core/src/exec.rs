@@ -6,6 +6,8 @@
 //! stdout is an infrastructure error.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// An identity for the *program* a command runs, not just its argv.
 ///
@@ -21,34 +23,90 @@ use std::collections::BTreeMap;
 /// and costs a `stat` per argument rather than hashing megabytes of executable
 /// on every cache lookup.
 ///
-/// Arguments that are not files (flags, plain values, a bare `sh`) contribute
-/// nothing beyond already being in `command`. A program resolved from `PATH`
-/// with no path separator is therefore *not* covered; a suite that needs that
-/// can still set `cache_salt` explicitly, which composes with this.
-pub fn program_identity(command: &[String]) -> serde_json::Value {
+/// # Resolved the way the child will resolve it
+///
+/// `base_dir` is the directory the child is spawned in, and a relative argument
+/// is resolved against *it*, not the process cwd. Getting this wrong is not a
+/// near-miss: `command: ["./sut"]` in a suite run from a repo root stats a path
+/// that does not exist, contributes nothing, and silently degrades the key back
+/// to argv alone — the exact failure this function exists to prevent.
+///
+/// `command[0]` additionally resolves through `PATH` when it names no directory,
+/// because `my-agent` installed on `PATH` is the most common exec provider there
+/// is and it is precisely the one a rebuild moves. Later arguments never do: a
+/// bare `grade.py` is a file next to the suite, not a program.
+///
+/// The recorded `path` is always the *argv* string, never the resolved one, so
+/// two machines sharing a cache do not miss on each other purely for having
+/// checked the repository out somewhere else.
+///
+/// Arguments that name nothing readable (flags, plain values, an inline `sh -c`
+/// script) contribute nothing beyond already being in `command`. When *no*
+/// argument resolves, there is no program identity at all and the caller must
+/// treat the command as uncacheable without an explicit `cache_salt` — see
+/// [`crate::exec_provider::ExecProvider::cacheable`].
+pub fn program_identity(command: &[String], base_dir: Option<&Path>) -> serde_json::Value {
     let mut parts = Vec::new();
-    for arg in command {
-        let Ok(meta) = std::fs::metadata(arg) else {
+    for (i, arg) in command.iter().enumerate() {
+        let Some(resolved) = resolve_program_arg(arg, i == 0, base_dir) else {
+            continue;
+        };
+        let Ok(meta) = std::fs::metadata(&resolved) else {
             continue;
         };
         if !meta.is_file() {
             continue;
         }
+        // Nanoseconds as well as seconds: a rebuild that lands in the same
+        // second and happens to produce an equal-length artifact is ordinary
+        // for a small script, and second-granularity would not see it.
         let mtime = meta
             .modified()
             .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs());
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
         parts.push(serde_json::json!({
             "path": arg,
             "len": meta.len(),
-            "mtime": mtime,
+            "mtime": mtime.map(|d| d.as_secs()),
+            "mtime_ns": mtime.map(|d| d.subsec_nanos()),
         }));
     }
     serde_json::Value::Array(parts)
 }
-use std::path::Path;
-use std::time::Duration;
+
+/// Where on disk `arg` points, resolved the way the spawned child would resolve
+/// it. `None` when the argument cannot name a file at all.
+fn resolve_program_arg(arg: &str, is_program: bool, base_dir: Option<&Path>) -> Option<PathBuf> {
+    if arg.is_empty() {
+        return None;
+    }
+    let path = Path::new(arg);
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+    // A bare name naming no directory is not a relative path *for the program*
+    // — the OS resolves that one through `PATH`. Every later argument is an
+    // ordinary path relative to the child's cwd.
+    if is_program && path.components().count() == 1 {
+        return path_lookup(arg);
+    }
+    Some(match base_dir {
+        Some(dir) => dir.join(path),
+        None => path.to_path_buf(),
+    })
+}
+
+/// The first entry on `PATH` that holds a file named `name`.
+fn path_lookup(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Whether [`program_identity`] found anything at all to key on.
+pub fn has_program_identity(identity: &serde_json::Value) -> bool {
+    identity.as_array().is_some_and(|parts| !parts.is_empty())
+}
 
 use serde_json::Value as Json;
 use tokio::io::AsyncWriteExt;

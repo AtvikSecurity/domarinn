@@ -61,7 +61,13 @@ pub fn resolve_file_vars(tests: &mut [TestCase], base_dir: &Path) -> Result<(), 
 /// nothing at all.
 ///
 /// The same was true of `equals` and `similar`, which compared output against
-/// the marker object rather than the file's contents. Both are fixed here.
+/// the marker object rather than the file's contents, and of `tool-call`'s
+/// `args`/`schema`. All are handled here.
+///
+/// **Every `Val`-typed assertion field belongs in the match below.** One left
+/// out is not a missing feature, it is a silent pass: `tool-call` was added with
+/// a `schema:` and reintroduced the exact green-check-that-validated-nothing
+/// this function was written to remove.
 ///
 /// Runs inside `expand_tests`, so a schema is concrete content long before the
 /// runner evaluates anything, and inherits the same sandbox as every other
@@ -72,15 +78,22 @@ pub fn resolve_assert_file_vals(
 ) -> Result<(), ResolveError> {
     for tc in tests.iter_mut() {
         for assert in tc.assert.iter_mut() {
-            let val: Option<&mut crate::val::Val> = match &mut assert.kind {
-                AssertKind::ContainsJson { schema } => schema.as_mut(),
-                AssertKind::Equals { value } => Some(value),
-                AssertKind::Similar { value, .. } => Some(value),
-                _ => None,
+            // A `Vec` rather than one slot: `tool-call` carries two `Val` fields,
+            // and an assertion kind that grew a second one is exactly how the
+            // gap this function closes reappeared.
+            let vals: Vec<&mut crate::val::Val> = match &mut assert.kind {
+                AssertKind::ContainsJson { schema } => schema.as_mut().into_iter().collect(),
+                AssertKind::Equals { value } => vec![value],
+                AssertKind::Similar { value, .. } => vec![value],
+                AssertKind::ToolCall { args, schema, .. } => {
+                    args.as_mut().into_iter().chain(schema.as_mut()).collect()
+                }
+                _ => Vec::new(),
             };
-            let Some(val) = val else { continue };
-            if let Some(spec) = FileSpec::from_json(val.as_json())? {
-                *val = load_file_var(&spec, base_dir)?;
+            for val in vals {
+                if let Some(spec) = FileSpec::from_json(val.as_json())? {
+                    *val = load_file_var(&spec, base_dir)?;
+                }
             }
         }
     }
@@ -402,6 +415,78 @@ mod tests {
         let err = resolve_file_vars(&mut cases, dir.path()).unwrap_err();
         assert!(matches!(err, ResolveError::Parse { .. }), "{err:?}");
         assert!(err.to_string().contains("prase"));
+    }
+
+    /// Every `Val`-typed assertion field, or the omission is a silent pass: an
+    /// unresolved `{"$file": …}` read as a JSON Schema is a document of entirely
+    /// unknown keywords, which validates *everything*.
+    #[test]
+    fn every_val_typed_assert_field_resolves_its_file_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("schema.json"),
+            r#"{"type": "object", "required": ["city"]}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("args.json"), r#"{"city": "Oslo"}"#).unwrap();
+
+        let file = |name: &str| Val::classify(serde_json::json!({"$file": name}));
+        let mut cases = vec![TestCase {
+            assert: vec![
+                crate::config::Assert {
+                    weight: 1.0,
+                    negate: false,
+                    kind: AssertKind::ToolCall {
+                        name: "get_weather".into(),
+                        args: Some(file("args.json")),
+                        schema: Some(file("schema.json")),
+                    },
+                },
+                crate::config::Assert {
+                    weight: 1.0,
+                    negate: false,
+                    kind: AssertKind::ContainsJson {
+                        schema: Some(file("schema.json")),
+                    },
+                },
+                crate::config::Assert {
+                    weight: 1.0,
+                    negate: false,
+                    kind: AssertKind::Equals {
+                        value: file("args.json"),
+                    },
+                },
+                crate::config::Assert {
+                    weight: 1.0,
+                    negate: false,
+                    kind: AssertKind::Similar {
+                        value: file("args.json"),
+                        threshold: None,
+                    },
+                },
+            ],
+            ..Default::default()
+        }];
+        resolve_assert_file_vals(&mut cases, dir.path()).unwrap();
+
+        for assert in &cases[0].assert {
+            let rendered = serde_json::to_string(&assert.kind).unwrap();
+            assert!(
+                !rendered.contains("$file"),
+                "an unresolved marker survived in {rendered}"
+            );
+        }
+        let AssertKind::ToolCall { args, schema, .. } = &cases[0].assert[0].kind else {
+            panic!("shape changed");
+        };
+        assert_eq!(
+            schema.as_ref().unwrap().as_json(),
+            &serde_json::json!({"type": "object", "required": ["city"]})
+        );
+        assert_eq!(
+            args.as_ref().unwrap().as_json(),
+            &serde_json::json!({"city": "Oslo"})
+        );
     }
 
     #[test]

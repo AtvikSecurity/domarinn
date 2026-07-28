@@ -49,6 +49,15 @@ pub struct DefaultGrader {
     /// map per grader, so a shared test binary cannot leak a warning between
     /// runs. The mutex is held for a map lookup, never across a request.
     rates: std::sync::Mutex<BTreeMap<String, Option<crate::pricing::ModelRate>>>,
+    /// Filesystem-derived identities (`exec` program identity, `grader.template`
+    /// contents), memoized per `(spec, base_dir)`.
+    ///
+    /// [`Self::grading_fingerprint`] is called for every assertion of every
+    /// cell, so without this a 500-case suite stats its grader binary 500 times
+    /// — and worse, a rebuild landing mid-run would give later cells a different
+    /// key than earlier ones. One resolution per run is both cheaper and the
+    /// only self-consistent answer.
+    identities: std::sync::Mutex<BTreeMap<String, Json>>,
     /// The resolved per-call ceiling. Kept alongside the client that already
     /// carries it, because an `exec` assert has no client to carry it — without
     /// this, `grader.timeout_ms` silently applied to the HTTP judges only.
@@ -69,9 +78,23 @@ impl DefaultGrader {
             default_grader,
             embeddings: None,
             rates: std::sync::Mutex::new(BTreeMap::new()),
+            identities: std::sync::Mutex::new(BTreeMap::new()),
             timeout,
             client: http_client(timeout),
         }
+    }
+
+    /// A filesystem-derived identity, resolved once per run per distinct input.
+    fn memoized_identity(&self, key: Json, resolve: impl FnOnce() -> Json) -> Json {
+        let key = crate::cache::canonical_json(&key);
+        let mut memo = match self.identities.lock() {
+            Ok(guard) => guard,
+            // Same rule as `judge_rate`: a poisoned mutex means another thread
+            // panicked resolving one of these. Recover rather than propagating a
+            // panic into every remaining grading.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        memo.entry(key).or_insert_with(resolve).clone()
     }
 
     /// The rate for a judge model, resolved once per distinct `(model, pricing)`
@@ -157,12 +180,65 @@ impl AssertGrader for DefaultGrader {
     }
 
     /// The grader's identity for this assertion, or `None` to skip caching it.
-    fn grading_fingerprint(&self, assert: &Assert) -> Option<Json> {
+    fn grading_fingerprint(
+        &self,
+        assert: &Assert,
+        base_dir: Option<&std::path::Path>,
+    ) -> Option<Json> {
         grading_fingerprint(
             self.default_grader.as_ref(),
             self.embeddings.as_ref().map(|e| e.identity()),
             assert,
+            self.on_disk_identity(assert, base_dir),
         )
+    }
+}
+
+impl DefaultGrader {
+    /// The part of this assertion's grading identity that lives on disk: the
+    /// `exec` child's program, or the contents of a `grader.template`.
+    ///
+    /// Split from the key-shaping in [`grading_fingerprint`] so that stays a
+    /// pure function of its inputs, and so the filesystem is touched once per
+    /// run rather than once per graded cell.
+    fn on_disk_identity(&self, assert: &Assert, base_dir: Option<&std::path::Path>) -> Json {
+        let dir_key = base_dir.map(|d| d.display().to_string());
+        match &assert.kind {
+            AssertKind::Exec { command, .. } => self.memoized_identity(
+                json!({"kind": "program", "command": command, "base_dir": dir_key}),
+                || crate::exec::program_identity(command, base_dir),
+            ),
+            AssertKind::LlmRubric { grader, .. } => {
+                let Some(g) = grader.as_deref().or(self.default_grader.as_ref()) else {
+                    return Json::Null;
+                };
+                let Some(spec) = g.template.as_deref() else {
+                    return Json::Null;
+                };
+                self.memoized_identity(
+                    json!({"kind": "template", "spec": spec, "base_dir": dir_key}),
+                    || template_digest(spec, base_dir),
+                )
+            }
+            _ => Json::Null,
+        }
+    }
+}
+
+/// A digest of the bytes a `grader.template` will contribute to the prompt.
+///
+/// The *path* is not the template: this branch made that file shape every
+/// verdict, so a key over the path replays scores produced by the previous
+/// judging prompt after the file is edited — with no cache miss and no warning.
+///
+/// A template that cannot be read digests to `null` rather than failing here.
+/// The failure belongs to [`render_grader_template`], which produces a real
+/// error message at grading time; a fingerprint's job is only to move when the
+/// inputs move.
+fn template_digest(spec: &str, base_dir: Option<&std::path::Path>) -> Json {
+    match read_grader_template(spec, base_dir) {
+        Ok(text) => json!(format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex())),
+        Err(_) => Json::Null,
     }
 }
 
@@ -209,19 +285,29 @@ fn sum_usage(a: Option<TokenUsage>, b: Option<TokenUsage>) -> Option<TokenUsage>
 ///   re-paying the judge, and it is structurally absent rather than merely
 ///   omitted: [`GradedVerdict`] has no threshold to include.
 /// - **the API key env var** — a secret, same rule as `Provider::fingerprint`.
-/// - **`vars`** — the rubric is rendered *before* it is hashed and the output is
-///   in the key, so any var that can move a verdict already moves one of them.
+/// - **`vars`, the rubric, the case's identity** — these live in the *other*
+///   half of the key. This function describes the judge; what it was asked is
+///   `graded_payload`'s job in `runner_asserts`, and that is where the rubric
+///   is rendered and the case's vars are hashed. The split is why
+///   editing a `threshold:` re-scores from cache while editing a rubric does
+///   not: one is a decision about a verdict, the other is a different question.
 ///
 /// [`SYSTEM_PROMPT`] is hashed in: it is a literal in this file that shapes
 /// every verdict, and nothing else in the key would notice an edit to it.
 ///
-/// `template` and `verdict_mode` are included at their *effective* values even
-/// though the first is now read and the second is rejected — so wiring either
-/// up further needs no cache-version bump.
+/// `verdict_mode` is included at its *effective* value even though it is
+/// currently rejected — so wiring it up further needs no cache-version bump.
+///
+/// `on_disk` carries whatever part of the identity had to be read off the
+/// filesystem (see [`DefaultGrader::on_disk_identity`]): the `exec` child's
+/// program, or a digest of the `grader.template` file's contents. It is a
+/// parameter rather than a filesystem call here so this stays a pure function
+/// and the disk is touched once per run rather than once per graded cell.
 fn grading_fingerprint(
     default_grader: Option<&Grader>,
     embeddings: Option<Json>,
     assert: &Assert,
+    on_disk: Json,
 ) -> Option<Json> {
     fn provider_identity(kind: &ProviderKind) -> Option<Json> {
         match kind {
@@ -262,6 +348,9 @@ fn grading_fingerprint(
                 "assert": "llm-rubric",
                 "provider": provider_identity(&g.provider)?,
                 "template": g.template,
+                // The file's *bytes*, not just its path — that file is the
+                // grading prompt, so editing it has to bust the verdict cache.
+                "template_digest": on_disk,
                 "verdict_mode": g.verdict_mode.unwrap_or_default(),
                 "assert_params": params,
                 "system_prompt": system_digest,
@@ -283,12 +372,21 @@ fn grading_fingerprint(
             command,
             cache_salt,
             config: _,
-        } => Some(json!({
-            "assert": "exec",
-            "command": command,
-            "program": crate::exec::program_identity(command),
-            "cache_salt": cache_salt,
-        })),
+        } => {
+            // Same rule as `ExecProvider::cacheable`: "by default" is not
+            // "unconditionally". With no identifiable program the key would be
+            // argv alone, which does not move when the child is rebuilt — so
+            // opt out of caching entirely unless the suite set a salt.
+            if !crate::exec::has_program_identity(&on_disk) && cache_salt.is_none() {
+                return None;
+            }
+            Some(json!({
+                "assert": "exec",
+                "command": command,
+                "program": on_disk,
+                "cache_salt": cache_salt,
+            }))
+        }
         _ => None,
     }
 }
@@ -315,6 +413,31 @@ fn merge_params(
     }
 }
 
+/// Read the file behind a `grader.template` spec, relative to the suite.
+///
+/// Relative to `base_dir` and through [`crate::sandbox`], like every other
+/// `file://` reference a suite can write. Reading it against the *process* cwd
+/// instead meant `template: "file://prompts/judge.md"` worked only when the
+/// suite happened to be run from its own directory — and, being outside the
+/// sandbox, that `file://../../etc/passwd` was a path the loader accepted.
+fn read_grader_template(
+    spec: &str,
+    base_dir: Option<&std::path::Path>,
+) -> Result<String, GraderError> {
+    let rel = spec.strip_prefix("file://").ok_or_else(|| {
+        GraderError::Misconfigured(format!(
+            "grader.template must be a `file://` reference, got `{spec}`"
+        ))
+    })?;
+    let path = match base_dir {
+        Some(dir) => crate::sandbox::resolve_within(dir, rel)
+            .map_err(|e| GraderError::Misconfigured(e.to_string()))?,
+        None => std::path::PathBuf::from(rel),
+    };
+    std::fs::read_to_string(&path)
+        .map_err(|e| GraderError::Misconfigured(format!("reading grader.template `{rel}`: {e}")))
+}
+
 /// Render a `grader.template` override into the grading prompt.
 ///
 /// Another field that was parsed and never read. The contract is two
@@ -322,15 +445,13 @@ fn merge_params(
 /// than through the template engine, because the *output* is untrusted model
 /// text and running it through minijinja would make a grading prompt an SSTI
 /// surface.
-fn render_grader_template(spec: &str, rubric: &str, output: &str) -> Result<String, GraderError> {
-    let path = spec.strip_prefix("file://").ok_or_else(|| {
-        GraderError::Misconfigured(format!(
-            "grader.template must be a `file://` reference, got `{spec}`"
-        ))
-    })?;
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        GraderError::Misconfigured(format!("reading grader.template `{path}`: {e}"))
-    })?;
+fn render_grader_template(
+    spec: &str,
+    base_dir: Option<&std::path::Path>,
+    rubric: &str,
+    output: &str,
+) -> Result<String, GraderError> {
+    let text = read_grader_template(spec, base_dir)?;
     Ok(text
         .replace("{{rubric}}", rubric)
         .replace("{{output}}", output))
@@ -453,7 +574,7 @@ impl DefaultGrader {
         // The grading prompt. `grader.template` replaces the built-in framing
         // when set; the two placeholders are the whole contract.
         let user = match &grader.template {
-            Some(spec) => render_grader_template(spec, &rubric, &output_text)?,
+            Some(spec) => render_grader_template(spec, ctx.working_dir, &rubric, &output_text)?,
             None => format!("RUBRIC:\n{rubric}\n\nASSISTANT OUTPUT:\n{output_text}"),
         };
 
@@ -521,355 +642,5 @@ impl DefaultGrader {
 }
 
 #[cfg(test)]
-mod tests {
-    /// Identity for a cell under test. The values are arbitrary; what matters
-    /// is that they are no longer empty strings on the wire.
-    fn grade_ctx<'a>(vars: &'a Json, engine: &'a TemplateEngine) -> GradeCtx<'a> {
-        GradeCtx {
-            vars,
-            engine,
-            working_dir: None,
-            provider_id: "p",
-            test_id: "t",
-            test_tags: &[],
-        }
-    }
-
-    use super::*;
-    use crate::config::Grader;
-    use crate::error_class::ErrorClass;
-    use crate::errors::Classify;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn anthropic_grader(uri: &str) -> Grader {
-        Grader {
-            provider: ProviderKind::Anthropic {
-                model: "claude-x".into(),
-                base_url: Some(uri.to_string()),
-                api_key_env: Some("GRADER_TEST_KEY".into()),
-                params: None,
-                pricing: None,
-            },
-            template: None,
-            verdict_mode: None,
-            timeout_ms: None,
-        }
-    }
-
-    fn rubric_assert() -> Assert {
-        Assert {
-            weight: 1.0,
-            negate: false,
-            kind: AssertKind::LlmRubric {
-                value: "declines the task".into(),
-                grader: None,
-                threshold: None,
-                params: None,
-            },
-        }
-    }
-
-    #[tokio::test]
-    async fn anthropic_tool_use_verdict_passes() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "stop_reason": "tool_use",
-                "content": [{
-                    "type": "tool_use", "name": "submit_verdict",
-                    "input": {"reasoning": "it declines", "pass": true, "score": 0.9}
-                }]
-            })))
-            .mount(&server)
-            .await;
-        std::env::set_var("GRADER_TEST_KEY", "sk-test");
-        let grader = DefaultGrader::new(Some(anthropic_grader(&server.uri())));
-        let outcome = grader
-            .grade(
-                &rubric_assert(),
-                &Output::Text("I cannot help with that".into()),
-                &grade_ctx(&json!({}), &TemplateEngine::new()),
-            )
-            .await
-            .unwrap()
-            .verdict
-            .to_outcome(None);
-        assert!(outcome.passed);
-        assert!((outcome.score - 0.9).abs() < 1e-9);
-    }
-
-    /// The judge's own bill. `pricing:` on a `grader.provider` used to be parsed
-    /// and ignored, so the model doing the scoring was the one part of a run
-    /// that cost nothing according to the run itself.
-    #[tokio::test]
-    async fn a_judge_call_is_priced_by_the_graders_own_pricing_block() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "stop_reason": "tool_use",
-                "model": "claude-x-20260101",
-                "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
-                "content": [{
-                    "type": "tool_use", "name": "submit_verdict",
-                    "input": {"reasoning": "ok", "pass": true, "score": 1.0}
-                }]
-            })))
-            .mount(&server)
-            .await;
-        std::env::set_var("GRADER_TEST_KEY", "sk-test");
-
-        // `claude-x` is not in the built-in table, so without the override this
-        // is unpriced — which is the second half of what this pins.
-        let mut cfg = anthropic_grader(&server.uri());
-        let unpriced = DefaultGrader::new(Some(cfg.clone()))
-            .grade(
-                &rubric_assert(),
-                &Output::Text("x".into()),
-                &grade_ctx(&json!({}), &TemplateEngine::new()),
-            )
-            .await
-            .unwrap();
-        assert!(unpriced.cost_usd.is_none(), "unknown model prices nothing");
-
-        if let ProviderKind::Anthropic { pricing, .. } = &mut cfg.provider {
-            *pricing = Some(Box::new(crate::config::PricingCfg {
-                input_per_mtok: Some(3.0),
-                output_per_mtok: Some(15.0),
-                ..Default::default()
-            }));
-        }
-        let graded = DefaultGrader::new(Some(cfg))
-            .grade(
-                &rubric_assert(),
-                &Output::Text("x".into()),
-                &grade_ctx(&json!({}), &TemplateEngine::new()),
-            )
-            .await
-            .unwrap();
-        assert_eq!(graded.cost_usd, Some(18.0));
-        // The model the judge reported, not the one configured.
-        assert_eq!(graded.model.as_deref(), Some("claude-x-20260101"));
-    }
-
-    /// A cosine value belongs to the model that produced the vectors, so the
-    /// verdict key must move when the embedder does. It did not: the key was the
-    /// constant `{"assert": "similar"}`, so switching embedding models replayed
-    /// the previous one's answers.
-    #[test]
-    fn a_similar_verdict_key_moves_with_the_embedding_model() {
-        let assert = Assert {
-            weight: 1.0,
-            negate: false,
-            kind: AssertKind::Similar {
-                value: crate::val::Val::Tpl(json!("hello")),
-                threshold: None,
-            },
-        };
-        let with = |model: &str| {
-            DefaultGrader::new(None)
-                .with_embeddings(crate::embeddings::EmbeddingsProvider::new(
-                    "e", model, None, None, None, None,
-                ))
-                .grading_fingerprint(&assert)
-        };
-        assert_ne!(
-            with("text-embedding-3-small"),
-            with("text-embedding-3-large")
-        );
-        // And with no embeddings provider there is nothing to key on, so the
-        // assertion opts out of caching entirely rather than caching an error.
-        assert!(DefaultGrader::new(None)
-            .grading_fingerprint(&assert)
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn truncated_verdict_fails_closed() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "stop_reason": "max_tokens",
-                "content": []
-            })))
-            .mount(&server)
-            .await;
-        std::env::set_var("GRADER_TEST_KEY", "sk-test");
-        let grader = DefaultGrader::new(Some(anthropic_grader(&server.uri())));
-        let outcome = grader
-            .grade(
-                &rubric_assert(),
-                &Output::Text("x".into()),
-                &grade_ctx(&json!({}), &TemplateEngine::new()),
-            )
-            .await;
-        let err = outcome.unwrap_err();
-        // Asserting on the variant, not a substring: a truncated verdict must
-        // fail closed *and* be identifiable as that specific problem, since the
-        // fix (raise the grader's max_tokens) is unique to it.
-        assert!(
-            matches!(err, GraderError::TruncatedVerdict { .. }),
-            "truncated verdict must fail closed as its own kind: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn no_grader_configured_fails_closed() {
-        let grader = DefaultGrader::new(None);
-        let outcome = grader
-            .grade(
-                &rubric_assert(),
-                &Output::Text("x".into()),
-                &grade_ctx(&json!({}), &TemplateEngine::new()),
-            )
-            .await;
-        let err = outcome.unwrap_err();
-        assert!(
-            matches!(err, GraderError::Unconfigured { kind: "llm-rubric" }),
-            "an unconfigured grader is the suite author's problem, not a failure: {err}"
-        );
-        assert_eq!(err.class().as_str(), ErrorClass::GRADER_MISSING);
-    }
-
-    #[tokio::test]
-    async fn thinking_params_are_rejected() {
-        let server = MockServer::start().await;
-        std::env::set_var("GRADER_TEST_KEY", "sk-test");
-        let mut params = serde_json::Map::new();
-        params.insert("thinking".into(), json!({"type": "enabled"}));
-        let grader = Grader {
-            provider: ProviderKind::Anthropic {
-                model: "claude-x".into(),
-                base_url: Some(server.uri()),
-                api_key_env: Some("GRADER_TEST_KEY".into()),
-                params: Some(params),
-                pricing: None,
-            },
-            template: None,
-            verdict_mode: None,
-            timeout_ms: None,
-        };
-        let outcome = DefaultGrader::new(Some(grader))
-            .grade(
-                &rubric_assert(),
-                &Output::Text("x".into()),
-                &grade_ctx(&json!({}), &TemplateEngine::new()),
-            )
-            .await;
-        let err = outcome.unwrap_err();
-        assert!(matches!(err, GraderError::Misconfigured(_)), "{err}");
-        assert!(err.to_string().contains("thinking"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn exec_assert_grades() {
-        let assert = Assert {
-            weight: 1.0,
-            negate: false,
-            kind: AssertKind::Exec {
-                command: vec![
-                    "sh".into(),
-                    "-c".into(),
-                    "cat >/dev/null; printf '{\"pass\":true,\"score\":1.0,\"reason\":\"ok\"}'"
-                        .into(),
-                ],
-                config: None,
-                cache_salt: None,
-            },
-        };
-        let outcome = DefaultGrader::new(None)
-            .grade(
-                &assert,
-                &Output::Text("x".into()),
-                &grade_ctx(&json!({}), &TemplateEngine::new()),
-            )
-            .await
-            .unwrap()
-            .verdict
-            .to_outcome(None);
-        assert!(outcome.passed);
-    }
-}
-
-#[cfg(test)]
-mod inert_field_tests {
-    //! The three fields that were parsed, schema'd, documented, and never read.
-
-    use super::*;
-    use crate::config::ParamMap;
-
-    fn params(pairs: &[(&str, serde_json::Value)]) -> ParamMap {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect()
-    }
-
-    /// `LlmRubric.params` is the more specific of the two, so it wins — a suite
-    /// sets it precisely to deviate from the shared grader default.
-    #[test]
-    fn assert_params_override_the_grader_provider_params() {
-        let merged = merge_params(
-            Some(&params(&[
-                ("temperature", serde_json::json!(0)),
-                ("max_tokens", serde_json::json!(1024)),
-            ])),
-            Some(&params(&[("max_tokens", serde_json::json!(8192))])),
-        )
-        .expect("merged");
-        assert_eq!(merged.get("max_tokens"), Some(&serde_json::json!(8192)));
-        // Keys the assertion did not mention are inherited, not dropped.
-        assert_eq!(merged.get("temperature"), Some(&serde_json::json!(0)));
-    }
-
-    #[test]
-    fn merging_is_identity_when_only_one_side_is_set() {
-        let only_provider = params(&[("a", serde_json::json!(1))]);
-        assert_eq!(
-            merge_params(Some(&only_provider), None).as_ref(),
-            Some(&only_provider)
-        );
-        assert_eq!(
-            merge_params(None, Some(&only_provider)).as_ref(),
-            Some(&only_provider)
-        );
-        assert!(merge_params(None, None).is_none());
-    }
-
-    #[test]
-    fn a_grader_template_substitutes_both_placeholders() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t.txt");
-        std::fs::write(&path, "Judge this.\n<r>{{rubric}}</r>\n<o>{{output}}</o>").unwrap();
-        let rendered = render_grader_template(
-            &format!("file://{}", path.display()),
-            "be concise",
-            "a model answer",
-        )
-        .unwrap();
-        assert!(rendered.contains("<r>be concise</r>"));
-        assert!(rendered.contains("<o>a model answer</o>"));
-    }
-
-    /// The output is untrusted model text. Substituting literally rather than
-    /// rendering keeps a grading prompt from becoming a template-injection
-    /// surface — a model that emits `{{ ... }}` must not have it evaluated.
-    #[test]
-    fn a_grader_template_does_not_evaluate_the_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t.txt");
-        std::fs::write(&path, "{{output}}").unwrap();
-        let rendered =
-            render_grader_template(&format!("file://{}", path.display()), "r", "{{ 7 * 7 }}")
-                .unwrap();
-        assert_eq!(rendered, "{{ 7 * 7 }}", "must not evaluate to 49");
-    }
-
-    #[test]
-    fn a_non_file_template_is_a_config_error() {
-        let err = render_grader_template("./relative.txt", "r", "o").unwrap_err();
-        assert!(err.to_string().contains("file://"));
-    }
-}
+#[path = "grader_tests.rs"]
+mod tests;

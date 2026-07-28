@@ -18,7 +18,14 @@ pub enum FactoryError {
 }
 
 /// Build a provider trait object from its config.
-pub fn build_provider(cfg: &ProviderCfg) -> Result<Box<dyn Provider>, FactoryError> {
+///
+/// `base_dir` is the suite's directory — the cwd every `exec` child is spawned
+/// in, and therefore what a relative `command` must be resolved against when its
+/// program identity is computed for the cache key.
+pub fn build_provider(
+    cfg: &ProviderCfg,
+    base_dir: Option<&std::path::Path>,
+) -> Result<Box<dyn Provider>, FactoryError> {
     match &cfg.kind {
         ProviderKind::Exec {
             command,
@@ -31,6 +38,7 @@ pub fn build_provider(cfg: &ProviderCfg) -> Result<Box<dyn Provider>, FactoryErr
             env.clone(),
             *timeout_ms,
             cache_salt.clone(),
+            base_dir,
         ))),
         ProviderKind::Anthropic {
             model,
@@ -116,7 +124,7 @@ providers: [{id: p, type: exec, command: ["echo"]}]
 "#,
         )
         .unwrap();
-        let provider = build_provider(&suite.providers[0]).unwrap();
+        let provider = build_provider(&suite.providers[0], None).unwrap();
         assert_eq!(provider.id(), "p");
         assert!(
             provider.cacheable(),
@@ -138,7 +146,7 @@ providers:
         )
         .unwrap();
         for provider in &suite.providers {
-            assert!(build_provider(provider).is_ok(), "{}", provider.id);
+            assert!(build_provider(provider, None).is_ok(), "{}", provider.id);
         }
     }
 
@@ -151,6 +159,6 @@ providers: [{id: e, type: embeddings, model: m}]
 "#,
         )
         .unwrap();
-        assert!(build_provider(&suite.providers[0]).is_err());
+        assert!(build_provider(&suite.providers[0], None).is_err());
     }
 }

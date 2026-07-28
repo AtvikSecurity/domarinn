@@ -616,7 +616,7 @@ assertion `grader` overrides this one.
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `provider` | provider-kind object | **yes** | The grading model. A provider **kind** (`{type, model, ...}`) with **no `id`** — not an entry from the `providers:` list. Prefer a different model family than the systems under test. |
-| `template` | string (`file://`) | no | Override the built-in grading-prompt template. |
+| `template` | string (`file://`) | no | Override the built-in grading-prompt template. Resolved relative to the suite directory and sandboxed to it, like every other `file://`. The file's contents are part of the verdict cache key, so editing the judging prompt re-grades rather than replaying the old one. |
 | `verdict_mode` | string | no | How the structured verdict is obtained: `forced` (default) or `auto`. |
 
 ```yaml

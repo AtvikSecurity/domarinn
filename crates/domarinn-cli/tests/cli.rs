@@ -134,6 +134,71 @@ fn run_failing_suite_exits_one() {
         .stdout(predicate::str::contains("FAIL"));
 }
 
+/// A run whose every case was skipped graded nothing, and a green gate there
+/// says the suite *ran*, not that it passed. The sibling guard
+/// (`RunError::NothingToRun`) covers the empty-cells end of the same hole; this
+/// is the end where cells existed and every response matched a
+/// `skip_on_empty_reason`, which is what a model regression that empties every
+/// answer looks like.
+#[test]
+fn a_run_where_every_case_was_skipped_does_not_exit_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(
+        dir.path(),
+        r#"
+version: 1
+suite: all-skipped
+runner:
+  skip_on_empty_reason: [tool_use_only]
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"\",\"empty_reason\":\"tool_use_only\"}'"]
+tests:
+  - id: a
+    vars: {}
+    assert: [{type: contains, value: "anything"}]
+  - id: b
+    vars: {}
+    assert: [{type: contains, value: "anything"}]
+"#,
+    );
+    bin()
+        .arg("run")
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("nothing was graded"));
+}
+
+/// …and one graded case is enough to make the run mean something again, so the
+/// guard does not fire on the ordinary mixed suite `skip` exists to serve.
+#[test]
+fn a_partially_skipped_run_still_exits_on_its_verdicts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(
+        dir.path(),
+        r#"
+version: 1
+suite: some-skipped
+runner:
+  skip_on_empty_reason: [tool_use_only]
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"hello\"}'"]
+  - id: q
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"\",\"empty_reason\":\"tool_use_only\"}'"]
+tests:
+  - id: a
+    vars: {}
+    assert: [{type: contains, value: "hello"}]
+"#,
+    );
+    bin().arg("run").current_dir(dir.path()).assert().success();
+}
+
 #[test]
 fn run_json_format_is_valid_json() {
     let dir = tempfile::tempdir().unwrap();

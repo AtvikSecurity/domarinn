@@ -66,25 +66,41 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
-    /// Input plus output. What the `tokens` assertion grades by default.
+    /// Every token in the exchange: the whole prompt plus the response. What the
+    /// `tokens` assertion grades by default.
     ///
-    /// Deliberately excludes the cache counts. Re-scoping this to include them
-    /// would silently change the meaning of every `tokens: {max: N}` already
-    /// written — a cache-heavy case that passed at 1,200 could start failing at
-    /// 40,000 with no config change, which is a breaking behavior change
-    /// wearing a bugfix's clothes. Use [`Self::billable_total`] to opt in.
+    /// [`Self::cache_read_tokens`] is *included*, and this is load-bearing. The
+    /// field means "the part of the prompt that was served from a provider-side
+    /// cache" — it is prompt, and it was sent. Both vendors exclude it from
+    /// `input_tokens` (Anthropic natively; OpenAI once `usage_from_payload`
+    /// normalizes it out of `prompt_tokens` so it is not billed twice), so a
+    /// total over `input + output` alone measures the *uncached* prompt and
+    /// nothing else.
+    ///
+    /// That made a `tokens: {max: N}` budget unenforceable exactly when it
+    /// mattered. A 6,000-token system prompt fails the budget cold, then passes
+    /// it warm at 200 — same suite, same prompt, no config change, and a
+    /// prompt-growth regression that can never be caught again once the cache is
+    /// warm. A guard that silently switches off is worse than no guard, so the
+    /// budget counts the prompt that was sent rather than the fraction of it
+    /// that happened to be billed at full rate.
+    ///
+    /// Saturating for the same reason [`Self::billable_total`] is: these are
+    /// counts reported by someone else.
     pub fn total(&self) -> u64 {
-        self.input_tokens + self.output_tokens
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.cache_read_tokens.unwrap_or(0))
     }
 
-    /// Every token the provider bills for, cache traffic included.
+    /// Every token the provider bills for, cache *writes* included.
     ///
-    /// Saturating, because these are counts reported by someone else: a
-    /// provider that reports nonsense should skew a budget assertion, not panic
-    /// a release build into wrapping around zero.
+    /// The delta over [`Self::total`] is the write step: tokens paid for to
+    /// populate the cache, which are not part of the prompt the model answered.
+    /// Budgeting them is opting in to paying attention to cache economics, which
+    /// is what `count: billable` says.
     pub fn billable_total(&self) -> u64 {
         self.total()
-            .saturating_add(self.cache_read_tokens.unwrap_or(0))
             .saturating_add(self.cache_write_tokens.unwrap_or(0))
     }
 }

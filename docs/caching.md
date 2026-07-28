@@ -128,10 +128,18 @@ key.
 
 Two rules worth stating plainly:
 
-- **The provider salt decides _whether_ exec responses are cached; a case salt
-  decides only _which key_ they are cached under.** A case salt on its own does
-  not enable caching — an `exec` provider still needs its own `cache_salt`. The
-  runner warns when a suite sets case salts against a provider that never caches.
+- **An `exec` provider is cached by default, and a `cache_salt` is the escape
+  hatch rather than the entry ticket.** What makes that safe is that the cache
+  key includes the *program*, not just the argv that names it: the path, size and
+  modification time of every argument that resolves to a file, with the program
+  itself resolved through `PATH` and relative paths resolved against the suite
+  directory (the cwd the child is spawned in). A rebuild therefore busts the
+  entry on its own. When nothing in the command resolves to a file — `docker run
+  …`, say — there is no identity beyond argv, and domarinn declines to cache
+  rather than replay stale output after a rebuild; set `cache_salt` to say "I
+  know what moves this" and caching resumes. The provider's `env` is in the key
+  too (as a digest, never the values), so two providers wrapping one script with
+  different endpoints do not collide.
 - **The salt is never sent to the provider** and is never templated — it is used
   verbatim. Putting the digest in `vars` instead would work, but `vars` are
   forwarded to the system under test and enter the template namespace.
@@ -140,7 +148,8 @@ Two rules worth stating plainly:
 generator-produced ones. Treat it as a fallback only: a single constant there is
 shared by every case, which reproduces exactly the all-or-nothing busting that
 per-case salts exist to avoid. When a generator knows which content each case
-depends on, have it emit a `cache_salt` per case.
+depends on, have it emit a `cache_salt` per case — including a `$digest:` one,
+which is resolved for generated cases exactly as it is for inline ones.
 
 In CSV/TSV test files, `cache_salt` is a **reserved column** (like `id` and
 `tags`), so it keys the cache instead of becoming a var.
@@ -152,6 +161,13 @@ In CSV/TSV test files, `cache_salt` is a **reserved column** (like `id` and
 | read-write | default | Read on hit, write on miss. |
 | disabled | `run --no-cache` | Never read or write. |
 | read-only strict | `run --cache-only` | Read only; a miss is an infrastructure error (exit `3`). Use for fully offline/reproducible CI. |
+
+`--cache-only` really is offline: the pre-run credential check is skipped, so the
+run needs no API keys in the environment for providers it will only replay. A
+grading that is *not* verdict-cached in that run (`cache.grader: false`,
+`--no-grader-cache`) is a miss rather than a live judge call, for the same
+reason — a `--cache-only` run that quietly reached the network would be lying
+about being offline.
 
 ## Backends
 

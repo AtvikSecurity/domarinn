@@ -26,6 +26,12 @@ pub struct AssertOutcome {
     pub passed: bool,
     pub reason: String,
     pub details: Option<serde_json::Value>,
+    /// The assertion could not be *evaluated* — a schema that will not compile,
+    /// a regex that will not parse. Distinct from "evaluated, and the output did
+    /// not satisfy it", because [`Self::negated`] must not turn one into a pass.
+    ///
+    /// See [`Self::unevaluable`].
+    pub unevaluable: bool,
 }
 
 impl AssertOutcome {
@@ -35,6 +41,7 @@ impl AssertOutcome {
             passed: true,
             reason: reason.into(),
             details: None,
+            unevaluable: false,
         }
     }
 
@@ -52,12 +59,31 @@ impl AssertOutcome {
             passed: false,
             reason: reason.into(),
             details: None,
+            unevaluable: false,
+        }
+    }
+
+    /// The assertion is broken, not unsatisfied — its schema will not compile,
+    /// its regex will not parse, its expression will not evaluate.
+    ///
+    /// Scores zero like a failure, but is immune to `negate`. Without that
+    /// distinction `not-contains-json` with an uncompilable `schema:` scored a
+    /// full 1.0: the compile error failed, `negated` flipped it, and the suite
+    /// reported a green check for an assertion that never ran. A guard that
+    /// fails *open* under negation is worse than no guard.
+    pub fn unevaluable(reason: impl Into<String>) -> Self {
+        AssertOutcome {
+            unevaluable: true,
+            ..AssertOutcome::fail(reason)
         }
     }
 
     /// Apply a `negate` flag, flipping pass/fail and score.
+    ///
+    /// An [unevaluable](Self::unevaluable) outcome passes through untouched:
+    /// "this assertion is broken" has no opposite.
     pub fn negated(self, negate: bool) -> Self {
-        if !negate {
+        if !negate || self.unevaluable {
             return self;
         }
         AssertOutcome {
@@ -65,6 +91,7 @@ impl AssertOutcome {
             passed: !self.passed,
             reason: format!("negated: {}", self.reason),
             details: self.details,
+            unevaluable: false,
         }
     }
 }

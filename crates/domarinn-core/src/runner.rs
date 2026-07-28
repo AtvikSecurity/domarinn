@@ -248,7 +248,17 @@ pub trait AssertGrader: Send + Sync {
     /// to opt out of caching it.
     ///
     /// Must exclude secrets, exactly like `Provider::fingerprint`.
-    fn grading_fingerprint(&self, _assert: &Assert) -> Option<Json> {
+    ///
+    /// `base_dir` is the suite's directory: the cwd an `exec` grader's child is
+    /// spawned in, and what a `grader.template` path resolves against. An
+    /// implementation reaching the filesystem must resolve against *it* rather
+    /// than the process cwd — the identity has to describe the thing that will
+    /// actually run, not a same-named file somewhere else.
+    fn grading_fingerprint(
+        &self,
+        _assert: &Assert,
+        _base_dir: Option<&std::path::Path>,
+    ) -> Option<Json> {
         None
     }
 }
@@ -310,7 +320,7 @@ pub async fn run_with_progress(
         .iter()
         .filter(|p| !matches!(p.kind, crate::config::ProviderKind::Embeddings { .. }))
         .filter(|p| opts.filter.providers.is_empty() || opts.filter.providers.contains(&p.id))
-        .map(build_provider)
+        .map(|p| build_provider(p, Some(base_dir)))
         .collect::<Result<_, _>>()?;
 
     // Tests (files + inline + generators).
@@ -323,11 +333,18 @@ pub async fn run_with_progress(
         .map(|g| g.command.clone())
         .collect();
     let mut generated = resolve_generators(&expanded.deferred_generators, base_dir).await?;
-    // Generators resolve after `expand_tests`, so their cases miss the defaults
-    // merge it performs. Apply it here or `defaults:` silently skips them.
+    // Generators resolve after `expand_tests`, so their cases miss everything it
+    // performs. Re-apply it here, in the same order, or a generated case is a
+    // second-class one: `defaults:` skips it, a `$file` schema stays the literal
+    // marker object (and so matches everything), and a `$digest:` salt stays the
+    // literal string — one constant shared by every generated case, which never
+    // moves when the file it names is edited.
     if let Some(defaults) = &suite.defaults {
         crate::resolve::apply_defaults(&mut generated, defaults);
     }
+    crate::filevars::resolve_file_vars(&mut generated, base_dir)?;
+    crate::filevars::resolve_assert_file_vals(&mut generated, base_dir)?;
+    crate::filevars::resolve_digest_salts(&mut generated, base_dir, &engine)?;
     tests.extend(generated);
 
     // The warning that used to live here — "you set a case salt against a
@@ -448,9 +465,24 @@ pub async fn run_with_progress(
     // After the guards above, so `cells` is the real work and nothing is
     // checked that this run will not touch. Before the first call, so a bad
     // grader key costs nothing instead of erroring every case in the suite.
-    if !cells.is_empty() {
+    //
+    // Skipped entirely under `--cache-only`, which is the documented way to
+    // replay a warm cache offline: demanding a live credential the run will
+    // never read turns "fully reproducible in CI without secrets" into "exit 2".
+    if !cells.is_empty() && opts.cache_mode != CacheMode::ReadOnlyStrict {
         let selected: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
-        let issues = crate::preflight::check(suite, &selected, &tests, &crate::interp::ProcessEnv);
+        // The *filtered* tests, not every test that was expanded. Preflight's
+        // whole claim is that it checks only what the run will use, and the
+        // grader scan is over assertions — so handing it the unfiltered list
+        // demands a judge key for the 195 rubric cases `--tag smoke` excluded.
+        let selected_tests: Vec<&TestCase> =
+            tests.iter().filter(|t| filter.matches_test(t)).collect();
+        let issues = crate::preflight::check(
+            suite,
+            &selected,
+            &selected_tests,
+            &crate::interp::ProcessEnv,
+        );
         if !issues.is_empty() {
             return Err(RunError::Credentials(issues));
         }

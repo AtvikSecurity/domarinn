@@ -75,9 +75,12 @@ pub fn validate_against(instance: &Json, schema: &Json, cache: &SchemaCache) -> 
     let compiled = cache.get(schema);
     let validator = match compiled.as_ref() {
         Ok(v) => v,
-        // Should be unreachable: `validate` rejects an uncompilable schema at
-        // load time. Fail closed anyway, matching the `regex` arm's precedent.
-        Err(e) => return AssertOutcome::fail(format!("invalid JSON Schema: {e}")),
+        // Reachable: nothing compiles an assertion's `schema:` before the run,
+        // so a malformed one arrives here. Unevaluable rather than a plain
+        // failure, so `negate` cannot flip "this schema will not compile" into a
+        // full-score pass — which is how `not-contains-json` with a remote `$ref`
+        // used to report a green check for an assertion that never ran.
+        Err(e) => return AssertOutcome::unevaluable(format!("invalid JSON Schema: {e}")),
     };
 
     let mut errors: Vec<(String, String)> = validator

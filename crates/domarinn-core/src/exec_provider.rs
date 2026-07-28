@@ -27,25 +27,63 @@ pub struct ExecProvider {
     /// Identity of the program `command` runs, resolved once at construction so
     /// a cache lookup costs no filesystem access.
     program: Json,
+    /// Digest of `env`, so two providers differing only in their environment do
+    /// not share a key. A digest rather than the map itself because a
+    /// fingerprint is persisted into the cache entry and `env` is a credential
+    /// channel — see [`Self::request_preview`], which excludes it for the same
+    /// reason.
+    env_digest: Option<String>,
 }
 
 impl ExecProvider {
+    /// `base_dir` is the directory children are spawned in — the suite's, in a
+    /// real run. It is what a relative `command` is resolved against when the
+    /// program's identity is computed, so passing `None` (tests, embedders with
+    /// no suite on disk) means only absolute and `PATH` programs are identified.
     pub fn new(
         id: impl Into<String>,
         command: Vec<String>,
         env: BTreeMap<String, String>,
         timeout_ms: Option<u64>,
         cache_salt: Option<String>,
+        base_dir: Option<&std::path::Path>,
     ) -> Self {
+        let id = id.into();
+        let program = crate::exec::program_identity(&command, base_dir);
+        if !crate::exec::has_program_identity(&program) && cache_salt.is_none() {
+            tracing::warn!(
+                provider = %id,
+                command = ?command,
+                "could not identify the program behind this exec provider, so its \
+                 responses will not be cached — a key over argv alone would replay \
+                 stale output after a rebuild. Set `cache_salt` to cache anyway."
+            );
+        }
         ExecProvider {
-            id: id.into(),
-            program: crate::exec::program_identity(&command),
+            id,
+            program,
+            env_digest: env_digest(&env),
             command,
             env,
             timeout: Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
             cache_salt,
         }
     }
+}
+
+/// A digest of a child's environment, or `None` when it sets nothing.
+///
+/// `None` rather than the digest of an empty map so the overwhelmingly common
+/// no-`env` provider keeps a fingerprint a human can read at a glance.
+fn env_digest(env: &BTreeMap<String, String>) -> Option<String> {
+    if env.is_empty() {
+        return None;
+    }
+    let canonical = crate::cache::canonical_json(&serde_json::json!(env));
+    Some(format!(
+        "blake3:{}",
+        blake3::hash(canonical.as_bytes()).to_hex()
+    ))
 }
 
 #[async_trait]
@@ -62,11 +100,16 @@ impl Provider for ExecProvider {
             // which does not move when the program behind it is rebuilt — the
             // hazard that used to make exec caching opt-in.
             "program": self.program,
+            // Two providers wrapping one script and differing only in `env` are
+            // a normal A/B shape (`MODEL_ENDPOINT: http://a` vs `…/b`). Without
+            // this they share a key and the second column silently replays the
+            // first's answers, fabricating the comparison the run exists for.
+            "env": self.env_digest,
             "cache_salt": self.cache_salt,
         })
     }
 
-    /// Always cacheable.
+    /// Cacheable once the program behind `command` can be identified.
     ///
     /// This used to require a hand-managed `cache_salt`, because argv does not
     /// move when the binary behind it is rebuilt and a stale verdict in CI is
@@ -74,11 +117,15 @@ impl Provider for ExecProvider {
     /// need for the hand-management by putting the program's own identity in the
     /// fingerprint, so a rebuild busts the entry on its own.
     ///
-    /// `cache_salt` still works and still composes — it is the escape hatch for
-    /// a program the identity cannot see (one resolved from `PATH`, or one whose
-    /// behavior depends on something off-disk).
+    /// It removes the need only when it finds something. A command whose argv
+    /// names nothing readable — `docker run …`, a wrapper invoked through an
+    /// interpreter that is itself a shell builtin — has no identity beyond argv,
+    /// and caching *that* is the original hazard rather than a fix for it. So
+    /// the guard is the identity, not the calendar: found one, cache by default;
+    /// found none, require the explicit `cache_salt` that says "I know what
+    /// moves this."
     fn cacheable(&self) -> bool {
-        true
+        self.cache_salt.is_some() || crate::exec::has_program_identity(&self.program)
     }
 
     async fn call(
@@ -248,18 +295,84 @@ mod tests {
     /// cache key, so an unconditional change invalidates every cached entry.
     #[test]
     fn fingerprint_is_stable_for_default_config() {
-        let p = ExecProvider::new("p", vec!["./sut".into()], BTreeMap::new(), None, None);
-        // `program` is empty here because `./sut` does not exist in the test's
-        // working directory, which is also the shape for any command resolved
-        // from PATH. The asserted string changed once, deliberately, when
-        // `program` was added to make exec caching safe by default — that
-        // invalidated every existing exec cache entry, one time. Any *further*
-        // change to this string does the same, so treat a failure here as a
-        // cache migration to plan rather than a test to update.
+        let p = ExecProvider::new("p", vec!["./sut".into()], BTreeMap::new(), None, None, None);
+        // `program` is empty here because `./sut` does not exist relative to the
+        // `base_dir` passed (none), so nothing on disk was found to key on. The
+        // asserted string changed twice, deliberately: once when `program` was
+        // added to make exec caching safe by default, and once when `env` joined
+        // it so two providers wrapping one script stop colliding. Each of those
+        // invalidated every existing exec cache entry. Any *further* change does
+        // the same, so treat a failure here as a cache migration to plan rather
+        // than a test to update.
         assert_eq!(
             crate::cache::canonical_json(&p.fingerprint()),
-            r#"{"cache_salt":null,"command":["./sut"],"program":[],"type":"exec"}"#
+            r#"{"cache_salt":null,"command":["./sut"],"env":null,"program":[],"type":"exec"}"#
         );
+        // …and with nothing found, it declines to cache rather than keying on
+        // argv alone.
+        assert!(!p.cacheable());
+    }
+
+    /// The child is spawned with `cwd = base_dir`, so that is what a relative
+    /// `command` must be resolved against. Statting it against the *process*
+    /// cwd finds nothing, contributes nothing, and silently degrades the key
+    /// back to argv — which is the whole hazard `program` exists to remove.
+    #[test]
+    fn a_relative_command_is_identified_against_the_suite_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sut"), "#!/bin/sh\necho v1").unwrap();
+
+        let command = vec!["./sut".to_string()];
+        let seen = ExecProvider::new("p", command.clone(), BTreeMap::new(), None, None, None);
+        assert!(
+            !seen.cacheable(),
+            "sanity: with no base_dir there is nothing to find"
+        );
+
+        let p = ExecProvider::new("p", command, BTreeMap::new(), None, None, Some(dir.path()));
+        assert!(p.cacheable());
+        let fp = crate::cache::canonical_json(&p.fingerprint());
+        assert!(fp.contains("\"len\""), "{fp}");
+        // The argv string, not the resolved path: two machines sharing a cache
+        // must not miss on each other for having checked the repo out elsewhere.
+        assert!(!fp.contains(&dir.path().display().to_string()), "{fp}");
+    }
+
+    /// The most ordinary exec provider there is — a tool installed on `PATH` —
+    /// and the one a rebuild moves. Before `PATH` was consulted this resolved to
+    /// nothing, so every such provider was keyed on argv alone.
+    #[test]
+    fn a_path_resolved_program_is_identified() {
+        let p = ExecProvider::new("p", vec!["sh".into()], BTreeMap::new(), None, None, None);
+        assert!(p.cacheable());
+        assert!(crate::cache::canonical_json(&p.fingerprint()).contains("\"len\""));
+    }
+
+    /// Two backends behind one wrapper script is a normal A/B shape. Sharing a
+    /// key would make the second column replay the first's answers — fabricating
+    /// exactly the comparison the run exists to make.
+    #[test]
+    fn providers_differing_only_in_env_do_not_share_a_key() {
+        let of = |endpoint: &str| {
+            ExecProvider::new(
+                "p",
+                vec!["sh".into()],
+                BTreeMap::from([("MODEL_ENDPOINT".to_string(), endpoint.to_string())]),
+                None,
+                None,
+                None,
+            )
+        };
+        let (a, b) = (of("http://a"), of("http://b"));
+        assert_ne!(
+            crate::cache::canonical_json(&a.fingerprint()),
+            crate::cache::canonical_json(&b.fingerprint())
+        );
+        // A digest, never the map: a fingerprint is persisted into the cache
+        // entry and `env` is where an exec provider's credentials live.
+        let fp = crate::cache::canonical_json(&a.fingerprint());
+        assert!(!fp.contains("http://a"), "{fp}");
+        assert!(!fp.contains("MODEL_ENDPOINT"), "{fp}");
     }
 
     /// A rebuild must bust the entry on its own, or caching exec by default
@@ -271,7 +384,7 @@ mod tests {
         std::fs::write(&prog, "#!/bin/sh\necho v1").unwrap();
         let command = vec![prog.to_string_lossy().to_string()];
 
-        let before = ExecProvider::new("p", command.clone(), BTreeMap::new(), None, None);
+        let before = ExecProvider::new("p", command.clone(), BTreeMap::new(), None, None, None);
         let before_fp = crate::cache::canonical_json(&before.fingerprint());
         assert!(
             before_fp.contains("\"len\""),
@@ -280,7 +393,7 @@ mod tests {
 
         // A rebuild: same argv, different bytes.
         std::fs::write(&prog, "#!/bin/sh\necho v2 and then some more").unwrap();
-        let after = ExecProvider::new("p", command, BTreeMap::new(), None, None);
+        let after = ExecProvider::new("p", command, BTreeMap::new(), None, None, None);
         assert_ne!(
             before_fp,
             crate::cache::canonical_json(&after.fingerprint())
@@ -295,6 +408,7 @@ mod tests {
             // A credential in the provider env — must not reach the preview,
             // which is persisted into a shareable run document.
             BTreeMap::from([("SUT_TOKEN".to_string(), "secret".to_string())]),
+            None,
             None,
             None,
         );
@@ -316,7 +430,7 @@ mod tests {
 
     #[test]
     fn request_preview_is_absent_for_an_empty_command() {
-        let p = ExecProvider::new("e", Vec::new(), BTreeMap::new(), None, None);
+        let p = ExecProvider::new("e", Vec::new(), BTreeMap::new(), None, None, None);
         assert!(p.request_preview(&request("hi")).is_none());
     }
 
@@ -352,6 +466,7 @@ mod tests {
             BTreeMap::new(),
             Some(5000),
             Some("salt".into()),
+            None,
         )
     }
 
@@ -381,6 +496,7 @@ mod tests {
             BTreeMap::new(),
             Some(5000),
             Some("salt".into()),
+            None,
         );
         let mut req = request("x");
         req.case_salt = Some("SENTINEL-DIGEST".into());
@@ -407,8 +523,10 @@ mod tests {
             BTreeMap::new(),
             None,
             Some("v1".into()),
+            None,
         );
-        let without = ExecProvider::new("p", vec!["true".into()], BTreeMap::new(), None, None);
+        let without =
+            ExecProvider::new("p", vec!["true".into()], BTreeMap::new(), None, None, None);
         assert!(with_salt.cacheable());
         assert!(without.cacheable());
         // The salt still separates them.
@@ -416,6 +534,35 @@ mod tests {
             crate::cache::canonical_json(&with_salt.fingerprint()),
             crate::cache::canonical_json(&without.fingerprint())
         );
+    }
+
+    /// "By default" is not "unconditionally". A command whose argv names nothing
+    /// readable has no identity beyond argv, and caching *that* is the original
+    /// hazard rather than a fix for it — so the salt goes back to being required.
+    #[tokio::test]
+    async fn a_command_with_no_identifiable_program_needs_a_salt() {
+        let unidentifiable = vec!["definitely-not-a-real-binary-xyz".to_string()];
+        let bare = ExecProvider::new(
+            "p",
+            unidentifiable.clone(),
+            BTreeMap::new(),
+            None,
+            None,
+            None,
+        );
+        assert!(
+            !bare.cacheable(),
+            "argv alone must not be a cache key: a rebuild does not move it"
+        );
+        let salted = ExecProvider::new(
+            "p",
+            unidentifiable,
+            BTreeMap::new(),
+            None,
+            Some("v1".into()),
+            None,
+        );
+        assert!(salted.cacheable(), "the salt is the escape hatch");
     }
 
     #[tokio::test]
@@ -429,6 +576,7 @@ mod tests {
             ],
             BTreeMap::new(),
             Some(5000),
+            None,
             None,
         );
         let err = provider
@@ -516,9 +664,11 @@ mod tests {
         assert_eq!(usage.cache_read_tokens, Some(100));
         assert_eq!(usage.cache_write_tokens, Some(40));
         assert_eq!(usage.cache_write_1h_tokens, Some(10));
-        // `total()` deliberately excludes cache traffic; `billable_total()` does not.
-        assert_eq!(usage.total(), 7);
-        assert_eq!(usage.billable_total(), 147);
+        // `total()` is the whole exchange — the cached span is prompt that was
+        // sent, so a `tokens:` budget counts it. `billable_total()` adds the
+        // cache *write*, which is spend rather than prompt.
+        assert_eq!(usage.total(), 5 + 2 + 100);
+        assert_eq!(usage.billable_total(), 5 + 2 + 100 + 40);
     }
 
     #[test]

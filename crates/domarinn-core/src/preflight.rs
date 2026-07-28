@@ -162,11 +162,17 @@ fn grader_credential<'a>(grader: &'a Grader, path: &str) -> Option<Credential<'a
 /// Check every credential this run will read, and return all the problems.
 ///
 /// `selected_providers` is the post-`--provider` list, and `tests` the
-/// post-filter list, so nothing is checked that the run will not touch.
+/// post-filter list, so nothing is checked that the run will not touch. Both
+/// halves of that are the caller's job and neither is optional — handing this
+/// the unfiltered tests reintroduces exactly the annoyance the module docs
+/// promise it does not have.
+///
+/// Borrowed rather than owned so the caller can filter without copying a large
+/// suite's worth of cases just to ask about their assertions.
 pub fn check(
     suite: &Suite,
     selected_providers: &[String],
-    tests: &[TestCase],
+    tests: &[&TestCase],
     env: &dyn EnvResolver,
 ) -> Vec<CredentialIssue> {
     let mut credentials: Vec<Credential> = Vec::new();
@@ -195,11 +201,18 @@ pub fn check(
         }
     }
 
-    // The suite-level grader, only when something deferred survived the filter.
-    let needs_grader = tests
-        .iter()
-        .flat_map(|t| t.assert.iter())
-        .any(|a| !crate::asserts::is_local(&a.kind));
+    // The suite-level grader, only when an assertion that will actually read its
+    // credential survived the filter. `!is_local` is too broad a proxy: it also
+    // catches `exec` (a child owning its own credentials) and `similar` (the
+    // embeddings provider, checked separately above), so a suite whose only
+    // deferred assertions are `exec` used to be told its judge key was missing.
+    // An `llm-rubric` carrying its own `grader:` block reads that one, not this.
+    let needs_grader = tests.iter().flat_map(|t| t.assert.iter()).any(|a| {
+        matches!(
+            &a.kind,
+            crate::config::AssertKind::LlmRubric { grader: None, .. }
+        )
+    });
     if needs_grader {
         if let Some(g) = &suite.grader {
             credentials.extend(grader_credential(g, "grader"));
@@ -243,7 +256,7 @@ pub fn check(
     issues
 }
 
-fn any_assert(tests: &[TestCase], pred: impl Fn(&crate::config::AssertKind) -> bool) -> bool {
+fn any_assert(tests: &[&TestCase], pred: impl Fn(&crate::config::AssertKind) -> bool) -> bool {
     tests
         .iter()
         .flat_map(|t| t.assert.iter())
@@ -393,6 +406,7 @@ grader:
             {"assert": [{"type": "llm-rubric", "value": "good"}]}
         ]))
         .unwrap();
+        let with_rubric: Vec<&TestCase> = with_rubric.iter().collect();
         let issues = check(&suite, &["e".into()], &with_rubric, &env(&[]));
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].path, "grader");

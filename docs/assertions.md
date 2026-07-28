@@ -394,7 +394,7 @@ These read the call's **run metrics** rather than the output text:
 |-----------|------------------------|--------|
 | `cost`    | `cost_usd` (optional)  | computed from the rate table for `anthropic`/`openai`, or self-reported by an `exec` provider (which wins) |
 | `latency` | `latency_ms`           | measured by the runner (always available) |
-| `tokens`  | token count (optional) | `count: total` (default) is `input + output`; `count: billable` adds cache reads and writes |
+| `tokens`  | token count (optional) | `count: total` (default) is the whole exchange — the prompt (cached span included) plus the response; `count: billable` adds the cache *write* |
 
 ```yaml
 - type: latency
@@ -417,6 +417,13 @@ Behavior details:
   a case for missing data. (The native `anthropic` and `openai` providers
   report token usage but not cost, so `tokens` is enforced while `cost` is a
   no-op unless your provider fills in `cost_usd`.)
+- **A warm prompt cache does not shrink a `tokens` budget.** Both vendors report
+  the cached span of a prompt in its own field rather than in `input_tokens`, so
+  a total over `input + output` alone would measure only the *uncached*
+  fraction — and a 6,000-token prompt would fail the budget cold and pass it a
+  few minutes later at 200, with no config change. `count: total` therefore
+  counts the prompt that was sent. `count: billable` adds the cache *write*,
+  which is spend rather than prompt.
 
 ---
 

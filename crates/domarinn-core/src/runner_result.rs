@@ -139,7 +139,13 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
             CaseStatus::Skip => s.skipped += 1,
         }
         if let Some(u) = &c.usage {
-            s.prompt_tokens += u.input_tokens;
+            // Cache reads included: they are prompt tokens that were sent, and
+            // the providers report them in their own field rather than in
+            // `input_tokens`. Counting only the latter reports a 6,000-token
+            // prompt as 200 the moment the provider's cache warms.
+            s.prompt_tokens += u
+                .input_tokens
+                .saturating_add(u.cache_read_tokens.unwrap_or(0));
             s.completion_tokens += u.output_tokens;
             s.cache_read_tokens += u.cache_read_tokens.unwrap_or(0);
             s.cache_write_tokens += u.cache_write_tokens.unwrap_or(0);

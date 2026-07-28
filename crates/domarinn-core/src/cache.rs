@@ -153,6 +153,7 @@ impl GradedVerdict {
                 },
                 reason: reasoning.clone(),
                 details: None,
+                unevaluable: false,
             },
             GradedVerdict::Similarity { cosine } => {
                 let threshold = threshold.unwrap_or(0.8);
@@ -165,6 +166,7 @@ impl GradedVerdict {
                         format!("cosine similarity {cosine:.3} < {threshold:.3}")
                     },
                     details: None,
+                    unevaluable: false,
                 }
             }
             GradedVerdict::Exec {
@@ -177,6 +179,7 @@ impl GradedVerdict {
                 passed: *pass,
                 reason: reason.clone(),
                 details: details.clone(),
+                unevaluable: false,
             },
         }
     }

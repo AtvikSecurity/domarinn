@@ -391,6 +391,39 @@ mod tests {
         assert_eq!(usage.billable_total(), 1010);
     }
 
+    /// …and the subtraction must not loosen a `tokens:` budget.
+    ///
+    /// Moving the cached span out of `input_tokens` is right for *cost* and
+    /// wrong for a size budget, because OpenAI's prompt caching is automatic:
+    /// the same suite, the same prompt, a few minutes apart, would flip FAIL to
+    /// PASS with no config change, and never catch a prompt-growth regression
+    /// again once the cache was warm. `total()` therefore counts the prompt that
+    /// was sent, not the fraction of it billed at full rate.
+    #[test]
+    fn a_warm_prompt_cache_does_not_shrink_the_token_budget() {
+        let usage_for = |cached: u64| {
+            usage_from_payload(&json!({
+                "usage": {
+                    "prompt_tokens": 6200,
+                    "completion_tokens": 100,
+                    "prompt_tokens_details": {"cached_tokens": cached}
+                }
+            }))
+            .unwrap()
+        };
+        let cold = usage_for(0);
+        let warm = usage_for(6000);
+        assert_eq!(
+            cold.total(),
+            warm.total(),
+            "a cache hit is not a smaller prompt"
+        );
+        assert_eq!(cold.total(), 6300);
+        // The cost story is untouched: the cached span still bills separately.
+        assert_eq!(warm.input_tokens, 200);
+        assert_eq!(warm.cache_read_tokens, Some(6000));
+    }
+
     #[test]
     fn fingerprint_is_stable_for_default_config() {
         let p = OpenAiProvider::new("p", "gpt-x", None, None, None, None);

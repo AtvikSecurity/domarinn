@@ -146,14 +146,34 @@ fn normalize(id: &str) -> &str {
     }
 }
 
-/// Drop a trailing `-YYYYMMDD` snapshot suffix, if present.
+/// Drop a trailing snapshot-date suffix, if present.
 ///
-/// Both vendors date their pinned snapshots this way, and a dated snapshot bills
-/// at its family's rate — so `claude-haiku-4-5-20251001` should not need its own
-/// row.
+/// A dated snapshot bills at its family's rate, so `claude-haiku-4-5-20251001`
+/// should not need its own row. The two vendors write the date differently and
+/// **both** shapes have to be handled: Anthropic uses a compact
+/// `-YYYYMMDD`, OpenAI a hyphenated `-YYYY-MM-DD`. Recognizing only the first is
+/// not a cosmetic gap — it leaves every pinned OpenAI snapshot (`gpt-4o-2024-11-20`,
+/// the id the vendor's own docs recommend) with no rate at all, so `cost_usd`
+/// stays absent and a `cost: {max: …}` budget takes its "not reported; budget not
+/// enforced" pass branch. That is precisely the silence this module exists to end.
 fn strip_snapshot_date(id: &str) -> Option<&str> {
     let (base, tail) = id.rsplit_once('-')?;
-    (tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_digit())).then_some(base)
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+
+    // Anthropic: `-20251001`.
+    if digits(tail, 8) {
+        return Some(base);
+    }
+    // OpenAI: `-2024-11-20`. Peeled one component at a time so a model id that
+    // merely ends in digits (`gpt-4o-mini-2`) is not mistaken for a date.
+    if digits(tail, 2) {
+        let (base, month) = base.rsplit_once('-')?;
+        let (base, year) = base.rsplit_once('-')?;
+        if digits(month, 2) && digits(year, 4) {
+            return Some(base);
+        }
+    }
+    None
 }
 
 /// The built-in rate for a model id, or `None` if the table does not know it.
@@ -469,6 +489,32 @@ mod tests {
             strip_snapshot_date("claude-haiku-4-5-20251001"),
             Some("claude-haiku-4-5")
         );
+    }
+
+    /// The two vendors date their snapshots differently, and recognizing only
+    /// Anthropic's compact form left every pinned OpenAI id unpriced — so
+    /// `cost_usd` was absent and a `cost:` budget silently stopped enforcing.
+    #[test]
+    fn openai_hyphenated_snapshot_dates_resolve_to_their_base_model() {
+        assert_eq!(
+            strip_snapshot_date("gpt-4o-2024-11-20"),
+            Some("gpt-4o"),
+            "the id OpenAI's own docs recommend pinning"
+        );
+        assert_eq!(built_in_rate("gpt-4o-2024-11-20"), built_in_rate("gpt-4o"));
+        assert!(
+            built_in_rate("gpt-4o-2024-11-20").is_some(),
+            "sanity: the base model must actually be in the table"
+        );
+    }
+
+    /// Peeled one component at a time, so an id that merely ends in digits is
+    /// not mistaken for a date and silently priced as a different model.
+    #[test]
+    fn a_trailing_number_is_not_mistaken_for_a_hyphenated_date() {
+        assert_eq!(strip_snapshot_date("gpt-4o-mini-2"), None);
+        assert_eq!(strip_snapshot_date("some-model-11-20"), None);
+        assert_eq!(strip_snapshot_date("some-model-24-11-20"), None);
     }
 
     #[test]
