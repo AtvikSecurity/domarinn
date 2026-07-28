@@ -77,12 +77,43 @@ const KNOWN_BAD: &[BadShape] = &[BadShape {
 struct Credential<'a> {
     path: String,
     provider_id: Option<String>,
-    env_name: String,
+    /// Every candidate name, in the order the provider will try them.
+    env_names: Vec<String>,
     provider_type: &'static str,
     base_url: Option<&'a str>,
 }
 
-fn default_env_for(kind: &ProviderKind) -> Option<(&'static str, &str, Option<&str>)> {
+impl Credential<'_> {
+    /// The name(s) this credential can come from, for an error message.
+    fn names(&self) -> String {
+        self.env_names
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn missing_message(&self) -> String {
+        match self.env_names.len() {
+            1 => format!(
+                "environment variable {} is not set (or is empty)",
+                self.names()
+            ),
+            _ => format!(
+                "none of these environment variables are set (or all are empty): {}",
+                self.names()
+            ),
+        }
+    }
+}
+
+fn default_env_for(kind: &ProviderKind) -> Option<(&'static str, Vec<String>, Option<&str>)> {
+    fn names(configured: &Option<crate::config::EnvNames>, fallback: &str) -> Vec<String> {
+        match configured {
+            Some(n) => n.iter().map(str::to_string).collect(),
+            None => vec![fallback.to_string()],
+        }
+    }
     match kind {
         ProviderKind::Anthropic {
             api_key_env,
@@ -90,7 +121,7 @@ fn default_env_for(kind: &ProviderKind) -> Option<(&'static str, &str, Option<&s
             ..
         } => Some((
             "anthropic",
-            api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY"),
+            names(api_key_env, "ANTHROPIC_API_KEY"),
             base_url.as_deref(),
         )),
         ProviderKind::Openai {
@@ -99,7 +130,7 @@ fn default_env_for(kind: &ProviderKind) -> Option<(&'static str, &str, Option<&s
             ..
         } => Some((
             "openai",
-            api_key_env.as_deref().unwrap_or("OPENAI_API_KEY"),
+            names(api_key_env, "OPENAI_API_KEY"),
             base_url.as_deref(),
         )),
         ProviderKind::Embeddings {
@@ -108,7 +139,7 @@ fn default_env_for(kind: &ProviderKind) -> Option<(&'static str, &str, Option<&s
             ..
         } => Some((
             "embeddings",
-            api_key_env.as_deref().unwrap_or("OPENAI_API_KEY"),
+            names(api_key_env, "OPENAI_API_KEY"),
             base_url.as_deref(),
         )),
         // `exec` runs a child that owns its own credentials, and `http` templates
@@ -118,11 +149,11 @@ fn default_env_for(kind: &ProviderKind) -> Option<(&'static str, &str, Option<&s
 }
 
 fn grader_credential<'a>(grader: &'a Grader, path: &str) -> Option<Credential<'a>> {
-    let (provider_type, env_name, base_url) = default_env_for(&grader.provider)?;
+    let (provider_type, env_names, base_url) = default_env_for(&grader.provider)?;
     Some(Credential {
         path: path.to_string(),
         provider_id: None,
-        env_name: env_name.to_string(),
+        env_names,
         provider_type,
         base_url,
     })
@@ -153,11 +184,11 @@ pub fn check(
         {
             continue;
         }
-        if let Some((provider_type, env_name, base_url)) = default_env_for(&provider.kind) {
+        if let Some((provider_type, env_names, base_url)) = default_env_for(&provider.kind) {
             credentials.push(Credential {
                 path: format!("providers[{i}]"),
                 provider_id: Some(provider.id.clone()),
-                env_name: env_name.to_string(),
+                env_names,
                 provider_type,
                 base_url,
             });
@@ -195,15 +226,16 @@ pub fn check(
         // An exported-but-empty variable is treated as unset: `std::env::var`
         // returns `Ok("")` for it, and an empty `x-api-key` 401s exactly like a
         // missing one.
-        let value = env.resolve(&cred.env_name).filter(|v| !v.trim().is_empty());
+        // First non-empty wins, matching how the provider itself resolves it.
+        let value = cred
+            .env_names
+            .iter()
+            .find_map(|name| env.resolve(name).filter(|v| !v.trim().is_empty()));
         match value {
             None => issues.push(CredentialIssue {
                 path: cred.path.clone(),
                 provider_id: cred.provider_id.clone(),
-                message: format!(
-                    "environment variable `{}` is not set (or is empty)",
-                    cred.env_name
-                ),
+                message: cred.missing_message(),
             }),
             Some(value) => issues.extend(check_shape(&cred, &value)),
         }
@@ -238,7 +270,7 @@ fn check_shape(cred: &Credential<'_>, value: &str) -> Option<CredentialIssue> {
     if !targets_known_endpoint {
         tracing::warn!(
             path = %cred.path,
-            variable = %cred.env_name,
+            variables = %cred.names(),
             "credential looks like {} — accepted here only because `base_url` \
              points somewhere domarinn does not know the contract of",
             bad.explanation
@@ -249,9 +281,13 @@ fn check_shape(cred: &Credential<'_>, value: &str) -> Option<CredentialIssue> {
     Some(CredentialIssue {
         path: cred.path.clone(),
         provider_id: cred.provider_id.clone(),
+        // Names the candidates rather than which one won: this is a shape
+        // complaint, and the resolved name is a debug-log concern.
         message: format!(
-            "`{}` holds {} (prefix `{}…`)",
-            cred.env_name, bad.explanation, bad.prefix
+            "the credential from {} holds {} (prefix `{}…`)",
+            cred.names(),
+            bad.explanation,
+            bad.prefix
         ),
     })
 }

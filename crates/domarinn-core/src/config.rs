@@ -172,7 +172,7 @@ pub enum ProviderKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
+        api_key_env: Option<EnvNames>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
         /// Rate override for this provider's model. See [`PricingCfg`].
@@ -191,7 +191,7 @@ pub enum ProviderKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
+        api_key_env: Option<EnvNames>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
         /// Rate override for this provider's model. See [`PricingCfg`].
@@ -223,7 +223,7 @@ pub enum ProviderKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
+        api_key_env: Option<EnvNames>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
     },
@@ -593,6 +593,40 @@ pub struct RateLimit {
     pub rps: f64,
 }
 
+/// One or more environment variable names holding an API key.
+///
+/// A bare string is the single-name form and serializes back to a bare string,
+/// so every existing suite's `config_digest` is unchanged and no `--against`
+/// comparison shows spurious drift. Pinned by
+/// `a_single_env_name_serializes_as_a_bare_string`.
+///
+/// The first name that resolves to a non-empty value wins. Which one that was
+/// is logged at debug rather than stored: the run document is shareable, and a
+/// variable name is a weak but real signal about someone's environment. That
+/// does mean two environments resolving different names produce runs that
+/// `config_digest` cannot tell apart — check the log if that matters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum EnvNames {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl EnvNames {
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        match self {
+            EnvNames::One(name) => Box::new(std::iter::once(name.as_str())),
+            EnvNames::Many(names) => Box::new(names.iter().map(String::as_str)),
+        }
+    }
+}
+
+impl From<&str> for EnvNames {
+    fn from(name: &str) -> Self {
+        EnvNames::One(name.to_string())
+    }
+}
+
 /// `serde(default)` helper for a flag that is on unless explicitly disabled.
 fn default_true() -> bool {
     true
@@ -687,5 +721,39 @@ mod tests {
             assert_eq!(parsed, variant);
         }
         assert!(serde_json::from_value::<VerdictMode>(serde_json::json!("manual")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod env_names_tests {
+    use super::*;
+
+    /// The load-bearing back-compat property: a single name must serialize back
+    /// to a bare string, or every existing suite's `config_digest` moves and
+    /// every `--against` comparison reports drift that did not happen.
+    #[test]
+    fn a_single_env_name_serializes_as_a_bare_string() {
+        let one: EnvNames = serde_json::from_str(r#""ANTHROPIC_API_KEY""#).unwrap();
+        assert_eq!(
+            serde_json::to_string(&one).unwrap(),
+            r#""ANTHROPIC_API_KEY""#
+        );
+    }
+
+    #[test]
+    fn a_list_round_trips_and_preserves_order() {
+        let raw = r#"["PRIMARY","FALLBACK"]"#;
+        let many: EnvNames = serde_json::from_str(raw).unwrap();
+        assert_eq!(serde_json::to_string(&many).unwrap(), raw);
+        assert_eq!(many.iter().collect::<Vec<_>>(), vec!["PRIMARY", "FALLBACK"]);
+    }
+
+    #[test]
+    fn both_forms_iterate_uniformly() {
+        assert_eq!(EnvNames::from("ONLY").iter().count(), 1);
+        assert_eq!(
+            EnvNames::Many(vec!["A".into(), "B".into()]).iter().count(),
+            2
+        );
     }
 }

@@ -189,9 +189,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -236,9 +240,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -324,9 +332,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -345,6 +357,20 @@
             "type",
             "model"
           ]
+        }
+      ]
+    },
+    "EnvNames": {
+      "description": "One or more environment variable names holding an API key.\n\nA bare string is the single-name form and serializes back to a bare string,\nso every existing suite's `config_digest` is unchanged and no `--against`\ncomparison shows spurious drift. Pinned by\n`a_single_env_name_serializes_as_a_bare_string`.\n\nThe first name that resolves to a non-empty value wins. Which one that was\nis logged at debug rather than stored: the run document is shareable, and a\nvariable name is a weak but real signal about someone's environment. That\ndoes mean two environments resolving different names produce runs that\n`config_digest` cannot tell apart — check the log if that matters.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       ]
     },
@@ -1042,9 +1068,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -1089,9 +1119,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -1177,9 +1211,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {

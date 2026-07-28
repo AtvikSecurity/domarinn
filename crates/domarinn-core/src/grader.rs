@@ -376,7 +376,7 @@ impl DefaultGrader {
                 self.anthropic_verdict(
                     model,
                     base_url.as_deref(),
-                    api_key_env.as_deref(),
+                    api_key_env.as_ref(),
                     merge_params(params.as_ref(), assert_params).as_ref(),
                     &user,
                 )
@@ -392,7 +392,7 @@ impl DefaultGrader {
                 self.openai_verdict(
                     model,
                     base_url.as_deref(),
-                    api_key_env.as_deref(),
+                    api_key_env.as_ref(),
                     merge_params(params.as_ref(), assert_params).as_ref(),
                     &user,
                 )
@@ -420,13 +420,15 @@ impl DefaultGrader {
         &self,
         model: &str,
         base_url: Option<&str>,
-        api_key_env: Option<&str>,
+        api_key_env: Option<&crate::config::EnvNames>,
         params: Option<&crate::config::ParamMap>,
         user: &str,
     ) -> Result<Verdict, GraderError> {
         reject_thinking(params)?;
-        let key = api_key(api_key_env.unwrap_or("ANTHROPIC_API_KEY"))
-            .map_err(|e| GraderError::Transport(e.to_string()))?;
+        let key = api_key(
+            api_key_env.unwrap_or(&crate::config::EnvNames::One("ANTHROPIC_API_KEY".into())),
+        )
+        .map_err(|e| GraderError::Transport(e.to_string()))?;
         let base = base_url
             .unwrap_or("https://api.anthropic.com")
             .trim_end_matches('/');
@@ -499,12 +501,13 @@ impl DefaultGrader {
         &self,
         model: &str,
         base_url: Option<&str>,
-        api_key_env: Option<&str>,
+        api_key_env: Option<&crate::config::EnvNames>,
         params: Option<&crate::config::ParamMap>,
         user: &str,
     ) -> Result<Verdict, GraderError> {
-        let key = api_key(api_key_env.unwrap_or("OPENAI_API_KEY"))
-            .map_err(|e| GraderError::Transport(e.to_string()))?;
+        let key =
+            api_key(api_key_env.unwrap_or(&crate::config::EnvNames::One("OPENAI_API_KEY".into())))
+                .map_err(|e| GraderError::Transport(e.to_string()))?;
         let base = base_url
             .unwrap_or("https://api.openai.com/v1")
             .trim_end_matches('/');

@@ -27,7 +27,7 @@ pub struct AnthropicProvider {
     id: String,
     model: String,
     base_url: String,
-    api_key_env: String,
+    api_key_env: crate::config::EnvNames,
     params: ParamMap,
     client: reqwest::Client,
     /// The effective rate for `model`, resolved once at construction. `None`
@@ -40,7 +40,7 @@ impl AnthropicProvider {
         id: impl Into<String>,
         model: impl Into<String>,
         base_url: Option<String>,
-        api_key_env: Option<String>,
+        api_key_env: Option<crate::config::EnvNames>,
         params: Option<ParamMap>,
         pricing: Option<crate::config::PricingCfg>,
     ) -> Self {
@@ -55,7 +55,7 @@ impl AnthropicProvider {
             id,
             model,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            api_key_env: api_key_env.unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
+            api_key_env: api_key_env.unwrap_or_else(|| "ANTHROPIC_API_KEY".into()),
             params: params.unwrap_or_default(),
             client: http_client(DEFAULT_TIMEOUT),
             rate,

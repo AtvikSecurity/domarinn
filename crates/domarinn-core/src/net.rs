@@ -96,13 +96,34 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// Read an API key from the named environment variable, or a fatal error naming
 /// the missing variable.
-pub fn api_key(env_name: &str) -> Result<String, ProviderError> {
-    std::env::var(env_name).map_err(|_| {
-        ProviderError::fatal(
-            ErrorClass::PROVIDER_AUTH,
-            anyhow::anyhow!("API key environment variable '{env_name}' is not set"),
-        )
-    })
+pub fn api_key(env_names: &crate::config::EnvNames) -> Result<String, ProviderError> {
+    for name in env_names.iter() {
+        // Empty counts as unset: `std::env::var` returns `Ok("")` for an
+        // exported-but-empty variable, and an empty credential 401s exactly
+        // like a missing one.
+        if let Some(value) = std::env::var(name).ok().filter(|v| !v.trim().is_empty()) {
+            // Which name won is otherwise invisible, and two environments
+            // resolving different names is exactly what makes two runs of the
+            // same suite quietly non-comparable. Logged, not stored: the run
+            // document is shared, and a variable *name* is a weak but real
+            // signal about someone's environment.
+            tracing::debug!(variable = name, "resolved API key");
+            return Ok(value);
+        }
+    }
+    Err(ProviderError::fatal(
+        ErrorClass::PROVIDER_AUTH,
+        match env_names.iter().count() {
+            1 => anyhow::anyhow!(
+                "API key environment variable '{}' is not set",
+                env_names.iter().next().unwrap_or_default()
+            ),
+            _ => anyhow::anyhow!(
+                "none of these API key environment variables are set: {}",
+                env_names.iter().collect::<Vec<_>>().join(", ")
+            ),
+        },
+    ))
 }
 
 #[cfg(test)]

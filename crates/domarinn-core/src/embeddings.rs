@@ -15,7 +15,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct EmbeddingsProvider {
     model: String,
     base_url: String,
-    api_key_env: String,
+    api_key_env: crate::config::EnvNames,
     params: ParamMap,
     client: reqwest::Client,
 }
@@ -24,13 +24,13 @@ impl EmbeddingsProvider {
     pub fn new(
         model: impl Into<String>,
         base_url: Option<String>,
-        api_key_env: Option<String>,
+        api_key_env: Option<crate::config::EnvNames>,
         params: Option<ParamMap>,
     ) -> Self {
         EmbeddingsProvider {
             model: model.into(),
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
+            api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".into()),
             params: params.unwrap_or_default(),
             client: http_client(DEFAULT_TIMEOUT),
         }
