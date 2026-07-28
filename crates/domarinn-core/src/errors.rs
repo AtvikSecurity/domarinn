@@ -134,6 +134,7 @@ impl Classify for crate::runner::RunError {
             // The suite resolved to nothing. Nothing rendered, nothing was
             // requested, nothing executed — the config is what is wrong.
             crate::runner::RunError::NothingToRun(_) => ErrorClass::new(ErrorClass::RENDER_FAILED),
+            crate::runner::RunError::Credentials(_) => ErrorClass::new(ErrorClass::PROVIDER_AUTH),
         }
     }
 }

@@ -58,6 +58,9 @@ pub enum RunError {
     /// no problems, and an exit code cannot tell them apart.
     #[error("{0}")]
     NothingToRun(crate::empty_run::EmptyRun),
+    /// One or more credentials this run would read are missing or wrong-shaped.
+    #[error("{} credential problem(s) before the run started:\n  - {}", .0.len(), .0.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("\n  - "))]
+    Credentials(Vec<crate::preflight::CredentialIssue>),
 }
 
 impl RunError {
@@ -69,7 +72,10 @@ impl RunError {
     /// `file://` test file exited 3 while the documented contract promised 2.
     pub fn is_config_error(&self) -> bool {
         match self {
-            RunError::Factory(_) | RunError::Resolve(_) | RunError::NothingToRun(_) => true,
+            RunError::Factory(_)
+            | RunError::Resolve(_)
+            | RunError::NothingToRun(_)
+            | RunError::Credentials(_) => true,
             // A generator that produced malformed tests is a config problem; one
             // that failed to spawn or timed out is infrastructure.
             RunError::Generate(crate::generate::GenerateError::BadTests { .. }) => true,
@@ -353,6 +359,17 @@ pub async fn run_with_progress(
     }
     if cells.is_empty() {
         tracing::warn!("this run graded nothing; --allow-empty was passed");
+    }
+
+    // After the guards above, so `cells` is the real work and nothing is
+    // checked that this run will not touch. Before the first call, so a bad
+    // grader key costs nothing instead of erroring every case in the suite.
+    if !cells.is_empty() {
+        let selected: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
+        let issues = crate::preflight::check(suite, &selected, &tests, &crate::interp::ProcessEnv);
+        if !issues.is_empty() {
+            return Err(RunError::Credentials(issues));
+        }
     }
 
     let total = cells.len();

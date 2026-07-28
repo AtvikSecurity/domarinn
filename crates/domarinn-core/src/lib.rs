@@ -40,6 +40,7 @@ pub mod loader_validate;
 pub mod matrix;
 pub mod net;
 pub mod openai;
+pub mod preflight;
 pub mod pricing;
 pub mod progress;
 pub mod provenance;
