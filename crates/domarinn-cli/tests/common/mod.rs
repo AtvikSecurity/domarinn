@@ -10,8 +10,38 @@ use std::process::Command;
 
 use assert_cmd::prelude::*;
 
+/// Environment the engine reads when it records a run's provenance.
+///
+/// Cleared for every test invocation so the suite is hermetic. Since provenance
+/// moved into the engine, `domarinn run` stamps whatever CI the *host* is in
+/// onto the run it writes — so on a GitHub Actions runner these tests would
+/// record the real workflow's URL and actor, and any assertion about a run's CI
+/// metadata would pass locally and fail in CI (which is exactly how this was
+/// found). A test that wants CI sets these itself, on the `run` invocation:
+/// `ci-summary` prefers the run's own recorded URL over the ambient
+/// environment, so setting them only at summary time proves nothing.
+const CI_ENV: &[&str] = &[
+    "GITHUB_ACTIONS",
+    "GITHUB_SERVER_URL",
+    "GITHUB_REPOSITORY",
+    "GITHUB_RUN_ID",
+    "GITHUB_ACTOR",
+    "GITLAB_CI",
+    "GITLAB_USER_LOGIN",
+    "CI_JOB_URL",
+    "JENKINS_URL",
+    "BUILD_URL",
+    "BUILD_USER",
+    "BUILDKITE_BUILD_CREATOR",
+    "CI",
+];
+
 pub fn bin() -> Command {
-    Command::cargo_bin("domarinn").unwrap()
+    let mut cmd = Command::cargo_bin("domarinn").unwrap();
+    for key in CI_ENV {
+        cmd.env_remove(key);
+    }
+    cmd
 }
 
 /// A suite whose single test echoes a fixed output and asserts it contains

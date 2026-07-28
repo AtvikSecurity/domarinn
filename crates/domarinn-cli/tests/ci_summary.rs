@@ -239,6 +239,15 @@ fn ci_summary_links_to_the_shared_run_and_the_ci_run() {
     bin()
         .args(["run", "--share"])
         .env("DOMARINN_SERVER_URL", &url)
+        // Set on the RUN, not on the summary: the engine records CI metadata
+        // onto the run document, and `ci-summary` prefers what the run itself
+        // recorded over the ambient environment. Setting these only at summary
+        // time would assert against a fallback that never fires for a run that
+        // knows its own origin.
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_SERVER_URL", "https://github.com")
+        .env("GITHUB_REPOSITORY", "acme/widgets")
+        .env("GITHUB_RUN_ID", "42")
         .current_dir(dir.path())
         .assert()
         .success();
@@ -246,10 +255,6 @@ fn ci_summary_links_to_the_shared_run_and_the_ci_run() {
 
     bin()
         .args(["ci-summary", "--github-output", "gh.txt"])
-        .env("GITHUB_ACTIONS", "true")
-        .env("GITHUB_SERVER_URL", "https://github.com")
-        .env("GITHUB_REPOSITORY", "acme/widgets")
-        .env("GITHUB_RUN_ID", "42")
         .current_dir(dir.path())
         .assert()
         .success()
@@ -270,9 +275,11 @@ fn ci_summary_omits_the_links_line_when_there_is_nothing_to_link() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
     bin().arg("run").current_dir(dir.path()).assert().success();
+    // `bin()` already clears the CI environment for both invocations, so the
+    // run genuinely has no CI metadata to link to — which is the condition this
+    // test is about.
     let out = bin()
         .arg("ci-summary")
-        .env_remove("GITHUB_ACTIONS")
         .current_dir(dir.path())
         .output()
         .unwrap();
