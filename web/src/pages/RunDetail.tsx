@@ -43,6 +43,19 @@ const STATUS_CHIPS: { value: string; label: string }[] = [
   { value: "skip", label: "Skip" },
 ];
 
+/** Header stat-row widths, keyed by how many stats the run actually has.
+ *
+ * Enumerated rather than interpolated because Tailwind scans for literal class
+ * names — a computed `lg:grid-cols-${n}` produces no CSS at all, which fails as
+ * a silent fallback to the two-column base rather than as a build error.
+ */
+const STAT_COLUMNS: Record<number, string> = {
+  6: "lg:grid-cols-6",
+  7: "lg:grid-cols-7",
+  8: "lg:grid-cols-8",
+  9: "lg:grid-cols-9",
+};
+
 export function RunDetail() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
@@ -191,6 +204,17 @@ export function RunDetail() {
   // existed, which is not the same as zero — either way there is nothing to
   // show, so both collapse to "hide the stat".
   const promptCacheTokens = (r.cache_read_tokens ?? 0) + (r.cache_write_tokens ?? 0);
+  const showGraderCost = r.grader_cost_usd != null;
+  const showPromptCache = promptCacheTokens > 0;
+  // Six unconditional stats plus whichever of the three optional ones this run
+  // has data for. Derived rather than hardcoded: the column count used to be a
+  // literal that mirrored the JSX below, and adding a stat silently wrapped the
+  // row — costing the cases grid a whole row of height, which only the app-shell
+  // scroll e2e caught.
+  const statColumns =
+    STAT_COLUMNS[
+      6 + Number(showGraderCost) + Number(cacheKnown) + Number(showPromptCache)
+    ];
   const siblingRuns = suiteRuns.data?.pages.flatMap((p) => p.runs) ?? [];
   // Older run in the suite = the default compare base for this run.
   // Undefined when `r` is the oldest loaded run in its suite — the real
@@ -299,9 +323,7 @@ export function RunDetail() {
           </div>
         </div>
 
-        <div
-          className={`mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 ${cacheKnown ? "lg:grid-cols-7" : "lg:grid-cols-6"}`}
-        >
+        <div className={`mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 ${statColumns}`}>
           <Stat label="Pass rate">
             <PassRateBadge
               pass={r.pass_count}
@@ -351,7 +373,7 @@ export function RunDetail() {
               suite with no model-graded assertions has nothing to report, and
               a run stored before the column existed reports null, which is not
               the same as zero. */}
-          {r.grader_cost_usd != null ? (
+          {showGraderCost ? (
             <Stat label="Grading" sub="not included in cost">
               {formatCost(r.grader_cost_usd)}
             </Stat>
@@ -376,7 +398,7 @@ export function RunDetail() {
               domarinn's own response cache above and dominates spend on a
               cache-heavy suite. Shown only when the run reported any, so it
               stays absent for suites that never enabled it. */}
-          {promptCacheTokens > 0 ? (
+          {showPromptCache ? (
             <Stat
               label="Prompt cache"
               sub={`${formatTokens(r.cache_write_tokens)} written`}

@@ -222,4 +222,32 @@ test.describe("Run detail", () => {
     ).toBeVisible();
     expect(caseParam(page)).toBe(openedCase);
   });
+
+  /// The stat row is a fixed-column grid whose width must track how many stats
+  /// the run actually has. It did not: adding two silently wrapped the row,
+  /// pushing the cases grid down a full row of header — a regression whose only
+  /// symptom was an app-shell scroll test failing somewhere else entirely.
+  test("the header stats stay on one row, whatever the run reports", async ({
+    page,
+  }) => {
+    await page.goto(`/runs/${MONEY_RUN}`);
+    await expect(page.getByText("Pass rate")).toBeVisible();
+
+    const rows = await page.evaluate(() => {
+      const label = [...document.querySelectorAll("*")].find(
+        (el) => el.textContent?.trim() === "Pass rate",
+      );
+      // The stat cells are the grid's direct children; walk up to the grid.
+      const grid = label?.closest("div.grid");
+      if (!grid) return null;
+      const tops = new Set(
+        [...grid.children].map((el) => Math.round(el.getBoundingClientRect().top)),
+      );
+      return { rows: tops.size, stats: grid.children.length };
+    });
+    expect(rows).not.toBeNull();
+    expect(rows!.stats).toBeGreaterThan(6);
+    expect(rows!.rows).toBe(1);
+  });
 });
+
