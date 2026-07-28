@@ -338,6 +338,32 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
           AND fail_count = 0 AND error_count = 0;
         "#,
         ),
+        // Migration 12: the cache-token and second-cost counters, promoted
+        // because the run header now renders them and the alternative is
+        // decompressing a whole run blob to draw four numbers.
+        //
+        // These were deliberately left in the blob when they were added — the
+        // repo's rule is to promote when a *query* needs a fact, not when one
+        // exists. A query needs them now.
+        //
+        // No backfill, and NULL is load-bearing rather than zero. A run stored
+        // before this migration may well have read from a prompt cache; we
+        // simply did not record it in a column, and writing `0` would assert it
+        // did not. Every reader renders NULL as absent, which is what the CLI
+        // already does for the same numbers.
+        //
+        // `cache_savings_microusd` and `grader_cost_microusd` follow
+        // `cost_microusd`'s integer storage: money is summed, and a float
+        // column would reintroduce exactly the order-dependent total the
+        // engine's integer accumulator exists to prevent.
+        M::up(
+            r#"
+        ALTER TABLE runs ADD COLUMN cache_read_tokens      INTEGER;
+        ALTER TABLE runs ADD COLUMN cache_write_tokens     INTEGER;
+        ALTER TABLE runs ADD COLUMN cache_savings_microusd INTEGER;
+        ALTER TABLE runs ADD COLUMN grader_cost_microusd   INTEGER;
+        "#,
+        ),
     ])
 }
 

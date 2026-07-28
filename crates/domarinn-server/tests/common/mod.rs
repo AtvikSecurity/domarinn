@@ -402,6 +402,13 @@ pub fn make_run(
     let mut summary = RunSummary {
         total: cases.len() as u64,
         cost_usd: Some(0.0025 * cases.len() as f64),
+        // Fixed per run rather than derived from the cases: these exercise the
+        // migration-12 columns, and the point is that a stored run round-trips
+        // them, not that this fixture reproduces `summarize()`'s arithmetic.
+        cache_read_tokens: 1_040,
+        cache_write_tokens: 82,
+        cache_savings_usd: Some(0.0011),
+        grader_cost_usd: Some(0.0009),
         ..Default::default()
     };
     for c in &cases {

@@ -105,6 +105,47 @@ async fn run_list_and_detail_expose_cache_counts() {
     assert_eq!(detail.json()["cache_misses"].as_i64(), Some(0));
 }
 
+/// The migration-12 columns: promoted so the run header can render them without
+/// decompressing a blob, which is the only reason they were promoted at all.
+#[tokio::test]
+async fn run_detail_exposes_cache_tokens_and_the_second_cost_figure() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    seed_cache_mix(&app).await;
+
+    let detail = get(&app, "/api/v1/runs/r-cached-pass").await.json();
+    assert_eq!(detail["cache_read_tokens"].as_i64(), Some(1_040));
+    assert_eq!(detail["cache_write_tokens"].as_i64(), Some(82));
+    assert_eq!(detail["cache_savings_usd"].as_f64(), Some(0.0011));
+    // Grading cost is its own number, never folded into `cost_usd` — that one
+    // is what the systems under test cost, and it is what `cost:` budgets.
+    assert_eq!(detail["grader_cost_usd"].as_f64(), Some(0.0009));
+    assert_ne!(detail["cost_usd"].as_f64(), Some(0.0009));
+}
+
+/// A run stored before migration 12 reads back as *unknown*, not as zero. Zero
+/// would assert the run had no cache activity, which we have no way to know.
+#[tokio::test]
+async fn a_run_predating_the_columns_reports_them_as_null_not_zero() {
+    let (app, dir) = test_app(Settings::default()).await;
+    seed_cache_mix(&app).await;
+
+    let db = rusqlite::Connection::open(dir.path().join("domarinn.db")).unwrap();
+    db.execute(
+        "UPDATE runs SET cache_read_tokens = NULL, cache_write_tokens = NULL,
+                         cache_savings_microusd = NULL, grader_cost_microusd = NULL
+         WHERE id = 'r-cached-pass'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let detail = get(&app, "/api/v1/runs/r-cached-pass").await.json();
+    assert!(detail["cache_read_tokens"].is_null());
+    assert!(detail["cache_write_tokens"].is_null());
+    assert!(detail["cache_savings_usd"].is_null());
+    assert!(detail["grader_cost_usd"].is_null());
+}
+
 #[tokio::test]
 async fn cached_exclude_hides_only_fully_cached_passing_runs() {
     let (app, _dir) = test_app(Settings::default()).await;

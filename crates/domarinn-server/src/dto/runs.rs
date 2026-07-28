@@ -116,6 +116,17 @@ pub struct RunDetailResponse {
     /// Provider-call cache counters (see [`RunListItem::cache_hits`]).
     pub cache_hits: Option<i64>,
     pub cache_misses: Option<i64>,
+    /// Provider-side prompt-cache token counters (migration 12). `None` for
+    /// runs stored before the columns existed — which is not the same as zero,
+    /// and readers must render it as unknown rather than "no cache activity".
+    pub cache_read_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
+    /// What the cached cases would have cost. Actual spend is `cost_usd` minus
+    /// this.
+    pub cache_savings_usd: Option<f64>,
+    /// What grading cost, which is **not** part of `cost_usd`: that is what the
+    /// systems under test cost, and it is what a `cost:` assertion budgets.
+    pub grader_cost_usd: Option<f64>,
     /// Run provenance — see the same-named fields on [`RunListItem`].
     pub actor: Option<String>,
     pub host: Option<String>,
@@ -307,6 +318,10 @@ mod tests {
             config_digest: Some("sha256:cfg".to_string()),
             cache_hits: Some(1),
             cache_misses: Some(0),
+            cache_read_tokens: Some(104_000),
+            cache_write_tokens: Some(8_200),
+            cache_savings_usd: Some(0.0011),
+            grader_cost_usd: Some(0.0009),
             actor: Some("alice".to_string()),
             host: Some("runner-07".to_string()),
             note: Some("nightly smoke".to_string()),
@@ -341,6 +356,10 @@ mod tests {
                 "config_digest": "sha256:cfg",
                 "cache_hits": 1,
                 "cache_misses": 0,
+                "cache_read_tokens": 104000,
+                "cache_write_tokens": 8200,
+                "cache_savings_usd": 0.0011,
+                "grader_cost_usd": 0.0009,
                 "actor": "alice",
                 "host": "runner-07",
                 "note": "nightly smoke",
@@ -380,6 +399,10 @@ mod tests {
             config_digest: None,
             cache_hits: None,
             cache_misses: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            cache_savings_usd: None,
+            grader_cost_usd: None,
             actor: None,
             host: None,
             note: None,

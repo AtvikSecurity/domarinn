@@ -179,6 +179,13 @@ struct PreparedRun {
     // filter fully-cached CI runs at SQL level.
     cache_hits: i64,
     cache_misses: i64,
+    // Migration-12 columns. `Option` rather than `i64`, so a run that reported
+    // no cache activity stays distinguishable from one recorded before the
+    // columns existed — the whole reason there is no backfill.
+    cache_read_tokens: Option<i64>,
+    cache_write_tokens: Option<i64>,
+    cache_savings_microusd: Option<i64>,
+    grader_cost_microusd: Option<i64>,
     tags: Vec<String>,
     blob: Vec<u8>,
     cases: Vec<PreparedCase>,
@@ -294,6 +301,12 @@ impl PreparedRun {
             config_digest: run.config_digest.clone(),
             cache_hits: run.summary.cache_hits as i64,
             cache_misses: run.summary.cache_misses as i64,
+            // Zero means "reported, and it was zero"; the column stays NULL
+            // only for rows written before migration 12.
+            cache_read_tokens: Some(run.summary.cache_read_tokens as i64),
+            cache_write_tokens: Some(run.summary.cache_write_tokens as i64),
+            cache_savings_microusd: to_microusd(run.summary.cache_savings_usd),
+            grader_cost_microusd: to_microusd(run.summary.grader_cost_usd),
             tags: run.filters.tags.clone(),
             blob,
             cases,
@@ -325,7 +338,8 @@ impl PreparedRun {
                 prompt_tokens, completion_tokens, cost_microusd, duration_ms,
                 content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
                 actor, host, domarinn_version,
-                prompts_digest, providers_digest, tests_digest, asserts_digest, grader_digest
+                prompts_digest, providers_digest, tests_digest, asserts_digest, grader_digest,
+                cache_read_tokens, cache_write_tokens, cache_savings_microusd, grader_cost_microusd
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
@@ -333,7 +347,8 @@ impl PreparedRun {
                 ?17, ?18, ?19, ?20,
                 ?21, ?22, ?23, ?24, ?25,
                 ?26, ?27, ?28,
-                ?29, ?30, ?31, ?32, ?33
+                ?29, ?30, ?31, ?32, ?33,
+                ?34, ?35, ?36, ?37
             )",
             params![
                 self.id,
@@ -369,6 +384,10 @@ impl PreparedRun {
                 self.tests_digest,
                 self.asserts_digest,
                 self.grader_digest,
+                self.cache_read_tokens,
+                self.cache_write_tokens,
+                self.cache_savings_microusd,
+                self.grader_cost_microusd,
             ],
         )?;
 
@@ -780,7 +799,9 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     case_count, pass_count, fail_count, error_count,
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
                     content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
-                    actor, host, description, domarinn_version
+                    actor, host, description, domarinn_version,
+                    cache_read_tokens, cache_write_tokens,
+                    cache_savings_microusd, grader_cost_microusd
              FROM runs WHERE id = ?1",
             params![id.as_str()],
             |row| {
@@ -814,6 +835,14 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     host: row.get::<_, Option<String>>(25)?,
                     note: row.get::<_, Option<String>>(26)?,
                     domarinn_version: row.get::<_, Option<String>>(27)?,
+                    // Migration-12 columns. NULL for anything stored before
+                    // them, and rendered as absent rather than zero — the run
+                    // may well have had cache activity we simply did not
+                    // record.
+                    cache_read_tokens: row.get::<_, Option<i64>>(28)?,
+                    cache_write_tokens: row.get::<_, Option<i64>>(29)?,
+                    cache_savings_usd: from_microusd(row.get::<_, Option<i64>>(30)?),
+                    grader_cost_usd: from_microusd(row.get::<_, Option<i64>>(31)?),
                     // Filled in below, after the row is loaded.
                     tags: Vec::new(),
                     assert_labels: Vec::new(),

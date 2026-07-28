@@ -26,6 +26,22 @@ config_digest: string | null,
  */
 cache_hits: number | null, cache_misses: number | null, 
 /**
+ * Provider-side prompt-cache token counters (migration 12). `None` for
+ * runs stored before the columns existed — which is not the same as zero,
+ * and readers must render it as unknown rather than "no cache activity".
+ */
+cache_read_tokens: number | null, cache_write_tokens: number | null, 
+/**
+ * What the cached cases would have cost. Actual spend is `cost_usd` minus
+ * this.
+ */
+cache_savings_usd: number | null, 
+/**
+ * What grading cost, which is **not** part of `cost_usd`: that is what the
+ * systems under test cost, and it is what a `cost:` assertion budgets.
+ */
+grader_cost_usd: number | null, 
+/**
  * Run provenance — see the same-named fields on [`RunListItem`].
  */
 actor: string | null, host: string | null, note: string | null, domarinn_version: string | null, tags: Array<string>, assert_labels: Array<string>, };

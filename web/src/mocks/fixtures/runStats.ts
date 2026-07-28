@@ -53,6 +53,10 @@ export interface RunStats {
   domarinn_version: string | null;
   cache_hits: number;
   cache_misses: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cache_savings_usd: number;
+  grader_cost_usd: number;
   tags: string[];
   assert_labels: string[];
 }
@@ -70,6 +74,7 @@ export function runStats(runId: string): RunStats {
   let duration = 0;
   let cache_hits = 0;
   let cache_misses = 0;
+  let cache_savings = 0;
   for (const c of cases) {
     if (c.status === "pass") pass++;
     else if (c.status === "fail") fail++;
@@ -78,8 +83,12 @@ export function runStats(runId: string): RunStats {
     completion_tokens += c.completion_tokens;
     cost += c.cost_usd;
     duration += c.latency_ms;
-    if (c.cached) cache_hits++;
-    else cache_misses++;
+    if (c.cached) {
+      cache_hits++;
+      // Exactly what the engine computes: the sum of `cost_usd` over the cases
+      // that were hits. Not a re-pricing.
+      cache_savings += c.cost_usd;
+    } else cache_misses++;
   }
   const uploadDelayMs = 1500 + Math.floor(rand(meta.suiteKey, meta.runIndex, "upl") * 4000);
   // Provenance mirrors the real split: a CI run is attributed to the person who
@@ -117,6 +126,14 @@ export function runStats(runId: string): RunStats {
     domarinn_version: "0.2.0",
     cache_hits,
     cache_misses,
+    // Provider-side prompt caching, roughly proportional to prompt volume so
+    // the offline UI shows a plausible split rather than a round number.
+    cache_read_tokens: Math.floor(prompt_tokens * 0.6),
+    cache_write_tokens: Math.floor(prompt_tokens * 0.05),
+    cache_savings_usd: round4(cache_savings),
+    // Grading is its own line item and is usually a meaningful fraction of the
+    // run — the whole reason it is reported apart from `cost_usd`.
+    grader_cost_usd: round4(cost * 0.35),
     tags: meta.tags,
     assert_labels: [...new Set(meta.suiteDef.labels)],
   };
@@ -180,6 +197,10 @@ function toRunDetailResponse(s: RunStats): RunDetailResponse {
     config_digest: configDigest(s.id),
     cache_hits: s.cache_hits,
     cache_misses: s.cache_misses,
+    cache_read_tokens: s.cache_read_tokens,
+    cache_write_tokens: s.cache_write_tokens,
+    cache_savings_usd: s.cache_savings_usd,
+    grader_cost_usd: s.grader_cost_usd,
     actor: s.actor,
     host: s.host,
     note: s.note,
