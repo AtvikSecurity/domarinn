@@ -35,6 +35,9 @@ pub struct EvalCtx<'a> {
     pub engine: &'a TemplateEngine,
     pub vars: &'a Json,
     pub metrics: &'a MetricCtx,
+    /// Compiled JSON Schemas for `contains-json`, memoized for the run. See
+    /// [`crate::jsonschema_cache`] for why it is threaded rather than global.
+    pub schemas: &'a crate::jsonschema_cache::SchemaCache,
 }
 
 // `AssertName` lives in `domarinn-types`: it is a wire value (it appears on
@@ -85,17 +88,17 @@ pub fn evaluate_local(
     if !is_local(&assert.kind) {
         return None;
     }
-    let outcome = evaluate_kind(&assert.kind, output, ctx.engine, ctx.vars, ctx.metrics);
+    let outcome = evaluate_kind(&assert.kind, output, ctx);
     Some(outcome.negated(assert.negate))
 }
 
-fn evaluate_kind(
-    kind: &AssertKind,
-    output: &Output,
-    engine: &TemplateEngine,
-    vars: &Json,
-    metrics: &MetricCtx,
-) -> AssertOutcome {
+fn evaluate_kind(kind: &AssertKind, output: &Output, ctx: &EvalCtx<'_>) -> AssertOutcome {
+    let EvalCtx {
+        engine,
+        vars,
+        metrics,
+        schemas,
+    } = ctx;
     let text = output.as_text();
     match kind {
         AssertKind::Contains { value } => cond(
@@ -149,14 +152,19 @@ fn evaluate_kind(
             "output is not valid JSON",
         ),
         AssertKind::ContainsJson { schema } => {
-            // Schema validation is added with the jsonschema dependency later;
-            // for now this checks for the presence of a JSON value.
-            let _ = schema;
-            cond(
-                extract_json(&text).is_some(),
-                "output contains JSON",
-                "output contains no JSON value",
-            )
+            let Some(found) = extract_json(&text) else {
+                return AssertOutcome::fail("output contains no JSON value");
+            };
+            match schema {
+                None => AssertOutcome::pass("output contains JSON"),
+                // Deliberately *not* rendered as a template. A schema is a
+                // contract, not a per-case value: rendering it would make the
+                // memo key case-dependent (defeating the cache) and open a
+                // template surface over a whole document for no gain.
+                Some(schema) => {
+                    crate::jsonschema_cache::validate_against(&found, schema.as_json(), schemas)
+                }
+            }
         }
         AssertKind::Length { min, max } => {
             let len = text.chars().count() as u64;
@@ -284,6 +292,7 @@ mod tests {
         let engine = TemplateEngine::new();
         let vars = json!({});
         let metrics = MetricCtx::default();
+        let schemas = crate::jsonschema_cache::SchemaCache::new();
         evaluate_local(
             assert,
             &Output::Text(out.into()),
@@ -291,6 +300,7 @@ mod tests {
                 engine: &engine,
                 vars: &vars,
                 metrics: &metrics,
+                schemas: &schemas,
             },
         )
         .unwrap()
@@ -405,10 +415,12 @@ mod tests {
         let out = Output::Text("x".into());
         let eng = TemplateEngine::new();
         let vars = json!({});
+        let schemas = crate::jsonschema_cache::SchemaCache::new();
         let ctx = EvalCtx {
             engine: &eng,
             vars: &vars,
             metrics: &metrics,
+            schemas: &schemas,
         };
         let lat = evaluate_local(&a(AssertKind::Latency { max: 1000 }), &out, &ctx).unwrap();
         assert!(lat.passed);
@@ -435,6 +447,7 @@ mod tests {
         let engine = TemplateEngine::new();
         let vars = json!({});
         let metrics = MetricCtx::default();
+        let schemas = crate::jsonschema_cache::SchemaCache::new();
         assert!(evaluate_local(
             &assert,
             &Output::Text("x".into()),
@@ -442,6 +455,7 @@ mod tests {
                 engine: &engine,
                 vars: &vars,
                 metrics: &metrics,
+                schemas: &schemas,
             }
         )
         .is_none());
@@ -518,5 +532,107 @@ mod tests {
                 "AssertName for {kind:?} must equal its AssertKind tag"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod contains_json_schema_tests {
+    //! `contains-json`'s `schema` field went from parsed-and-ignored to
+    //! enforced. These are the regressions that were silently passing.
+
+    use super::*;
+    use crate::config::Assert;
+    use crate::jsonschema_cache::SchemaCache;
+    use crate::val::Val;
+    use serde_json::json;
+
+    fn eval_with_schema(output: &str, schema: Option<serde_json::Value>) -> AssertOutcome {
+        let engine = TemplateEngine::new();
+        let vars = json!({});
+        let metrics = MetricCtx::default();
+        let schemas = SchemaCache::new();
+        evaluate_local(
+            &Assert {
+                weight: 1.0,
+                negate: false,
+                kind: AssertKind::ContainsJson {
+                    schema: schema.map(Val::Raw),
+                },
+            },
+            &Output::Text(output.into()),
+            &EvalCtx {
+                engine: &engine,
+                vars: &vars,
+                metrics: &metrics,
+                schemas: &schemas,
+            },
+        )
+        .unwrap()
+    }
+
+    /// The regression: this used to pass, because `schema` was `let _ = schema;`.
+    #[test]
+    fn a_schema_mismatch_now_fails() {
+        let schema = json!({"type": "object", "required": ["age"],
+                            "properties": {"age": {"type": "integer"}}});
+        assert!(!eval_with_schema(r#"here: {"age": "seven"}"#, Some(schema.clone())).passed);
+        assert!(!eval_with_schema(r#"{"name": "x"}"#, Some(schema)).passed);
+    }
+
+    #[test]
+    fn a_matching_document_passes() {
+        let schema = json!({"type": "object", "properties": {"age": {"type": "integer"}}});
+        assert!(eval_with_schema(r#"result: {"age": 7}"#, Some(schema)).passed);
+    }
+
+    /// Back-compat floor: without a schema the assertion behaves exactly as it
+    /// always did — presence of a JSON value, nothing more.
+    #[test]
+    fn no_schema_is_unchanged() {
+        assert!(eval_with_schema(r#"{"anything": true}"#, None).passed);
+        assert!(!eval_with_schema("no json here", None).passed);
+    }
+
+    /// A missing JSON value must fail on its own terms rather than being
+    /// reported as a schema mismatch, which would send the reader to the wrong
+    /// half of the assertion.
+    #[test]
+    fn absent_json_fails_before_the_schema_is_consulted() {
+        let schema = json!({"type": "object"});
+        let outcome = eval_with_schema("prose only", Some(schema));
+        assert!(!outcome.passed);
+        assert!(
+            outcome.reason.contains("no JSON value"),
+            "{}",
+            outcome.reason
+        );
+    }
+
+    /// `negate` composes for free, so `not-contains-json` with a schema means
+    /// "no JSON here matches this shape".
+    #[test]
+    fn negate_inverts_a_schema_match() {
+        let engine = TemplateEngine::new();
+        let vars = json!({});
+        let metrics = MetricCtx::default();
+        let schemas = SchemaCache::new();
+        let outcome = evaluate_local(
+            &Assert {
+                weight: 1.0,
+                negate: true,
+                kind: AssertKind::ContainsJson {
+                    schema: Some(Val::Raw(json!({"type": "object"}))),
+                },
+            },
+            &Output::Text(r#"{"a": 1}"#.into()),
+            &EvalCtx {
+                engine: &engine,
+                vars: &vars,
+                metrics: &metrics,
+                schemas: &schemas,
+            },
+        )
+        .unwrap();
+        assert!(!outcome.passed, "a match under negate must fail");
     }
 }

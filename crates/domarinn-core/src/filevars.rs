@@ -32,7 +32,7 @@ use std::path::Path;
 
 use serde_json::Value as Json;
 
-use crate::config::TestCase;
+use crate::config::{AssertKind, TestCase};
 use crate::resolve::ResolveError;
 use crate::sandbox;
 use crate::val::{Val, FILE_KEY};
@@ -42,6 +42,43 @@ use crate::val::{Val, FILE_KEY};
 pub fn resolve_file_vars(tests: &mut [TestCase], base_dir: &Path) -> Result<(), ResolveError> {
     for tc in tests.iter_mut() {
         for val in tc.vars.values_mut() {
+            if let Some(spec) = FileSpec::from_json(val.as_json())? {
+                *val = load_file_var(&spec, base_dir)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolve `{$file: …}` inside every assertion's `Val`-typed field, the same
+/// way [`resolve_file_vars`] does for test vars.
+///
+/// This closes a second silent pass hiding behind the first. `resolve_file_vars`
+/// walks only `tc.vars`, so `schema: {$file: "s.json"}` reached the assertion as
+/// the literal object `{"$file": "s.json"}` — which, read as a JSON Schema, is a
+/// document of entirely unknown keywords and therefore **matches everything**. A
+/// user who moved their schema into a file got a green check that validated
+/// nothing at all.
+///
+/// The same was true of `equals` and `similar`, which compared output against
+/// the marker object rather than the file's contents. Both are fixed here.
+///
+/// Runs inside `expand_tests`, so a schema is concrete content long before the
+/// runner evaluates anything, and inherits the same sandbox as every other
+/// `$file` reference.
+pub fn resolve_assert_file_vals(
+    tests: &mut [TestCase],
+    base_dir: &Path,
+) -> Result<(), ResolveError> {
+    for tc in tests.iter_mut() {
+        for assert in tc.assert.iter_mut() {
+            let val: Option<&mut crate::val::Val> = match &mut assert.kind {
+                AssertKind::ContainsJson { schema } => schema.as_mut(),
+                AssertKind::Equals { value } => Some(value),
+                AssertKind::Similar { value, .. } => Some(value),
+                _ => None,
+            };
+            let Some(val) = val else { continue };
             if let Some(spec) = FileSpec::from_json(val.as_json())? {
                 *val = load_file_var(&spec, base_dir)?;
             }

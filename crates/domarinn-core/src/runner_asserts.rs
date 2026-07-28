@@ -35,6 +35,7 @@ pub(super) struct AssertCtx<'a> {
     pub engine: &'a TemplateEngine,
     pub grader: Option<&'a dyn AssertGrader>,
     pub base_dir: &'a Path,
+    pub schemas: &'a crate::jsonschema_cache::SchemaCache,
 }
 
 /// Evaluate all asserts: local first, then (if they can still change the
@@ -51,6 +52,7 @@ pub(super) async fn evaluate_asserts(
         engine: ctx.engine,
         vars,
         metrics,
+        schemas: ctx.schemas,
     };
     // Slot results by original index so output order matches config order.
     let mut results: Vec<Option<AssertResult>> = vec![None; asserts.len()];

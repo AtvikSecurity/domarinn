@@ -161,6 +161,8 @@ pub async fn run_with_progress(
 ) -> Result<RunResult, RunError> {
     let started_at = Utc::now();
     let engine = TemplateEngine::new();
+    // One compiled-schema cache for the whole run — see `jsonschema_cache`.
+    let schemas = &crate::jsonschema_cache::SchemaCache::new();
     let filter = Filter::build(&opts.filter).map_err(|e| {
         RunError::Resolve(crate::resolve::ResolveError::Parse {
             path: "<filter>".into(),
@@ -301,6 +303,7 @@ pub async fn run_with_progress(
                     opts.cache_mode,
                     opts.include_raw,
                     &retry_cfg,
+                    schemas,
                 )
                 .await;
                 if let Some(sink) = progress {
@@ -405,6 +408,7 @@ async fn run_cell(
     cache_mode: CacheMode,
     include_raw: bool,
     retry_cfg: &RetryPolicy,
+    schemas: &crate::jsonschema_cache::SchemaCache,
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
     let cell = CellKey {
@@ -560,6 +564,7 @@ async fn run_cell(
             engine,
             grader,
             base_dir,
+            schemas,
         },
         &test.assert,
         &response.output,

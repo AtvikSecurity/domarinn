@@ -33,6 +33,7 @@ pub mod generate;
 pub mod grader;
 pub mod http_provider;
 pub mod interp;
+pub mod jsonschema_cache;
 pub mod loader;
 pub mod loader_validate;
 pub mod matrix;

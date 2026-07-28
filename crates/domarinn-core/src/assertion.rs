@@ -38,6 +38,14 @@ impl AssertOutcome {
         }
     }
 
+    /// Attach structured detail to an outcome. Chained rather than a fourth
+    /// constructor argument: almost every assertion has nothing structured to
+    /// say and should stay a one-liner.
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
     pub fn fail(reason: impl Into<String>) -> Self {
         AssertOutcome {
             score: 0.0,

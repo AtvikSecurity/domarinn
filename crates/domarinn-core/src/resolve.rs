@@ -10,7 +10,7 @@ use std::path::Path;
 use serde_json::Value as Json;
 
 use crate::config::{Assert, Defaults, GeneratorSpec, Suite, TestCase, TestSource};
-use crate::filevars::resolve_file_vars;
+use crate::filevars::{resolve_assert_file_vals, resolve_file_vars};
 use crate::matrix::expand_matrix;
 use crate::sandbox::{self, SandboxError};
 use crate::val::{desugar_tags, Val};
@@ -83,6 +83,7 @@ pub fn expand_tests(suite: &Suite, base_dir: &Path) -> Result<Expanded, ResolveE
     // fixtures pulled in by matrix axes or `defaults` are loaded too. Runs before
     // any rendering (the runner renders later), so a fixture is never a template.
     resolve_file_vars(&mut out.tests, base_dir)?;
+    resolve_assert_file_vals(&mut out.tests, base_dir)?;
 
     Ok(out)
 }
