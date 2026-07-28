@@ -156,6 +156,46 @@ impl Default for RunOptions {
 /// grading". Like a provider fingerprint it must exclude secrets, and it must
 /// include everything that can move a verdict — the grader's model and
 /// endpoint, the rendered rubric, the system prompt.
+/// A one-way latch that stops a run once continuing is pointless.
+///
+/// Set when the grader's credential is rejected. That failure will repeat for
+/// every remaining case — a 401 does not become a 200 on the next call — so
+/// without this a whole suite errors one case at a time and exits 3, an
+/// *infrastructure* fault, after paying for every provider call to get there.
+/// With `concurrency: N` the loss is bounded at roughly N in-flight calls.
+///
+/// Deliberately not a general cancellation mechanism: the only thing that
+/// poisons it is a failure known to be permanent for the whole run.
+#[derive(Debug, Default)]
+pub struct AbortFlag {
+    reason: std::sync::Mutex<Option<String>>,
+}
+
+impl AbortFlag {
+    /// Record the first reason. Later calls are ignored: the first failure is
+    /// the cause, and the rest are it happening again.
+    pub fn poison(&self, reason: String) {
+        let mut slot = self.reason.lock().expect("abort flag mutex");
+        if slot.is_none() {
+            tracing::error!(%reason, "aborting the run; remaining cases will not be graded");
+            *slot = Some(reason);
+        }
+    }
+
+    /// Why the run was aborted, if it was.
+    pub fn reason(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .expect("abort flag mutex")
+            .as_ref()
+            .map(|r| format!("aborted: {r}"))
+    }
+
+    pub fn is_poisoned(&self) -> bool {
+        self.reason.lock().expect("abort flag mutex").is_some()
+    }
+}
+
 /// Everything a grading call needs beyond the assertion and the output.
 ///
 /// A struct rather than five more parameters: `grade` was already at the
@@ -230,6 +270,7 @@ pub async fn run_with_progress(
     // Precedence: `--no-cache` kills everything (via `cache_mode`), then
     // `--no-grader-cache`, then the suite's `cache.grader`, which defaults on.
     let grader_cache = opts.grader_cache && suite.cache.as_ref().is_none_or(|c| c.grader);
+    let aborted = &AbortFlag::default();
     let filter = Filter::build(&opts.filter).map_err(|e| {
         RunError::Resolve(crate::resolve::ResolveError::Parse {
             path: "<filter>".into(),
@@ -432,6 +473,7 @@ pub async fn run_with_progress(
                     &retry_cfg,
                     schemas,
                     grader_cache,
+                    aborted,
                 )
                 .await;
                 if let Some(sink) = progress {
@@ -538,6 +580,7 @@ async fn run_cell(
     retry_cfg: &RetryPolicy,
     schemas: &crate::jsonschema_cache::SchemaCache,
     grader_cache: bool,
+    aborted: &AbortFlag,
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
     let cell = CellKey {
@@ -548,6 +591,21 @@ async fn run_cell(
     };
     let case_key = cell.case_key();
     let name = test.description.clone().or_else(|| test.id.clone());
+
+    // Checked before the *provider* call, not just before grading: once the
+    // grader's credential is known bad, paying a model to produce output that
+    // will never be graded is the expensive half of the failure this prevents.
+    if let Some(reason) = aborted.reason() {
+        return error_case(
+            cell,
+            case_key,
+            name,
+            test,
+            CallFailure::before_any_attempt(ErrorClass::PROVIDER_AUTH, reason),
+            0,
+            CaseInputs::default(),
+        );
+    }
 
     // Render the test's vars once. `rendered_vars` excludes the environment, so
     // it is a stable request identity (cache key) and does not leak the whole
@@ -701,6 +759,7 @@ async fn run_cell(
             cache_mode,
             grader_cache,
             repeat,
+            aborted,
         },
         &test.assert,
         &response.output,

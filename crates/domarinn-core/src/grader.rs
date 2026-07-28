@@ -462,6 +462,12 @@ impl DefaultGrader {
             .map_err(|e| GraderError::Transport(e.to_string()))?;
         if !resp.status().is_success() {
             let code = resp.status().as_u16();
+            // 401/403 gets its own variant: a rejected credential will reject
+            // every remaining call too, so the runner short-circuits rather
+            // than erroring the whole suite one case at a time.
+            if code == 401 || code == 403 {
+                return Err(GraderError::AuthRejected { status: code });
+            }
             return Err(GraderError::Transport(format!(
                 "HTTP {code}: {}",
                 resp.text().await.unwrap_or_default()
@@ -535,6 +541,12 @@ impl DefaultGrader {
             .map_err(|e| GraderError::Transport(e.to_string()))?;
         if !resp.status().is_success() {
             let code = resp.status().as_u16();
+            // 401/403 gets its own variant: a rejected credential will reject
+            // every remaining call too, so the runner short-circuits rather
+            // than erroring the whole suite one case at a time.
+            if code == 401 || code == 403 {
+                return Err(GraderError::AuthRejected { status: code });
+            }
             return Err(GraderError::Transport(format!(
                 "HTTP {code}: {}",
                 resp.text().await.unwrap_or_default()

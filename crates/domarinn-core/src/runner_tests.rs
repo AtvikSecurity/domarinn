@@ -253,3 +253,36 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
         "retry warn must record a `delay_ms` field; got: {logged}"
     );
 }
+
+// ── The grader-auth circuit breaker ──────────────────────────────────────────
+
+/// The first rejection is the cause; the rest are it happening again.
+#[test]
+fn the_abort_flag_keeps_the_first_reason() {
+    let flag = AbortFlag::default();
+    assert!(!flag.is_poisoned());
+    assert_eq!(flag.reason(), None);
+
+    flag.poison("grader credential rejected (HTTP 401)".into());
+    flag.poison("grader credential rejected (HTTP 403)".into());
+
+    assert!(flag.is_poisoned());
+    let reason = flag.reason().expect("poisoned");
+    assert!(reason.contains("401"), "{reason}");
+    assert!(
+        !reason.contains("403"),
+        "later failures must not overwrite: {reason}"
+    );
+    assert!(reason.starts_with("aborted: "), "{reason}");
+}
+
+/// A rejected credential is the caller's problem, not a flaky grader — the
+/// distinction that decides whether CI retries or stops.
+#[test]
+fn a_rejected_grader_credential_is_classified_as_auth() {
+    use crate::errors::Classify;
+    let auth = crate::errors::GraderError::AuthRejected { status: 401 };
+    let broke = crate::errors::GraderError::Transport("connection reset".into());
+    assert_eq!(auth.class().as_str(), ErrorClass::PROVIDER_AUTH);
+    assert_eq!(broke.class().as_str(), ErrorClass::GRADER_FAILED);
+}

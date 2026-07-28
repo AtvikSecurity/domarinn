@@ -51,6 +51,8 @@ pub(super) struct AssertCtx<'a> {
     /// collapse to one verdict and erase exactly the variance `--repeat`
     /// exists to measure.
     pub repeat: u32,
+    /// Set once the grader's credential is rejected. See [`super::AbortFlag`].
+    pub aborted: &'a super::AbortFlag,
 }
 
 /// Evaluate all asserts: local first, then (if they can still change the
@@ -103,6 +105,14 @@ pub(super) async fn evaluate_asserts(
             results[i] = Some(skipped_result(assert));
             continue;
         }
+        // Checked before every grading call, not just at the top of the loop:
+        // with concurrency N, cells already in flight when the credential was
+        // rejected must not each pay for their own 401 to find out.
+        if let Some(reason) = ctx.aborted.reason() {
+            classes.push(ErrorClass::new(ErrorClass::PROVIDER_AUTH));
+            results[i] = Some(error_assert(assert, reason));
+            continue;
+        }
         match ctx.grader {
             Some(g) => match graded_verdict(g, ctx, assert, output, vars).await {
                 Ok((verdict, cached)) => {
@@ -120,6 +130,12 @@ pub(super) async fn evaluate_asserts(
                 // configured" and "the grader broke" stay distinguishable all
                 // the way to the stored case.
                 Err(e) => {
+                    // A rejected credential will reject every remaining call
+                    // too, so poison the run rather than discovering it once
+                    // per case at full provider cost.
+                    if let crate::errors::GraderError::AuthRejected { .. } = e {
+                        ctx.aborted.poison(e.to_string());
+                    }
                     classes.push(e.class());
                     results[i] = Some(error_assert(assert, e.to_string()));
                 }
