@@ -98,6 +98,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_progress: bool,
 
+    /// Re-grade every assertion instead of reusing cached verdicts.
+    ///
+    /// Provider responses are still cached. Use this to measure judge variance
+    /// deliberately — with `--repeat N`, each trial is keyed separately, so
+    /// cached verdicts already preserve variance across runs.
+    #[arg(long)]
+    pub no_grader_cache: bool,
+
     /// Succeed even if the run resolves to zero test cases.
     ///
     /// Without this a run that graded nothing exits 2, because a green result
@@ -159,6 +167,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         },
         repeat: args.repeat.max(1),
         allow_empty: args.allow_empty,
+        grader_cache: !args.no_grader_cache,
         cache_mode,
         concurrency: args.concurrency,
         retries: if args.no_retries {

@@ -471,6 +471,16 @@ pub enum AssertKind {
         command: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config: Option<Json>,
+        /// Opt this assertion's verdicts into the cache, and bust them when the
+        /// value changes.
+        ///
+        /// Required for the same reason an `exec` *provider* needs one: `command`
+        /// does not move when the program behind it is rebuilt, so caching by
+        /// default would serve stale verdicts after a rebuild — silently, and in
+        /// CI. Set it to something that tracks the program (a git SHA, a build
+        /// id, a content digest).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_salt: Option<String>,
     },
     LlmRubric {
         value: String,
@@ -583,6 +593,11 @@ pub struct RateLimit {
     pub rps: f64,
 }
 
+/// `serde(default)` helper for a flag that is on unless explicitly disabled.
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CacheCfg {
@@ -590,6 +605,18 @@ pub struct CacheCfg {
     pub backend: CacheBackendKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s3: Option<S3Cfg>,
+    /// Cache grader verdicts as well as provider responses. Default `true`.
+    ///
+    /// On by default because it is the dominant recurring cost of an LLM-graded
+    /// suite: without it the judge is re-paid on every run even when every
+    /// provider response was a cache hit. Every way a verdict could go stale is
+    /// in the key — the rubric, the grader's model and endpoint, its params, the
+    /// system prompt, and the graded output itself.
+    ///
+    /// Turn it off to measure judge variance deliberately, or use
+    /// `--no-grader-cache` for one run.
+    #[serde(default = "default_true")]
+    pub grader: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

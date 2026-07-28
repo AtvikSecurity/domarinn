@@ -178,6 +178,9 @@ pub(super) fn response_to_entry(
         reasoning: response.reasoning.clone(),
         empty_reason: response.empty_reason.clone(),
         model: response.model.clone(),
+        // Provider responses never carry a verdict; its absence is what marks
+        // this entry as a provider response rather than a grading result.
+        verdict: None,
         // Same size cap as persistence, so a pathological payload can't bloat
         // the shared cache. `--no-raw` intentionally does NOT strip the cache
         // copy: a later run without the flag replaying this entry should still

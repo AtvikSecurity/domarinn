@@ -793,6 +793,13 @@
               }
             },
             "config": true,
+            "cache_salt": {
+              "description": "Opt this assertion's verdicts into the cache, and bust them when the\nvalue changes.\n\nRequired for the same reason an `exec` *provider* needs one: `command`\ndoes not move when the program behind it is rebuilt, so caching by\ndefault would serve stale verdicts after a rebuild — silently, and in\nCI. Set it to something that tracks the program (a git SHA, a build\nid, a content digest).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "exec"
@@ -1381,6 +1388,11 @@
               "type": "null"
             }
           ]
+        },
+        "grader": {
+          "description": "Cache grader verdicts as well as provider responses. Default `true`.\n\nOn by default because it is the dominant recurring cost of an LLM-graded\nsuite: without it the judge is re-paid on every run even when every\nprovider response was a cache hit. Every way a verdict could go stale is\nin the key — the rubric, the grader's model and endpoint, its params, the\nsystem prompt, and the graded output itself.\n\nTurn it off to measure judge variance deliberately, or use\n`--no-grader-cache` for one run.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false

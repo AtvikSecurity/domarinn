@@ -95,6 +95,7 @@ mod tests {
             cost_usd: None,
             stop_reason: None,
             model: None,
+            verdict: None,
             raw: None,
             reasoning: None,
             empty_reason: None,

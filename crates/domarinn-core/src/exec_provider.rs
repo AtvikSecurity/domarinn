@@ -24,6 +24,9 @@ pub struct ExecProvider {
     env: BTreeMap<String, String>,
     timeout: Duration,
     cache_salt: Option<String>,
+    /// Identity of the program `command` runs, resolved once at construction so
+    /// a cache lookup costs no filesystem access.
+    program: Json,
 }
 
 impl ExecProvider {
@@ -36,6 +39,7 @@ impl ExecProvider {
     ) -> Self {
         ExecProvider {
             id: id.into(),
+            program: crate::exec::program_identity(&command),
             command,
             env,
             timeout: Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
@@ -54,23 +58,27 @@ impl Provider for ExecProvider {
         serde_json::json!({
             "type": "exec",
             "command": self.command,
+            // Computed once at construction. Without it the key is argv only,
+            // which does not move when the program behind it is rebuilt — the
+            // hazard that used to make exec caching opt-in.
+            "program": self.program,
             "cache_salt": self.cache_salt,
         })
     }
 
-    /// Keyed on the **provider** salt only, deliberately.
+    /// Always cacheable.
     ///
-    /// Do *not* relax this to also accept a case's `cache_salt`. That is a
-    /// tempting "fix" when a suite sets case salts and sees no caching, but the
-    /// two salts answer different questions: this one is *"is this the same
-    /// build?"*, a case salt is only *"is this the same content?"*. A case salt
-    /// digests prompt content, which does not move when the binary behind
-    /// `command` is rebuilt — so accepting it here would serve stale output from
-    /// every entry after a rebuild, silently, and worst of all in CI. No caching
-    /// is the correct answer for a salted case with no provider salt; the runner
-    /// warns about that combination instead of papering over it.
+    /// This used to require a hand-managed `cache_salt`, because argv does not
+    /// move when the binary behind it is rebuilt and a stale verdict in CI is
+    /// worse than a cache miss. [`crate::exec::program_identity`] removes the
+    /// need for the hand-management by putting the program's own identity in the
+    /// fingerprint, so a rebuild busts the entry on its own.
+    ///
+    /// `cache_salt` still works and still composes — it is the escape hatch for
+    /// a program the identity cannot see (one resolved from `PATH`, or one whose
+    /// behavior depends on something off-disk).
     fn cacheable(&self) -> bool {
-        self.cache_salt.is_some()
+        true
     }
 
     async fn call(
@@ -223,9 +231,41 @@ mod tests {
     #[test]
     fn fingerprint_is_stable_for_default_config() {
         let p = ExecProvider::new("p", vec!["./sut".into()], BTreeMap::new(), None, None);
+        // `program` is empty here because `./sut` does not exist in the test's
+        // working directory, which is also the shape for any command resolved
+        // from PATH. The asserted string changed once, deliberately, when
+        // `program` was added to make exec caching safe by default — that
+        // invalidated every existing exec cache entry, one time. Any *further*
+        // change to this string does the same, so treat a failure here as a
+        // cache migration to plan rather than a test to update.
         assert_eq!(
             crate::cache::canonical_json(&p.fingerprint()),
-            r#"{"cache_salt":null,"command":["./sut"],"type":"exec"}"#
+            r#"{"cache_salt":null,"command":["./sut"],"program":[],"type":"exec"}"#
+        );
+    }
+
+    /// A rebuild must bust the entry on its own, or caching exec by default
+    /// would serve stale output — the hazard that used to make it opt-in.
+    #[test]
+    fn the_fingerprint_moves_when_the_program_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = dir.path().join("sut");
+        std::fs::write(&prog, "#!/bin/sh\necho v1").unwrap();
+        let command = vec![prog.to_string_lossy().to_string()];
+
+        let before = ExecProvider::new("p", command.clone(), BTreeMap::new(), None, None);
+        let before_fp = crate::cache::canonical_json(&before.fingerprint());
+        assert!(
+            before_fp.contains("\"len\""),
+            "an existing program must contribute its identity: {before_fp}"
+        );
+
+        // A rebuild: same argv, different bytes.
+        std::fs::write(&prog, "#!/bin/sh\necho v2 and then some more").unwrap();
+        let after = ExecProvider::new("p", command, BTreeMap::new(), None, None);
+        assert_ne!(
+            before_fp,
+            crate::cache::canonical_json(&after.fingerprint())
         );
     }
 
@@ -338,7 +378,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cacheable_requires_cache_salt() {
+    async fn exec_providers_are_cached_by_default() {
+        // This used to require a `cache_salt`. Everything that can be cached is
+        // now cached by default; `program` in the fingerprint is what makes that
+        // safe, and the salt is the escape hatch rather than the entry ticket.
         let with_salt = ExecProvider::new(
             "p",
             vec!["true".into()],
@@ -348,7 +391,12 @@ mod tests {
         );
         let without = ExecProvider::new("p", vec!["true".into()], BTreeMap::new(), None, None);
         assert!(with_salt.cacheable());
-        assert!(!without.cacheable());
+        assert!(without.cacheable());
+        // The salt still separates them.
+        assert_ne!(
+            crate::cache::canonical_json(&with_salt.fingerprint()),
+            crate::cache::canonical_json(&without.fingerprint())
+        );
     }
 
     #[tokio::test]

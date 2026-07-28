@@ -40,6 +40,27 @@ use serde_json::Value as Json;
 use crate::cache::CacheKey;
 use crate::provider::ProviderRequest;
 
+/// Compute the cache key for one grading call.
+///
+/// **The "only when set" discipline above does not apply here.** That rule
+/// exists to keep keys written before a member existed valid, and this key
+/// space is new — it has no legacy entries to preserve. Every member is
+/// therefore included unconditionally, which is simpler and is the right
+/// default for a fresh key. Do not copy the conditional-insert pattern from
+/// `provider_cache_key` into this function; it would be cargo-culting a
+/// constraint that does not exist here.
+///
+/// `kind` discriminates the two key spaces, so a grader key can never collide
+/// with a provider key even if their other members coincided.
+pub fn grader_cache_key(fingerprint: &Json, graded: &Json, repeat: u32) -> CacheKey {
+    CacheKey::compute(&serde_json::json!({
+        "kind": "grader-verdict",
+        "fingerprint": fingerprint,
+        "graded": graded,
+        "repeat": repeat,
+    }))
+}
+
 /// Compute the cache key for one provider call.
 pub fn provider_cache_key(fingerprint: &Json, req: &ProviderRequest, repeat: u32) -> CacheKey {
     let prompt = req

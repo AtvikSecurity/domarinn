@@ -466,13 +466,23 @@ fn run_no_progress_flag_is_accepted_and_silent() {
 /// stdout purity is independent of `--no-progress`: the primary (table) output
 /// is byte-identical with and without the flag, so the progress bar can never
 /// perturb the machine-facing stream.
+///
+/// Both runs pass `--no-cache`. Without it the second run is a cache hit and
+/// its stats line legitimately gains a "1 cache hits" segment — a difference
+/// caused by the cache, not by the progress bar, which would make this test
+/// fail for a reason it is not about. It only ever passed because `exec`
+/// providers were uncached by default.
 #[test]
 fn run_stdout_is_byte_identical_with_and_without_no_progress() {
     let dir = tempfile::tempdir().unwrap();
     write_suite(dir.path(), PASSING_SUITE);
-    let with_bar = bin().arg("run").current_dir(dir.path()).output().unwrap();
+    let with_bar = bin()
+        .args(["run", "--no-cache"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
     let no_bar = bin()
-        .args(["run", "--no-progress"])
+        .args(["run", "--no-progress", "--no-cache"])
         .current_dir(dir.path())
         .output()
         .unwrap();

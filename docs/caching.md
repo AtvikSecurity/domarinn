@@ -15,9 +15,19 @@ vars produces a new key.
   content-addressed, two machines that compute the same request write identical
   bytes, so sharing is safe with no clobbering.
 - **Errors are never cached.** Only successful responses are stored.
-- **Grader verdicts are _not_ cached.** Only provider responses are. An
-  LLM-graded suite re-pays for grading on every run, even when every provider
-  response is a cache hit.
+- **Grader verdicts are cached too**, on by default like everything else. An
+  LLM-graded suite used to re-pay its judge on every run even when every
+  provider response was a cache hit, which is the dominant recurring cost of
+  running one. Disable with `cache.grader: false` or `--no-grader-cache`.
+- **A `threshold` is not in the verdict key.** The cached value is the raw
+  verdict, and the threshold is applied on read — so editing a `threshold:`
+  re-scores every case instantly instead of re-paying the judge for an answer
+  it already gave. This is structural: the cached type has no threshold in it.
+- **`--repeat` still samples the judge.** The trial index is in the key, so N
+  repeats produce N independent verdicts on the first run and replay those N
+  afterwards. Without that, two trials whose provider responses were
+  byte-identical — common at temperature 0 — would collapse into one verdict
+  and erase exactly the variance `--repeat` exists to measure.
 - **The model a provider *reports* having used is not in the key.** It cannot
   be: the key is derived from a request, and a reported model only exists on a
   response. The *requested* model is already covered (it is in the
@@ -46,11 +56,16 @@ on every edit. That is what per-case salts exist to avoid.
 
 ### `exec` providers and the provider salt
 
-An `exec` provider is only cached when it sets a `cache_salt`. Its fingerprint is
-the command, which does **not** change when you rebuild the program behind it —
-so without a salt a rebuilt binary would be served stale output. Set
-`cache_salt` to something that changes with the program (a git SHA, a build
-hash):
+An `exec` provider is cached like every other kind. Its fingerprint includes the
+identity of the *program* — the path, size and modification time of every
+argument that names a readable file — not just the command line, so rebuilding
+the binary busts its entries automatically.
+
+That covers a compiled binary (`./target/release/appd`) and an interpreter plus
+a script (`python3 grade.py`). It does **not** cover a program resolved from
+`PATH` with no path separator, or one whose behavior depends on something not on
+disk. Set `cache_salt` for those — it composes with the automatic identity
+rather than replacing it:
 
 ```yaml
 providers:

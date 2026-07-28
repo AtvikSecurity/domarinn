@@ -13,7 +13,6 @@ use chrono::Utc;
 use futures::StreamExt;
 use serde_json::Value as Json;
 
-use crate::assertion::AssertOutcome;
 use crate::asserts::MetricCtx;
 use crate::cache::{CacheBackend, CacheMode};
 use crate::config::{Assert, Suite, TestCase};
@@ -107,6 +106,9 @@ pub struct RunOptions {
     /// What to record about who and where this run came from. A run option
     /// rather than a suite field for the same reason as `retries` above.
     pub provenance: crate::provenance::ProvenanceOptions,
+    /// Cache grader verdicts. Default `true`; `--no-grader-cache` disables it
+    /// for one run without touching the provider-response cache.
+    pub grader_cache: bool,
     /// Accept a run that resolved to zero cases instead of failing it.
     ///
     /// Two real cases justify it, both CI-shaped: a sharded matrix where a
@@ -125,6 +127,7 @@ impl Default for RunOptions {
             retries: None,
             include_raw: true,
             provenance: crate::provenance::ProvenanceOptions::default(),
+            grader_cache: true,
             allow_empty: false,
         }
     }
@@ -143,15 +146,16 @@ impl Default for RunOptions {
 /// `grader_failed`, which sent first-time users hunting for a transient fault
 /// that did not exist. See [`crate::errors::Classify`].
 ///
-/// **Verdicts are not cached.** Note the absence of a [`CacheBackend`] here:
-/// grading runs live on every call, so an LLM-graded suite re-pays its grader on
-/// every run even when every provider response was a cache hit. Only provider
-/// responses are cached. Do not assume otherwise — the caching happens in
-/// `call_with_cache`, which this trait is never routed through, and
-/// `DefaultGrader` talks to its endpoint over its own client. Adding verdict
-/// caching means threading a backend into `grade` and deriving a key from the
-/// grader fingerprint, the rendered rubric, and the output; pinned by
-/// `grader_verdicts_are_not_cached_today` in `tests/cache_integration.rs`.
+/// `grade` returns the verdict **before** any threshold, which is what makes
+/// caching it correct: a threshold is a decision *about* a verdict, not part of
+/// one, so editing a `threshold:` re-scores every case from cache instead of
+/// re-paying the judge for an answer it already gave.
+///
+/// [`Self::grading_fingerprint`] is the cacheability lever, mirroring
+/// [`crate::provider::Provider::cacheable`]: `None` means "do not cache this
+/// grading". Like a provider fingerprint it must exclude secrets, and it must
+/// include everything that can move a verdict — the grader's model and
+/// endpoint, the rendered rubric, the system prompt.
 /// Everything a grading call needs beyond the assertion and the output.
 ///
 /// A struct rather than five more parameters: `grade` was already at the
@@ -177,7 +181,15 @@ pub trait AssertGrader: Send + Sync {
         assert: &Assert,
         output: &Output,
         ctx: &GradeCtx<'_>,
-    ) -> Result<AssertOutcome, crate::errors::GraderError>;
+    ) -> Result<crate::cache::GradedVerdict, crate::errors::GraderError>;
+
+    /// A stable identity for the grading this assertion will perform, or `None`
+    /// to opt out of caching it.
+    ///
+    /// Must exclude secrets, exactly like `Provider::fingerprint`.
+    fn grading_fingerprint(&self, _assert: &Assert) -> Option<Json> {
+        None
+    }
 }
 
 /// Run a suite and produce a [`RunResult`].
@@ -215,6 +227,9 @@ pub async fn run_with_progress(
     let engine = TemplateEngine::new();
     // One compiled-schema cache for the whole run — see `jsonschema_cache`.
     let schemas = &crate::jsonschema_cache::SchemaCache::new();
+    // Precedence: `--no-cache` kills everything (via `cache_mode`), then
+    // `--no-grader-cache`, then the suite's `cache.grader`, which defaults on.
+    let grader_cache = opts.grader_cache && suite.cache.as_ref().is_none_or(|c| c.grader);
     let filter = Filter::build(&opts.filter).map_err(|e| {
         RunError::Resolve(crate::resolve::ResolveError::Parse {
             path: "<filter>".into(),
@@ -248,24 +263,10 @@ pub async fn run_with_progress(
     }
     tests.extend(generated);
 
-    // A per-case `cache_salt` only chooses the cache key; it never makes a
-    // provider cacheable. Warn when a suite sets one against a provider that
-    // does not cache at all, where the salt silently does nothing.
-    if tests.iter().any(|t| t.cache_salt.is_some()) {
-        let uncacheable: Vec<&str> = providers
-            .iter()
-            .filter(|p| !p.cacheable())
-            .map(|p| p.id())
-            .collect();
-        if !uncacheable.is_empty() {
-            tracing::warn!(
-                providers = %uncacheable.join(", "),
-                "tests set `cache_salt`, but these providers are not cacheable \
-                 (an `exec` provider needs its own `cache_salt` to be cached at \
-                 all) — the per-case salt has no effect for them"
-            );
-        }
-    }
+    // The warning that used to live here — "you set a case salt against a
+    // provider that cannot cache" — is gone because that combination no longer
+    // exists: every provider kind caches by default. A case salt now always
+    // chooses a key rather than sometimes doing nothing.
 
     // Prompt slots: each prompt, or a single None slot when there are no prompts.
     let prompt_slots: Vec<Option<&crate::config::Prompt>> = if suite.prompts.is_empty() {
@@ -430,6 +431,7 @@ pub async fn run_with_progress(
                     opts.include_raw,
                     &retry_cfg,
                     schemas,
+                    grader_cache,
                 )
                 .await;
                 if let Some(sink) = progress {
@@ -535,6 +537,7 @@ async fn run_cell(
     include_raw: bool,
     retry_cfg: &RetryPolicy,
     schemas: &crate::jsonschema_cache::SchemaCache,
+    grader_cache: bool,
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
     let cell = CellKey {
@@ -694,6 +697,10 @@ async fn run_cell(
             grader,
             base_dir,
             schemas,
+            cache,
+            cache_mode,
+            grader_cache,
+            repeat,
         },
         &test.assert,
         &response.output,

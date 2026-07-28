@@ -500,6 +500,7 @@ mod tests {
             AssertKind::Exec {
                 command: vec![],
                 config: None,
+                cache_salt: None,
             },
             AssertKind::LlmRubric {
                 value: String::new(),

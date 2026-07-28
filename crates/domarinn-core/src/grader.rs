@@ -11,7 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
-use crate::assertion::AssertOutcome;
+use crate::cache::GradedVerdict;
 use crate::config::{Assert, AssertKind, Grader, ProviderKind};
 use crate::errors::GraderError;
 use crate::exec::run_exec_json;
@@ -71,7 +71,7 @@ impl AssertGrader for DefaultGrader {
         assert: &Assert,
         output: &Output,
         ctx: &GradeCtx<'_>,
-    ) -> Result<AssertOutcome, GraderError> {
+    ) -> Result<GradedVerdict, GraderError> {
         let GradeCtx {
             vars,
             engine,
@@ -79,7 +79,12 @@ impl AssertGrader for DefaultGrader {
             ..
         } = ctx;
         let outcome = match &assert.kind {
-            AssertKind::Exec { command, config } => {
+            AssertKind::Exec {
+                command,
+                config,
+                // Cacheability only; it never reaches the child.
+                cache_salt: _,
+            } => {
                 self.grade_exec(command, config.as_ref(), output, vars, *working_dir, ctx)
                     .await
             }
@@ -105,7 +110,107 @@ impl AssertGrader for DefaultGrader {
             }
             _ => Err(GraderError::Internal("local assert routed to grader")),
         };
-        outcome.map(|o| o.negated(assert.negate))
+        // `negate` is applied when the verdict becomes an outcome, not here:
+        // caching a *negated* verdict would key the cache on the assertion's
+        // polarity, so flipping `negate` would re-pay the judge for the same
+        // answer.
+        outcome
+    }
+
+    /// The grader's identity for this assertion, or `None` to skip caching it.
+    fn grading_fingerprint(&self, assert: &Assert) -> Option<Json> {
+        grading_fingerprint(
+            self.default_grader.as_ref(),
+            self.embeddings.is_some(),
+            assert,
+        )
+    }
+}
+
+/// A stable identity for the grading `assert` will perform.
+///
+/// Everything that can move a verdict, and nothing that cannot. Notably absent:
+///
+/// - **`threshold`** — a decision *about* a verdict, not part of one. Excluding
+///   it is what makes editing a threshold re-score from cache instead of
+///   re-paying the judge, and it is structurally absent rather than merely
+///   omitted: [`GradedVerdict`] has no threshold to include.
+/// - **the API key env var** — a secret, same rule as `Provider::fingerprint`.
+/// - **`vars`** — the rubric is rendered *before* it is hashed and the output is
+///   in the key, so any var that can move a verdict already moves one of them.
+///
+/// [`SYSTEM_PROMPT`] is hashed in: it is a literal in this file that shapes
+/// every verdict, and nothing else in the key would notice an edit to it.
+///
+/// `template` and `verdict_mode` are included at their *effective* values even
+/// though the first is now read and the second is rejected — so wiring either
+/// up further needs no cache-version bump.
+fn grading_fingerprint(
+    default_grader: Option<&Grader>,
+    has_embeddings: bool,
+    assert: &Assert,
+) -> Option<Json> {
+    fn provider_identity(kind: &ProviderKind) -> Option<Json> {
+        match kind {
+            ProviderKind::Anthropic {
+                model,
+                base_url,
+                params,
+                ..
+            } => Some(
+                json!({"type": "anthropic", "model": model, "base_url": base_url, "params": params}),
+            ),
+            ProviderKind::Openai {
+                model,
+                base_url,
+                params,
+                ..
+            } => Some(
+                json!({"type": "openai", "model": model, "base_url": base_url, "params": params}),
+            ),
+            ProviderKind::Embeddings {
+                model,
+                base_url,
+                params,
+                ..
+            } => Some(
+                json!({"type": "embeddings", "model": model, "base_url": base_url, "params": params}),
+            ),
+            _ => None,
+        }
+    }
+
+    let system_digest = format!("{}", blake3::hash(SYSTEM_PROMPT.as_bytes()).to_hex());
+
+    match &assert.kind {
+        AssertKind::LlmRubric { grader, params, .. } => {
+            let g = grader.as_deref().or(default_grader)?;
+            Some(json!({
+                "assert": "llm-rubric",
+                "provider": provider_identity(&g.provider)?,
+                "template": g.template,
+                "verdict_mode": g.verdict_mode.unwrap_or_default(),
+                "assert_params": params,
+                "system_prompt": system_digest,
+            }))
+        }
+        AssertKind::Similar { .. } => has_embeddings.then(|| json!({"assert": "similar"})),
+        // Cached by default, like everything else that can be. `program` is
+        // what makes that safe: argv alone does not move when the binary behind
+        // it is rebuilt, so a key over `command` would serve stale verdicts
+        // after a rebuild — silently, and in CI. `cache_salt` remains the
+        // escape hatch for a program the identity cannot see.
+        AssertKind::Exec {
+            command,
+            cache_salt,
+            config: _,
+        } => Some(json!({
+            "assert": "exec",
+            "command": command,
+            "program": crate::exec::program_identity(command),
+            "cache_salt": cache_salt,
+        })),
+        _ => None,
     }
 }
 
@@ -161,7 +266,7 @@ impl DefaultGrader {
         vars: &Json,
         working_dir: Option<&std::path::Path>,
         ctx: &GradeCtx<'_>,
-    ) -> Result<AssertOutcome, GraderError> {
+    ) -> Result<GradedVerdict, GraderError> {
         // `test` and `provider` used to be sent as empty strings, and `vars`
         // was discarded outright — three fields the wire format declares as
         // populated, so a child written against `docs/protocol.md` received
@@ -194,9 +299,9 @@ impl DefaultGrader {
         let resp: AssertResp = serde_json::from_value(value)
             .map_err(|e| GraderError::InvalidVerdict(format!("bad assert response: {e}")))?;
         let score = resp.score.unwrap_or(if resp.pass { 1.0 } else { 0.0 });
-        Ok(AssertOutcome {
+        Ok(GradedVerdict::Exec {
+            pass: resp.pass,
             score,
-            passed: resp.pass,
             reason: resp.reason.unwrap_or_default(),
             details: resp.details,
         })
@@ -209,7 +314,7 @@ impl DefaultGrader {
         output: &Output,
         vars: &Json,
         engine: &TemplateEngine,
-    ) -> Result<AssertOutcome, GraderError> {
+    ) -> Result<GradedVerdict, GraderError> {
         let embeddings = self
             .embeddings
             .as_ref()
@@ -224,18 +329,11 @@ impl DefaultGrader {
         let output_text = output.as_text();
         let (a, b) = tokio::try_join!(embeddings.embed(&output_text), embeddings.embed(&reference))
             .map_err(GraderError::Transport)?;
-        let sim = crate::embeddings::cosine(&a, &b);
-        let threshold = threshold.unwrap_or(0.8);
-        let score = ((sim + 1.0) / 2.0).clamp(0.0, 1.0);
-        Ok(AssertOutcome {
-            score,
-            passed: sim >= threshold,
-            reason: if sim >= threshold {
-                format!("cosine similarity {sim:.3} >= {threshold:.3}")
-            } else {
-                format!("cosine similarity {sim:.3} < {threshold:.3}")
-            },
-            details: None,
+        // The threshold is applied by `to_outcome`, so the cached verdict is the
+        // raw similarity and changing a threshold costs nothing.
+        let _ = threshold;
+        Ok(GradedVerdict::Similarity {
+            cosine: crate::embeddings::cosine(&a, &b),
         })
     }
 
@@ -247,7 +345,7 @@ impl DefaultGrader {
         output: &Output,
         assert_params: Option<&crate::config::ParamMap>,
         ctx: &GradeCtx<'_>,
-    ) -> Result<AssertOutcome, GraderError> {
+    ) -> Result<GradedVerdict, GraderError> {
         let (vars, engine) = (ctx.vars, ctx.engine);
         // The variant that motivated the whole type: nothing ran, and the fix is
         // to add a `grader:` block — not to retry.
@@ -310,15 +408,11 @@ impl DefaultGrader {
         // Passed through unwrapped — re-wrapping it in prose here is exactly
         // what erased the distinction between "unconfigured" and "broke".
         let v = verdict?;
-        let passed = match threshold {
-            Some(t) => v.score >= t,
-            None => v.pass,
-        };
-        Ok(AssertOutcome {
+        let _ = threshold;
+        Ok(GradedVerdict::Rubric {
             score: v.score,
-            passed,
-            reason: v.reasoning,
-            details: None,
+            pass: v.pass,
+            reasoning: v.reasoning,
         })
     }
 
@@ -620,7 +714,8 @@ mod tests {
                 &grade_ctx(&json!({}), &TemplateEngine::new()),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .to_outcome(None);
         assert!(outcome.passed);
         assert!((outcome.score - 0.9).abs() < 1e-9);
     }
@@ -715,6 +810,7 @@ mod tests {
                         .into(),
                 ],
                 config: None,
+                cache_salt: None,
             },
         };
         let outcome = DefaultGrader::new(None)
@@ -724,7 +820,8 @@ mod tests {
                 &grade_ctx(&json!({}), &TemplateEngine::new()),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .to_outcome(None);
         assert!(outcome.passed);
     }
 }

@@ -116,8 +116,9 @@ providers: [{id: p, type: exec, command: ["echo"]}]
         let provider = build_provider(&suite.providers[0]).unwrap();
         assert_eq!(provider.id(), "p");
         assert!(
-            !provider.cacheable(),
-            "exec without cache_salt is not cacheable"
+            provider.cacheable(),
+            "exec is cached by default; the program's own identity is in the \
+             fingerprint, so a rebuild busts the entry without a hand-set salt"
         );
     }
 
