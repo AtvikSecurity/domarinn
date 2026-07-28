@@ -6,6 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value as Json;
 
+use crate::empty::EmptyReason;
 use crate::error_class::ErrorClass;
 use crate::exec::run_exec_json;
 use crate::exec_protocol::{Envelope, Kind, ProviderReq, TestRef};
@@ -148,12 +149,23 @@ fn parse_response(value: Json) -> Result<ProviderResponse, ProviderError> {
     })?;
 
     if let Some(err) = resp.error {
+        // `metadata` as the fallback fixes a real loss: this arm used to return
+        // before `metadata` was read at all, so a child that sent structured
+        // diagnostics alongside an error had them silently discarded — which is
+        // exactly why children ended up formatting JSON into `message`.
+        let details = err.details.or(resp.metadata);
+        // The child's own class when it named one, so a rejected credential or
+        // a rate limit stays distinguishable instead of collapsing into
+        // "exec_failed" like every other exec failure. Unknown values are kept
+        // verbatim: `ErrorClass` is open by construction, and rejecting a
+        // future vocabulary here would turn a diagnosis into a parse failure.
+        let class = err.class.as_deref().unwrap_or(ErrorClass::EXEC_FAILED);
         return Err(if err.retriable {
-            // The child said it was retriable; it did not say why, and a
-            // future child may name its own class here.
-            ProviderError::retriable(ErrorClass::EXEC_FAILED, anyhow::anyhow!(err.message), None)
+            let retry_after = err.retry_after_ms.map(Duration::from_millis);
+            ProviderError::retriable(class, anyhow::anyhow!(err.message), retry_after)
+                .with_details(details)
         } else {
-            ProviderError::fatal(ErrorClass::EXEC_FAILED, anyhow::anyhow!(err.message))
+            ProviderError::fatal(class, anyhow::anyhow!(err.message)).with_details(details)
         });
     }
 
@@ -164,16 +176,37 @@ fn parse_response(value: Json) -> Result<ProviderResponse, ProviderError> {
     let usage = resp.usage.map(|u| TokenUsage {
         input_tokens: u.input_tokens,
         output_tokens: u.output_tokens,
-        cache_read_tokens: None,
+        cache_read_tokens: u.cache_read_tokens,
+        cache_write_tokens: u.cache_write_tokens,
+        cache_write_1h_tokens: u.cache_write_1h_tokens,
     });
+
+    let empty_reason = resp
+        .empty_reason
+        .map(EmptyReason::new)
+        // Derive only when the output really is blank. A child reporting
+        // `stop_reason: "max_tokens"` next to a complete answer hit the ceiling
+        // *after* saying something useful; labelling that "truncated" would
+        // send a reader after the wrong fix.
+        //
+        // The child's own claim always wins, and is honoured even on a
+        // non-blank output: `tool_use_only` alongside a structured tool call is
+        // a legitimate combination, and the child is the authority on its own
+        // response.
+        .or_else(|| {
+            crate::empty::classify_blank(&output)?;
+            resp.stop_reason
+                .as_deref()
+                .and_then(crate::empty::from_stop_reason)
+        });
 
     Ok(ProviderResponse {
         output,
         usage,
         cost_usd: resp.cost_usd,
-        stop_reason: None,
-        reasoning: None,
-        empty_reason: None,
+        stop_reason: resp.stop_reason,
+        reasoning: resp.reasoning,
+        empty_reason,
         raw: resp.metadata,
     })
 }
@@ -335,5 +368,158 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::Retriable { .. }));
+    }
+
+    /// Parse a response document the way a child would have written it.
+    fn parse(body: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
+        parse_response(body)
+    }
+
+    /// The back-compat floor for every field added to protocol 1: a child that
+    /// sets only `output` must behave exactly as it did before they existed.
+    #[test]
+    fn a_response_with_none_of_the_new_fields_is_unchanged() {
+        let resp = parse(serde_json::json!({"output": "hi"})).unwrap();
+        assert_eq!(resp.output, Output::Text("hi".into()));
+        assert_eq!(resp.stop_reason, None);
+        assert_eq!(resp.empty_reason, None);
+        assert_eq!(resp.reasoning, None);
+        assert!(resp.usage.is_none());
+    }
+
+    /// The gap this closed: an exec child that knows the model refused had no
+    /// way to say so, so the cell scored 0 against every assertion as if the
+    /// prompt were bad.
+    #[test]
+    fn a_child_reported_empty_reason_reaches_the_response() {
+        let resp = parse(serde_json::json!({"output": "", "empty_reason": "refusal"})).unwrap();
+        assert_eq!(
+            resp.empty_reason.as_ref().map(|r| r.as_str()),
+            Some("refusal")
+        );
+    }
+
+    /// Open set: a reason this build has never heard of is carried verbatim,
+    /// never rejected. Rejecting it would turn a diagnosis into a parse failure.
+    #[test]
+    fn an_unknown_empty_reason_is_carried_verbatim() {
+        let resp =
+            parse(serde_json::json!({"output": "", "empty_reason": "invented_later"})).unwrap();
+        assert_eq!(
+            resp.empty_reason.as_ref().map(|r| r.as_str()),
+            Some("invented_later")
+        );
+    }
+
+    #[test]
+    fn a_blank_output_with_only_a_stop_reason_derives_one() {
+        let resp = parse(serde_json::json!({"output": "", "stop_reason": "max_tokens"})).unwrap();
+        assert_eq!(
+            resp.empty_reason.as_ref().map(|r| r.as_str()),
+            Some(crate::empty::EmptyReason::TRUNCATED)
+        );
+        assert_eq!(resp.stop_reason.as_deref(), Some("max_tokens"));
+    }
+
+    /// A model that hit `max_tokens` *after* answering was not truncated into
+    /// silence. Labelling that "truncated" sends the reader after the wrong fix,
+    /// so derivation is gated on the output actually being blank.
+    #[test]
+    fn a_non_blank_output_never_derives_an_empty_reason() {
+        let resp =
+            parse(serde_json::json!({"output": "a real answer", "stop_reason": "max_tokens"}))
+                .unwrap();
+        assert_eq!(resp.empty_reason, None);
+        assert_eq!(resp.stop_reason.as_deref(), Some("max_tokens"));
+    }
+
+    #[test]
+    fn child_reported_cache_tokens_reach_token_usage() {
+        let resp = parse(serde_json::json!({
+            "output": "hi",
+            "usage": {
+                "input_tokens": 5, "output_tokens": 2,
+                "cache_read_tokens": 100, "cache_write_tokens": 40,
+                "cache_write_1h_tokens": 10
+            }
+        }))
+        .unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.cache_read_tokens, Some(100));
+        assert_eq!(usage.cache_write_tokens, Some(40));
+        assert_eq!(usage.cache_write_1h_tokens, Some(10));
+        // `total()` deliberately excludes cache traffic; `billable_total()` does not.
+        assert_eq!(usage.total(), 7);
+        assert_eq!(usage.billable_total(), 147);
+    }
+
+    #[test]
+    fn a_child_error_keeps_its_structured_details() {
+        let err = parse(serde_json::json!({
+            "output": "",
+            "error": {
+                "message": "upstream refused",
+                "retriable": false,
+                "details": {"status": 403, "model": "m-1"}
+            }
+        }))
+        .unwrap_err();
+        assert_eq!(
+            err.details(),
+            Some(&serde_json::json!({"status": 403, "model": "m-1"}))
+        );
+    }
+
+    /// The reported bug, verbatim: `parse_response` returned before `metadata`
+    /// was read, so a child that sent diagnostics alongside an error had them
+    /// silently discarded. The fallback fixes it for children that never change.
+    #[test]
+    fn a_child_error_without_details_falls_back_to_metadata() {
+        let err = parse(serde_json::json!({
+            "output": "",
+            "error": {"message": "boom", "retriable": false},
+            "metadata": {"attempt": 3}
+        }))
+        .unwrap_err();
+        assert_eq!(err.details(), Some(&serde_json::json!({"attempt": 3})));
+    }
+
+    /// Every exec failure used to be `exec_failed`, so a child that knew its
+    /// credential was rejected could not say so and the error-class vocabulary
+    /// was blind to the one provider type most people extend with.
+    #[test]
+    fn a_child_can_name_its_own_error_class() {
+        let err = parse(serde_json::json!({
+            "output": "",
+            "error": {"message": "401", "retriable": false, "class": "provider_auth"}
+        }))
+        .unwrap_err();
+        assert_eq!(err.class().as_str(), ErrorClass::PROVIDER_AUTH);
+    }
+
+    #[test]
+    fn an_unnamed_class_still_defaults_to_exec_failed() {
+        let err = parse(serde_json::json!({
+            "output": "", "error": {"message": "boom", "retriable": false}
+        }))
+        .unwrap_err();
+        assert_eq!(err.class().as_str(), ErrorClass::EXEC_FAILED);
+    }
+
+    /// All three native providers parse a `Retry-After`; the exec child was the
+    /// only one that had to swallow it.
+    #[test]
+    fn a_child_can_supply_a_retry_after() {
+        let err = parse(serde_json::json!({
+            "output": "",
+            "error": {"message": "slow down", "retriable": true, "retry_after_ms": 2500}
+        }))
+        .unwrap_err();
+        match err {
+            ProviderError::Retriable { retry_after, .. } => {
+                assert_eq!(retry_after, Some(Duration::from_millis(2500)));
+            }
+            other => panic!("expected a retriable error, got {other:?}"),
+        }
     }
 }

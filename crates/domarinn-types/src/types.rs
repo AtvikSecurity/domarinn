@@ -32,6 +32,18 @@ impl Output {
 }
 
 /// Token accounting for a single provider call.
+///
+/// The cache fields are their own line items rather than folded into
+/// `input_tokens` because they are *billed* differently — a cache read is a
+/// fraction of the input rate and a cache write is a premium on it — so a cost
+/// model that cannot see them is wrong on exactly the calls that populate the
+/// cache. On a cache-heavy workload they can be the majority of real spend.
+///
+/// All three are optional and `skip_serializing_if`, so a stored `CaseResult`
+/// written before they existed re-serializes byte-identically. That property is
+/// load-bearing: the server content-hashes the run document for ingest
+/// idempotency, so a field that appears with a zero default would turn a
+/// re-upload into a conflict.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(optional_fields)]
 pub struct TokenUsage {
@@ -39,13 +51,41 @@ pub struct TokenUsage {
     pub input_tokens: u64,
     #[serde(default)]
     pub output_tokens: u64,
+    /// Input tokens served from a provider-side prompt cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u64>,
+    /// Input tokens written *into* a provider-side prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// The subset of [`Self::cache_write_tokens`] written at a longer-lived
+    /// cache TTL, when the provider reports the split. Absent means "all at the
+    /// default TTL" — which is what the vendors' own default is, so absence and
+    /// zero mean the same thing here and neither is a guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_tokens: Option<u64>,
 }
 
 impl TokenUsage {
+    /// Input plus output. What the `tokens` assertion grades by default.
+    ///
+    /// Deliberately excludes the cache counts. Re-scoping this to include them
+    /// would silently change the meaning of every `tokens: {max: N}` already
+    /// written — a cache-heavy case that passed at 1,200 could start failing at
+    /// 40,000 with no config change, which is a breaking behavior change
+    /// wearing a bugfix's clothes. Use [`Self::billable_total`] to opt in.
     pub fn total(&self) -> u64 {
         self.input_tokens + self.output_tokens
+    }
+
+    /// Every token the provider bills for, cache traffic included.
+    ///
+    /// Saturating, because these are counts reported by someone else: a
+    /// provider that reports nonsense should skew a budget assertion, not panic
+    /// a release build into wrapping around zero.
+    pub fn billable_total(&self) -> u64 {
+        self.total()
+            .saturating_add(self.cache_read_tokens.unwrap_or(0))
+            .saturating_add(self.cache_write_tokens.unwrap_or(0))
     }
 }
 

@@ -235,6 +235,21 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
+    /// Structured detail for whatever `error` describes — the machine-readable
+    /// half of a message that is otherwise prose.
+    ///
+    /// Provider-authored for a provider failure. It exists because `error` was
+    /// the only field that survived a failed call, so anything structured had
+    /// to be formatted into a sentence and parsed back out by whoever read it.
+    ///
+    /// Size-capped like `raw`, but deliberately **not** gated behind
+    /// `--no-raw`: that flag exists to shrink documents by dropping bulky
+    /// happy-path provenance, and an errored case has no `output` and no `raw`,
+    /// so this is the only thing it carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "unknown")]
+    pub error_details: Option<serde_json::Value>,
     /// What kind of failure `error` describes — see [`crate::error_class`].
     ///
     /// Strictly additive: `error` stays the verbatim prose it always was, and

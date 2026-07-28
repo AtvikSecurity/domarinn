@@ -76,6 +76,10 @@ pub(super) fn error_case(
         // definition to identify.
         assert_digest: None,
         error: Some(failure.message),
+        // Size-capped like `raw`, but not gated on `include_raw`: see the field
+        // docs. An errored case has no output and no raw payload, so dropping
+        // this would leave nothing but prose.
+        error_details: json_to_persist(true, failure.details, "error_details"),
         reasoning: None,
         empty_reason: None,
     }

@@ -607,6 +607,10 @@ async fn run_cell(
         provider_digest,
         assert_digest,
         error: assert_error,
+        // A graded case reached the provider, so any error here came from an
+        // assertion rather than the call; assert-level detail lives on each
+        // AssertResult.
+        error_details: None,
         error_class: assert_error_class,
         reasoning,
         empty_reason,

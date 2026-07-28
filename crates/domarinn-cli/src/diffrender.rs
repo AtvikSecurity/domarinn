@@ -479,6 +479,7 @@ mod diff_tests {
             provider_digest: None,
             assert_digest: None,
             error: None,
+            error_details: None,
             error_class: None,
         }
     }

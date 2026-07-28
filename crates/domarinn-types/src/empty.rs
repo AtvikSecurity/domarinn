@@ -107,6 +107,30 @@ pub fn most_specific(candidates: &[EmptyReason]) -> Option<EmptyReason> {
         .or_else(|| candidates.first().cloned())
 }
 
+/// The empty reason a vendor finish reason implies, for an output that is
+/// *already* known to be blank.
+///
+/// Deliberately vendor-agnostic, and deliberately not exhaustive. An `exec`
+/// child may echo one vendor's vocabulary, another's, or its own, and domarinn
+/// cannot know which — so this recognizes the spellings both major APIs use and
+/// returns `None` for everything else, including clean finishes (`end_turn`,
+/// `stop`). Callers fall through to [`classify_blank`] on `None`.
+///
+/// Returning `None` rather than guessing is the whole contract: an unrecognized
+/// finish reason must never be handed a diagnosis, because a wrong diagnosis
+/// sends a reader after the wrong fix and is worse than no diagnosis at all.
+pub fn from_stop_reason(stop_reason: &str) -> Option<EmptyReason> {
+    let reason = match stop_reason.trim().to_ascii_lowercase().as_str() {
+        // Anthropic | OpenAI | some gateways
+        "max_tokens" | "length" | "content_length" => EmptyReason::TRUNCATED,
+        "refusal" => EmptyReason::REFUSAL,
+        "content_filter" | "safety" => EmptyReason::CONTENT_FILTER,
+        "tool_use" | "tool_calls" | "function_call" => EmptyReason::TOOL_USE_ONLY,
+        _ => return None,
+    };
+    Some(EmptyReason::new(reason))
+}
+
 /// The provider-agnostic fallback: is this output devoid of gradeable content?
 ///
 /// `Output::Json` needs care. `Output::as_text()` renders `null` as `"null"` and
@@ -176,6 +200,42 @@ mod tests {
     fn an_unranked_reason_is_still_reported() {
         let picked = most_specific(&[EmptyReason::new("from_the_future")]).unwrap();
         assert_eq!(picked.as_str(), "from_the_future");
+    }
+
+    #[test]
+    fn from_stop_reason_maps_both_vendor_vocabularies() {
+        for (raw, want) in [
+            ("max_tokens", EmptyReason::TRUNCATED),
+            ("length", EmptyReason::TRUNCATED),
+            ("refusal", EmptyReason::REFUSAL),
+            ("content_filter", EmptyReason::CONTENT_FILTER),
+            ("tool_use", EmptyReason::TOOL_USE_ONLY),
+            ("tool_calls", EmptyReason::TOOL_USE_ONLY),
+            // Case and padding come from whoever wrote the child, not from us.
+            ("  MAX_TOKENS ", EmptyReason::TRUNCATED),
+        ] {
+            assert_eq!(
+                from_stop_reason(raw).map(|r| r.0),
+                Some(want.to_string()),
+                "mapping {raw}"
+            );
+        }
+    }
+
+    /// A finished answer is not an empty one. Handing `end_turn` a reason would
+    /// label every successful call.
+    #[test]
+    fn from_stop_reason_is_none_for_a_clean_finish() {
+        assert!(from_stop_reason("end_turn").is_none());
+        assert!(from_stop_reason("stop").is_none());
+    }
+
+    /// The open-set half: an unrecognized reason gets no diagnosis rather than
+    /// a wrong one, and the caller falls back to `classify_blank`.
+    #[test]
+    fn from_stop_reason_is_none_for_an_unknown_value() {
+        assert!(from_stop_reason("invented_next_year").is_none());
+        assert!(from_stop_reason("").is_none());
     }
 
     #[test]

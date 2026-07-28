@@ -2,5 +2,32 @@
 
 /**
  * Token accounting for a single provider call.
+ *
+ * The cache fields are their own line items rather than folded into
+ * `input_tokens` because they are *billed* differently — a cache read is a
+ * fraction of the input rate and a cache write is a premium on it — so a cost
+ * model that cannot see them is wrong on exactly the calls that populate the
+ * cache. On a cache-heavy workload they can be the majority of real spend.
+ *
+ * All three are optional and `skip_serializing_if`, so a stored `CaseResult`
+ * written before they existed re-serializes byte-identically. That property is
+ * load-bearing: the server content-hashes the run document for ingest
+ * idempotency, so a field that appears with a zero default would turn a
+ * re-upload into a conflict.
  */
-export type TokenUsage = { input_tokens: number, output_tokens: number, cache_read_tokens?: number, };
+export type TokenUsage = { input_tokens: number, output_tokens: number, 
+/**
+ * Input tokens served from a provider-side prompt cache.
+ */
+cache_read_tokens?: number, 
+/**
+ * Input tokens written *into* a provider-side prompt cache.
+ */
+cache_write_tokens?: number, 
+/**
+ * The subset of [`Self::cache_write_tokens`] written at a longer-lived
+ * cache TTL, when the provider reports the split. Absent means "all at the
+ * default TTL" — which is what the vendors' own default is, so absence and
+ * zero mean the same thing here and neither is a guess.
+ */
+cache_write_1h_tokens?: number, };

@@ -80,7 +80,13 @@ impl ProviderResponse {
 /// The variant and the class are independent axes, not two names for one thing:
 /// a `Retry-After` longer than the retry budget becomes `Fatal`, and its class
 /// is still `provider_rate_limit`.
+/// `details` is the structured half of a failure, alongside the prose in
+/// `source`. A provider that knows something specific — which model it asked
+/// for, what the endpoint said, how far a completion got — has somewhere to put
+/// it that survives to the stored case, instead of formatting JSON into a
+/// sentence and hoping the reader parses it back out.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProviderError {
     /// Transient — 429/5xx/timeout/connection. May carry a server `Retry-After`.
     #[error("retriable provider error: {source}")]
@@ -89,6 +95,7 @@ pub enum ProviderError {
         source: anyhow::Error,
         retry_after: Option<Duration>,
         class: ErrorClass,
+        details: Option<Json>,
     },
     /// Permanent — 4xx, bad protocol, misconfiguration.
     #[error("fatal provider error: {source}")]
@@ -96,6 +103,7 @@ pub enum ProviderError {
         #[source]
         source: anyhow::Error,
         class: ErrorClass,
+        details: Option<Json>,
     },
 }
 
@@ -105,6 +113,7 @@ impl ProviderError {
         ProviderError::Fatal {
             source,
             class: ErrorClass::new(class),
+            details: None,
         }
     }
 
@@ -115,12 +124,33 @@ impl ProviderError {
             source,
             retry_after,
             class: ErrorClass::new(class),
+            details: None,
         }
+    }
+
+    /// Attach structured diagnostics. Chained onto a constructor rather than
+    /// being a fourth positional argument, because the overwhelming majority of
+    /// failure sites have nothing structured to say and should stay short.
+    pub fn with_details(mut self, value: Option<Json>) -> Self {
+        match &mut self {
+            ProviderError::Retriable { details, .. } | ProviderError::Fatal { details, .. } => {
+                *details = value
+            }
+        }
+        self
     }
 
     pub fn class(&self) -> &ErrorClass {
         match self {
             ProviderError::Retriable { class, .. } | ProviderError::Fatal { class, .. } => class,
+        }
+    }
+
+    pub fn details(&self) -> Option<&Json> {
+        match self {
+            ProviderError::Retriable { details, .. } | ProviderError::Fatal { details, .. } => {
+                details.as_ref()
+            }
         }
     }
 }

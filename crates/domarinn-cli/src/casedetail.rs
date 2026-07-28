@@ -224,6 +224,15 @@ pub fn render_case_detail(case: &CaseResult, palette: &Palette, show_raw: bool) 
         out.push_str(&render_error(error, palette));
     }
 
+    // Not gated on `show_raw`: an errored case has no output and no raw
+    // payload, so this is the only structured thing it carries. Hiding it
+    // behind a flag would leave the reader with prose and nothing else.
+    if let Some(details) = &case.error_details {
+        out.push_str(&format!("  {}\n", palette.dim("error details")));
+        out.push_str(&indent(&pretty_json(details), 4));
+        out.push('\n');
+    }
+
     if show_raw {
         match &case.raw {
             Some(raw) => {
@@ -419,6 +428,7 @@ mod tests {
             provider_digest: None,
             assert_digest: None,
             error: None,
+            error_details: None,
             error_class: None,
         }
     }
@@ -620,7 +630,7 @@ mod tests {
         c.usage = Some(TokenUsage {
             input_tokens: 123,
             output_tokens: 45,
-            cache_read_tokens: None,
+            ..Default::default()
         });
         c.cost_usd = Some(0.0012);
         c.stop_reason = Some("end_turn".into());

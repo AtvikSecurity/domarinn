@@ -9,7 +9,14 @@
 //!   - `error:<retriable|fatal>` — return a protocol-level error.
 //!   - `exit:<n>`    — exit with code `<n>` before writing (infra error).
 //!   - `garbage`     — write non-JSON to stdout (protocol violation).
+//!   - `empty:<r>`   — empty output reported with `empty_reason: <r>`.
+//!   - `usage:cache` — echo, with cache-read and cache-write token counts.
 //! * `FAKE_OUTPUT`   — the output string for `fixed` mode.
+//! * `FAKE_STOP_REASON` — sets `stop_reason` on the response.
+//! * `FAKE_MODEL`    — sets `model` (the model the child actually used).
+//! * `FAKE_ERROR_CLASS`   — sets `error.class` in the `error:` modes.
+//! * `FAKE_ERROR_DETAILS` — raw JSON for `error.details` in the `error:` modes.
+//! * `FAKE_RETRY_AFTER_MS` — sets `error.retry_after_ms`.
 //! * `FAKE_CALL_LOG` — if set, append one line per invocation to this file, so a
 //!   test can assert how many times the provider was actually called (cache
 //!   hits, short-circuits, retries).
@@ -61,7 +68,20 @@ fn main() {
             error: Some(ProtocolError {
                 message: "scripted failure".into(),
                 retriable: kind == "retriable",
+                class: env("FAKE_ERROR_CLASS"),
+                details: env("FAKE_ERROR_DETAILS").and_then(|raw| serde_json::from_str(&raw).ok()),
+                retry_after_ms: env("FAKE_RETRY_AFTER_MS").and_then(|v| v.parse().ok()),
             }),
+            ..Default::default()
+        });
+        return;
+    }
+    if let Some(reason) = mode.strip_prefix("empty:") {
+        emit(ProviderResp {
+            output: serde_json::Value::String(String::new()),
+            empty_reason: Some(reason.to_string()),
+            stop_reason: env("FAKE_STOP_REASON"),
+            model: env("FAKE_MODEL"),
             ..Default::default()
         });
         return;
@@ -78,12 +98,27 @@ fn main() {
         }
     };
 
-    emit(ProviderResp {
-        output,
-        usage: Some(Usage {
+    let usage = if mode == "usage:cache" {
+        Usage {
             input_tokens: 1,
             output_tokens: 1,
-        }),
+            cache_read_tokens: Some(100),
+            cache_write_tokens: Some(40),
+            cache_write_1h_tokens: Some(10),
+        }
+    } else {
+        Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            ..Default::default()
+        }
+    };
+
+    emit(ProviderResp {
+        output,
+        usage: Some(usage),
+        stop_reason: env("FAKE_STOP_REASON"),
+        model: env("FAKE_MODEL"),
         ..Default::default()
     });
 }
@@ -92,4 +127,10 @@ fn main() {
 fn emit(resp: ProviderResp) {
     let body = serde_json::to_string(&resp).expect("a ProviderResp serializes");
     let _ = writeln!(std::io::stdout(), "{body}");
+}
+
+/// A set, non-empty environment variable. Empty is treated as unset so a test
+/// can neutralize an inherited value without unsetting it.
+fn env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
 }

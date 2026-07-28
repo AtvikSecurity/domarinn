@@ -221,10 +221,22 @@ fn parse_messages_response(payload: &Json) -> Result<ProviderResponse, ProviderE
         None
     };
 
+    // `input_tokens` here already *excludes* both cache counters, so the three
+    // fields sum cleanly. See `openai.rs` for the vendor that does not.
     let usage = payload.get("usage").map(|u| TokenUsage {
         input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
         output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
         cache_read_tokens: u.get("cache_read_input_tokens").and_then(|v| v.as_u64()),
+        cache_write_tokens: u
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64()),
+        // The per-TTL split, when the API reports it. Absent is not zero-ish
+        // guesswork: the default TTL is the short one, so "no split reported"
+        // and "all at the short TTL" are the same statement.
+        cache_write_1h_tokens: u
+            .get("cache_creation")
+            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
+            .and_then(|v| v.as_u64()),
     });
     Ok(ProviderResponse {
         output: Output::Text(text),

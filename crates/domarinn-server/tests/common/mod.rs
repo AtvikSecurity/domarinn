@@ -360,7 +360,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         usage: Some(TokenUsage {
             input_tokens: 10,
             output_tokens: 20,
-            cache_read_tokens: None,
+            ..Default::default()
         }),
         cost_usd: spec.cost_usd,
         latency_ms: spec.latency_ms,
@@ -373,6 +373,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         provider_digest: spec.provider_digest.map(str::to_string),
         assert_digest: spec.assert_digest.map(str::to_string),
         error: spec.error.map(str::to_string),
+        error_details: None,
         error_class: spec
             .error_class
             .map(domarinn_core::error_class::ErrorClass::new),

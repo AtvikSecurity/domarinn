@@ -143,6 +143,11 @@ where
                 source,
                 retry_after,
                 class,
+                // Threaded through both exits below, not dropped. This is the
+                // one place a provider's structured diagnostics could vanish
+                // precisely on the failure that gets reported — the retry
+                // budget ran out, so this error is the one a human reads.
+                details,
             }) => {
                 if attempts > policy.max {
                     return (
@@ -150,6 +155,7 @@ where
                             source,
                             retry_after,
                             class,
+                            details,
                         }),
                         stats,
                     );
@@ -174,6 +180,7 @@ where
                                     ceiling.as_secs()
                                 ),
                                 class,
+                                details,
                             }),
                             stats,
                         );
@@ -251,11 +258,11 @@ mod tests {
             ..Default::default()
         };
         let (result, stats) = with_retry(&policy, |_| async {
-            Err::<(), _>(ProviderError::Retriable {
-                class: ErrorClass::new(ErrorClass::PROVIDER_UNAVAILABLE),
-                source: anyhow::anyhow!("boom"),
-                retry_after: None,
-            })
+            Err::<(), _>(ProviderError::retriable(
+                ErrorClass::PROVIDER_UNAVAILABLE,
+                anyhow::anyhow!("boom"),
+                None,
+            ))
         })
         .await;
         assert!(result.is_err());
@@ -329,11 +336,11 @@ mod tests {
             ..Default::default()
         };
         let (result, stats) = with_retry(&policy, |_| async {
-            Err::<(), _>(ProviderError::Retriable {
-                class: ErrorClass::new(ErrorClass::PROVIDER_UNAVAILABLE),
-                source: anyhow::anyhow!("rate limited"),
-                retry_after: Some(Duration::from_secs(600)),
-            })
+            Err::<(), _>(ProviderError::retriable(
+                ErrorClass::PROVIDER_UNAVAILABLE,
+                anyhow::anyhow!("rate limited"),
+                Some(Duration::from_secs(600)),
+            ))
         })
         .await;
 

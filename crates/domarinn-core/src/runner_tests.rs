@@ -54,13 +54,11 @@ impl Provider for FlakyProvider {
     ) -> Result<ProviderResponse, ProviderError> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n == 0 {
-            Err(ProviderError::Retriable {
-                class: crate::error_class::ErrorClass::new(
-                    crate::error_class::ErrorClass::PROVIDER_UNAVAILABLE,
-                ),
-                source: anyhow::anyhow!("boom"),
-                retry_after: None,
-            })
+            Err(ProviderError::retriable(
+                crate::error_class::ErrorClass::PROVIDER_UNAVAILABLE,
+                anyhow::anyhow!("boom"),
+                None,
+            ))
         } else {
             Ok(ProviderResponse::text("ok"))
         }
@@ -120,6 +118,8 @@ fn cache_round_trip_preserves_every_response_field() {
             input_tokens: 11,
             output_tokens: 7,
             cache_read_tokens: Some(3),
+            cache_write_tokens: Some(5),
+            cache_write_1h_tokens: Some(2),
         }),
         cost_usd: Some(0.0125),
         stop_reason: Some("end_turn".to_string()),

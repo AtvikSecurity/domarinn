@@ -86,6 +86,34 @@ pub struct ProviderResp {
     pub error: Option<ProtocolError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Json>,
+
+    /// The vendor's finish reason, verbatim (`end_turn`, `length`, `refusal`,
+    /// …). Free-form: this crate never checks it against a list, because the
+    /// list grows at model-release cadence with no domarinn release in the loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+
+    /// Why `output` has nothing gradeable in it, when it does not.
+    ///
+    /// Set this when you know — a refusal, a truncation, a tool call with no
+    /// prose — rather than returning an empty string and letting every
+    /// assertion score zero for a reason that has nothing to do with the
+    /// prompt. See `docs/protocol.md` for the known values; an unrecognized one
+    /// is carried through verbatim and is never an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_reason: Option<String>,
+
+    /// The model's reasoning or thinking text, when the child can expose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+
+    /// The model actually used, as opposed to the one requested — an alias that
+    /// silently repoints to a new snapshot has no other signal.
+    ///
+    /// Response metadata, not request identity: it never enters a cache key,
+    /// because a key cannot depend on something learned after the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -94,13 +122,49 @@ pub struct Usage {
     pub input_tokens: u64,
     #[serde(default)]
     pub output_tokens: u64,
+    /// Input tokens served from a provider-side prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    /// Input tokens written *into* a provider-side prompt cache. Billed at a
+    /// premium over an ordinary input token, so a harness that cannot see this
+    /// under-reports cost on exactly the calls that populate the cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// The subset of `cache_write_tokens` written at a longer-lived TTL, when
+    /// the provider reports the split. Absent means "all at the default TTL".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProtocolError {
     pub message: String,
     #[serde(default)]
     pub retriable: bool,
+
+    /// Structured diagnostics for the failure — the machine-readable half of
+    /// `message`.
+    ///
+    /// Worth its own field because `message` is prose: without this, a child
+    /// with anything structured to say has to format JSON into a sentence and
+    /// hope the reader parses it back out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Json>,
+
+    /// What kind of failure this was, using domarinn's error-class vocabulary
+    /// (`provider_auth`, `provider_rate_limit`, `provider_timeout`, …).
+    ///
+    /// Without it every exec failure is indistinguishable from every other, so
+    /// a child that knows perfectly well its credential was rejected cannot say
+    /// so. Unrecognized values are kept verbatim, same as `empty_reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+
+    /// How long to wait before retrying, in milliseconds — a `Retry-After` the
+    /// child received and would otherwise have to swallow. Only meaningful
+    /// alongside `retriable: true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
 }
 
 /// An assert request (GradingResult-shaped response).

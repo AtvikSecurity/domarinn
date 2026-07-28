@@ -11,6 +11,7 @@
 //! replaying less than the call it stood in for.
 
 use chrono::Utc;
+use serde_json::Value as Json;
 
 use crate::cache::{CacheBackend, CacheEntry, CacheMode};
 use crate::cache_key::provider_cache_key;
@@ -42,6 +43,8 @@ pub(super) struct CallFailure {
     /// What kind of failure this was, carried alongside the prose rather than
     /// re-derived from it. See [`crate::error_class`].
     pub class: ErrorClass,
+    /// Structured diagnostics the provider attached, if any.
+    pub details: Option<Json>,
 }
 
 impl CallFailure {
@@ -52,6 +55,9 @@ impl CallFailure {
             message,
             attempts: 0,
             class: ErrorClass::new(class),
+            // domarinn generated this failure itself, so there is no
+            // provider-authored detail to carry.
+            details: None,
         }
     }
 }
@@ -122,23 +128,23 @@ pub(super) async fn call_with_cache(
                 provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
             })
         }
-        Err(ProviderError::Retriable {
-            source, ref class, ..
-        }) => Err(CallFailure {
-            message: format!(
-                "provider error after {} attempt(s): {source}",
-                stats.attempts
-            ),
-            attempts: stats.attempts,
-            class: class.clone(),
-        }),
-        Err(ProviderError::Fatal {
-            source, ref class, ..
-        }) => Err(CallFailure {
-            message: format!("provider error: {source}"),
-            attempts: stats.attempts,
-            class: class.clone(),
-        }),
+        Err(err) => {
+            let class = err.class().clone();
+            let details = err.details().cloned();
+            let message = match &err {
+                ProviderError::Retriable { source, .. } => format!(
+                    "provider error after {} attempt(s): {source}",
+                    stats.attempts
+                ),
+                ProviderError::Fatal { source, .. } => format!("provider error: {source}"),
+            };
+            Err(CallFailure {
+                message,
+                attempts: stats.attempts,
+                class,
+                details,
+            })
+        }
     }
 }
 
