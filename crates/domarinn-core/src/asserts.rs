@@ -20,6 +20,19 @@ pub struct MetricCtx {
     pub total_tokens: Option<u64>,
 }
 
+/// Everything a local assertion needs beyond the assertion and the output.
+///
+/// A struct rather than a parameter list: the shared state an assertion may
+/// need is open-ended (a compiled-schema cache is next), and threading it one
+/// argument at a time is how the runner's own assert entry point ended up with
+/// eight parameters. Borrowed, never owned — this is built per cell and thrown
+/// away.
+pub struct EvalCtx<'a> {
+    pub engine: &'a TemplateEngine,
+    pub vars: &'a Json,
+    pub metrics: &'a MetricCtx,
+}
+
 // `AssertName` lives in `domarinn-types`: it is a wire value (it appears on
 // every stored `AssertResult`), whereas the evaluation logic in this module is
 // engine-only. Re-exported so `crate::asserts::AssertName` keeps resolving.
@@ -63,14 +76,12 @@ pub fn is_local(kind: &AssertKind) -> bool {
 pub fn evaluate_local(
     assert: &Assert,
     output: &Output,
-    engine: &TemplateEngine,
-    vars: &Json,
-    metrics: &MetricCtx,
+    ctx: &EvalCtx<'_>,
 ) -> Option<AssertOutcome> {
     if !is_local(&assert.kind) {
         return None;
     }
-    let outcome = evaluate_kind(&assert.kind, output, engine, vars, metrics);
+    let outcome = evaluate_kind(&assert.kind, output, ctx.engine, ctx.vars, ctx.metrics);
     Some(outcome.negated(assert.negate))
 }
 
@@ -250,12 +261,17 @@ mod tests {
     }
 
     fn eval(assert: &Assert, out: &str) -> AssertOutcome {
+        let engine = TemplateEngine::new();
+        let vars = json!({});
+        let metrics = MetricCtx::default();
         evaluate_local(
             assert,
             &Output::Text(out.into()),
-            &TemplateEngine::new(),
-            &json!({}),
-            &MetricCtx::default(),
+            &EvalCtx {
+                engine: &engine,
+                vars: &vars,
+                metrics: &metrics,
+            },
         )
         .unwrap()
     }
@@ -368,23 +384,14 @@ mod tests {
         let out = Output::Text("x".into());
         let eng = TemplateEngine::new();
         let vars = json!({});
-        let lat = evaluate_local(
-            &a(AssertKind::Latency { max: 1000 }),
-            &out,
-            &eng,
-            &vars,
-            &metrics,
-        )
-        .unwrap();
+        let ctx = EvalCtx {
+            engine: &eng,
+            vars: &vars,
+            metrics: &metrics,
+        };
+        let lat = evaluate_local(&a(AssertKind::Latency { max: 1000 }), &out, &ctx).unwrap();
         assert!(lat.passed);
-        let toks = evaluate_local(
-            &a(AssertKind::Tokens { max: 1000 }),
-            &out,
-            &eng,
-            &vars,
-            &metrics,
-        )
-        .unwrap();
+        let toks = evaluate_local(&a(AssertKind::Tokens { max: 1000 }), &out, &ctx).unwrap();
         assert!(!toks.passed, "1200 tokens exceeds max 1000");
     }
 
@@ -396,12 +403,17 @@ mod tests {
             threshold: None,
             params: None,
         });
+        let engine = TemplateEngine::new();
+        let vars = json!({});
+        let metrics = MetricCtx::default();
         assert!(evaluate_local(
             &assert,
             &Output::Text("x".into()),
-            &TemplateEngine::new(),
-            &json!({}),
-            &MetricCtx::default()
+            &EvalCtx {
+                engine: &engine,
+                vars: &vars,
+                metrics: &metrics,
+            }
         )
         .is_none());
     }

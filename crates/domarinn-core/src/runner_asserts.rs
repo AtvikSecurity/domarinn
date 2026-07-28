@@ -12,7 +12,7 @@ use std::path::Path;
 use serde_json::Value as Json;
 
 use crate::assertion::AssertOutcome;
-use crate::asserts::{evaluate_local, is_local, MetricCtx};
+use crate::asserts::{evaluate_local, is_local, EvalCtx, MetricCtx};
 use crate::config::{Assert, AssertKind};
 use crate::error_class::ErrorClass;
 use crate::errors::Classify;
@@ -23,19 +23,35 @@ use crate::types::Output;
 
 use super::AssertGrader;
 
+/// The parts of the assert path that are fixed for a whole run.
+///
+/// Fields rather than parameters, deliberately. `evaluate_asserts` reached
+/// eight arguments and a `too_many_arguments` allow by growing one at a time,
+/// and everything still queued to be threaded through here — a compiled-schema
+/// cache, a verdict cache, an abort flag — is run-scoped in the same way. A
+/// struct absorbs those without the signature moving again, and makes it
+/// obvious at a glance which inputs vary per cell and which do not.
+pub(super) struct AssertCtx<'a> {
+    pub engine: &'a TemplateEngine,
+    pub grader: Option<&'a dyn AssertGrader>,
+    pub base_dir: &'a Path,
+}
+
 /// Evaluate all asserts: local first, then (if they can still change the
 /// outcome) the graded ones; otherwise mark them skipped.
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn evaluate_asserts(
+    ctx: &AssertCtx<'_>,
     asserts: &[Assert],
     output: &Output,
     vars: &Json,
-    engine: &TemplateEngine,
-    grader: Option<&dyn AssertGrader>,
-    base_dir: &Path,
     metrics: &MetricCtx,
     threshold: Option<f64>,
 ) -> (Vec<AssertResult>, Vec<Scored>, Vec<ErrorClass>) {
+    let eval = EvalCtx {
+        engine: ctx.engine,
+        vars,
+        metrics,
+    };
     // Slot results by original index so output order matches config order.
     let mut results: Vec<Option<AssertResult>> = vec![None; asserts.len()];
     let mut scored: Vec<Scored> = Vec::new();
@@ -47,8 +63,8 @@ pub(super) async fn evaluate_asserts(
     let mut deferred_indices: Vec<usize> = Vec::new();
     for (i, assert) in asserts.iter().enumerate() {
         if is_local(&assert.kind) {
-            let outcome = evaluate_local(assert, output, engine, vars, metrics)
-                .expect("local assert yields an outcome");
+            let outcome =
+                evaluate_local(assert, output, &eval).expect("local assert yields an outcome");
             scored.push(scored_of(assert, &outcome));
             results[i] = Some(assert_result(
                 assert,
@@ -70,8 +86,11 @@ pub(super) async fn evaluate_asserts(
             results[i] = Some(skipped_result(assert));
             continue;
         }
-        match grader {
-            Some(g) => match g.grade(assert, output, vars, engine, Some(base_dir)).await {
+        match ctx.grader {
+            Some(g) => match g
+                .grade(assert, output, vars, ctx.engine, Some(ctx.base_dir))
+                .await
+            {
                 Ok(outcome) => {
                     scored.push(scored_of(assert, &outcome));
                     results[i] = Some(assert_result(

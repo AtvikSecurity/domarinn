@@ -15,35 +15,35 @@ use serde_json::Value as Json;
 
 use crate::assertion::AssertOutcome;
 use crate::asserts::MetricCtx;
-use crate::cache::{CacheBackend, CacheEntry, CacheMode};
-use crate::cache_key::provider_cache_key;
+use crate::cache::{CacheBackend, CacheMode};
 use crate::config::{Assert, Suite, TestCase};
 use crate::error_class::ErrorClass;
 use crate::filter::{Filter, FilterOpts};
 use crate::generate::resolve_generators;
-use crate::ids::{CaseKey, RunId};
+use crate::ids::RunId;
 use crate::progress::{ProgressEvent, ProgressSink};
-use crate::provider::{
-    CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse, TestMeta,
-};
+use crate::provider::{CallCtx, Provider, ProviderRequest, TestMeta};
 use crate::provider_factory::build_provider;
 use crate::render::{self, render_prompt};
 use crate::resolve::expand_tests;
 use crate::result::{
-    CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary, RESULT_SCHEMA_VERSION,
+    CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RESULT_SCHEMA_VERSION,
 };
-use crate::retry::{with_retry, RetryPolicy, RetryStats};
+use crate::retry::RetryPolicy;
 use crate::scoring::case_verdict;
 use crate::template::TemplateEngine;
-use crate::types::{Output, RenderedPrompt};
+use crate::types::Output;
 
 #[path = "runner_asserts.rs"]
 mod runner_asserts;
-use runner_asserts::{assert_error_message, evaluate_asserts, has_latency_assert};
+#[path = "runner_cache.rs"]
+mod runner_cache;
+#[path = "runner_result.rs"]
+mod runner_result;
 
-/// Upper bound on the raw provider metadata persisted per case. A payload over
-/// this size is dropped wholesale (truncated JSON is useless) rather than stored.
-const RAW_MAX_BYTES: usize = 64 * 1024;
+use runner_asserts::{assert_error_message, evaluate_asserts, has_latency_assert, AssertCtx};
+use runner_cache::{call_with_cache, CallFailure, CallOutcome};
+use runner_result::{error_case, json_to_persist, summarize, CaseInputs};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -555,12 +555,14 @@ async fn run_cell(
     };
 
     let (assert_results, scored, assert_error_classes) = evaluate_asserts(
+        &AssertCtx {
+            engine,
+            grader,
+            base_dir,
+        },
         &test.assert,
         &response.output,
         &var_ctx,
-        engine,
-        grader,
-        base_dir,
         &metrics,
         test.threshold,
     )
@@ -608,290 +610,6 @@ async fn run_cell(
         error_class: assert_error_class,
         reasoning,
         empty_reason,
-    }
-}
-
-/// One provider call's result, plus how it was obtained.
-struct CallOutcome {
-    response: ProviderResponse,
-    cached: bool,
-    /// `None` only for a cache hit on an entry written before entries recorded
-    /// attempts — honest about not knowing, where the old `0` sentinel was not.
-    attempts: Option<u32>,
-    /// In-flight provider time, excluding retry backoff. On a cache hit this is
-    /// the *original* call's latency replayed from the entry, not the cache-read
-    /// time.
-    provider_latency_ms: Option<u64>,
-}
-
-/// A failed provider call. Carries the attempt count so an errored case can
-/// report what it actually spent instead of a hardcoded `1`.
-#[derive(Debug)]
-struct CallFailure {
-    message: String,
-    attempts: u32,
-    /// What kind of failure this was, carried alongside the prose rather than
-    /// re-derived from it. See [`crate::error_class`].
-    class: ErrorClass,
-}
-
-impl CallFailure {
-    /// A failure that never reached the provider (cache read error, cache-only
-    /// miss) — no attempt was made against the system under test.
-    fn before_any_attempt(class: &str, message: String) -> Self {
-        CallFailure {
-            message,
-            attempts: 0,
-            class: ErrorClass::new(class),
-        }
-    }
-}
-
-/// Call a provider, consulting the cache per `mode` and retrying retriable
-/// errors with backoff.
-#[tracing::instrument(name = "provider_call", skip_all, fields(provider = %provider.id()))]
-async fn call_with_cache(
-    provider: &dyn Provider,
-    req: &ProviderRequest,
-    ctx: &CallCtx,
-    cache: &dyn CacheBackend,
-    mode: CacheMode,
-    repeat: u32,
-    retry_cfg: &RetryPolicy,
-) -> Result<CallOutcome, CallFailure> {
-    let use_cache = mode != CacheMode::Disabled && provider.cacheable();
-    let key = use_cache.then(|| provider_cache_key(&provider.fingerprint(), req, repeat));
-
-    if let Some(key) = &key {
-        match cache.get(key).await {
-            Ok(Some(entry)) => {
-                tracing::debug!(%key, "cache hit");
-                let attempts = entry.attempts;
-                let provider_latency_ms = entry.provider_latency_ms;
-                return Ok(CallOutcome {
-                    response: entry_to_response(entry),
-                    cached: true,
-                    attempts,
-                    provider_latency_ms,
-                });
-            }
-            Ok(None) => {
-                tracing::debug!(%key, "cache miss");
-                if mode == CacheMode::ReadOnlyStrict {
-                    return Err(CallFailure::before_any_attempt(
-                        ErrorClass::CACHE_MISS,
-                        format!("cache-only: miss for key {key}"),
-                    ));
-                }
-            }
-            Err(e) => {
-                return Err(CallFailure::before_any_attempt(
-                    ErrorClass::CACHE_UNAVAILABLE,
-                    format!("cache read error: {e}"),
-                ))
-            }
-        }
-    }
-
-    let (result, stats) = with_retry(retry_cfg, |_attempt| provider.call(req, ctx)).await;
-
-    match result {
-        Ok(response) => {
-            if let Some(key) = &key {
-                if mode == CacheMode::ReadWrite {
-                    let entry = response_to_entry(provider, &response, stats);
-                    // A cache write failure must not fail the run.
-                    if let Err(e) = cache.put(key, &entry).await {
-                        tracing::warn!(error = %e, "cache write failed");
-                    }
-                }
-            }
-            Ok(CallOutcome {
-                response,
-                cached: false,
-                attempts: Some(stats.attempts),
-                provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
-            })
-        }
-        Err(ProviderError::Retriable {
-            source, ref class, ..
-        }) => Err(CallFailure {
-            message: format!(
-                "provider error after {} attempt(s): {source}",
-                stats.attempts
-            ),
-            attempts: stats.attempts,
-            class: class.clone(),
-        }),
-        Err(ProviderError::Fatal {
-            source, ref class, ..
-        }) => Err(CallFailure {
-            message: format!("provider error: {source}"),
-            attempts: stats.attempts,
-            class: class.clone(),
-        }),
-    }
-}
-
-/// Everything a case knows about its own inputs before a provider responds:
-/// what was rendered, and what was going to be sent.
-///
-/// Grouped so `error_case` can hand all of it to a failed case — an errored case
-/// that still shows its request is the difference between "HTTP 404" and "HTTP
-/// 404, and here is the model id we asked for".
-#[derive(Default)]
-struct CaseInputs {
-    prompt: Option<RenderedPrompt>,
-    vars: serde_json::Map<String, serde_json::Value>,
-    request: Option<Json>,
-    /// Identity of what was going to be sent. Present for every failure after
-    /// the request was built; `None` for the two earlier ones (rendering vars,
-    /// rendering the prompt), which honestly have no input identity yet.
-    prompt_digest: Option<String>,
-    provider_digest: Option<String>,
-}
-
-fn error_case(
-    cell: CellKey,
-    case_key: CaseKey,
-    name: Option<String>,
-    test: &TestCase,
-    failure: CallFailure,
-    wall_ms: u64,
-    inputs: CaseInputs,
-) -> CaseResult {
-    CaseResult {
-        cell,
-        case_key,
-        name,
-        tags: test.tags.clone(),
-        vars: inputs.vars,
-        status: CaseStatus::Error,
-        score: 0.0,
-        output: None,
-        prompt: inputs.prompt,
-        request: inputs.request,
-        stop_reason: None,
-        raw: None,
-        asserts: Vec::new(),
-        usage: None,
-        cost_usd: None,
-        // 0 when the call never reached the provider (a cache-only miss or a
-        // cache read error): there is no provider latency to report.
-        latency_ms: 0,
-        wall_ms: Some(wall_ms),
-        cached: false,
-        attempts: failure.attempts,
-        error_class: Some(failure.class),
-        prompt_digest: inputs.prompt_digest,
-        provider_digest: inputs.provider_digest,
-        // An errored case never graded anything, so there is no assert
-        // definition to identify.
-        assert_digest: None,
-        error: Some(failure.message),
-        reasoning: None,
-        empty_reason: None,
-    }
-}
-
-/// Apply the retention policy for a bulky JSON provenance payload: keep it only
-/// when raw persistence is enabled and it fits within [`RAW_MAX_BYTES`];
-/// otherwise drop it to `None` (an oversized blob is dropped whole — truncated
-/// JSON is useless). `what` names the payload in the drop log.
-fn json_to_persist(include_raw: bool, raw: Option<Json>, what: &str) -> Option<Json> {
-    if !include_raw {
-        return None;
-    }
-    let raw = raw?;
-    match serde_json::to_vec(&raw) {
-        Ok(bytes) if bytes.len() > RAW_MAX_BYTES => {
-            tracing::debug!(
-                raw_bytes = bytes.len(),
-                max_bytes = RAW_MAX_BYTES,
-                payload = what,
-                "dropping oversized provider payload"
-            );
-            None
-        }
-        Ok(_) => Some(raw),
-        Err(e) => {
-            tracing::debug!(error = %e, payload = what, "dropping unserializable provider payload");
-            None
-        }
-    }
-}
-
-fn summarize(cases: &[CaseResult]) -> RunSummary {
-    let mut s = RunSummary {
-        total: cases.len() as u64,
-        ..Default::default()
-    };
-    let mut cost = 0.0;
-    let mut any_cost = false;
-    for c in cases {
-        match c.status {
-            CaseStatus::Pass => s.passed += 1,
-            CaseStatus::Fail => s.failed += 1,
-            CaseStatus::Error => s.errored += 1,
-            CaseStatus::Skip => s.skipped += 1,
-        }
-        if let Some(u) = &c.usage {
-            s.prompt_tokens += u.input_tokens;
-            s.completion_tokens += u.output_tokens;
-        }
-        if let Some(cst) = c.cost_usd {
-            cost += cst;
-            any_cost = true;
-        }
-        if c.cached {
-            s.cache_hits += 1;
-        } else {
-            s.cache_misses += 1;
-        }
-        // A cached case replays the original attempt count, so counting it here
-        // would re-report a retry that happened on some earlier run.
-        if !c.cached && c.attempts > 1 {
-            s.retried_cases += 1;
-        }
-    }
-    s.cost_usd = any_cost.then_some(cost);
-    s
-}
-
-fn entry_to_response(entry: CacheEntry) -> ProviderResponse {
-    ProviderResponse {
-        output: entry.output,
-        usage: entry.usage,
-        cost_usd: entry.cost_usd,
-        stop_reason: entry.stop_reason,
-        raw: entry.raw,
-        reasoning: entry.reasoning,
-        empty_reason: entry.empty_reason,
-    }
-}
-
-fn response_to_entry(
-    provider: &dyn Provider,
-    response: &ProviderResponse,
-    stats: RetryStats,
-) -> CacheEntry {
-    CacheEntry {
-        created_at: Utc::now(),
-        provider_fingerprint: provider.fingerprint(),
-        output: response.output.clone(),
-        usage: response.usage.clone(),
-        cost_usd: response.cost_usd,
-        stop_reason: response.stop_reason.clone(),
-        attempts: Some(stats.attempts),
-        provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
-        reasoning: response.reasoning.clone(),
-        empty_reason: response.empty_reason.clone(),
-        // Same size cap as persistence, so a pathological payload can't bloat
-        // the shared cache. `--no-raw` intentionally does NOT strip the cache
-        // copy: a later run without the flag replaying this entry should still
-        // get the metadata.
-        raw: json_to_persist(true, response.raw.clone(), "raw"),
-        domarinn_version: crate::VERSION.to_string(),
     }
 }
 

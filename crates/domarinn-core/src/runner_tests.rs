@@ -2,8 +2,10 @@
 //! `#[path]` to keep that file under the repo's 1000-line source cap;
 //! this is still the runner's private child module (`use super::*`).
 
+use super::runner_cache::{entry_to_response, response_to_entry};
 use super::*;
-use crate::cache::{CacheError, CacheStats, PurgeFilter};
+use crate::cache::{CacheEntry, CacheError, CacheStats, PurgeFilter};
+use crate::provider::{ProviderError, ProviderResponse};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
