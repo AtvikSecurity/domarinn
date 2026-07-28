@@ -87,14 +87,14 @@ results, and persist the run under `.domarinn/runs/<id>/`.
 | `--out <FILE>` | Write the primary output to a file instead of stdout. |
 | `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |
 | `--no-progress` | Disable the live progress bar (see below). |
-| `--against <REF>` | Compare against a baseline run (a run id, a `result.json` path, or `latest`); a regression sets exit code `1`. |
+| `--against <REF>` | Compare against a baseline run. `server:baseline` uses the baseline pinned for this suite on the results server (the only reference that works in CI); `latest` uses the newest local run *of the same suite*; also accepts a run id or a `result.json` path. A regression sets exit code `1`; a baseline that was requested but could not be resolved sets exit code `2`. |
 | `--summary-md <FILE>` | Write a Markdown summary (headline metrics table, failing cases, and any baseline comparison). Identical to what [`ci-summary`](#domarinn-ci-summary-run-flags) writes, minus the step outputs. |
 | `--share` | Upload the completed run to the configured server, and record the returned URL on the stored run. |
 
 ```sh
 domarinn run examples/render-health                 # run, print a table
 domarinn run --tag safety -j 8 --format junit --out results.xml
-domarinn run --against latest --summary-md summary.md
+domarinn run --against server:baseline --summary-md summary.md
 ```
 
 **Live progress.** When stderr is a terminal, `run` draws a single progress bar
@@ -199,7 +199,7 @@ summary, plus the headline numbers as GitHub Actions step outputs. See
 | Flag | Meaning |
 |---|---|
 | `RUN` | Run to summarize — a run id, `latest` (default), a `result.json`, or a run directory. |
-| `--against <REF>` | Append a baseline comparison. An unresolvable baseline warns and is skipped rather than failing. |
+| `--against <REF>` | Append a baseline comparison; same references as `run --against`. `ci-summary` is a reporter, not a gate, so an unresolvable baseline warns and is skipped rather than failing. |
 | `--out <FILE>` | Write the Markdown to a file instead of stdout. |
 | `--github-output <FILE>` | Append `key=value` step outputs here. Defaults to `$GITHUB_OUTPUT`, so on a runner no flag is needed. |
 
@@ -209,7 +209,7 @@ run reference cannot be resolved.
 
 ```sh
 domarinn ci-summary                              # latest run, Markdown on stdout
-domarinn ci-summary --against latest --out summary.md
+domarinn ci-summary --against server:baseline --out summary.md
 ```
 
 ## `domarinn cache <stats|path|gc|clear>`
@@ -283,7 +283,7 @@ shell or curl.
 ## CI usage
 
 - **Validate on every push:** `domarinn validate` (fast, no provider calls).
-- **Gate PRs on eval quality:** `domarinn run --against latest` (exit `1` on
+- **Gate PRs on eval quality:** `domarinn run --against server:baseline` (exit `1` on
   regression), or use the reusable action at `.github/actions/domarinn-eval`.
   See [ci.md](./ci.md).
 - **Contract-test the schema:** regenerate `domarinn schema config` and fail

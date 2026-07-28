@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod baseline;
 mod cachecfg;
 mod cachecmd;
 mod casedetail;
@@ -191,7 +192,7 @@ fn main() -> ExitCode {
     let code = match cli.command {
         Command::Run(args) => run::execute(args, cli.server_url, palette, cli.verbose),
         Command::Share(args) => share::execute(args, cli.server_url),
-        Command::CiSummary(args) => cisummary::execute(args),
+        Command::CiSummary(args) => cisummary::execute(args, cli.server_url),
         Command::Runs(args) => runscmd::execute(args, cli.server_url, palette),
         Command::Diff(args) => diffcmd::execute_diff(args, palette),
         Command::View(args) => diffcmd::execute_view(args, palette),

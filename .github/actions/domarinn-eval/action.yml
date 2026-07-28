@@ -13,7 +13,7 @@
 #       config: eval/domarinn.yaml
 #       server-url: https://domarinn.example.com   # optional (enables --share)
 #       token: ${{ secrets.DOMARINN_TOKEN }}        # optional bearer token
-#       against: latest                               # optional baseline to diff
+#       against: server:baseline                      # optional baseline to diff
 #       fail-on-regression: "true"
 #
 # Exit-code contract (from the CLI): 0 = all pass; 1 = assertion failure or
@@ -56,9 +56,14 @@ inputs:
     default: ""
   against:
     description: >-
-      Baseline to diff this run against (e.g. "latest", a run id, or a
-      result.json path). Empty disables the diff. A regression against the
-      baseline makes the CLI exit 1.
+      Baseline to diff this run against. Use "server:baseline" in CI: it
+      resolves the baseline pinned for this suite on the results server, and
+      needs `server-url` plus `project:`/`suite:` in the config. "latest" reads
+      the local .domarinn/runs store, which a fresh checkout does not have — in
+      CI it silently finds nothing and the gate never fires. Also accepts a run
+      id or a result.json path. Empty disables the diff. A regression makes the
+      CLI exit 1; a baseline that was requested but could not be resolved makes
+      it exit 2.
     required: false
     default: ""
   fail-on-regression:

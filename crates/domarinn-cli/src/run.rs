@@ -70,7 +70,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Compare against a baseline run (id, path, or `latest`); regressions fail.
+    /// Compare against a baseline run; regressions fail.
+    ///
+    /// `server:baseline` uses the baseline pinned for this suite on the results
+    /// server — the only reference that works in CI, where a fresh checkout has
+    /// no local run store. `latest` uses the newest local run *of this same
+    /// suite*. Also accepts a run id or a `result.json` path. Unlike a missing
+    /// baseline, a baseline that cannot be resolved is a usage error, so a gate
+    /// can never report green without having compared.
     #[arg(long)]
     pub against: Option<String>,
 
@@ -207,16 +214,31 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
     // Baseline comparison. Keep the loaded base run alongside the diff so the
     // markdown (output diffs, config drift) can join base↔head cases.
     let mut regressed = false;
+    // A baseline was asked for and could not be produced. Tracked rather than
+    // returned immediately so the run still shares and still writes its summary
+    // — the results are real and worth keeping — while the exit code below
+    // refuses to call the job green.
+    let mut baseline_unresolved = false;
     let mut baseline: Option<(domarinn_core::RunResult, domarinn_core::diff::RunDiff)> = None;
     if let Some(reference) = &args.against {
-        match crate::loadrun::load_run(reference) {
+        match crate::baseline::resolve(reference, &result, server_url.as_deref()) {
             Ok(base) => {
                 let d = domarinn_core::diff_runs(&base, &result);
                 eprintln!("{}", crate::diffrender::render_markdown(&base, &result, &d));
                 regressed = d.has_regression();
                 baseline = Some((base, d));
             }
-            Err(e) => tracing::warn!(error = %e, "--against baseline unavailable"),
+            // Nothing to compare against yet — a suite's first run. Not a
+            // failure: there is no regression to miss.
+            Err(crate::baseline::BaselineError::Absent(msg)) => {
+                tracing::info!("--against: {msg}; skipping the comparison");
+            }
+            // A baseline that should have been there was not. Silently
+            // continuing here is exactly what let a regression exit 0.
+            Err(crate::baseline::BaselineError::Failed(msg)) => {
+                eprintln!("error: --against: {msg}");
+                baseline_unresolved = true;
+            }
         }
     }
 
@@ -243,9 +265,13 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         }
     }
 
-    // Exit code: infra errors win over assertion failures/regressions.
+    // Exit code: infra errors win over everything, then an unresolved baseline
+    // (the gate could not do its job, so its silence means nothing), then
+    // assertion failures and regressions.
     if result.summary.errored > 0 {
         exit::INFRA
+    } else if baseline_unresolved {
+        exit::USAGE
     } else if result.summary.failed > 0 || regressed {
         exit::ASSERT_FAIL
     } else {

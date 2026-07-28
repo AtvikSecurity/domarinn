@@ -29,8 +29,7 @@ use crate::provider_factory::build_provider;
 use crate::render::{self, render_prompt};
 use crate::resolve::expand_tests;
 use crate::result::{
-    AssertStatus, CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary,
-    RESULT_SCHEMA_VERSION,
+    CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary, RESULT_SCHEMA_VERSION,
 };
 use crate::retry::{with_retry, RetryPolicy, RetryStats};
 use crate::scoring::case_verdict;
@@ -39,7 +38,7 @@ use crate::types::{Output, RenderedPrompt};
 
 #[path = "runner_asserts.rs"]
 mod runner_asserts;
-use runner_asserts::{evaluate_asserts, has_latency_assert};
+use runner_asserts::{assert_error_message, evaluate_asserts, has_latency_assert};
 
 /// Upper bound on the raw provider metadata persisted per case. A payload over
 /// this size is dropped wholesale (truncated JSON is useless) rather than stored.
@@ -526,11 +525,11 @@ async fn run_cell(
     )
     .await;
 
-    let any_error = assert_results
-        .iter()
-        .any(|a| a.status == AssertStatus::Error);
+    // `Some` exactly when at least one assert errored, so it carries both the
+    // diagnosis and the "did anything error" verdict input.
+    let assert_error = assert_error_message(&assert_results);
     let verdict = case_verdict(&scored, test.threshold);
-    let status = if any_error {
+    let status = if assert_error.is_some() {
         CaseStatus::Error
     } else if verdict.passed {
         CaseStatus::Pass
@@ -558,7 +557,7 @@ async fn run_cell(
         wall_ms: Some(wall_ms),
         cached,
         attempts,
-        error: any_error.then(|| "one or more assertions errored".to_string()),
+        error: assert_error,
         reasoning,
         empty_reason,
     }

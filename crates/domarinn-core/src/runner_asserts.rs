@@ -170,6 +170,34 @@ impl AssertStatus {
     }
 }
 
+/// The case-level `error` message for a case whose assertions errored, or
+/// `None` when none did — so it doubles as the "did anything error" predicate.
+///
+/// Names the first errored assert and quotes its reason. This string is promoted
+/// to the server's `cases.error` column and indexed for full-text search, so it
+/// has to carry a diagnosis: the constant this replaced ("one or more assertions
+/// errored") spent a column and an FTS slot on nothing, while the actual reason
+/// sat one field away in [`AssertResult::reason`]. Later errors are reduced to a
+/// count — the first one is nearly always the cause, and the rest are visible in
+/// the case drawer.
+pub(super) fn assert_error_message(results: &[AssertResult]) -> Option<String> {
+    let mut errored = results.iter().filter(|a| a.status == AssertStatus::Error);
+    let first = errored.next()?;
+    let others = errored.count();
+
+    let kind = first.kind.as_str();
+    let reason = first.reason.trim();
+    let head = if reason.is_empty() {
+        format!("{kind} assertion errored")
+    } else {
+        format!("{kind} assertion errored: {reason}")
+    };
+    Some(match others {
+        0 => head,
+        n => format!("{head} (and {n} more errored)"),
+    })
+}
+
 /// A `latency` assert measures the provider call itself, so a cache hit would
 /// score a timing the run never paid. Callers use this to force a cache bypass.
 pub(super) fn has_latency_assert(asserts: &[Assert]) -> bool {

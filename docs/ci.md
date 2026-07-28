@@ -40,14 +40,30 @@ The minimal gate is a single `run` invocation whose exit code you read:
 
 ```sh
 domarinn run \
-  --against latest \
+  --against server:baseline \
   --format junit --out results.xml \
   --summary-md summary.md
-# exit 0 pass · 1 fail/regression · 2 config · 3 infra
+# exit 0 pass · 1 fail/regression · 2 config/unresolvable baseline · 3 infra
 ```
 
-- `--against latest` diffs this run against the latest baseline and turns a
-  **regression into exit 1**. You can also pass a run id or a `result.json` path.
+- `--against server:baseline` diffs this run against the baseline **pinned for
+  this suite on the results server** and turns a **regression into exit 1**.
+
+  Use this one in CI. `--against latest` reads the local `.domarinn/runs` store,
+  which a fresh checkout does not have — so in CI it finds no baseline, compares
+  nothing, and the job passes. It also needs `project:` and `suite:` set in your
+  config, since the server pins one baseline per `(project, suite)`.
+
+  Pin a baseline from the run's page in the web UI, or with
+  `PUT /api/v1/projects/{project}/suites/{suite}/baseline`.
+
+- `--against latest` is the **local** equivalent: the newest run *of the same
+  suite* in `.domarinn/runs`. You can also pass a run id or a `result.json` path.
+
+- A baseline that was requested but cannot be resolved is **exit 2**, not a
+  warning. A gate that silently skips its comparison is not a gate. Only a
+  genuine absence — a suite's first run, or a suite with no baseline pinned yet —
+  is treated as "nothing to compare" and lets the run through.
 - `--format junit --out results.xml` writes a JUnit report your CI can render as
   test results.
 - `--summary-md summary.md` writes a Markdown summary suitable for a PR comment
@@ -58,7 +74,7 @@ domarinn run \
 Then gate on the code:
 
 ```sh
-domarinn run --against latest --format junit --out results.xml --summary-md summary.md
+domarinn run --against server:baseline --format junit --out results.xml --summary-md summary.md
 code=$?
 case "$code" in
   0) echo "all passed" ;;
@@ -109,7 +125,7 @@ jobs:
       - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@0.1.0
         with:
           config: eval/domarinn.yaml
-          against: latest
+          against: server:baseline
 ```
 
 ### Inputs
@@ -121,7 +137,7 @@ jobs:
 | `version`            | `latest`            | Release tag to download the binary from (e.g. `0.1.0`), or `latest`. Used only when `binary-path` is empty. |
 | `server-url`         | `""`                | Results server base URL. When set, the run is uploaded with `--share` (exported as `DOMARINN_SERVER_URL`). |
 | `token`              | `""`                | Bearer token for the results server (exported as `DOMARINN_TOKEN`). Pass a **secret**, never a literal. |
-| `against`            | `""`                | Baseline to diff against (`latest`, a run id, or a `result.json` path). Empty disables the diff. A regression makes the CLI exit 1. |
+| `against`            | `""`                | Baseline to diff against. Use `server:baseline` in CI (the suite's pinned baseline on the server); `latest` reads the local run store, which a fresh checkout does not have. Also accepts a run id or a `result.json` path. Empty disables the diff. A regression makes the CLI exit 1; a baseline that cannot be resolved makes it exit 2. |
 | `fail-on-regression` | `"true"`            | If `true`, exit 1 (assertion/regression) fails the check. If `false`, exit 1 is a warning only. Exit 2 and 3 **always** fail. |
 | `comment`            | `"true"`            | Post/update the summary comment on the PR. |
 | `artifact-name`      | `"domarinn-results"` | Name of the uploaded artifact holding `results.xml` + `summary.md`. |
@@ -180,7 +196,7 @@ two apart without re-reading the report.
 - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@0.1.0
   with:
     config: eval/
-    against: latest
+    against: server:baseline
     fail-on-regression: "true"
     server-url: https://domarinn.example.com   # enables --share
     token: ${{ secrets.DOMARINN_TOKEN }}        # write-scoped token
@@ -197,7 +213,7 @@ hand-roll a pipeline, or on a forge that is not GitHub.
 
 ```sh
 domarinn run eval/ --format junit --out results.xml   # exit code gates the PR
-domarinn ci-summary latest --against latest --out summary.md
+domarinn ci-summary latest --against server:baseline --out summary.md
 ```
 
 It reads a **persisted** run rather than taking one over a pipe, so it can also

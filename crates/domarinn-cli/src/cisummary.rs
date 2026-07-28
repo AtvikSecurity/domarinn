@@ -42,7 +42,7 @@ pub struct CiSummaryArgs {
     pub github_output: Option<PathBuf>,
 }
 
-pub fn execute(args: CiSummaryArgs) -> u8 {
+pub fn execute(args: CiSummaryArgs, server_url: Option<String>) -> u8 {
     let run = match load_run(&args.run) {
         Ok(r) => r,
         Err(e) => {
@@ -51,22 +51,32 @@ pub fn execute(args: CiSummaryArgs) -> u8 {
         }
     };
 
-    // The baseline is best-effort. A missing `latest` is the normal state on a
-    // repo's first eval, and refusing to summarize the run we *do* have would
-    // turn a routine absence into an empty PR comment.
-    let baseline = args
-        .against
-        .as_deref()
-        .and_then(|reference| match load_run(reference) {
+    // The baseline is best-effort *here* — unlike `run --against`, which gates.
+    // A missing baseline is the normal state on a repo's first eval, and
+    // refusing to summarize the run we do have would turn a routine absence into
+    // an empty PR comment. Both `BaselineError` arms therefore degrade to "no
+    // comparison"; only the severity differs in the log.
+    //
+    // It still routes through `baseline::resolve` rather than `load_run` so that
+    // `latest` means the newest run *of this suite*, not the newest run of any
+    // suite — a summary that compared two unrelated suites would report
+    // confident nonsense.
+    let baseline = args.against.as_deref().and_then(|reference| {
+        match crate::baseline::resolve(reference, &run, server_url.as_deref()) {
             Ok(base) => {
                 let diff = domarinn_core::diff_runs(&base, &run);
                 Some((base, diff))
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "--against baseline unavailable");
+            Err(crate::baseline::BaselineError::Absent(msg)) => {
+                tracing::info!("--against: {msg}; summarizing without a comparison");
                 None
             }
-        });
+            Err(crate::baseline::BaselineError::Failed(msg)) => {
+                tracing::warn!("--against: {msg}; summarizing without a comparison");
+                None
+            }
+        }
+    });
     let comparison = baseline.as_ref().map(|(base, diff)| (base, diff));
 
     let markdown = render(&run, comparison);

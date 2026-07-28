@@ -70,6 +70,15 @@ pub fn latest_run(dir: &Path) -> domarinn_core::result::RunResult {
 /// mock server would have to be driven from a runtime these blocking tests do
 /// not have.
 pub fn stub_server(status: &str, body: &'static str) -> (String, std::thread::JoinHandle<Vec<u8>>) {
+    stub_server_owned(status.to_string(), body.to_string())
+}
+
+/// [`stub_server`] over owned strings, for bodies computed at run time (a run
+/// document read back off disk, say).
+pub fn stub_server_owned(
+    status: String,
+    body: String,
+) -> (String, std::thread::JoinHandle<Vec<u8>>) {
     use std::io::{Read, Write};
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -109,6 +118,73 @@ pub fn stub_server(status: &str, body: &'static str) -> (String, std::thread::Jo
         sock.write_all(response.as_bytes()).unwrap();
         sock.flush().ok();
         buf
+    });
+    (url, handle)
+}
+
+/// A stand-in for the results server that answers up to `count` requests,
+/// choosing each reply by the first route whose fragment appears in the request
+/// line. Unmatched requests get a 404.
+///
+/// [`stub_server`] answers exactly one request, which is all `share` needs.
+/// Resolving `--against server:baseline` takes two — the suite listing, then the
+/// baseline run's export — and they need different bodies, so routing on the
+/// path is clearer than depending on their order.
+///
+/// Gives up after `deadline` rather than blocking forever, so a client that
+/// makes *fewer* calls than expected fails the assertion instead of hanging the
+/// suite. Returns the request lines it served, so a test can assert which
+/// endpoints were actually called.
+pub fn stub_routes(
+    routes: Vec<(&'static str, String)>,
+    count: usize,
+    deadline: std::time::Duration,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+
+    let handle = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let mut served = Vec::new();
+        while served.len() < count && started.elapsed() < deadline {
+            let Ok((mut sock, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            };
+            sock.set_nonblocking(false).ok();
+            sock.set_read_timeout(Some(deadline)).ok();
+
+            // These are GETs, so the headers are the whole request — no need to
+            // drain a body before routing.
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                match sock.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let line = String::from_utf8_lossy(&buf)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+
+            let response = match routes.iter().find(|(fragment, _)| line.contains(fragment)) {
+                Some((_, body)) => format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+                None => "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: 11\r\nconnection: close\r\n\r\n{\"error\":\"\"}".to_string(),
+            };
+            sock.write_all(response.as_bytes()).ok();
+            sock.flush().ok();
+            served.push(line);
+        }
+        served
     });
     (url, handle)
 }
