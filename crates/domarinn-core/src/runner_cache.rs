@@ -157,6 +157,7 @@ pub(super) fn entry_to_response(entry: CacheEntry) -> ProviderResponse {
         raw: entry.raw,
         reasoning: entry.reasoning,
         empty_reason: entry.empty_reason,
+        model: entry.model,
     }
 }
 
@@ -176,6 +177,7 @@ pub(super) fn response_to_entry(
         provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
         reasoning: response.reasoning.clone(),
         empty_reason: response.empty_reason.clone(),
+        model: response.model.clone(),
         // Same size cap as persistence, so a pathological payload can't bloat
         // the shared cache. `--no-raw` intentionally does NOT strip the cache
         // copy: a later run without the flag replaying this entry should still

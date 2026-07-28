@@ -465,6 +465,7 @@ mod diff_tests {
             prompt: None,
             request: None,
             stop_reason: None,
+            model: None,
             raw: None,
             asserts: vec![],
             usage: None,

@@ -177,6 +177,11 @@ pub fn render_case_detail(case: &CaseResult, palette: &Palette, show_raw: bool) 
         ident.push_str(&format!(" · prompt {prompt_id}"));
     }
     ident.push_str(&format!(" · test {}", case.cell.test_id));
+    // The model the provider *reported*, which is the point: when a suite pins
+    // a floating alias, this is the only place the actual snapshot shows up.
+    if let Some(model) = &case.model {
+        ident.push_str(&format!(" · model {model}"));
+    }
     ident.push_str(&format!(" · repeat {}", case.cell.repeat));
     ident.push_str(&format!(" · {}", pluralize(case.attempts, "attempt")));
     if case.cached {
@@ -414,6 +419,7 @@ mod tests {
             prompt: None,
             request: None,
             stop_reason: None,
+            model: None,
             raw: None,
             asserts: vec![],
             usage: None,

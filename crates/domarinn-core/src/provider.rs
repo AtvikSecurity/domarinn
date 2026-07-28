@@ -51,6 +51,14 @@ pub struct ProviderResponse {
     pub reasoning: Option<String>,
     /// Why [`Self::output`] has nothing gradeable in it, when it does not.
     pub empty_reason: Option<EmptyReason>,
+    /// The model the provider actually used, as opposed to the one it was
+    /// asked for — an alias that silently repoints to a new snapshot has no
+    /// other signal, and a suite can pin a model that quietly stopped being
+    /// the model it names.
+    ///
+    /// Response metadata, not request identity: this never enters a cache key.
+    /// See `cache_key.rs` for why that is structural rather than a choice.
+    pub model: Option<String>,
 }
 
 impl ProviderResponse {
@@ -62,6 +70,7 @@ impl ProviderResponse {
             stop_reason: None,
             raw: None,
             reasoning: None,
+            model: None,
             empty_reason: None,
         }
     }
@@ -80,6 +89,7 @@ impl ProviderResponse {
 /// The variant and the class are independent axes, not two names for one thing:
 /// a `Retry-After` longer than the retry budget becomes `Fatal`, and its class
 /// is still `provider_rate_limit`.
+///
 /// `details` is the structured half of a failure, alongside the prose in
 /// `source`. A provider that knows something specific — which model it asked
 /// for, what the endpoint said, how far a completion got — has somewhere to put

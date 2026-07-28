@@ -20,6 +20,15 @@
 //!   resolves its own prompts across a process boundary and domarinn never sees
 //!   them. Use a per-case `cache_salt` for that; keep this a pure hash of what
 //!   it is handed, with no filesystem or prompt-source resolution.
+//! - **The model a provider *reports* having used.** This one is enforced by
+//!   the signature rather than by discipline: [`provider_cache_key`] is handed
+//!   a request, and the reported model only exists on a response, so a lookup
+//!   could not depend on it even if that were wanted. Nor should it — the
+//!   *requested* model is already covered (it is in the `anthropic`/`openai`
+//!   fingerprints, and inside `command` for `exec`). Hashing the reported one
+//!   would silently discard every cache entry on the day a vendor rolls a
+//!   snapshot, which is the opposite of useful; `CaseResult.model` makes that
+//!   drift visible and diffable instead, which is the right lever.
 //! - **`req.test` (the test id and tags).** Adding it would change every
 //!   existing key, and identity is not what makes two calls interchangeable —
 //!   the request is. Two cases with identical vars and no prompt therefore share

@@ -154,6 +154,9 @@ impl Provider for HttpProvider {
             output,
             usage: None,
             cost_usd: None,
+            // An HTTP provider addresses an arbitrary endpoint; there is no
+            // model concept to report.
+            model: None,
             stop_reason: None,
             reasoning: None,
             empty_reason: None,

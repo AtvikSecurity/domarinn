@@ -595,6 +595,7 @@ async fn run_cell(
         prompt: rendered_prompt,
         request,
         stop_reason: response.stop_reason,
+        model: response.model,
         raw: json_to_persist(include_raw, response.raw, "raw"),
         asserts: assert_results,
         usage: response.usage,

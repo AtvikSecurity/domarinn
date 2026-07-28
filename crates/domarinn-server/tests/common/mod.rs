@@ -355,6 +355,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
             .map(|t| domarinn_core::types::RenderedPrompt::Text(t.to_string())),
         request: None,
         stop_reason: None,
+        model: None,
         raw: None,
         asserts,
         usage: Some(TokenUsage {

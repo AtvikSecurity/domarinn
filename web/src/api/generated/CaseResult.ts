@@ -45,7 +45,18 @@ vars?: { [key in string]: JsonValue }, status: CaseStatus, score: number, output
  * stored blobs written before this field existed; presence-gated by the web
  * UI. Never contains headers.
  */
-request?: unknown, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, 
+request?: unknown, stop_reason?: string, 
+/**
+ * The model the provider actually used, as reported by the provider —
+ * not the one the suite configured.
+ *
+ * The two diverge whenever a suite pins a floating alias and the vendor
+ * repoints it, which otherwise has no signal at all: the configured model
+ * is in the provider fingerprint, so the cache and every comparison agree
+ * nothing changed while the thing being measured did. `None` for providers
+ * with no model concept, and for runs recorded before this existed.
+ */
+model?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, 
 /**
  * Time the provider itself took, excluding retry backoff and (on a cache
  * hit) replayed from the entry rather than measured against the cache read.

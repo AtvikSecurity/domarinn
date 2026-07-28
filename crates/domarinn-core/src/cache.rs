@@ -132,6 +132,14 @@ pub struct CacheEntry {
     /// `s3`, where it is simply a different measurement wearing the same name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_latency_ms: Option<u64>,
+    /// The model the original call actually used.
+    ///
+    /// Mandatory to replay, not optional-in-spirit: without it a cache hit
+    /// comes back with no model, so the field would be present on the first
+    /// run of a suite and gone on every run after — which is the common path,
+    /// not the rare one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Reasoning/thinking text from the original call. Without this a cache hit
     /// replays with no reasoning and no explanation for an empty output — and a
     /// hit is the common path, so the diagnostic would be present on the first

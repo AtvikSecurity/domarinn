@@ -196,6 +196,7 @@ mod tests {
             usage: None,
             cost_usd: None,
             stop_reason: None,
+            model: None,
             raw: None,
             reasoning: None,
             empty_reason: None,

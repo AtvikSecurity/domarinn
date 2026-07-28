@@ -791,6 +791,7 @@ mod tests {
             prompt: None,
             request: None,
             stop_reason: None,
+            model: None,
             raw: None,
             asserts: asserts(status),
             usage: None,

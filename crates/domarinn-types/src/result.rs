@@ -185,6 +185,17 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub stop_reason: Option<String>,
+    /// The model the provider actually used, as reported by the provider —
+    /// not the one the suite configured.
+    ///
+    /// The two diverge whenever a suite pins a floating alias and the vendor
+    /// repoints it, which otherwise has no signal at all: the configured model
+    /// is in the provider fingerprint, so the cache and every comparison agree
+    /// nothing changed while the thing being measured did. `None` for providers
+    /// with no model concept, and for runs recorded before this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "unknown")]
     pub raw: Option<serde_json::Value>,
@@ -496,6 +507,8 @@ mod tests {
         assert!(case.raw.is_none());
         assert!(case.vars.is_empty());
         assert!(case.asserts[0].criteria.is_none());
+        assert!(case.model.is_none());
+        assert!(case.error_details.is_none());
 
         let reserialized = serde_json::to_string(&case).unwrap();
         assert!(!reserialized.contains("prompt"));
@@ -512,6 +525,12 @@ mod tests {
         assert!(!reserialized.contains("provider_digest"));
         assert!(!reserialized.contains("assert_digest"));
         assert!(!reserialized.contains("error_class"));
+        // The reported model and structured error detail. Same hazard: a
+        // `skip_serializing_if` dropped from either would make every stored
+        // run grow a `null` on re-serialization, moving the content hash the
+        // server uses for ingest idempotency.
+        assert!(!reserialized.contains("\"model\""));
+        assert!(!reserialized.contains("error_details"));
     }
 
     /// The run-level counterpart of the guard above.

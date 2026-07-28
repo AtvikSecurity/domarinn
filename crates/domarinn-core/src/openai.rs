@@ -251,6 +251,13 @@ fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, Provide
         raw: Some(raw),
         reasoning: reasoning.map(str::to_string),
         empty_reason,
+        // The model the API says it served, not the one configured. An alias
+        // like a floating snapshot pointer silently repointing is exactly the
+        // drift this exists to make visible.
+        model: payload
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
     })
 }
 

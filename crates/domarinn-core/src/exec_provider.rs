@@ -207,6 +207,7 @@ fn parse_response(value: Json) -> Result<ProviderResponse, ProviderError> {
         stop_reason: resp.stop_reason,
         reasoning: resp.reasoning,
         empty_reason,
+        model: resp.model,
         raw: resp.metadata,
     })
 }

@@ -90,6 +90,7 @@ fn cache_entries_preserve_raw_provider_metadata() {
         raw: Some(raw.clone()),
         reasoning: None,
         empty_reason: None,
+        model: None,
     };
 
     let entry = response_to_entry(&provider, &response, test_stats());
@@ -128,6 +129,7 @@ fn cache_round_trip_preserves_every_response_field() {
         empty_reason: Some(crate::empty::EmptyReason::new(
             crate::empty::EmptyReason::THINKING_ONLY,
         )),
+        model: Some("m-2026-01-01".to_string()),
     };
 
     let replayed = entry_to_response(response_to_entry(&provider, &original, test_stats()));
@@ -140,6 +142,7 @@ fn cache_round_trip_preserves_every_response_field() {
         raw,
         reasoning,
         empty_reason,
+        model,
     } = replayed;
     assert_eq!(output, original.output);
     assert_eq!(usage, original.usage);
@@ -148,6 +151,7 @@ fn cache_round_trip_preserves_every_response_field() {
     assert_eq!(raw, original.raw);
     assert_eq!(reasoning, original.reasoning);
     assert_eq!(empty_reason, original.empty_reason);
+    assert_eq!(model, original.model);
 }
 
 /// Entries written before the `raw` field existed keep deserializing (and

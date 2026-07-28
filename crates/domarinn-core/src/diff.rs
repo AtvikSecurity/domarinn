@@ -221,6 +221,7 @@ mod tests {
             assert_digest: None,
             error: None,
             error_details: None,
+            model: None,
             error_class: None,
         }
     }

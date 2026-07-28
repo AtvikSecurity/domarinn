@@ -59,6 +59,8 @@ pub(super) fn error_case(
         prompt: inputs.prompt,
         request: inputs.request,
         stop_reason: None,
+        // The call failed, so nothing reported a model.
+        model: None,
         raw: None,
         asserts: Vec::new(),
         usage: None,
