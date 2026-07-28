@@ -74,6 +74,9 @@ pub struct RunOptions {
     /// keep result documents small. Both are bulky provenance rather than
     /// results, and both are dropped whole above [`RAW_MAX_BYTES`].
     pub include_raw: bool,
+    /// What to record about who and where this run came from. A run option
+    /// rather than a suite field for the same reason as `retries` above.
+    pub provenance: crate::provenance::ProvenanceOptions,
 }
 
 impl Default for RunOptions {
@@ -85,6 +88,7 @@ impl Default for RunOptions {
             concurrency: None,
             retries: None,
             include_raw: true,
+            provenance: crate::provenance::ProvenanceOptions::default(),
         }
     }
 }
@@ -331,6 +335,15 @@ pub async fn run_with_progress(
         blake3::hash(crate::cache::canonical_json(&config_snapshot).as_bytes()).to_hex()
     );
 
+    // A run with no explicit `--note` inherits the suite's `description`, which
+    // is otherwise parsed and read by nothing. Collected after the work so a
+    // long run records the dirty state it actually finished with.
+    let mut provenance_opts = opts.provenance.clone();
+    if provenance_opts.note.is_none() {
+        provenance_opts.note = suite.description.clone();
+    }
+    let provenance = crate::provenance::collect(&provenance_opts, base_dir);
+
     Ok(RunResult {
         schema_version: RESULT_SCHEMA_VERSION,
         run_id: RunId::generate(),
@@ -340,8 +353,9 @@ pub async fn run_with_progress(
         finished_at,
         config_digest,
         config_snapshot,
-        git: None,
-        ci: None,
+        git: provenance.git,
+        ci: provenance.ci,
+        origin: provenance.origin,
         share_url: None,
         filters: FilterSpec {
             tags: opts.filter.tags.clone(),

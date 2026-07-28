@@ -144,7 +144,7 @@ fn ci_run_url(run: &RunResult) -> Option<String> {
         .as_ref()
         .and_then(|c| nonempty(c.run_url.as_deref()))
         .map(String::from)
-        .or_else(|| crate::share::collect_ci()?.run_url)
+        .or_else(|| domarinn_core::provenance::collect_ci()?.run_url)
         .filter(|u| !u.is_empty())
 }
 

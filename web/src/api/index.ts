@@ -56,6 +56,10 @@ export type { ChatMessage } from "./generated/ChatMessage";
 export type { ChatRole } from "./generated/ChatRole";
 
 export type { IngestResponse } from "./generated/IngestResponse";
+// Run provenance: who ran it, where, on what build, with what note.
+export type { RunOrigin } from "./generated/RunOrigin";
+export type { GitMeta } from "./generated/GitMeta";
+export type { CiMeta } from "./generated/CiMeta";
 export type { RunDetailResponse } from "./generated/RunDetailResponse";
 export type { RunId } from "./generated/RunId";
 export type { RunListItem } from "./generated/RunListItem";

@@ -90,12 +90,44 @@ results, and persist the run under `.domarinn/runs/<id>/`.
 | `--against <REF>` | Compare against a baseline run. `server:baseline` uses the baseline pinned for this suite on the results server (the only reference that works in CI); `latest` uses the newest local run *of the same suite*; also accepts a run id or a `result.json` path. A regression sets exit code `1`; a baseline that was requested but could not be resolved sets exit code `2`. |
 | `--summary-md <FILE>` | Write a Markdown summary (headline metrics table, failing cases, and any baseline comparison). Identical to what [`ci-summary`](#domarinn-ci-summary-run-flags) writes, minus the step outputs. |
 | `--share` | Upload the completed run to the configured server, and record the returned URL on the stored run. |
+| `--note <TEXT>` | A short human label for this run ("trying temperature 0.3"). Stored on the run and full-text searchable on the server. Defaults to the suite's `description`. |
+| `--no-provenance` | Do not record the OS username or hostname. Git, CI and version metadata are still recorded, and the run is marked redacted. |
 
 ```sh
 domarinn run examples/render-health                 # run, print a table
 domarinn run --tag safety -j 8 --format junit --out results.xml
 domarinn run --against server:baseline --summary-md summary.md
+domarinn run --note "retry backoff, 3rd attempt"    # label this run
 ```
+
+### Run provenance
+
+Every run records who and what produced it, in the engine — so a plain
+`domarinn run` carries it, not only a shared one:
+
+| Field | Source |
+|-------|--------|
+| `origin.actor` | `DOMARINN_ACTOR`, else the CI actor (`GITHUB_ACTOR`, `GITLAB_USER_LOGIN`, …), else the OS username. In CI the CI actor wins because the OS user there is a service account that identifies nobody. |
+| `origin.host` | `DOMARINN_HOST`, else the hostname. |
+| `origin.version` | The domarinn build that produced the document. |
+| `origin.note` | `--note`, else the suite's `description`. |
+| `git` | Branch, commit and dirty state of the repo containing the suite. |
+| `ci` | The detected CI system and its run URL. `ci` being present *is* the "was this CI?" flag — there is no separate boolean to disagree with it. |
+
+**Suppressing it.** `actor` and `host` are mild PII, and once written they are
+inside the document the server content-hashes for ingest idempotency, so they
+cannot be redacted afterwards without changing that hash. Suppression therefore
+has to happen on the client:
+
+| Setting | Effect |
+|---------|--------|
+| `DOMARINN_PROVENANCE=full` | The default: record everything. |
+| `DOMARINN_PROVENANCE=anonymous` | Drop `actor`/`host`; keep git, CI, version and note. Sets `origin.redacted: true` so a reader can tell suppression from an older client. |
+| `DOMARINN_PROVENANCE=off` | Record nothing — no `origin`, `git` or `ci` key at all. |
+| `--no-provenance` | Same as `anonymous`. It can only *tighten* the environment's policy, never re-enable what the environment turned off. |
+
+Set the environment variable in the image or on the machine when this is an
+organisation-wide policy; the flag is for one-off runs.
 
 **Live progress.** When stderr is a terminal, `run` draws a single progress bar
 on **stderr** — elapsed time, a bar, `done/total`, and a running pass/fail/error

@@ -4,10 +4,11 @@
 //! upload failure fail the command. Git and CI metadata are attached
 //! automatically when available.
 
-use std::process::Command;
+use std::path::Path;
 
 use clap::Args;
-use domarinn_core::result::{CiMeta, GitMeta, RunResult};
+use domarinn_core::provenance;
+use domarinn_core::result::RunResult;
 
 use crate::exit;
 use crate::loadrun::load_run;
@@ -78,81 +79,24 @@ pub fn upload_run(
     Ok(url)
 }
 
-/// Attach git and CI metadata to the run if not already present.
+/// Attach git and CI metadata to a run that predates engine-side collection.
+///
+/// Since the engine collects provenance itself, a freshly produced run already
+/// carries both and this is a no-op. It stays as the backfill path for
+/// `domarinn share <old-result.json>` — and for a run whose author set
+/// `DOMARINN_PROVENANCE=off`, where the `is_none()` guards keep the opt-out
+/// intact only because collection here would re-add what the author suppressed.
+/// That is why it consults the same policy rather than collecting blindly.
 fn enrich(result: &mut RunResult) {
+    if provenance::ProvenanceOptions::from_env().mode == provenance::ProvenanceMode::Off {
+        return;
+    }
     if result.git.is_none() {
-        result.git = collect_git();
+        result.git = provenance::collect_git(Path::new("."));
     }
     if result.ci.is_none() {
-        result.ci = collect_ci();
+        result.ci = provenance::collect_ci();
     }
-}
-
-fn git(args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!s.is_empty()).then_some(s)
-}
-
-fn collect_git() -> Option<GitMeta> {
-    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
-    let commit = git(&["rev-parse", "HEAD"]);
-    if branch.is_none() && commit.is_none() {
-        return None;
-    }
-    let dirty = git(&["status", "--porcelain"])
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
-    Some(GitMeta {
-        branch,
-        commit,
-        dirty,
-    })
-}
-
-/// Detect the CI system from the environment. Shared with `ci-summary`, which
-/// needs the workflow's run URL for runs that were never uploaded (and so never
-/// had this recorded on them).
-pub(crate) fn collect_ci() -> Option<CiMeta> {
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    if env("GITHUB_ACTIONS").is_some() {
-        let run_url = match (
-            env("GITHUB_SERVER_URL"),
-            env("GITHUB_REPOSITORY"),
-            env("GITHUB_RUN_ID"),
-        ) {
-            (Some(server), Some(repo), Some(id)) => {
-                Some(format!("{server}/{repo}/actions/runs/{id}"))
-            }
-            _ => None,
-        };
-        return Some(CiMeta {
-            provider: Some("github".into()),
-            run_url,
-        });
-    }
-    if env("GITLAB_CI").is_some() {
-        return Some(CiMeta {
-            provider: Some("gitlab".into()),
-            run_url: env("CI_JOB_URL"),
-        });
-    }
-    if env("JENKINS_URL").is_some() {
-        return Some(CiMeta {
-            provider: Some("jenkins".into()),
-            run_url: env("BUILD_URL"),
-        });
-    }
-    if env("CI").is_some() {
-        return Some(CiMeta {
-            provider: Some("ci".into()),
-            run_url: None,
-        });
-    }
-    None
 }
 
 async fn upload(server: &str, result: &RunResult) -> Result<String, String> {

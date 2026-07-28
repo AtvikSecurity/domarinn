@@ -258,6 +258,50 @@ pub struct CiMeta {
     pub run_url: Option<String>,
 }
 
+/// Who and what produced a run.
+///
+/// Collected by the engine (see [`crate::provenance`]) so a plain `domarinn run`
+/// carries it too. Before this existed, git and CI metadata were attached only
+/// on the upload path, so every `result.json` on disk had `git: null` and there
+/// was no notion of an actor at all.
+///
+/// [`RunResult::git`] and [`RunResult::ci`] deliberately stay as their own
+/// fields rather than moving in here: they already have server columns and a
+/// share-time backfill path, so folding them in would be a breaking rename for
+/// no gain.
+///
+/// One optional struct rather than five optional fields, also deliberately. The
+/// byte-stable-reserialization contract is about keys staying *absent* on
+/// documents that never had them; nesting costs exactly one
+/// `skip_serializing_if` at the [`RunResult`] level and leaves every field
+/// inside it unconstrained for legacy blobs, which carry no `origin` key at all.
+/// It also gives the privacy opt-out a single lever: `origin: None`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
+pub struct RunOrigin {
+    /// Who this run is attributable to: the CI actor when running in CI
+    /// (`GITHUB_ACTOR` and friends — of a CI run people ask "who pushed the
+    /// change", not "which service account ran the container"), otherwise the OS
+    /// username. `None` when suppressed or undeterminable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Hostname of the machine that ran it. `None` when suppressed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// The domarinn build that produced this document ([`crate::VERSION`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// A free-form human label (`domarinn run --note "…"`), falling back to the
+    /// suite's `description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Set when the identity fields were suppressed by policy. Distinguishes "the
+    /// operator opted out" from "an older client wrote this document" — without
+    /// it a reader cannot tell the two apart, since both look like absence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted: Option<bool>,
+}
+
 /// Which filters produced this run (for reproducibility and the UI).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FilterSpec {
@@ -289,6 +333,9 @@ pub struct RunResult {
     pub git: Option<GitMeta>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci: Option<CiMeta>,
+    /// Who and where this run came from. See [`RunOrigin`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<RunOrigin>,
     /// Where this run was published, recorded by `--share` from the URL the
     /// results server returned. Absent when the run was never shared.
     ///
@@ -371,6 +418,38 @@ mod tests {
         assert!(!reserialized.contains("\"raw\""));
         assert!(!reserialized.contains("vars"));
         assert!(!reserialized.contains("criteria"));
+    }
+
+    /// The run-level counterpart of the guard above.
+    ///
+    /// The server's ingest idempotency key is `sha256(canonical_json(run))` over
+    /// the *whole* document, so a stored run that never carried `origin` (or
+    /// `git`, `ci`, `share_url`) must not grow the key on a load/store round
+    /// trip — that would change its content hash and turn an idempotent
+    /// re-upload into a 409 Conflict.
+    #[test]
+    fn a_run_without_optional_provenance_does_not_grow_it_on_re_serialization() {
+        let stored = r#"{
+            "schema_version": 2,
+            "run_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "started_at": "2026-01-01T00:00:00Z",
+            "finished_at": "2026-01-01T00:00:01Z",
+            "config_digest": "blake3:abc",
+            "config_snapshot": {},
+            "cases": [],
+            "summary": {"total": 0, "passed": 0, "failed": 0, "errored": 0, "skipped": 0}
+        }"#;
+        let run: RunResult = serde_json::from_str(stored).unwrap();
+        assert!(run.origin.is_none());
+        assert!(run.git.is_none());
+        assert!(run.ci.is_none());
+        assert!(run.share_url.is_none());
+
+        let reserialized = serde_json::to_string(&run).unwrap();
+        assert!(!reserialized.contains("origin"));
+        assert!(!reserialized.contains("\"git\""));
+        assert!(!reserialized.contains("\"ci\""));
+        assert!(!reserialized.contains("share_url"));
     }
 
     #[test]

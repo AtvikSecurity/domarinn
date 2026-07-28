@@ -146,6 +146,12 @@ struct PreparedRun {
     content_hash: String,
     uploaded_by: Option<String>,
     config_digest: String,
+    /// The run's human label: `origin.note` (from `--note`, itself falling back
+    /// to the suite's `description`), or the snapshot's `description` for runs
+    /// from clients that predate provenance collection. Feeds both the
+    /// `description` column and its `runs_fts` slot, which existed and were
+    /// never populated until now.
+    description: Option<String>,
     // Migration-6 columns, promoted from `RunSummary` so the run list can
     // filter fully-cached CI runs at SQL level.
     cache_hits: i64,
@@ -229,6 +235,17 @@ impl PreparedRun {
             git_dirty: git.map(|g| g.dirty as i64),
             ci_provider: ci.and_then(|c| c.provider.clone()),
             ci_run_url: ci.and_then(|c| c.run_url.clone()),
+            description: run
+                .origin
+                .as_ref()
+                .and_then(|o| o.note.clone())
+                .or_else(|| {
+                    run.config_snapshot
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .map(str::to_string)
+                })
+                .filter(|d| !d.trim().is_empty()),
             case_count: run.summary.total as i64,
             pass_count: run.summary.passed as i64,
             fail_count: run.summary.failed as i64,
@@ -286,7 +303,7 @@ impl PreparedRun {
                 self.created_at,
                 now_ms(),
                 self.schema_version,
-                Option::<String>::None,
+                self.description,
                 self.git_branch,
                 self.git_commit,
                 self.git_dirty,
@@ -387,10 +404,7 @@ impl PreparedRun {
                 suite: self.suite.as_deref(),
                 branch: self.git_branch.as_deref(),
                 commit: self.git_commit.as_deref(),
-                // `runs.description` is not part of the upload document today;
-                // it is inserted NULL above. Indexed anyway so it becomes
-                // searchable the moment ingest starts populating it.
-                description: None,
+                description: self.description.as_deref(),
                 tags: &self.tags,
             },
         )?;

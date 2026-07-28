@@ -97,6 +97,21 @@ pub struct RunArgs {
     /// Disable the live progress bar.
     #[arg(long)]
     pub no_progress: bool,
+
+    /// A short human label for this run ("trying temperature 0.3"), stored on
+    /// the run and searchable on the server. Defaults to the suite's
+    /// `description`.
+    #[arg(long)]
+    pub note: Option<String>,
+
+    /// Do not record the OS username or hostname on this run. Git, CI and
+    /// version metadata are still recorded; the run is marked as redacted so a
+    /// reader can tell suppression from an older client.
+    ///
+    /// `DOMARINN_PROVENANCE=off` suppresses git and CI as well, and is the right
+    /// lever for a whole machine or container image.
+    #[arg(long)]
+    pub no_provenance: bool,
 }
 
 pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verbose: u8) -> u8 {
@@ -143,6 +158,16 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
             args.retries
         },
         include_raw: !args.no_raw,
+        provenance: {
+            // Env sets the machine-wide policy; `--no-provenance` can only
+            // tighten it, never re-enable identity the environment turned off.
+            let mut p = domarinn_core::provenance::ProvenanceOptions::from_env();
+            if args.no_provenance && p.mode == domarinn_core::provenance::ProvenanceMode::Full {
+                p.mode = domarinn_core::provenance::ProvenanceMode::Anonymous;
+            }
+            p.note = args.note.clone();
+            p
+        },
     };
 
     let cache = cachecfg::build_cache(&suite, server_url.as_deref());

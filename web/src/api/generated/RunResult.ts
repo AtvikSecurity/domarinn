@@ -4,6 +4,7 @@ import type { CiMeta } from "./CiMeta";
 import type { FilterSpec } from "./FilterSpec";
 import type { GitMeta } from "./GitMeta";
 import type { RunId } from "./RunId";
+import type { RunOrigin } from "./RunOrigin";
 import type { RunSummary } from "./RunSummary";
 import type { JsonValue } from "./serde_json/JsonValue";
 
@@ -11,6 +12,10 @@ import type { JsonValue } from "./serde_json/JsonValue";
  * The full result of a run.
  */
 export type RunResult = { schema_version: number, run_id: RunId, project?: string, suite?: string, started_at: string, finished_at: string, config_digest: string, config_snapshot: JsonValue, git?: GitMeta, ci?: CiMeta, 
+/**
+ * Who and where this run came from. See [`RunOrigin`].
+ */
+origin?: RunOrigin, 
 /**
  * Where this run was published, recorded by `--share` from the URL the
  * results server returned. Absent when the run was never shared.

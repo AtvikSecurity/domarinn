@@ -227,6 +227,7 @@ mod tests {
             config_snapshot: serde_json::Value::Null,
             git: None,
             ci: None,
+            origin: None,
             share_url: None,
             filters: Default::default(),
             summary: RunSummary::default(),

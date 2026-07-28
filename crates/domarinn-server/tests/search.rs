@@ -84,6 +84,51 @@ fn run_hit_ids(body: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
+/// A run's note reaches `runs.description` and its `runs_fts` slot.
+///
+/// Both existed before this and neither was ever written: ingest inserted NULL,
+/// so the indexed column matched nothing. The note comes from `--note`, falling
+/// back to the suite's `description` — which was likewise parsed and read by
+/// nothing.
+#[tokio::test]
+async fn a_runs_note_is_stored_as_its_description_and_is_searchable() {
+    let (app, dir) = test_app(Settings::default()).await;
+
+    let mut run = make_run(
+        "s-noted",
+        Some("checkout"),
+        Some("regression"),
+        vec![],
+        Some("main"),
+        0,
+        &[CaseSpec::new("openai", "checkout/noted", CaseStatus::Pass)],
+    );
+    run.origin = Some(domarinn_core::result::RunOrigin {
+        note: Some("investigating quibblewort latency".to_string()),
+        ..Default::default()
+    });
+    let reply = post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+
+    // The column itself, not just the index — the DTO does not expose it yet.
+    let conn = Connection::open(dir.path().join("domarinn.db")).unwrap();
+    let description: Option<String> = conn
+        .query_row(
+            "SELECT description FROM runs WHERE id = ?1",
+            ["s-noted"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        description.as_deref(),
+        Some("investigating quibblewort latency")
+    );
+
+    let reply = get(&app, "/api/v1/search?q=quibblewort").await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(run_hit_ids(&reply.json()), vec!["s-noted"]);
+}
+
 #[tokio::test]
 async fn search_finds_cases_by_output_prompt_and_error_text() {
     let (app, _dir) = test_app(Settings::default()).await;

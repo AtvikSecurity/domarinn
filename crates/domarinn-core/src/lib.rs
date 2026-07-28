@@ -29,6 +29,7 @@ pub mod matrix;
 pub mod net;
 pub mod openai;
 pub mod progress;
+pub mod provenance;
 pub mod provider;
 pub mod provider_factory;
 pub mod render;

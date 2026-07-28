@@ -497,6 +497,7 @@ mod diff_tests {
             config_snapshot: snapshot,
             git: None,
             ci: None,
+            origin: None,
             share_url: None,
             filters: Default::default(),
             summary: RunSummary {

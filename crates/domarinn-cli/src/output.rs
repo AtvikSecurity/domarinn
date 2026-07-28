@@ -815,6 +815,7 @@ mod tests {
             config_snapshot: serde_json::json!({}),
             git: None,
             ci: None,
+            origin: None,
             share_url: None,
             filters: Default::default(),
             cases: vec![
