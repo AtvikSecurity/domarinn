@@ -78,7 +78,7 @@ jobs:
   # cargo-workspace plugin rejects members whose [package.version] is
   # `version.workspace = true` rather than a literal. So the version is written
   # by a TOML extra-file updater targeting $.workspace.package.version, which
-  # leaves the six member entries in Cargo.lock pointing at the old version.
+  # leaves every member entry in Cargo.lock pointing at the old version.
   #
   # That is not cosmetic: `--locked` is used by all three `mise run install*`
   # tasks and by the domarinn-eval action's build-from-source fallback, and

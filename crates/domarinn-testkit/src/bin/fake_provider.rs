@@ -15,8 +15,14 @@
 //!   hits, short-circuits, retries).
 //!
 //! It reads one JSON request from stdin and writes one JSON response to stdout.
+//!
+//! Responses are built through `domarinn_protocol`'s types rather than `json!`
+//! literals, so this doubles as the workspace's smoke test that the protocol
+//! crate is actually pleasant to write a provider against.
 
 use std::io::{Read, Write};
+
+use domarinn_protocol::{ProtocolError, ProviderResp, Usage};
 
 fn main() {
     let mode = std::env::var("FAKE_MODE").unwrap_or_else(|_| "echo".to_string());
@@ -50,12 +56,14 @@ fn main() {
         }
     }
     if let Some(kind) = mode.strip_prefix("error:") {
-        let retriable = kind == "retriable";
-        let resp = serde_json::json!({
-            "output": "",
-            "error": {"message": "scripted failure", "retriable": retriable}
+        emit(ProviderResp {
+            output: serde_json::Value::String(String::new()),
+            error: Some(ProtocolError {
+                message: "scripted failure".into(),
+                retriable: kind == "retriable",
+            }),
+            ..Default::default()
         });
-        let _ = writeln!(std::io::stdout(), "{resp}");
         return;
     }
 
@@ -70,9 +78,18 @@ fn main() {
         }
     };
 
-    let resp = serde_json::json!({
-        "output": output,
-        "usage": {"input_tokens": 1, "output_tokens": 1}
+    emit(ProviderResp {
+        output,
+        usage: Some(Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+        }),
+        ..Default::default()
     });
-    let _ = writeln!(std::io::stdout(), "{resp}");
+}
+
+/// Write the one response document this process is allowed to produce.
+fn emit(resp: ProviderResp) {
+    let body = serde_json::to_string(&resp).expect("a ProviderResp serializes");
+    let _ = writeln!(std::io::stdout(), "{body}");
 }

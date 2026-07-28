@@ -932,6 +932,7 @@ dependencies = [
  "blake3",
  "chrono",
  "csv",
+ "domarinn-protocol",
  "domarinn-types",
  "futures",
  "glob",
@@ -963,6 +964,14 @@ version = "0.2.0"
 dependencies = [
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "domarinn-protocol"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1009,6 +1018,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "domarinn-core",
+ "domarinn-protocol",
  "serde_json",
  "tempfile",
  "tokio",

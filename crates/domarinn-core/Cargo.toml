@@ -9,6 +9,7 @@ authors.workspace = true
 description = "Core eval engine, config schema, and traits for domarinn"
 
 [dependencies]
+domarinn-protocol = { workspace = true }
 domarinn-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

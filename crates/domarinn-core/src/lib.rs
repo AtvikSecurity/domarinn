@@ -19,6 +19,11 @@ pub mod errors;
 // `domarinn_core::result::RunResult` and friends keep resolving: the split is an
 // internal reorganisation, not a rename for every caller in the workspace.
 pub use domarinn_types::{empty, error_class, ids, result, types};
+
+// The exec protocol lives in `domarinn-protocol`, a serde-only crate an
+// external provider author can depend on. Re-exported under its own name so
+// embedders can reach it without guessing the path.
+pub use domarinn_protocol;
 pub mod exec;
 pub mod exec_protocol;
 pub mod exec_provider;
