@@ -16,4 +16,34 @@ created_at: string, git_branch: string | null, git_commit: string | null, git_di
  * failed-backfill rows carrying the -1 sentinel, which the query maps to
  * `None`. A run is "fully cached" when `cache_misses == 0 && cache_hits > 0`.
  */
-cache_hits: number | null, cache_misses: number | null, tags: Array<string>, };
+cache_hits: number | null, cache_misses: number | null, 
+/**
+ * Who ran it, as recorded by the client (`RunOrigin.actor`). `None` for
+ * runs from clients that predate provenance, and for runs whose author
+ * suppressed it.
+ */
+actor: string | null, 
+/**
+ * The machine it ran on. Same caveats as `actor`.
+ */
+host: string | null, 
+/**
+ * Who *uploaded* it, from the authenticated identity. Distinct from
+ * `actor` on purpose: this one is verified and server-side, that one is
+ * client-supplied and covers local runs. A shared CI token shows up here
+ * as the token's label, which is why both are surfaced.
+ */
+uploaded_by: string | null, 
+/**
+ * The CI system that ran it, if any. Its presence *is* the "was this CI?"
+ * flag — see `OriginFilter`.
+ */
+ci_provider: string | null, ci_run_url: string | null, 
+/**
+ * The run's human label (`--note`, else the suite's `description`).
+ */
+note: string | null, 
+/**
+ * The domarinn build that produced the run.
+ */
+domarinn_version: string | null, tags: Array<string>, };

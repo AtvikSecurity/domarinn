@@ -237,6 +237,34 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE cases ADD COLUMN error TEXT;
         "#,
         ),
+        // Migration 8: run provenance columns, plus the indexes the
+        // origin/actor/branch facets need.
+        //
+        // Unlike migrations 3/6/7 this needs **no backfill and no sentinel**.
+        // Those promoted facts that already existed inside the blobs, so NULL
+        // was ambiguous ("not yet extracted" vs "genuinely absent") and had to
+        // be disambiguated. `RunOrigin` is new: no run written before it can
+        // carry one, so NULL here means exactly "the client did not record an
+        // actor" and always will. Adding a backfill pass would decompress every
+        // historical blob to discover nothing.
+        //
+        // `git_dirty`/`ci_provider` are deliberately not re-added — they have
+        // been columns since migration 1 and were simply never surfaced.
+        M::up(
+            r#"
+        ALTER TABLE runs ADD COLUMN actor TEXT;
+        ALTER TABLE runs ADD COLUMN host TEXT;
+        ALTER TABLE runs ADD COLUMN domarinn_version TEXT;
+
+        CREATE INDEX idx_runs_actor ON runs(actor, created_at DESC);
+        CREATE INDEX idx_runs_ci ON runs(ci_provider, created_at DESC);
+        CREATE INDEX idx_runs_uploaded_by ON runs(uploaded_by, created_at DESC);
+        -- Not a prefix of idx_runs_proj_suite_created: that one still serves
+        -- branch-agnostic ordering without a sort, so both earn their keep.
+        CREATE INDEX idx_runs_proj_suite_branch_created
+            ON runs(project, suite, git_branch, created_at DESC);
+        "#,
+        ),
     ])
 }
 

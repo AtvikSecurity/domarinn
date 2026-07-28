@@ -10,7 +10,7 @@ use super::{
     compress, content_hash, decompress, empty_to_none, encode_cursor, from_microusd, ms_to_rfc3339,
     now_ms, sha256_hex, to_microusd, IngestOutcome, Storage,
 };
-use crate::domain::{CachedFilter, RunStatusFilter};
+use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
 use crate::dto::config::RunConfigResponse;
 use crate::dto::runs::{CaseAssertLean, RunDetailResponse, RunListItem};
 
@@ -152,6 +152,11 @@ struct PreparedRun {
     /// `description` column and its `runs_fts` slot, which existed and were
     /// never populated until now.
     description: Option<String>,
+    // Migration-8 columns, promoted from `RunOrigin` so the run list can render
+    // and filter on who produced a run without decompressing every blob.
+    actor: Option<String>,
+    host: Option<String>,
+    domarinn_version: Option<String>,
     // Migration-6 columns, promoted from `RunSummary` so the run list can
     // filter fully-cached CI runs at SQL level.
     cache_hits: i64,
@@ -246,6 +251,9 @@ impl PreparedRun {
                         .map(str::to_string)
                 })
                 .filter(|d| !d.trim().is_empty()),
+            actor: run.origin.as_ref().and_then(|o| o.actor.clone()),
+            host: run.origin.as_ref().and_then(|o| o.host.clone()),
+            domarinn_version: run.origin.as_ref().and_then(|o| o.version.clone()),
             case_count: run.summary.total as i64,
             pass_count: run.summary.passed as i64,
             fail_count: run.summary.failed as i64,
@@ -288,13 +296,15 @@ impl PreparedRun {
                 git_branch, git_commit, git_dirty, ci_provider, ci_run_url,
                 case_count, pass_count, fail_count, error_count,
                 prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                content_hash, uploaded_by, config_digest, cache_hits, cache_misses
+                content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
+                actor, host, domarinn_version
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19, ?20,
-                ?21, ?22, ?23, ?24, ?25
+                ?21, ?22, ?23, ?24, ?25,
+                ?26, ?27, ?28
             )",
             params![
                 self.id,
@@ -322,6 +332,9 @@ impl PreparedRun {
                 self.config_digest,
                 self.cache_hits,
                 self.cache_misses,
+                self.actor,
+                self.host,
+                self.domarinn_version,
             ],
         )?;
 
@@ -429,6 +442,14 @@ pub struct RunListFilter {
     pub until_ms: Option<i64>,
     pub status: Option<RunStatusFilter>,
     pub cached: Option<CachedFilter>,
+    /// CI vs developer runs — the facet that separates the canonical stream
+    /// from iteration noise.
+    pub origin: Option<OriginFilter>,
+    /// Matches either the recorded `origin.actor` (who ran it) or the
+    /// authenticated `uploaded_by` (who pushed it). They answer different
+    /// questions and are often different values — a filter that matched only
+    /// one would silently miss half the runs a person is responsible for.
+    pub actor: Option<String>,
     pub limit: i64,
     pub cursor: Option<(i64, RunId)>,
 }
@@ -453,7 +474,9 @@ impl RunListFilter {
             "SELECT id, project, suite, created_at, git_branch, git_commit, git_dirty,
                     case_count, pass_count, fail_count, error_count,
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                    cache_hits, cache_misses
+                    cache_hits, cache_misses,
+                    actor, host, uploaded_by, ci_provider, ci_run_url,
+                    description, domarinn_version
              FROM runs",
         );
         let mut clauses: Vec<String> = Vec::new();
@@ -485,6 +508,18 @@ impl RunListFilter {
                 args.len() + 1
             ));
             args.push(tag.clone().into());
+        }
+        match self.origin {
+            Some(OriginFilter::Ci) => clauses.push("ci_provider IS NOT NULL".into()),
+            Some(OriginFilter::Local) => clauses.push("ci_provider IS NULL".into()),
+            None => {}
+        }
+        if let Some(actor) = &self.actor {
+            clauses.push(format!(
+                "(actor = ?{a} OR uploaded_by = ?{a})",
+                a = args.len() + 1
+            ));
+            args.push(actor.clone().into());
         }
         match self.status {
             Some(RunStatusFilter::Fail) => clauses.push("fail_count > 0".into()),
@@ -561,6 +596,13 @@ impl RunListFilter {
                 duration_ms: row.get(14)?,
                 cache_hits: row.get(15)?,
                 cache_misses: row.get(16)?,
+                actor: row.get(17)?,
+                host: row.get(18)?,
+                uploaded_by: row.get(19)?,
+                ci_provider: row.get(20)?,
+                ci_run_url: row.get(21)?,
+                description: row.get(22)?,
+                domarinn_version: row.get(23)?,
             })
         })?;
         let mut collected: Vec<RunRow> = Vec::new();
@@ -610,6 +652,13 @@ struct RunRow {
     duration_ms: i64,
     cache_hits: Option<i64>,
     cache_misses: Option<i64>,
+    actor: Option<String>,
+    host: Option<String>,
+    uploaded_by: Option<String>,
+    ci_provider: Option<String>,
+    ci_run_url: Option<String>,
+    description: Option<String>,
+    domarinn_version: Option<String>,
 }
 
 /// Map a stored cache counter to its wire value: NULL (legacy, pre-backfill)
@@ -644,6 +693,13 @@ impl RunRow {
             duration_ms: self.duration_ms,
             cache_hits: clean_cache_count(self.cache_hits),
             cache_misses: clean_cache_count(self.cache_misses),
+            actor: self.actor.clone(),
+            host: self.host.clone(),
+            uploaded_by: self.uploaded_by.clone(),
+            ci_provider: self.ci_provider.clone(),
+            ci_run_url: self.ci_run_url.clone(),
+            note: self.description.clone(),
+            domarinn_version: self.domarinn_version.clone(),
             tags,
         }
     }
@@ -666,7 +722,8 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     git_branch, git_commit, git_dirty, ci_provider, ci_run_url,
                     case_count, pass_count, fail_count, error_count,
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                    content_hash, uploaded_by, config_digest, cache_hits, cache_misses
+                    content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
+                    actor, host, description, domarinn_version
              FROM runs WHERE id = ?1",
             params![id.as_str()],
             |row| {
@@ -696,6 +753,10 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     config_digest: empty_to_none(row.get::<_, Option<String>>(21)?),
                     cache_hits: clean_cache_count(row.get::<_, Option<i64>>(22)?),
                     cache_misses: clean_cache_count(row.get::<_, Option<i64>>(23)?),
+                    actor: row.get::<_, Option<String>>(24)?,
+                    host: row.get::<_, Option<String>>(25)?,
+                    note: row.get::<_, Option<String>>(26)?,
+                    domarinn_version: row.get::<_, Option<String>>(27)?,
                     // Filled in below, after the row is loaded.
                     tags: Vec::new(),
                     assert_labels: Vec::new(),

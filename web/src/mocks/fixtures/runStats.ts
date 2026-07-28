@@ -1,10 +1,21 @@
 import type { RunDetailResponse, RunListItem } from "@/api";
 import { parseTimestamp } from "@/lib/format";
-import { hash, rand, round4, toIso } from "./rng";
+import { hash, pick, rand, round4, toIso } from "./rng";
 import { RESULT_SCHEMA_VERSION } from "./suites";
 import { RUN_METAS, RUN_META_BY_ID } from "./runMeta";
 import { generateCases, type MockCaseRow } from "./cases";
 import { configDigest } from "./config";
+
+/** Deterministic people the mock attributes runs to. */
+const ACTORS = ["alice", "bob", "dana", "erik"];
+
+/** Notes a developer might leave on an iteration run. */
+const NOTES = [
+  "trying temperature 0.3",
+  "retry backoff, 3rd attempt",
+  "new rubric wording",
+  "checking the tokenizer fix",
+];
 
 // ---------------------------------------------------------------------------
 // Run stats: one internal computation, projected into the two distinct wire
@@ -36,6 +47,10 @@ export interface RunStats {
   duration_ms: number;
   content_hash: string;
   uploaded_by: string | null;
+  actor: string | null;
+  host: string | null;
+  note: string | null;
+  domarinn_version: string | null;
   cache_hits: number;
   cache_misses: number;
   tags: string[];
@@ -67,6 +82,11 @@ export function runStats(runId: string): RunStats {
     else cache_misses++;
   }
   const uploadDelayMs = 1500 + Math.floor(rand(meta.suiteKey, meta.runIndex, "upl") * 4000);
+  // Provenance mirrors the real split: a CI run is attributed to the person who
+  // pushed the change (the CI actor) and uploaded by a shared token, while a
+  // developer run is both run and uploaded by the same account.
+  const isCi = meta.ci_run_url != null;
+  const person = pick(ACTORS, meta.suiteKey, meta.runIndex, "actor");
   return {
     id: meta.id,
     project: meta.suiteDef.project,
@@ -88,7 +108,13 @@ export function runStats(runId: string): RunStats {
     cost_usd: round4(cost),
     duration_ms: duration,
     content_hash: `sha256:${hash(meta.id, "hash").toString(16).padStart(16, "0")}`,
-    uploaded_by: null,
+    uploaded_by: isCi ? "ci-token" : person,
+    actor: person,
+    host: isCi
+      ? `runner-${String(1 + Math.floor(rand(meta.suiteKey, meta.runIndex, "host") * 9)).padStart(2, "0")}`
+      : `${person}-laptop`,
+    note: isCi ? null : pick(NOTES, meta.suiteKey, meta.runIndex, "note"),
+    domarinn_version: "0.2.0",
     cache_hits,
     cache_misses,
     tags: meta.tags,
@@ -117,6 +143,13 @@ function toRunListItem(s: RunStats): RunListItem {
     duration_ms: s.duration_ms,
     cache_hits: s.cache_hits,
     cache_misses: s.cache_misses,
+    actor: s.actor,
+    host: s.host,
+    uploaded_by: s.uploaded_by,
+    ci_provider: s.ci_provider,
+    ci_run_url: s.ci_run_url,
+    note: s.note,
+    domarinn_version: s.domarinn_version,
     tags: s.tags,
   };
 }
@@ -147,6 +180,10 @@ function toRunDetailResponse(s: RunStats): RunDetailResponse {
     config_digest: configDigest(s.id),
     cache_hits: s.cache_hits,
     cache_misses: s.cache_misses,
+    actor: s.actor,
+    host: s.host,
+    note: s.note,
+    domarinn_version: s.domarinn_version,
     tags: s.tags,
     assert_labels: s.assert_labels,
   };

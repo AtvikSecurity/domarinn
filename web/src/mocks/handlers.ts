@@ -115,6 +115,8 @@ function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
   const until = p.get("until");
   const status = p.get("status");
   const cached = p.get("cached");
+  const origin = p.get("origin");
+  const actor = p.get("actor");
   return runs.filter((r) => {
     if (project && r.project !== project) return false;
     if (suite && r.suite !== suite) return false;
@@ -125,6 +127,11 @@ function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
     if (status && derivedRunStatus(r) !== status) return false;
     if (cached === "exclude" && hiddenByCachedExclude(r)) return false;
     if (cached === "only" && !fullyCached(r)) return false;
+    // Mirrors the server: `ci_provider IS NOT NULL` is the exact CI predicate,
+    // and `actor` matches either who ran a run or who uploaded it.
+    if (origin === "ci" && r.ci_provider == null) return false;
+    if (origin === "local" && r.ci_provider != null) return false;
+    if (actor && r.actor !== actor && r.uploaded_by !== actor) return false;
     return true;
   });
 }

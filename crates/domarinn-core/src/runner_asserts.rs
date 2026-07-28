@@ -205,3 +205,85 @@ pub(super) fn has_latency_assert(asserts: &[Assert]) -> bool {
         .iter()
         .any(|a| matches!(a.kind, AssertKind::Latency { .. }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asserts::AssertName;
+
+    fn result(kind: AssertName, status: AssertStatus, reason: &str) -> AssertResult {
+        AssertResult {
+            kind,
+            status,
+            score: 0.0,
+            weight: 1.0,
+            reason: reason.to_string(),
+            details: None,
+            criteria: None,
+            cached: false,
+        }
+    }
+
+    #[test]
+    fn no_errored_asserts_yields_no_message() {
+        let results = [
+            result(AssertName::Contains, AssertStatus::Pass, "ok"),
+            result(AssertName::Regex, AssertStatus::Fail, "no match"),
+        ];
+        assert_eq!(assert_error_message(&results), None);
+    }
+
+    /// The whole point of the change: the message names the assert and quotes
+    /// its reason, instead of the constant that used to occupy the indexed
+    /// `cases.error` column on every graded failure.
+    #[test]
+    fn a_single_errored_assert_names_its_kind_and_reason() {
+        let results = [
+            result(AssertName::Contains, AssertStatus::Pass, "ok"),
+            result(
+                AssertName::LlmRubric,
+                AssertStatus::Error,
+                "grader returned a truncated verdict",
+            ),
+        ];
+        assert_eq!(
+            assert_error_message(&results).as_deref(),
+            Some("llm-rubric assertion errored: grader returned a truncated verdict")
+        );
+    }
+
+    #[test]
+    fn later_errors_are_reduced_to_a_count() {
+        let results = [
+            result(AssertName::LlmRubric, AssertStatus::Error, "grader down"),
+            result(AssertName::Exec, AssertStatus::Error, "exit 3"),
+            result(AssertName::Similar, AssertStatus::Error, "no embeddings"),
+        ];
+        assert_eq!(
+            assert_error_message(&results).as_deref(),
+            Some("llm-rubric assertion errored: grader down (and 2 more errored)")
+        );
+    }
+
+    /// A grader can fail without saying why; the message must still identify
+    /// which assert broke rather than trailing an empty colon.
+    #[test]
+    fn an_empty_reason_still_names_the_assert() {
+        let results = [result(AssertName::Exec, AssertStatus::Error, "   ")];
+        assert_eq!(
+            assert_error_message(&results).as_deref(),
+            Some("exec assertion errored")
+        );
+    }
+
+    /// `Skipped` is short-circuiting, not failure, and must not be reported as
+    /// an error — a case whose deferred asserts were skipped still passed.
+    #[test]
+    fn skipped_asserts_are_not_errors() {
+        let results = [
+            result(AssertName::Contains, AssertStatus::Pass, "ok"),
+            result(AssertName::LlmRubric, AssertStatus::Skipped, "decided"),
+        ];
+        assert_eq!(assert_error_message(&results), None);
+    }
+}

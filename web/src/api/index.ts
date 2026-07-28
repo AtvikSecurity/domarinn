@@ -68,6 +68,7 @@ export type { SearchResponse } from "./generated/SearchResponse";
 export type { RunSearchHit } from "./generated/RunSearchHit";
 export type { CaseSearchHit } from "./generated/CaseSearchHit";
 export type { RunStatusFilter } from "./generated/RunStatusFilter";
+export type { OriginFilter } from "./generated/OriginFilter";
 export type { CachedFilter } from "./generated/CachedFilter";
 
 // Provider × prompt × test matrix (`GET /runs/{id}/matrix`). Columns are the

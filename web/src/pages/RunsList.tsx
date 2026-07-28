@@ -23,6 +23,7 @@ import { ErrorState, EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { Chip } from "@/components/ui/Chip";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { RunOriginCell } from "@/components/RunOriginCell";
 
 /** From a pair of selected run ids, resolve which is base (older) / head (newer). */
 function comparePair(
@@ -237,7 +238,7 @@ function SuiteGroup({ group }: { group: Group }) {
         </div>
       </header>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[940px] text-sm">
+        <table className="w-full min-w-[1080px] text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
               <th className="w-8 px-3 py-2 font-medium">
@@ -245,6 +246,7 @@ function SuiteGroup({ group }: { group: Group }) {
               </th>
               <th className="px-4 py-2 font-medium">Run</th>
               <th className="px-3 py-2 font-medium">When</th>
+              <th className="px-3 py-2 font-medium">Who</th>
               <th className="px-3 py-2 font-medium">Branch</th>
               <th className="px-3 py-2 font-medium">Pass rate</th>
               <th className="px-3 py-2 text-right font-medium">Cases</th>
@@ -318,11 +320,24 @@ function SuiteGroup({ group }: { group: Group }) {
                   </Tooltip>
                 </td>
                 <td className="px-3 py-2">
+                  <RunOriginCell run={r} />
+                </td>
+                <td className="px-3 py-2">
                   <span className="font-mono text-xs">{r.git_branch ?? "-"}</span>
                   {r.git_commit ? (
                     <Tooltip content={r.git_commit}>
                       <span className="ml-1 font-mono text-[11px] text-muted">
                         @{r.git_commit.slice(0, 7)}
+                      </span>
+                    </Tooltip>
+                  ) : null}
+                  {/* An uncommitted worktree means this result cannot be
+                      reproduced from the commit next to it — the one piece of
+                      trust information a shared board most needs. */}
+                  {r.git_dirty ? (
+                    <Tooltip content="Ran against an uncommitted worktree; not reproducible from this commit">
+                      <span className="ml-1 text-[11px] text-amber" aria-label="dirty worktree">
+                        ⟡
                       </span>
                     </Tooltip>
                   ) : null}

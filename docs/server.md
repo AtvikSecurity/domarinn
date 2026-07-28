@@ -338,7 +338,7 @@ token has no owning user and gets a `403` here.
 | Method | Path                                    | Scope   | Notes |
 |--------|-----------------------------------------|---------|-------|
 | POST   | `/api/v1/runs`                          | `write` | Ingest a run document. See [ingest](#run-ingest). |
-| GET    | `/api/v1/runs`                          | `read`  | List runs (filterable, paginated). |
+| GET    | `/api/v1/runs`                          | `read`  | List runs (filterable, paginated). Filters: `project`, `suite`, `tag`, `branch`, `since`, `until`, `status`, `cached`, `origin` (`ci`\|`local`), `actor`. |
 | GET    | `/api/v1/runs/{id}`                      | `read`  | Full run detail. `404` if unknown. |
 | GET    | `/api/v1/runs/{id}/cases`               | `read`  | Lean list of the run's cases (filterable, paginated). |
 | GET    | `/api/v1/runs/{id}/cases/{case_key}`    | `read`  | One case's full detail. |
@@ -533,7 +533,7 @@ service its own hostname, not a path prefix).
 
 | Path                          | Page | What it does |
 |-------------------------------|------|--------------|
-| `/`                           | Runs list | Browse and filter runs (project, suite, tag, branch, status). |
+| `/`                           | Runs list | Browse and filter runs (project, suite, tag, branch, status, origin, actor). |
 | `/runs/:id`                   | Run detail | The **cases × asserts grid**; click a cell to open the **detail drawer** with the case's output and assertion evidence. |
 | `/runs/:id/compare[/:other]`  | Compare | Base/head run pickers with **regression highlighting** (newly failing cases stand out). |
 | `/cache`                      | Cache stats | Entry count, total size, hit/miss counters. |

@@ -24,4 +24,8 @@ config_digest: string | null,
 /**
  * Provider-call cache counters (see [`RunListItem::cache_hits`]).
  */
-cache_hits: number | null, cache_misses: number | null, tags: Array<string>, assert_labels: Array<string>, };
+cache_hits: number | null, cache_misses: number | null, 
+/**
+ * Run provenance — see the same-named fields on [`RunListItem`].
+ */
+actor: string | null, host: string | null, note: string | null, domarinn_version: string | null, tags: Array<string>, assert_labels: Array<string>, };

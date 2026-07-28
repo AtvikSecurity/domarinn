@@ -27,6 +27,13 @@ function run(id: string, created_at: string): RunListItem {
     duration_ms: 0,
     cache_hits: null,
     cache_misses: null,
+    actor: null,
+    host: null,
+    uploaded_by: null,
+    ci_provider: null,
+    ci_run_url: null,
+    note: null,
+    domarinn_version: null,
     tags: [],
   };
 }
