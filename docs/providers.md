@@ -69,11 +69,16 @@ and closes it, then reads one JSON response from stdout:
   `prompt` is **null / omitted** when the suite has no prompts (the "self-input"
   case) — the provider works from `vars` alone. A text prompt is sent as
   `{ "text": "…" }`; a chat prompt as `{ "messages": [...] }`.
-- **Response** (child stdout → domarinn):
-  `{ "output" (required), "usage"?, "cost_usd"?, "error"?, "metadata"? }`.
+- **Response** (child stdout → domarinn): `output` is the only required field;
+  see [the protocol reference](./protocol.md#response) for the full set.
   A string `output` becomes text; any other JSON becomes a structured output.
   `usage` fills token counts, `cost_usd` feeds the [`cost`](./assertions.md#budget-assertions-cost-latency-tokens)
   assertion, and `metadata` is retained as the raw payload.
+- Worth reporting even though all of it is optional: `empty_reason` (so a
+  refusal is diagnosed instead of scoring zero against every assertion),
+  `error.class` (so a rejected credential is distinguishable from a crash),
+  `error.details` (structured diagnostics that survive to the stored case), and
+  `model` (so an alias that silently repointed is visible).
 
 The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus
 your `env`. The full wire contract, exit-code rules, and minimal Bash/Python
@@ -131,8 +136,9 @@ Behavior:
   pulled out and joined with blank lines into the top-level `system` field; the
   rest become `messages`. A plain text prompt becomes a single `user` message.
 - Parses the response by concatenating `text` content blocks. Records token
-  `usage` (including `cache_read_input_tokens`) and `stop_reason`. It does not
-  compute `cost_usd`.
+  `usage` (cache reads and both cache-write TTLs included), `stop_reason`, and
+  the `model` the API reports having served. `cost_usd` is computed from the
+  built-in rate table; see [`pricing`](#pricing) to override it.
 - A missing prompt is a fatal error (this provider requires a prompt).
 
 ```yaml
@@ -168,7 +174,7 @@ Behavior:
   through with their roles.
 - Parses `choices[0].message.content` as the output, `finish_reason` as the
   stop reason, and `usage.prompt_tokens` / `usage.completion_tokens` as token
-  usage. It does not compute `cost_usd`.
+  usage. `cost_usd` is computed from domarinn's built-in rate table for known models; set `pricing:` to override the rates or price a model the table does not know.
 - A missing prompt is a fatal error.
 
 ```yaml
@@ -189,6 +195,76 @@ providers:
 ```
 
 ---
+
+## Pricing
+
+`anthropic` and `openai` providers cost each call from a built-in per-model
+rate table, so [`cost`](./assertions.md#budget-assertions-cost-latency-tokens)
+assertions and the run-level cost figure mean something without configuration.
+
+A model the table does not know reports **no cost at all** rather than a
+guessed one — the `cost` assertion keeps honestly saying "not reported", and
+the run warns once naming the id. A made-up number that silently passes or
+fails a budget is worse than a loud no-op.
+
+Override the rates, or price a model the table has never heard of, with
+`pricing` (USD per **million** tokens, merged field-wise over any built-in
+row):
+
+```yaml
+providers:
+  - id: via-gateway
+    type: anthropic
+    model: our-fine-tune
+    base_url: https://gateway.internal/v1
+    pricing:
+      input_per_mtok: 2.00
+      output_per_mtok: 8.00
+      cache_read_per_mtok: 0.20
+      cache_write_per_mtok: 2.50
+```
+
+An `exec` provider that reports its own `cost_usd` always wins: it is the only
+party that knows whether it hit a proxy, a batch endpoint, or a different model
+entirely.
+
+`pricing` never reaches a provider's fingerprint, so setting it does not
+invalidate a single cache entry. Cost is not request identity.
+
+### Graders are priced too, and reported separately
+
+`pricing` also works on a `grader.provider` block and on the `embeddings`
+provider, so the models doing the *scoring* are priced by the same table and
+the same override. What they cost is reported as `grader_cost_usd`, next to
+`cost_usd` rather than added to it:
+
+- `cost_usd` is what the **systems under test** cost. That is the number a
+  `cost:` assertion budgets, and the one a model-selection decision turns on. A
+  judge's price must not move a budget gate on the model being judged.
+- `grader_cost_usd` is what **measuring them** cost. On a suite scored by a
+  larger model than it tests, this is the bigger of the two; merging them would
+  hide that rather than report it.
+
+Per-assertion, the same figure appears as `AssertResult.cost_usd`. An `exec`
+grader reports nothing — the child spends against whatever endpoint it chose and
+the protocol gives it no way to say so, and a zero there would claim custom
+grading is free.
+
+## Credential preflight
+
+Before the first call, domarinn checks that every credential the run will
+actually read resolves to a non-empty value, and fails with exit 2 naming the
+provider and the variable if not. "Actually read" is the operative part: a
+grader key is only required when a rubric assertion survived your filters.
+
+It also rejects one known-wrong credential *shape* — an Anthropic OAuth access
+token (`sk-ant-oat…`), which the Messages API rejects as `x-api-key`. That is a
+hard failure only against `api.anthropic.com`; against any other `base_url` it
+is a warning, because a gateway may legitimately accept it.
+
+Without this, a wrong **grader** key errors every case in the suite and exits 3,
+which reads as an infrastructure fault after burning the run's entire provider
+spend.
 
 ## `http`
 
@@ -250,6 +326,7 @@ provider in the suite is handed to the grader.
 | `base_url`    | string    | `https://api.openai.com/v1`  | API base. |
 | `api_key_env` | string    | `OPENAI_API_KEY`             | Env var holding the API key (sent as a bearer token). |
 | `params`      | object    | `{}`                         | Extra request-body params, passed through verbatim. |
+| `pricing`     | object    | built-in rate                | Rate override. Only `input_per_mtok` is read — see below. |
 
 Behavior:
 
@@ -260,6 +337,11 @@ Behavior:
 - Listing an `embeddings` provider as a *direct* system under test is
   unsupported (the provider factory rejects it); it exists only to serve
   `similar`.
+- Each `similar` assertion embeds **two** strings (the output and the
+  reference), and both calls are priced and reported as that assertion's
+  grading cost. Only `input_per_mtok` applies: an embedding call has no output
+  tokens and the endpoint reports no cache counters, so the other `pricing`
+  fields would price components that do not exist.
 
 ```yaml
 providers:

@@ -78,7 +78,7 @@ The `grader:` block wraps a provider plus grading options:
 |----------------|---------------|------------|---------|
 | `provider`     | provider spec | –          | The judge model. Only `anthropic` and `openai` are supported for grading. |
 | `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template. |
-| `verdict_mode` | string        | `forced`   | How the structured verdict is obtained: `forced` (default) or `auto`. |
+| `verdict_mode` | string        | `forced`   | How the structured verdict is obtained: `forced` (default) or `auto` (rejected at load — not implemented). |
 
 The `provider` is a standard [`ProviderKind`](./providers.md) — but only the
 `anthropic` and `openai` shapes are valid graders. Any other provider type
@@ -216,13 +216,47 @@ weighted-mean score and pass/fail then follow the normal
 
 | Setting                    | Value |
 |----------------------------|-------|
-| Grader HTTP timeout        | 120 s |
+| Grader call timeout        | 120 s, or `grader.timeout_ms` |
 | Default grader `max_tokens`| 4096  |
 | Default verdict mode       | `forced` |
+
+`grader.timeout_ms` covers `exec` assertions as well as the HTTP judges — the
+ceiling belongs to grading, not to a transport.
 
 Non-2xx responses, transport errors, missing `tool_use`/content, and truncated
 verdicts all surface as grader **errors** (fail-closed), recorded as
 `grader error: …`.
+
+---
+
+## What grading costs
+
+Judge calls are priced from the same built-in rate table as the systems under
+test, and a `grader.provider` accepts the same [`pricing:`
+override](./providers.md#pricing). The same applies to the embeddings provider
+behind `similar`, which spends two calls per assertion (the output and the
+reference).
+
+The figure is reported **separately** from the run's cost:
+
+| Where | Field | Meaning |
+|---|---|---|
+| Run summary | `cost_usd` | What the systems under test cost. |
+| Run summary | `grader_cost_usd` | What grading them cost. |
+| Each assertion | `cost_usd` | What that one verdict cost. |
+
+They are not added together on purpose. `cost_usd` is what a `cost:` assertion
+budgets, and a judge's price must not move a budget gate on the model being
+judged. It also stays honest about the common case where the judge is the more
+expensive model: a merged number would bury that.
+
+Verdicts are cached, and the cost is cached with them — so a fully-cached run
+still reports what its grading is worth rather than dropping to zero. Which
+calls were actually paid for this time is visible per assertion, via `cached`.
+
+An `exec` grader reports nothing: the child spends against whatever endpoint it
+chose, and the protocol gives it no way to say so. A zero would claim custom
+grading is free.
 
 ---
 

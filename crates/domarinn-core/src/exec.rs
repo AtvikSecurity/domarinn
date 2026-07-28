@@ -6,6 +6,47 @@
 //! stdout is an infrastructure error.
 
 use std::collections::BTreeMap;
+
+/// An identity for the *program* a command runs, not just its argv.
+///
+/// This is what makes caching an `exec` provider or assertion safe by default.
+/// `command` does not move when the binary behind it is rebuilt, so a key over
+/// argv alone would serve stale output from every entry after a rebuild —
+/// silently, and worst of all in CI. That hazard is the reason exec caching
+/// used to be opt-in behind a hand-managed `cache_salt`.
+///
+/// Every argument that names a readable file contributes its path, length and
+/// modification time. That covers the two shapes that matter — a compiled
+/// binary (`./sut`) and an interpreter plus a script (`python3 grade.py`) —
+/// and costs a `stat` per argument rather than hashing megabytes of executable
+/// on every cache lookup.
+///
+/// Arguments that are not files (flags, plain values, a bare `sh`) contribute
+/// nothing beyond already being in `command`. A program resolved from `PATH`
+/// with no path separator is therefore *not* covered; a suite that needs that
+/// can still set `cache_salt` explicitly, which composes with this.
+pub fn program_identity(command: &[String]) -> serde_json::Value {
+    let mut parts = Vec::new();
+    for arg in command {
+        let Ok(meta) = std::fs::metadata(arg) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+        parts.push(serde_json::json!({
+            "path": arg,
+            "len": meta.len(),
+            "mtime": mtime,
+        }));
+    }
+    serde_json::Value::Array(parts)
+}
 use std::path::Path;
 use std::time::Duration;
 

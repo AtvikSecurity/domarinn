@@ -131,6 +131,33 @@ pub struct AssertResult {
     pub criteria: Option<serde_json::Value>,
     #[serde(default)]
     pub cached: bool,
+    /// What producing this verdict cost, for the assertions that call a model
+    /// to decide (`llm-rubric`, `similar`). Absent for a locally-evaluated
+    /// assertion, which costs nothing, and for an `exec` grader, whose spending
+    /// domarinn cannot see.
+    ///
+    /// Deliberately *not* folded into `CaseResult.cost_usd`: that number is what
+    /// the system under test cost, which is what a `cost:` assertion budgets. A
+    /// judge's price should not move a budget gate on the model being judged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+/// One tool call a model decided to make.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
+pub struct ToolCall {
+    /// The vendor's call id, when there was one. Carried so a multi-call
+    /// response stays attributable; never interpreted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    /// The decoded arguments object — never the raw JSON string some vendors
+    /// put on the wire, which would hand every assertion a parsing problem
+    /// instead of an argument.
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub arguments: serde_json::Value,
 }
 
 /// The result of one matrix cell.
@@ -185,6 +212,25 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub stop_reason: Option<String>,
+    /// The model the provider actually used, as reported by the provider —
+    /// not the one the suite configured.
+    ///
+    /// The two diverge whenever a suite pins a floating alias and the vendor
+    /// repoints it, which otherwise has no signal at all: the configured model
+    /// is in the provider fingerprint, so the cache and every comparison agree
+    /// nothing changed while the thing being measured did. `None` for providers
+    /// with no model concept, and for runs recorded before this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    /// The tool calls the model decided to make, in order.
+    ///
+    /// A *decision*, not an execution: domarinn never runs a tool. Recording
+    /// them is what makes a case whose right answer is a tool call gradeable at
+    /// all — previously such a case had no prose, scored zero, and looked like
+    /// a model failure rather than an evaluation that could not see the answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "unknown")]
     pub raw: Option<serde_json::Value>,
@@ -235,6 +281,21 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
+    /// Structured detail for whatever `error` describes — the machine-readable
+    /// half of a message that is otherwise prose.
+    ///
+    /// Provider-authored for a provider failure. It exists because `error` was
+    /// the only field that survived a failed call, so anything structured had
+    /// to be formatted into a sentence and parsed back out by whoever read it.
+    ///
+    /// Size-capped like `raw`, but deliberately **not** gated behind
+    /// `--no-raw`: that flag exists to shrink documents by dropping bulky
+    /// happy-path provenance, and an errored case has no `output` and no `raw`,
+    /// so this is the only thing it carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "unknown")]
+    pub error_details: Option<serde_json::Value>,
     /// What kind of failure `error` describes — see [`crate::error_class`].
     ///
     /// Strictly additive: `error` stays the verbatim prose it always was, and
@@ -279,6 +340,45 @@ pub struct RunSummary {
     /// cost is a longer wall-clock.
     #[serde(default)]
     pub retried_cases: u64,
+    /// Input tokens served from a provider-side prompt cache, summed.
+    ///
+    /// Note these three carry `skip_serializing_if`, unlike the bare
+    /// `#[serde(default)]` counters above. That is deliberate and not a style
+    /// inconsistency: those fields predate the server's content-hash ingest, so
+    /// they already appear in every stored run. Adding a *new* always-emitted
+    /// counter would make every historical run grow a `0` on re-serialization
+    /// and shift the hash the server uses for idempotency, turning a re-upload
+    /// into a 409. Guarded by
+    /// `a_run_without_optional_provenance_does_not_grow_it_on_re_serialization`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_read_tokens: u64,
+    /// Input tokens written into a provider-side prompt cache, summed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_tokens: u64,
+    /// What the cached cases would have cost had they been called.
+    ///
+    /// Exact arithmetic on data already present — the sum of `cost_usd` over
+    /// cases that were cache hits — not a counterfactual re-pricing. Note
+    /// `cost_usd` above is the cost of the *work*, so money actually spent this
+    /// run is `cost_usd - cache_savings_usd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_savings_usd: Option<f64>,
+    /// What the graders cost, summed over every assertion that called a model
+    /// to reach its verdict.
+    ///
+    /// Separate from `cost_usd` rather than added to it, because the two answer
+    /// different questions: `cost_usd` is what the systems under test cost — the
+    /// number a `cost:` assertion budgets and a model-selection decision turns
+    /// on — while this is what measuring them cost. On a suite graded by a
+    /// larger model than it tests, this is the bigger of the two, and adding
+    /// them would hide that rather than report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grader_cost_usd: Option<f64>,
+}
+
+/// `skip_serializing_if` helper for counters that must stay absent at zero.
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
@@ -481,6 +581,8 @@ mod tests {
         assert!(case.raw.is_none());
         assert!(case.vars.is_empty());
         assert!(case.asserts[0].criteria.is_none());
+        assert!(case.model.is_none());
+        assert!(case.error_details.is_none());
 
         let reserialized = serde_json::to_string(&case).unwrap();
         assert!(!reserialized.contains("prompt"));
@@ -497,6 +599,21 @@ mod tests {
         assert!(!reserialized.contains("provider_digest"));
         assert!(!reserialized.contains("assert_digest"));
         assert!(!reserialized.contains("error_class"));
+        // The reported model and structured error detail. Same hazard: a
+        // `skip_serializing_if` dropped from either would make every stored
+        // run grow a `null` on re-serialization, moving the content hash the
+        // server uses for ingest idempotency.
+        assert!(!reserialized.contains("\"model\""));
+        assert!(!reserialized.contains("error_details"));
+        // The per-assertion grading cost. It sits inside every assert of every
+        // case, so it is the densest of these keys: emitting it as `null` would
+        // move the content hash of every stored run that has any assertions.
+        assert!(case.asserts[0].cost_usd.is_none());
+        assert!(!reserialized.contains("cost_usd"));
+        // Tool calls, same hazard: a `Vec` without `skip_serializing_if` would
+        // add `"tool_calls":[]` to every stored case ever written.
+        assert!(case.tool_calls.is_empty());
+        assert!(!reserialized.contains("tool_calls"));
     }
 
     /// The run-level counterpart of the guard above.
@@ -531,6 +648,14 @@ mod tests {
         assert!(!reserialized.contains("\"ci\""));
         assert!(!reserialized.contains("share_url"));
         assert!(!reserialized.contains("digests"));
+        // The cost/cache counters added alongside. Unlike the older bare-
+        // `default` fields on RunSummary, these must stay absent at zero — or
+        // every historical run grows three keys on re-serialization and the
+        // content hash the server ingests on moves.
+        assert!(!reserialized.contains("cache_read_tokens"));
+        assert!(!reserialized.contains("cache_write_tokens"));
+        assert!(!reserialized.contains("cache_savings_usd"));
+        assert!(!reserialized.contains("grader_cost_usd"));
     }
 
     #[test]

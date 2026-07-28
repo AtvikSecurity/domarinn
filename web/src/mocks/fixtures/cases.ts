@@ -439,6 +439,16 @@ export function detailAsserts(
         ? { criteria: synthCriteria(a.kind, pick(NOUNS, a.kind, seed), negate) }
         : {}),
       cached: false,
+      // Only the kinds that call a model to decide carry a cost. A `contains`
+      // check is local arithmetic, and pricing it would misrepresent what a
+      // suite actually spends on grading.
+      ...(a.kind === "llm-rubric" || a.kind === "similar"
+        ? {
+            cost_usd: round4(
+              0.0004 + rand(meta.suiteKey, seed, a.kind, "gcost") * 0.004,
+            ),
+          }
+        : {}),
     };
   });
 }

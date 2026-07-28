@@ -61,7 +61,7 @@ from "the harness broke". `3` (infra) wins over `1` (assertion) when both occur.
 |------|------|---------|
 | `0` | OK | Everything passed. |
 | `1` | assertion | An assertion failed, or a run regressed against a `--against` baseline. |
-| `2` | config/usage | Bad config or flags, or a suite that fails to load/validate. |
+| `2` | config/usage | Bad config or flags, a suite that fails to load or validate, a run that resolved to **zero test cases**, or a missing / wrong-shaped provider credential. |
 | `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, a `--cache-only` miss, the server was unreachable. |
 
 ---
@@ -87,6 +87,7 @@ results, and persist the run under `.domarinn/runs/<id>/`.
 | `--out <FILE>` | Write the primary output to a file instead of stdout. |
 | `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |
 | `--no-progress` | Disable the live progress bar (see below). |
+| `--allow-empty` | Succeed even if the run resolves to zero test cases. Without it that is exit 2, because a green result over no cells is indistinguishable from a green result over every cell. Pass it for a sharded matrix where a shard legitimately has no work. |
 | `--against <REF>` | Compare against a baseline run. `server:baseline` uses the baseline pinned for this suite on the results server (the only reference that works in CI); `latest` uses the newest local run *of the same suite*; also accepts a run id or a `result.json` path. A regression sets exit code `1`; a baseline that was requested but could not be resolved sets exit code `2`. |
 | `--summary-md <FILE>` | Write a Markdown summary (headline metrics table, failing cases, and any baseline comparison). Identical to what [`ci-summary`](#domarinn-ci-summary-run-flags) writes, minus the step outputs. |
 | `--share` | Upload the completed run to the configured server, and record the returned URL on the stored run. |
@@ -284,14 +285,22 @@ drift.
 domarinn schema config > domarinn.schema.json
 ```
 
-## `domarinn list <tests|providers|prompts> [PATH] [--json]`
+## `domarinn list <tests|providers|prompts> [PATH] [--json] [--generators]`
 
-List what a suite resolves to (tests are fully resolved — globs and generators
-included). `--json` emits a JSON array.
+List what a suite resolves to. `--json` emits a JSON array.
+
+`list tests` resolves inline cases, `file://` globs, and matrix expansion. It
+does **not** run the suite's `generator:` commands unless you pass
+`--generators`: a generator only produces cases by being executed, and `list` is
+otherwise a read-only command. Without the flag, a suite with generators gets a
+note on stderr saying how many were skipped; with it, the produced ids appear in
+the listing exactly as they will at run time, which is what makes them usable as
+`--filter` targets.
 
 ```sh
 domarinn list providers examples/render-health
 domarinn list tests . --json
+domarinn list tests . --generators
 ```
 
 ## `domarinn server [--port N] [--data-dir DIR]`

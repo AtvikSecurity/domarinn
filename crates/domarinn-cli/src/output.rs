@@ -188,7 +188,7 @@ fn render_table(result: &RunResult, palette: Palette, failed_only: bool) -> Stri
         errored,
         humanize_duration(duration_secs(result)),
     ));
-    out.push_str(&stats_line(s));
+    out.push_str(&stats_line(s, &result.cases));
     out.push('\n');
 
     if failed_only {
@@ -229,9 +229,43 @@ fn humanize_count(n: u64) -> String {
     }
 }
 
-/// The stats footer line: Wilson pass-rate interval, then token/cost/cache
-/// segments that are omitted when zero or absent, joined by ` · `.
-fn stats_line(s: &RunSummary) -> String {
+/// pass@1 across repeated trials, or `None` when the run had no repeats.
+///
+/// Groups cases by their cell minus the repeat index, so each group is one
+/// test's trials, and averages `pass_at_k(n, passed, 1)` over the groups.
+/// `stats::pass_at_k` has been implemented and unit-tested since it shipped
+/// and referenced nowhere; this is its first caller.
+fn pass_at_1(cases: &[domarinn_core::result::CaseResult]) -> Option<f64> {
+    use std::collections::BTreeMap;
+    let mut trials: BTreeMap<(String, Option<String>, String), (u64, u64)> = BTreeMap::new();
+    for c in cases {
+        let key = (
+            c.cell.provider_id.clone(),
+            c.cell.prompt_id.clone(),
+            c.cell.test_id.clone(),
+        );
+        let entry = trials.entry(key).or_insert((0, 0));
+        entry.0 += 1;
+        if c.status == domarinn_core::result::CaseStatus::Pass {
+            entry.1 += 1;
+        }
+    }
+    // No repeats means pass@1 is the pass rate, and printing it twice under two
+    // names is noise rather than information.
+    if trials.values().all(|(n, _)| *n <= 1) {
+        return None;
+    }
+    let total: f64 = trials
+        .values()
+        .map(|(n, passed)| domarinn_core::stats::pass_at_k(*n, *passed, 1))
+        .sum();
+    Some(total / trials.len() as f64)
+}
+
+/// The stats footer line: Wilson pass-rate interval, then pass@1 and the
+/// token/cost/cache segments that are omitted when zero or absent, joined
+/// by ` · `.
+fn stats_line(s: &RunSummary, run_cases: &[domarinn_core::result::CaseResult]) -> String {
     let mut segments = Vec::new();
     let rate = domarinn_core::stats::wilson(s.passed, s.total, domarinn_core::stats::Z_95);
     segments.push(format!(
@@ -247,10 +281,35 @@ fn stats_line(s: &RunSummary) -> String {
             humanize_count(s.completion_tokens),
         ));
     }
+    // pass@1 over repeated trials. Only meaningful with `--repeat`, and only
+    // *different* from the plain pass rate when a case's trials disagreed —
+    // which is exactly the judge/model variance `--repeat` exists to measure,
+    // and which the pass rate alone averages away.
+    if let Some(p1) = pass_at_1(run_cases) {
+        segments.push(format!("pass@1 {:.1}%", p1 * 100.0));
+    }
+    if s.cache_read_tokens > 0 || s.cache_write_tokens > 0 {
+        segments.push(format!(
+            "{} cache-read / {} cache-write tokens",
+            humanize_count(s.cache_read_tokens),
+            humanize_count(s.cache_write_tokens),
+        ));
+    }
     if let Some(cost) = s.cost_usd {
         if cost > 0.0 {
-            segments.push(format!("${cost:.4}"));
+            // The saving rides on the cost segment rather than standing alone:
+            // it is only meaningful next to the number it is a fraction of.
+            match s.cache_savings_usd.filter(|c| *c > 0.0) {
+                Some(saved) => segments.push(format!("${cost:.4} (${saved:.4} saved by cache)")),
+                None => segments.push(format!("${cost:.4}")),
+            }
         }
+    }
+    // Its own segment, never added to the line above: a suite judged by a
+    // larger model than it tests spends more here than on the run itself, and
+    // one merged number would hide exactly that.
+    if let Some(cost) = s.grader_cost_usd.filter(|c| *c > 0.0) {
+        segments.push(format!("${cost:.4} grading"));
     }
     if s.cache_hits > 0 {
         segments.push(format!("{} cache hits", s.cache_hits));
@@ -322,8 +381,21 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
             humanize_count(s.completion_tokens),
         ));
     }
+    if s.cache_read_tokens > 0 || s.cache_write_tokens > 0 {
+        out.push_str(&format!(
+            "| Cache tokens | {} read / {} written |\n",
+            humanize_count(s.cache_read_tokens),
+            humanize_count(s.cache_write_tokens),
+        ));
+    }
     if let Some(cost) = s.cost_usd.filter(|c| *c > 0.0) {
         out.push_str(&format!("| Cost | ${cost:.4} |\n"));
+    }
+    if let Some(saved) = s.cache_savings_usd.filter(|c| *c > 0.0) {
+        out.push_str(&format!("| Saved by cache | ${saved:.4} |\n"));
+    }
+    if let Some(cost) = s.grader_cost_usd.filter(|c| *c > 0.0) {
+        out.push_str(&format!("| Grading cost | ${cost:.4} |\n"));
     }
     if s.retried_cases > 0 {
         out.push_str(&format!("| Retries | {} cases |\n", s.retried_cases));
@@ -573,7 +645,7 @@ mod tests {
             failed: 1,
             ..Default::default()
         };
-        let line = stats_line(&s);
+        let line = stats_line(&s, &[]);
         assert!(line.starts_with("pass rate 83.3% (95% CI "));
         // No tokens/cost/cache segments when they are zero/None.
         assert!(!line.contains("tokens"));
@@ -594,7 +666,7 @@ mod tests {
             cache_hits: 3,
             ..Default::default()
         };
-        let line = stats_line(&s);
+        let line = stats_line(&s, &[]);
         assert!(line.contains("12.3k in / 4.5k out tokens"));
         assert!(line.contains("$0.4200"));
         assert!(line.contains("3 cache hits"));
@@ -776,10 +848,12 @@ mod tests {
                 details: None,
                 criteria: None,
                 cached: false,
+                cost_usd: None,
             }],
             _ => vec![],
         };
         let case = |test: &str, status: CaseStatus, score: f64| CaseResult {
+            tool_calls: Vec::new(),
             case_key: cell(test).case_key(),
             cell: cell(test),
             name: Some(test.into()),
@@ -791,6 +865,7 @@ mod tests {
             prompt: None,
             request: None,
             stop_reason: None,
+            model: None,
             raw: None,
             asserts: asserts(status),
             usage: None,
@@ -805,6 +880,7 @@ mod tests {
             provider_digest: None,
             assert_digest: None,
             error: None,
+            error_details: None,
             error_class: None,
         };
         let started = chrono::Utc::now();

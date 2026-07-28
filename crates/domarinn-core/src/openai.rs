@@ -24,9 +24,12 @@ pub struct OpenAiProvider {
     id: String,
     model: String,
     base_url: String,
-    api_key_env: String,
+    api_key_env: crate::config::EnvNames,
     params: ParamMap,
     client: reqwest::Client,
+    /// The effective rate for `model`, resolved once at construction. `None`
+    /// means this provider's calls cannot be priced, so `cost_usd` stays absent.
+    rate: Option<crate::pricing::ModelRate>,
 }
 
 impl OpenAiProvider {
@@ -34,20 +37,29 @@ impl OpenAiProvider {
         id: impl Into<String>,
         model: impl Into<String>,
         base_url: Option<String>,
-        api_key_env: Option<String>,
+        api_key_env: Option<crate::config::EnvNames>,
         params: Option<ParamMap>,
+        pricing: Option<crate::config::PricingCfg>,
     ) -> Self {
+        let model = model.into();
+        let id = id.into();
+        // Resolved here, not per call: `build_provider` runs once per provider
+        // per run, so the unknown-model warning fires exactly once per run per
+        // id with no global state — and `validate`/`list`, which never build a
+        // provider, stay silent.
+        let rate = crate::pricing::resolve_rate(&id, &model, pricing.as_ref());
         OpenAiProvider {
-            id: id.into(),
-            model: model.into(),
+            id,
+            model,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
+            api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".into()),
             params: params.unwrap_or_default(),
             client: http_client(DEFAULT_TIMEOUT),
+            rate,
         }
     }
 
-    fn build_body(&self, prompt: &RenderedPrompt) -> Json {
+    fn build_body(&self, prompt: &RenderedPrompt, tools: &[crate::config::ToolDef]) -> Json {
         let messages = to_messages(prompt);
         let mut body = serde_json::Map::new();
         for (k, v) in &self.params {
@@ -55,6 +67,31 @@ impl OpenAiProvider {
         }
         body.insert("model".into(), json!(self.model));
         body.insert("messages".into(), json!(messages));
+        // The one place the two vendors' tool shapes diverge: OpenAI wraps each
+        // declaration in a `function` object and calls the schema `parameters`.
+        // Written only when the suite declared tools, so a tool-free body — and
+        // therefore every cache entry keyed on one — is unchanged.
+        if !tools.is_empty() {
+            body.insert(
+                "tools".into(),
+                Json::Array(
+                    tools
+                        .iter()
+                        .map(|t| {
+                            json!({
+                                "type": "function",
+                                "function": {
+                                    "name": t.name,
+                                    "description": t.description.clone().unwrap_or_default(),
+                                    "parameters": t.input_schema.clone()
+                                        .unwrap_or_else(|| json!({"type": "object"})),
+                                },
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
         Json::Object(body)
     }
 
@@ -91,7 +128,7 @@ impl Provider for OpenAiProvider {
             )
         })?;
         let key = api_key(&self.api_key_env)?;
-        let body = self.build_body(prompt);
+        let body = self.build_body(prompt, &req.tools);
         let url = self.endpoint();
 
         let response = self
@@ -111,7 +148,7 @@ impl Provider for OpenAiProvider {
         }
 
         let payload: Json = response.json().await.map_err(transport_error)?;
-        parse_completion_response(&payload)
+        parse_completion_response(&payload, self.rate.as_ref())
     }
 
     fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
@@ -119,7 +156,7 @@ impl Provider for OpenAiProvider {
         Some(http_request_preview(
             "POST",
             &self.endpoint(),
-            self.build_body(prompt),
+            self.build_body(prompt, &req.tools),
         ))
     }
 }
@@ -134,12 +171,86 @@ fn to_messages(prompt: &RenderedPrompt) -> Vec<Json> {
     }
 }
 
+/// The `tool_calls` on a chat-completions message, in order.
+///
+/// The vendor split this exists to absorb: OpenAI sends `function.arguments` as
+/// a **JSON string**, where Anthropic sends a decoded object. Forwarding the
+/// string would hand every assertion a parsing problem instead of an argument,
+/// so it is parsed here. A string that is not valid JSON is kept verbatim
+/// rather than dropped — the call did happen, and a `tool-call` assertion
+/// matching on name alone must still see it.
+fn tool_calls_from_message(message: &Json) -> Vec<domarinn_types::result::ToolCall> {
+    let Some(calls) = message.get("tool_calls").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    calls
+        .iter()
+        .filter_map(|c| {
+            let f = c.get("function")?;
+            let raw = f.get("arguments");
+            let arguments = match raw.and_then(|a| a.as_str()) {
+                Some(text) => {
+                    serde_json::from_str(text).unwrap_or_else(|_| Json::String(text.to_string()))
+                }
+                None => raw.cloned().unwrap_or(Json::Null),
+            };
+            Some(domarinn_types::result::ToolCall {
+                id: c.get("id").and_then(|v| v.as_str()).map(str::to_string),
+                name: f.get("name").and_then(|v| v.as_str())?.to_string(),
+                arguments,
+            })
+        })
+        .collect()
+}
+
 /// Fields a reasoning model may use instead of `content` when it exposes its
 /// chain of thought. `reasoning` is what ollama emits; `reasoning_content` is
 /// the DeepSeek / vLLM spelling.
 const REASONING_FIELDS: [&str; 2] = ["reasoning", "reasoning_content"];
 
-fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, ProviderError> {
+/// The billable tokens in a chat-completions response.
+///
+/// The vendors disagree about what "input tokens" counts, and getting this
+/// backwards double-charges every cached call at the full rate.
+///
+/// Anthropic's `input_tokens` *excludes* its cache counters. OpenAI's
+/// `prompt_tokens` *includes* `cached_tokens`. [`TokenUsage`] follows
+/// Anthropic's shape — the fields sum, and `input_tokens` means "tokens billed
+/// at the full input rate" — so the cached span is subtracted out here rather
+/// than counted twice.
+///
+/// Shared with the llm-rubric grader, which calls the same endpoint. That is
+/// the point of it being a function: this subtraction is exactly the thing a
+/// second implementation would forget.
+pub(crate) fn usage_from_payload(payload: &Json) -> Option<TokenUsage> {
+    payload.get("usage").map(|u| {
+        let prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cache_read_tokens = u
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64());
+        TokenUsage {
+            // Saturating because the subtraction is over numbers a server sent
+            // us: a provider reporting `cached_tokens > prompt_tokens` should
+            // not underflow.
+            input_tokens: prompt_tokens.saturating_sub(cache_read_tokens.unwrap_or(0)),
+            output_tokens: u
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            cache_read_tokens,
+            // OpenAI's prompt caching is automatic and has no write step to
+            // bill for, so there is nothing to report rather than a zero.
+            cache_write_tokens: None,
+            cache_write_1h_tokens: None,
+        }
+    })
+}
+
+fn parse_completion_response(
+    payload: &Json,
+    rate: Option<&crate::pricing::ModelRate>,
+) -> Result<ProviderResponse, ProviderError> {
     let choice = payload
         .get("choices")
         .and_then(|c| c.as_array())
@@ -171,14 +282,7 @@ fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, Provide
         .and_then(|s| s.as_str())
         .map(String::from);
 
-    let usage = payload.get("usage").map(|u| TokenUsage {
-        input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        output_tokens: u
-            .get("completion_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0),
-        cache_read_tokens: None,
-    });
+    let usage = usage_from_payload(payload);
 
     // Record which field the scored text came from, so the UI can label an
     // answer that is really exposed reasoning instead of presenting it as the
@@ -202,14 +306,10 @@ fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, Provide
 
     let empty_reason = if text.trim().is_empty() {
         let mut candidates = Vec::new();
-        match finish_reason {
-            Some("length") => candidates.push(EmptyReason::new(EmptyReason::TRUNCATED)),
-            Some("content_filter") => {
-                candidates.push(EmptyReason::new(EmptyReason::CONTENT_FILTER))
-            }
-            Some("tool_calls") => candidates.push(EmptyReason::new(EmptyReason::TOOL_USE_ONLY)),
-            _ => {}
-        }
+        // Shared with every other provider, including exec children: one
+        // vocabulary rather than a hand-rolled match per call site, so a
+        // reason added for one provider is understood by all of them.
+        candidates.extend(finish_reason.and_then(crate::empty::from_stop_reason));
         if message.is_none() {
             candidates.push(EmptyReason::new(EmptyReason::NO_CONTENT_BLOCKS));
         } else if reasoning.is_some() {
@@ -221,14 +321,34 @@ fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, Provide
         None
     };
 
+    // Costed here, in the parse path, rather than in the runner. A cache hit
+    // replays `cost_usd` from its entry, so costing downstream would re-price a
+    // replayed hit against today's rate table — and a run's cost would then
+    // depend on when you read it. Computed once, with the rates in effect at
+    // the moment of the call, and replayed verbatim forever.
+    let cost_usd = rate
+        .and_then(|r| usage.as_ref().and_then(|u| crate::pricing::cost_of(u, r)))
+        .map(|c| c.to_usd());
+
     Ok(ProviderResponse {
+        tool_calls: choice
+            .and_then(|c| c.get("message"))
+            .map(tool_calls_from_message)
+            .unwrap_or_default(),
         output: Output::Text(text),
         usage,
-        cost_usd: None,
+        cost_usd,
         stop_reason,
         raw: Some(raw),
         reasoning: reasoning.map(str::to_string),
         empty_reason,
+        // The model the API says it served, not the one configured. An alias
+        // like a floating snapshot pointer silently repointing is exactly the
+        // drift this exists to make visible.
+        model: payload
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
     })
 }
 
@@ -243,9 +363,37 @@ mod tests {
     /// See the matching test in `anthropic.rs` for why this is load-bearing:
     /// the fingerprint feeds every cache key, so an unconditional change here
     /// invalidates every cached entry in every store.
+    /// The vendor trap: OpenAI's `prompt_tokens` *includes* `cached_tokens`,
+    /// where Anthropic's `input_tokens` excludes its cache counters. Without
+    /// the subtraction the cached span is billed at the full input rate on top
+    /// of the discounted one.
+    #[test]
+    fn cached_prompt_tokens_are_not_double_counted() {
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 10,
+                    "prompt_tokens_details": {"cached_tokens": 800}
+                }
+            }),
+            None,
+        )
+        .unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(
+            usage.input_tokens, 200,
+            "full-rate input excludes the cached span"
+        );
+        assert_eq!(usage.cache_read_tokens, Some(800));
+        // Everything the provider billed for still adds back up to what it sent.
+        assert_eq!(usage.billable_total(), 1010);
+    }
+
     #[test]
     fn fingerprint_is_stable_for_default_config() {
-        let p = OpenAiProvider::new("p", "gpt-x", None, None, None);
+        let p = OpenAiProvider::new("p", "gpt-x", None, None, None, None);
         assert_eq!(
             crate::cache::canonical_json(&p.fingerprint()),
             r#"{"base_url":"https://api.openai.com/v1","model":"gpt-x","params":{},"type":"openai"}"#
@@ -254,9 +402,12 @@ mod tests {
 
     #[test]
     fn prefers_content_when_present() {
-        let resp = parse_completion_response(&json!({
-            "choices": [{"message": {"content": "the answer", "reasoning": "thinking…"}}]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {"content": "the answer", "reasoning": "thinking…"}}]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(resp.output, Output::Text("the answer".into()));
         assert!(resp.raw.unwrap().get("domarinn_output_source").is_none());
@@ -266,12 +417,15 @@ mod tests {
     fn falls_back_to_reasoning_when_content_is_empty() {
         // ollama's reasoning models put the whole answer here and leave
         // `content` empty, especially when cut off by max_tokens.
-        let resp = parse_completion_response(&json!({
-            "choices": [{
-                "message": {"content": "", "reasoning": "Thinking: the capital is Paris."},
-                "finish_reason": "length"
-            }]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{
+                    "message": {"content": "", "reasoning": "Thinking: the capital is Paris."},
+                    "finish_reason": "length"
+                }]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(
             resp.output,
@@ -285,27 +439,36 @@ mod tests {
 
     #[test]
     fn falls_back_to_reasoning_content_spelling() {
-        let resp = parse_completion_response(&json!({
-            "choices": [{"message": {"reasoning_content": "deepseek style"}}]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {"reasoning_content": "deepseek style"}}]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(resp.output, Output::Text("deepseek style".into()));
     }
 
     #[test]
     fn treats_whitespace_only_content_as_absent() {
-        let resp = parse_completion_response(&json!({
-            "choices": [{"message": {"content": "   \n", "reasoning": "real text"}}]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {"content": "   \n", "reasoning": "real text"}}]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(resp.output, Output::Text("real text".into()));
     }
 
     #[test]
     fn yields_empty_text_when_the_message_carries_nothing() {
-        let resp = parse_completion_response(&json!({
-            "choices": [{"message": {}}]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {}}]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(resp.output, Output::Text(String::new()));
         assert!(resp.raw.unwrap().get("domarinn_output_source").is_none());
@@ -313,6 +476,7 @@ mod tests {
 
     fn text_request() -> ProviderRequest {
         ProviderRequest {
+            tools: Vec::new(),
             prompt: Some(RenderedPrompt::Text("hi".into())),
             vars: BTreeMap::new(),
             params: serde_json::Map::new(),
@@ -334,6 +498,7 @@ mod tests {
             Some("https://gw.example/v1/".into()),
             None,
             Some(params),
+            None,
         );
 
         let preview = p.request_preview(&text_request()).unwrap();
@@ -359,15 +524,18 @@ mod tests {
 
     #[test]
     fn request_preview_matches_the_body_actually_built() {
-        let p = OpenAiProvider::new("g", "m", None, None, None);
+        let p = OpenAiProvider::new("g", "m", None, None, None, None);
         let req = text_request();
         let preview = p.request_preview(&req).unwrap();
-        assert_eq!(preview["body"], p.build_body(req.prompt.as_ref().unwrap()));
+        assert_eq!(
+            preview["body"],
+            p.build_body(req.prompt.as_ref().unwrap(), &req.tools)
+        );
     }
 
     #[test]
     fn request_preview_is_absent_without_a_prompt() {
-        let p = OpenAiProvider::new("g", "m", None, None, None);
+        let p = OpenAiProvider::new("g", "m", None, None, None, None);
         let req = ProviderRequest::default();
         assert!(p.request_preview(&req).is_none());
     }
@@ -390,6 +558,7 @@ mod tests {
             Some(server.uri()),
             Some("OPENAI_TEST_KEY".into()),
             None,
+            None,
         );
         let resp = p.call(&text_request(), &CallCtx::default()).await.unwrap();
         assert_eq!(resp.output, Output::Text("hello".into()));
@@ -411,6 +580,7 @@ mod tests {
             Some(server.uri()),
             Some("OPENAI_TEST_KEY2".into()),
             None,
+            None,
         );
         match p.call(&text_request(), &CallCtx::default()).await {
             Err(ProviderError::Retriable { retry_after, .. }) => {
@@ -426,7 +596,7 @@ mod empty_classification_tests {
     use super::*;
 
     fn reason_of(payload: Json) -> Option<String> {
-        parse_completion_response(&payload)
+        parse_completion_response(&payload, None)
             .unwrap()
             .empty_reason
             .map(|r| r.as_str().to_string())
@@ -466,7 +636,7 @@ mod empty_classification_tests {
         let payload = json!({
             "choices": [{"message": {"content": "", "reasoning": "thinking aloud"}}]
         });
-        let resp = parse_completion_response(&payload).unwrap();
+        let resp = parse_completion_response(&payload, None).unwrap();
         assert_eq!(resp.reasoning.as_deref(), Some("thinking aloud"));
         // Existing substitution behavior is preserved, so nothing regresses.
         assert_eq!(resp.output, Output::Text("thinking aloud".into()));
@@ -477,9 +647,74 @@ mod empty_classification_tests {
         let payload = json!({
             "choices": [{"message": {"content": "42"}, "finish_reason": "stop"}]
         });
-        assert!(parse_completion_response(&payload)
+        assert!(parse_completion_response(&payload, None)
             .unwrap()
             .empty_reason
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod tool_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The vendor split this absorbs: OpenAI sends `function.arguments` as a
+    /// JSON **string**, Anthropic sends a decoded object. Forwarding the string
+    /// would hand every assertion a parsing problem instead of an argument.
+    #[test]
+    fn arguments_are_decoded_from_the_json_string() {
+        let calls = tool_calls_from_message(&json!({
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": "{\"city\":\"Oslo\"}"}
+            }]
+        }));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_weather");
+        assert_eq!(calls[0].arguments["city"], "Oslo");
+        assert_eq!(calls[0].id.as_deref(), Some("call_1"));
+    }
+
+    /// A model that emits malformed argument JSON still *made the call*, and a
+    /// `tool-call` assertion matching on name alone must see it.
+    #[test]
+    fn unparseable_arguments_are_kept_verbatim_rather_than_dropped() {
+        let calls = tool_calls_from_message(&json!({
+            "tool_calls": [{
+                "function": {"name": "get_weather", "arguments": "{not json"}
+            }]
+        }));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].arguments, json!("{not json"));
+    }
+
+    #[test]
+    fn a_message_without_tool_calls_reports_none() {
+        assert!(tool_calls_from_message(&json!({"content": "hi"})).is_empty());
+    }
+
+    /// A suite with no tools must build the body it always built, or every
+    /// cached entry keyed on that body is invalidated for nothing.
+    #[test]
+    fn a_tool_free_body_is_unchanged_and_a_declared_tool_takes_the_function_shape() {
+        let p = OpenAiProvider::new("p", "gpt-4o-mini", None, None, None, None);
+        let prompt = RenderedPrompt::Text("hi".into());
+        assert!(p.build_body(&prompt, &[]).get("tools").is_none());
+
+        let body = p.build_body(
+            &prompt,
+            &[crate::config::ToolDef {
+                name: "get_weather".into(),
+                description: None,
+                input_schema: Some(json!({"type": "object"})),
+            }],
+        );
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "get_weather");
+        // OpenAI calls the schema `parameters`; Anthropic calls it
+        // `input_schema`. This rename is the whole mapping.
+        assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
     }
 }

@@ -454,6 +454,7 @@ mod diff_tests {
             repeat: 0,
         };
         CaseResult {
+            tool_calls: Vec::new(),
             case_key: cell.case_key(),
             cell,
             name: Some(test.into()),
@@ -465,6 +466,7 @@ mod diff_tests {
             prompt: None,
             request: None,
             stop_reason: None,
+            model: None,
             raw: None,
             asserts: vec![],
             usage: None,
@@ -479,6 +481,7 @@ mod diff_tests {
             provider_digest: None,
             assert_digest: None,
             error: None,
+            error_details: None,
             error_class: None,
         }
     }

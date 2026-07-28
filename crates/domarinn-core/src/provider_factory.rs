@@ -37,24 +37,28 @@ pub fn build_provider(cfg: &ProviderCfg) -> Result<Box<dyn Provider>, FactoryErr
             base_url,
             api_key_env,
             params,
+            pricing,
         } => Ok(Box::new(AnthropicProvider::new(
             cfg.id.clone(),
             model.clone(),
             base_url.clone(),
             api_key_env.clone(),
             params.clone(),
+            pricing.as_deref().cloned(),
         ))),
         ProviderKind::Openai {
             model,
             base_url,
             api_key_env,
             params,
+            pricing,
         } => Ok(Box::new(OpenAiProvider::new(
             cfg.id.clone(),
             model.clone(),
             base_url.clone(),
             api_key_env.clone(),
             params.clone(),
+            pricing.as_deref().cloned(),
         ))),
         ProviderKind::Http {
             url,
@@ -86,11 +90,14 @@ pub fn build_embeddings(suite: &Suite) -> Option<EmbeddingsProvider> {
             base_url,
             api_key_env,
             params,
+            pricing,
         } => Some(EmbeddingsProvider::new(
+            &p.id,
             model.clone(),
             base_url.clone(),
             api_key_env.clone(),
             params.clone(),
+            pricing.as_deref(),
         )),
         _ => None,
     })
@@ -112,8 +119,9 @@ providers: [{id: p, type: exec, command: ["echo"]}]
         let provider = build_provider(&suite.providers[0]).unwrap();
         assert_eq!(provider.id(), "p");
         assert!(
-            !provider.cacheable(),
-            "exec without cache_salt is not cacheable"
+            provider.cacheable(),
+            "exec is cached by default; the program's own identity is in the \
+             fingerprint, so a rebuild busts the entry without a hand-set salt"
         );
     }
 

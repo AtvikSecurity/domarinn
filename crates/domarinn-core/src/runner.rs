@@ -13,37 +13,36 @@ use chrono::Utc;
 use futures::StreamExt;
 use serde_json::Value as Json;
 
-use crate::assertion::AssertOutcome;
 use crate::asserts::MetricCtx;
-use crate::cache::{CacheBackend, CacheEntry, CacheMode};
-use crate::cache_key::provider_cache_key;
+use crate::cache::{CacheBackend, CacheMode};
 use crate::config::{Assert, Suite, TestCase};
 use crate::error_class::ErrorClass;
 use crate::filter::{Filter, FilterOpts};
 use crate::generate::resolve_generators;
-use crate::ids::{CaseKey, RunId};
+use crate::ids::RunId;
 use crate::progress::{ProgressEvent, ProgressSink};
-use crate::provider::{
-    CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse, TestMeta,
-};
+use crate::provider::{CallCtx, Provider, ProviderRequest, TestMeta};
 use crate::provider_factory::build_provider;
 use crate::render::{self, render_prompt};
 use crate::resolve::expand_tests;
 use crate::result::{
-    CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary, RESULT_SCHEMA_VERSION,
+    CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RESULT_SCHEMA_VERSION,
 };
-use crate::retry::{with_retry, RetryPolicy, RetryStats};
+use crate::retry::RetryPolicy;
 use crate::scoring::case_verdict;
 use crate::template::TemplateEngine;
-use crate::types::{Output, RenderedPrompt};
+use crate::types::Output;
 
 #[path = "runner_asserts.rs"]
 mod runner_asserts;
-use runner_asserts::{assert_error_message, evaluate_asserts, has_latency_assert};
+#[path = "runner_cache.rs"]
+mod runner_cache;
+#[path = "runner_result.rs"]
+mod runner_result;
 
-/// Upper bound on the raw provider metadata persisted per case. A payload over
-/// this size is dropped wholesale (truncated JSON is useless) rather than stored.
-const RAW_MAX_BYTES: usize = 64 * 1024;
+use runner_asserts::{assert_error_message, evaluate_asserts, has_latency_assert, AssertCtx};
+use runner_cache::{call_with_cache, CallFailure, CallOutcome};
+use runner_result::{error_case, json_to_persist, summarize, CaseInputs};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -53,6 +52,35 @@ pub enum RunError {
     Resolve(#[from] crate::resolve::ResolveError),
     #[error("running generator: {0}")]
     Generate(#[from] crate::generate::GenerateError),
+    /// The run resolved to zero cases. Never a pass: a suite that graded
+    /// nothing is indistinguishable from one that graded everything and found
+    /// no problems, and an exit code cannot tell them apart.
+    #[error("{0}")]
+    NothingToRun(crate::empty_run::EmptyRun),
+    /// One or more credentials this run would read are missing or wrong-shaped.
+    #[error("{} credential problem(s) before the run started:\n  - {}", .0.len(), .0.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("\n  - "))]
+    Credentials(Vec<crate::preflight::CredentialIssue>),
+}
+
+impl RunError {
+    /// Whether this is the caller's configuration or usage problem (CLI exit 2)
+    /// rather than an infrastructure failure (exit 3). See `docs/cli.md`.
+    ///
+    /// This also corrects a pre-existing mismatch: the CLI mapped *every*
+    /// `RunError` to the infrastructure code, so a YAML syntax error inside a
+    /// `file://` test file exited 3 while the documented contract promised 2.
+    pub fn is_config_error(&self) -> bool {
+        match self {
+            RunError::Factory(_)
+            | RunError::Resolve(_)
+            | RunError::NothingToRun(_)
+            | RunError::Credentials(_) => true,
+            // A generator that produced malformed tests is a config problem; one
+            // that failed to spawn or timed out is infrastructure.
+            RunError::Generate(crate::generate::GenerateError::BadTests { .. }) => true,
+            RunError::Generate(_) => false,
+        }
+    }
 }
 
 /// Options controlling a run.
@@ -78,6 +106,15 @@ pub struct RunOptions {
     /// What to record about who and where this run came from. A run option
     /// rather than a suite field for the same reason as `retries` above.
     pub provenance: crate::provenance::ProvenanceOptions,
+    /// Cache grader verdicts. Default `true`; `--no-grader-cache` disables it
+    /// for one run without touching the provider-response cache.
+    pub grader_cache: bool,
+    /// Accept a run that resolved to zero cases instead of failing it.
+    ///
+    /// Two real cases justify it, both CI-shaped: a sharded matrix where a
+    /// shard legitimately has no work, and a registry-driven generator that
+    /// yields nothing for some inputs. The diagnosis is still logged at `warn`.
+    pub allow_empty: bool,
 }
 
 impl Default for RunOptions {
@@ -90,8 +127,83 @@ impl Default for RunOptions {
             retries: None,
             include_raw: true,
             provenance: crate::provenance::ProvenanceOptions::default(),
+            grader_cache: true,
+            allow_empty: false,
         }
     }
+}
+
+/// Whether this cell's empty reason is one the suite asked to skip.
+///
+/// The distinction `skip` exists to draw: a blank output is a *successful*
+/// call, so it gets graded and scores zero against every assertion — which
+/// reads as a prompt failure whether or not it was one. `skip` says "not
+/// gradeable, and that is not a verdict", and is counted separately rather
+/// than dragging the pass rate down.
+///
+/// Compared as a plain string against the configured list, so a reason this
+/// build has never heard of still works — `EmptyReason` is open by design and
+/// this must not become the one place that closes it.
+fn reasoning_is_skippable(reason: Option<&crate::empty::EmptyReason>, skip: &[String]) -> bool {
+    reason.is_some_and(|r| skip.iter().any(|s| s == r.as_str()))
+}
+
+/// A one-way latch that stops a run once continuing is pointless.
+///
+/// Set when the grader's credential is rejected. That failure will repeat for
+/// every remaining case — a 401 does not become a 200 on the next call — so
+/// without this a whole suite errors one case at a time and exits 3, an
+/// *infrastructure* fault, after paying for every provider call to get there.
+/// With `concurrency: N` the loss is bounded at roughly N in-flight calls.
+///
+/// Deliberately not a general cancellation mechanism: the only thing that
+/// poisons it is a failure known to be permanent for the whole run.
+#[derive(Debug, Default)]
+pub struct AbortFlag {
+    reason: std::sync::Mutex<Option<String>>,
+}
+
+impl AbortFlag {
+    /// Record the first reason. Later calls are ignored: the first failure is
+    /// the cause, and the rest are it happening again.
+    pub fn poison(&self, reason: String) {
+        let mut slot = self.reason.lock().expect("abort flag mutex");
+        if slot.is_none() {
+            tracing::error!(%reason, "aborting the run; remaining cases will not be graded");
+            *slot = Some(reason);
+        }
+    }
+
+    /// Why the run was aborted, if it was.
+    pub fn reason(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .expect("abort flag mutex")
+            .as_ref()
+            .map(|r| format!("aborted: {r}"))
+    }
+
+    pub fn is_poisoned(&self) -> bool {
+        self.reason.lock().expect("abort flag mutex").is_some()
+    }
+}
+
+/// Everything a grading call needs beyond the assertion and the output.
+///
+/// A struct rather than five more parameters: `grade` was already at the
+/// argument limit, and the identity fields below were the reason to add any.
+/// The exec protocol's `AssertReq` declares `test`, `provider` and (now) `vars`,
+/// and the engine used to fill the first two with empty strings and discard the
+/// third — because `grade` was never told which cell it was grading. A child
+/// written against `docs/protocol.md` therefore received stubs.
+#[derive(Clone, Copy)]
+pub struct GradeCtx<'a> {
+    pub vars: &'a Json,
+    pub engine: &'a TemplateEngine,
+    pub working_dir: Option<&'a Path>,
+    pub provider_id: &'a str,
+    pub test_id: &'a str,
+    pub test_tags: &'a [String],
 }
 
 /// A grader for the non-local assert kinds (`exec`, `llm-rubric`, `similar`).
@@ -107,25 +219,38 @@ impl Default for RunOptions {
 /// `grader_failed`, which sent first-time users hunting for a transient fault
 /// that did not exist. See [`crate::errors::Classify`].
 ///
-/// **Verdicts are not cached.** Note the absence of a [`CacheBackend`] here:
-/// grading runs live on every call, so an LLM-graded suite re-pays its grader on
-/// every run even when every provider response was a cache hit. Only provider
-/// responses are cached. Do not assume otherwise — the caching happens in
-/// `call_with_cache`, which this trait is never routed through, and
-/// `DefaultGrader` talks to its endpoint over its own client. Adding verdict
-/// caching means threading a backend into `grade` and deriving a key from the
-/// grader fingerprint, the rendered rubric, and the output; pinned by
-/// `grader_verdicts_are_not_cached_today` in `tests/cache_integration.rs`.
+/// `grade` returns the verdict **before** any threshold, which is what makes
+/// caching it correct: a threshold is a decision *about* a verdict, not part of
+/// one, so editing a `threshold:` re-scores every case from cache instead of
+/// re-paying the judge for an answer it already gave.
+///
+/// [`Self::grading_fingerprint`] is the cacheability lever, mirroring
+/// [`crate::provider::Provider::cacheable`]: `None` means "do not cache this
+/// grading". Like a provider fingerprint it must exclude secrets, and it must
+/// include everything that can move a verdict — the grader's model and
+/// endpoint, the rendered rubric, the system prompt.
+///
+/// The returned [`crate::cache::Graded`] carries what the judge cost alongside
+/// its verdict. Reporting it is optional — [`crate::cache::Graded::unpriced`]
+/// is the honest answer when an implementation cannot see what it spent — but
+/// an implementation that *can* should, because a run whose judges cost more
+/// than its systems under test currently reports only the smaller half.
 #[async_trait]
 pub trait AssertGrader: Send + Sync {
     async fn grade(
         &self,
         assert: &Assert,
         output: &Output,
-        vars: &Json,
-        engine: &TemplateEngine,
-        working_dir: Option<&Path>,
-    ) -> Result<AssertOutcome, crate::errors::GraderError>;
+        ctx: &GradeCtx<'_>,
+    ) -> Result<crate::cache::Graded, crate::errors::GraderError>;
+
+    /// A stable identity for the grading this assertion will perform, or `None`
+    /// to opt out of caching it.
+    ///
+    /// Must exclude secrets, exactly like `Provider::fingerprint`.
+    fn grading_fingerprint(&self, _assert: &Assert) -> Option<Json> {
+        None
+    }
 }
 
 /// Run a suite and produce a [`RunResult`].
@@ -161,6 +286,17 @@ pub async fn run_with_progress(
 ) -> Result<RunResult, RunError> {
     let started_at = Utc::now();
     let engine = TemplateEngine::new();
+    // One compiled-schema cache for the whole run — see `jsonschema_cache`.
+    let schemas = &crate::jsonschema_cache::SchemaCache::new();
+    // Precedence: `--no-cache` kills everything (via `cache_mode`), then
+    // `--no-grader-cache`, then the suite's `cache.grader`, which defaults on.
+    let grader_cache = opts.grader_cache && suite.cache.as_ref().is_none_or(|c| c.grader);
+    let aborted = &AbortFlag::default();
+    let skip_on_empty_reason: &[String] = suite
+        .runner
+        .as_ref()
+        .map(|r| r.skip_on_empty_reason.as_slice())
+        .unwrap_or(&[]);
     let filter = Filter::build(&opts.filter).map_err(|e| {
         RunError::Resolve(crate::resolve::ResolveError::Parse {
             path: "<filter>".into(),
@@ -179,7 +315,13 @@ pub async fn run_with_progress(
 
     // Tests (files + inline + generators).
     let expanded = expand_tests(suite, base_dir)?;
+    let expanded_globs = expanded.globs;
     let mut tests = expanded.tests;
+    let generator_commands: Vec<Vec<String>> = expanded
+        .deferred_generators
+        .iter()
+        .map(|g| g.command.clone())
+        .collect();
     let mut generated = resolve_generators(&expanded.deferred_generators, base_dir).await?;
     // Generators resolve after `expand_tests`, so their cases miss the defaults
     // merge it performs. Apply it here or `defaults:` silently skips them.
@@ -188,24 +330,10 @@ pub async fn run_with_progress(
     }
     tests.extend(generated);
 
-    // A per-case `cache_salt` only chooses the cache key; it never makes a
-    // provider cacheable. Warn when a suite sets one against a provider that
-    // does not cache at all, where the salt silently does nothing.
-    if tests.iter().any(|t| t.cache_salt.is_some()) {
-        let uncacheable: Vec<&str> = providers
-            .iter()
-            .filter(|p| !p.cacheable())
-            .map(|p| p.id())
-            .collect();
-        if !uncacheable.is_empty() {
-            tracing::warn!(
-                providers = %uncacheable.join(", "),
-                "tests set `cache_salt`, but these providers are not cacheable \
-                 (an `exec` provider needs its own `cache_salt` to be cached at \
-                 all) — the per-case salt has no effect for them"
-            );
-        }
-    }
+    // The warning that used to live here — "you set a case salt against a
+    // provider that cannot cache" — is gone because that combination no longer
+    // exists: every provider kind caches by default. A case salt now always
+    // chooses a key rather than sometimes doing nothing.
 
     // Prompt slots: each prompt, or a single None slot when there are no prompts.
     let prompt_slots: Vec<Option<&crate::config::Prompt>> = if suite.prompts.is_empty() {
@@ -227,6 +355,26 @@ pub async fn run_with_progress(
         .or_else(|| suite.runner.as_ref().and_then(|r| r.concurrency))
         .unwrap_or(1)
         .max(1);
+
+    // Two guards, at two points, because the diagnosis differs. Here: nothing
+    // was produced at all, so the fault is a source. Below: things were
+    // produced and then all excluded, so the fault is a filter.
+    if tests.is_empty() && !opts.allow_empty {
+        let empty_globs: Vec<String> = expanded_globs
+            .iter()
+            .filter(|g| g.cases == 0)
+            .map(|g| g.spec.clone())
+            .collect();
+        let empty_generators: Vec<Vec<String>> = generator_commands;
+        return Err(RunError::NothingToRun(if suite.tests.is_empty() {
+            crate::empty_run::EmptyRun::NoTestSources
+        } else {
+            crate::empty_run::EmptyRun::SourcesProducedNothing {
+                empty_globs,
+                empty_generators,
+            }
+        }));
+    }
 
     // Expand the matrix into indexed cells so completion order does not affect
     // output order.
@@ -257,6 +405,54 @@ pub async fn run_with_progress(
                     });
                 }
             }
+        }
+    }
+
+    if cells.is_empty() && !opts.allow_empty {
+        // Ordered most-specific first: an unknown `--provider` is a typo with a
+        // one-line fix, and reporting it as "the filters excluded everything"
+        // would bury that.
+        let available_providers: Vec<String> =
+            providers.iter().map(|p| p.id().to_string()).collect();
+        let reason = if providers.is_empty() {
+            crate::empty_run::EmptyRun::NoProvidersSelected {
+                requested: opts.filter.providers.clone(),
+                available: suite.providers.iter().map(|p| p.id.clone()).collect(),
+            }
+        } else if prompt_slots.iter().flatten().count() == 0 && !suite.prompts.is_empty() {
+            crate::empty_run::EmptyRun::NoPromptsSelected {
+                requested: opts.filter.prompts.clone(),
+                available: suite.prompts.iter().map(|p| p.id.clone()).collect(),
+            }
+        } else {
+            let _ = &available_providers;
+            crate::empty_run::EmptyRun::FilteredOut {
+                tests: tests.len(),
+                filters: FilterSpec {
+                    tags: opts.filter.tags.clone(),
+                    filters: opts.filter.filters.clone(),
+                    providers: opts.filter.providers.clone(),
+                    prompts: opts.filter.prompts.clone(),
+                },
+                examples: crate::empty_run::EmptyRun::examples(
+                    tests.iter().filter_map(|t| t.id.clone()),
+                ),
+            }
+        };
+        return Err(RunError::NothingToRun(reason));
+    }
+    if cells.is_empty() {
+        tracing::warn!("this run graded nothing; --allow-empty was passed");
+    }
+
+    // After the guards above, so `cells` is the real work and nothing is
+    // checked that this run will not touch. Before the first call, so a bad
+    // grader key costs nothing instead of erroring every case in the suite.
+    if !cells.is_empty() {
+        let selected: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
+        let issues = crate::preflight::check(suite, &selected, &tests, &crate::interp::ProcessEnv);
+        if !issues.is_empty() {
+            return Err(RunError::Credentials(issues));
         }
     }
 
@@ -301,6 +497,11 @@ pub async fn run_with_progress(
                     opts.cache_mode,
                     opts.include_raw,
                     &retry_cfg,
+                    schemas,
+                    grader_cache,
+                    aborted,
+                    skip_on_empty_reason,
+                    &suite.tools,
                 )
                 .await;
                 if let Some(sink) = progress {
@@ -405,6 +606,11 @@ async fn run_cell(
     cache_mode: CacheMode,
     include_raw: bool,
     retry_cfg: &RetryPolicy,
+    schemas: &crate::jsonschema_cache::SchemaCache,
+    grader_cache: bool,
+    aborted: &AbortFlag,
+    skip_on_empty_reason: &[String],
+    tools: &[crate::config::ToolDef],
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
     let cell = CellKey {
@@ -415,6 +621,21 @@ async fn run_cell(
     };
     let case_key = cell.case_key();
     let name = test.description.clone().or_else(|| test.id.clone());
+
+    // Checked before the *provider* call, not just before grading: once the
+    // grader's credential is known bad, paying a model to produce output that
+    // will never be graded is the expensive half of the failure this prevents.
+    if let Some(reason) = aborted.reason() {
+        return error_case(
+            cell,
+            case_key,
+            name,
+            test,
+            CallFailure::before_any_attempt(ErrorClass::PROVIDER_AUTH, reason),
+            0,
+            CaseInputs::default(),
+        );
+    }
 
     // Render the test's vars once. `rendered_vars` excludes the environment, so
     // it is a stable request identity (cache key) and does not leak the whole
@@ -475,6 +696,7 @@ async fn run_cell(
         },
         // Keys this case's cache entry only; never reaches the provider.
         case_salt: test.cache_salt.clone(),
+        tools: tools.to_vec(),
     };
 
     // Computed here, not inside `call_with_cache`'s `use_cache` gate: the cache
@@ -552,15 +774,28 @@ async fn run_cell(
         latency_ms,
         cost_usd: response.cost_usd,
         total_tokens: response.usage.as_ref().map(|u| u.total()),
+        billable_tokens: response.usage.as_ref().map(|u| u.billable_total()),
     };
 
     let (assert_results, scored, assert_error_classes) = evaluate_asserts(
+        &AssertCtx {
+            provider_id: provider.id(),
+            test_id: &test_id,
+            test_tags: &test.tags,
+            engine,
+            grader,
+            base_dir,
+            schemas,
+            cache,
+            cache_mode,
+            grader_cache,
+            repeat,
+            aborted,
+            tool_calls: &response.tool_calls,
+        },
         &test.assert,
         &response.output,
         &var_ctx,
-        engine,
-        grader,
-        base_dir,
         &metrics,
         test.threshold,
     )
@@ -573,8 +808,12 @@ async fn run_cell(
     let assert_digest = crate::digests::assert_digest(&assert_results, test.threshold);
     let assert_error_class = crate::error_class::most_specific(&assert_error_classes);
     let verdict = case_verdict(&scored, test.threshold);
+    // `Error` first: a grader that broke is a fact about the run, and outranks
+    // any statement about whether the output was gradeable.
     let status = if assert_error.is_some() {
         CaseStatus::Error
+    } else if reasoning_is_skippable(response.empty_reason.as_ref(), skip_on_empty_reason) {
+        CaseStatus::Skip
     } else if verdict.passed {
         CaseStatus::Pass
     } else {
@@ -593,6 +832,8 @@ async fn run_cell(
         prompt: rendered_prompt,
         request,
         stop_reason: response.stop_reason,
+        model: response.model,
+        tool_calls: response.tool_calls.clone(),
         raw: json_to_persist(include_raw, response.raw, "raw"),
         asserts: assert_results,
         usage: response.usage,
@@ -605,293 +846,13 @@ async fn run_cell(
         provider_digest,
         assert_digest,
         error: assert_error,
+        // A graded case reached the provider, so any error here came from an
+        // assertion rather than the call; assert-level detail lives on each
+        // AssertResult.
+        error_details: None,
         error_class: assert_error_class,
         reasoning,
         empty_reason,
-    }
-}
-
-/// One provider call's result, plus how it was obtained.
-struct CallOutcome {
-    response: ProviderResponse,
-    cached: bool,
-    /// `None` only for a cache hit on an entry written before entries recorded
-    /// attempts — honest about not knowing, where the old `0` sentinel was not.
-    attempts: Option<u32>,
-    /// In-flight provider time, excluding retry backoff. On a cache hit this is
-    /// the *original* call's latency replayed from the entry, not the cache-read
-    /// time.
-    provider_latency_ms: Option<u64>,
-}
-
-/// A failed provider call. Carries the attempt count so an errored case can
-/// report what it actually spent instead of a hardcoded `1`.
-#[derive(Debug)]
-struct CallFailure {
-    message: String,
-    attempts: u32,
-    /// What kind of failure this was, carried alongside the prose rather than
-    /// re-derived from it. See [`crate::error_class`].
-    class: ErrorClass,
-}
-
-impl CallFailure {
-    /// A failure that never reached the provider (cache read error, cache-only
-    /// miss) — no attempt was made against the system under test.
-    fn before_any_attempt(class: &str, message: String) -> Self {
-        CallFailure {
-            message,
-            attempts: 0,
-            class: ErrorClass::new(class),
-        }
-    }
-}
-
-/// Call a provider, consulting the cache per `mode` and retrying retriable
-/// errors with backoff.
-#[tracing::instrument(name = "provider_call", skip_all, fields(provider = %provider.id()))]
-async fn call_with_cache(
-    provider: &dyn Provider,
-    req: &ProviderRequest,
-    ctx: &CallCtx,
-    cache: &dyn CacheBackend,
-    mode: CacheMode,
-    repeat: u32,
-    retry_cfg: &RetryPolicy,
-) -> Result<CallOutcome, CallFailure> {
-    let use_cache = mode != CacheMode::Disabled && provider.cacheable();
-    let key = use_cache.then(|| provider_cache_key(&provider.fingerprint(), req, repeat));
-
-    if let Some(key) = &key {
-        match cache.get(key).await {
-            Ok(Some(entry)) => {
-                tracing::debug!(%key, "cache hit");
-                let attempts = entry.attempts;
-                let provider_latency_ms = entry.provider_latency_ms;
-                return Ok(CallOutcome {
-                    response: entry_to_response(entry),
-                    cached: true,
-                    attempts,
-                    provider_latency_ms,
-                });
-            }
-            Ok(None) => {
-                tracing::debug!(%key, "cache miss");
-                if mode == CacheMode::ReadOnlyStrict {
-                    return Err(CallFailure::before_any_attempt(
-                        ErrorClass::CACHE_MISS,
-                        format!("cache-only: miss for key {key}"),
-                    ));
-                }
-            }
-            Err(e) => {
-                return Err(CallFailure::before_any_attempt(
-                    ErrorClass::CACHE_UNAVAILABLE,
-                    format!("cache read error: {e}"),
-                ))
-            }
-        }
-    }
-
-    let (result, stats) = with_retry(retry_cfg, |_attempt| provider.call(req, ctx)).await;
-
-    match result {
-        Ok(response) => {
-            if let Some(key) = &key {
-                if mode == CacheMode::ReadWrite {
-                    let entry = response_to_entry(provider, &response, stats);
-                    // A cache write failure must not fail the run.
-                    if let Err(e) = cache.put(key, &entry).await {
-                        tracing::warn!(error = %e, "cache write failed");
-                    }
-                }
-            }
-            Ok(CallOutcome {
-                response,
-                cached: false,
-                attempts: Some(stats.attempts),
-                provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
-            })
-        }
-        Err(ProviderError::Retriable {
-            source, ref class, ..
-        }) => Err(CallFailure {
-            message: format!(
-                "provider error after {} attempt(s): {source}",
-                stats.attempts
-            ),
-            attempts: stats.attempts,
-            class: class.clone(),
-        }),
-        Err(ProviderError::Fatal {
-            source, ref class, ..
-        }) => Err(CallFailure {
-            message: format!("provider error: {source}"),
-            attempts: stats.attempts,
-            class: class.clone(),
-        }),
-    }
-}
-
-/// Everything a case knows about its own inputs before a provider responds:
-/// what was rendered, and what was going to be sent.
-///
-/// Grouped so `error_case` can hand all of it to a failed case — an errored case
-/// that still shows its request is the difference between "HTTP 404" and "HTTP
-/// 404, and here is the model id we asked for".
-#[derive(Default)]
-struct CaseInputs {
-    prompt: Option<RenderedPrompt>,
-    vars: serde_json::Map<String, serde_json::Value>,
-    request: Option<Json>,
-    /// Identity of what was going to be sent. Present for every failure after
-    /// the request was built; `None` for the two earlier ones (rendering vars,
-    /// rendering the prompt), which honestly have no input identity yet.
-    prompt_digest: Option<String>,
-    provider_digest: Option<String>,
-}
-
-fn error_case(
-    cell: CellKey,
-    case_key: CaseKey,
-    name: Option<String>,
-    test: &TestCase,
-    failure: CallFailure,
-    wall_ms: u64,
-    inputs: CaseInputs,
-) -> CaseResult {
-    CaseResult {
-        cell,
-        case_key,
-        name,
-        tags: test.tags.clone(),
-        vars: inputs.vars,
-        status: CaseStatus::Error,
-        score: 0.0,
-        output: None,
-        prompt: inputs.prompt,
-        request: inputs.request,
-        stop_reason: None,
-        raw: None,
-        asserts: Vec::new(),
-        usage: None,
-        cost_usd: None,
-        // 0 when the call never reached the provider (a cache-only miss or a
-        // cache read error): there is no provider latency to report.
-        latency_ms: 0,
-        wall_ms: Some(wall_ms),
-        cached: false,
-        attempts: failure.attempts,
-        error_class: Some(failure.class),
-        prompt_digest: inputs.prompt_digest,
-        provider_digest: inputs.provider_digest,
-        // An errored case never graded anything, so there is no assert
-        // definition to identify.
-        assert_digest: None,
-        error: Some(failure.message),
-        reasoning: None,
-        empty_reason: None,
-    }
-}
-
-/// Apply the retention policy for a bulky JSON provenance payload: keep it only
-/// when raw persistence is enabled and it fits within [`RAW_MAX_BYTES`];
-/// otherwise drop it to `None` (an oversized blob is dropped whole — truncated
-/// JSON is useless). `what` names the payload in the drop log.
-fn json_to_persist(include_raw: bool, raw: Option<Json>, what: &str) -> Option<Json> {
-    if !include_raw {
-        return None;
-    }
-    let raw = raw?;
-    match serde_json::to_vec(&raw) {
-        Ok(bytes) if bytes.len() > RAW_MAX_BYTES => {
-            tracing::debug!(
-                raw_bytes = bytes.len(),
-                max_bytes = RAW_MAX_BYTES,
-                payload = what,
-                "dropping oversized provider payload"
-            );
-            None
-        }
-        Ok(_) => Some(raw),
-        Err(e) => {
-            tracing::debug!(error = %e, payload = what, "dropping unserializable provider payload");
-            None
-        }
-    }
-}
-
-fn summarize(cases: &[CaseResult]) -> RunSummary {
-    let mut s = RunSummary {
-        total: cases.len() as u64,
-        ..Default::default()
-    };
-    let mut cost = 0.0;
-    let mut any_cost = false;
-    for c in cases {
-        match c.status {
-            CaseStatus::Pass => s.passed += 1,
-            CaseStatus::Fail => s.failed += 1,
-            CaseStatus::Error => s.errored += 1,
-            CaseStatus::Skip => s.skipped += 1,
-        }
-        if let Some(u) = &c.usage {
-            s.prompt_tokens += u.input_tokens;
-            s.completion_tokens += u.output_tokens;
-        }
-        if let Some(cst) = c.cost_usd {
-            cost += cst;
-            any_cost = true;
-        }
-        if c.cached {
-            s.cache_hits += 1;
-        } else {
-            s.cache_misses += 1;
-        }
-        // A cached case replays the original attempt count, so counting it here
-        // would re-report a retry that happened on some earlier run.
-        if !c.cached && c.attempts > 1 {
-            s.retried_cases += 1;
-        }
-    }
-    s.cost_usd = any_cost.then_some(cost);
-    s
-}
-
-fn entry_to_response(entry: CacheEntry) -> ProviderResponse {
-    ProviderResponse {
-        output: entry.output,
-        usage: entry.usage,
-        cost_usd: entry.cost_usd,
-        stop_reason: entry.stop_reason,
-        raw: entry.raw,
-        reasoning: entry.reasoning,
-        empty_reason: entry.empty_reason,
-    }
-}
-
-fn response_to_entry(
-    provider: &dyn Provider,
-    response: &ProviderResponse,
-    stats: RetryStats,
-) -> CacheEntry {
-    CacheEntry {
-        created_at: Utc::now(),
-        provider_fingerprint: provider.fingerprint(),
-        output: response.output.clone(),
-        usage: response.usage.clone(),
-        cost_usd: response.cost_usd,
-        stop_reason: response.stop_reason.clone(),
-        attempts: Some(stats.attempts),
-        provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
-        reasoning: response.reasoning.clone(),
-        empty_reason: response.empty_reason.clone(),
-        // Same size cap as persistence, so a pathological payload can't bloat
-        // the shared cache. `--no-raw` intentionally does NOT strip the cache
-        // copy: a later run without the flag replaying this entry should still
-        // get the metadata.
-        raw: json_to_persist(true, response.raw.clone(), "raw"),
-        domarinn_version: crate::VERSION.to_string(),
     }
 }
 

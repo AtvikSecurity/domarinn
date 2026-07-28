@@ -335,9 +335,11 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
             details: None,
             criteria: None,
             cached: false,
+            cost_usd: None,
         })
         .collect();
     CaseResult {
+        tool_calls: Vec::new(),
         cell,
         case_key,
         name: Some(format!("{}::{}", spec.provider, spec.test)),
@@ -355,12 +357,13 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
             .map(|t| domarinn_core::types::RenderedPrompt::Text(t.to_string())),
         request: None,
         stop_reason: None,
+        model: None,
         raw: None,
         asserts,
         usage: Some(TokenUsage {
             input_tokens: 10,
             output_tokens: 20,
-            cache_read_tokens: None,
+            ..Default::default()
         }),
         cost_usd: spec.cost_usd,
         latency_ms: spec.latency_ms,
@@ -373,6 +376,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         provider_digest: spec.provider_digest.map(str::to_string),
         assert_digest: spec.assert_digest.map(str::to_string),
         error: spec.error.map(str::to_string),
+        error_details: None,
         error_class: spec
             .error_class
             .map(domarinn_core::error_class::ErrorClass::new),
@@ -399,6 +403,13 @@ pub fn make_run(
     let mut summary = RunSummary {
         total: cases.len() as u64,
         cost_usd: Some(0.0025 * cases.len() as f64),
+        // Fixed per run rather than derived from the cases: these exercise the
+        // migration-12 columns, and the point is that a stored run round-trips
+        // them, not that this fixture reproduces `summarize()`'s arithmetic.
+        cache_read_tokens: 1_040,
+        cache_write_tokens: 82,
+        cache_savings_usd: Some(0.0011),
+        grader_cost_usd: Some(0.0009),
         ..Default::default()
     };
     for c in &cases {

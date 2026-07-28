@@ -45,6 +45,16 @@ pub struct Suite {
     /// Optional prompts. Omit when a provider constructs its own input.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompts: Vec<Prompt>,
+    /// Tools every provider in this suite may offer the model.
+    ///
+    /// Declaring a tool does not make domarinn run one — it never executes a
+    /// tool and never feeds a result back. What it wants is the model's
+    /// *decision*, reported as `tool_calls` and graded by `tool-call`
+    /// assertions. Suite-level rather than per-test because the tool surface is
+    /// a property of the system being evaluated, and varying it per case would
+    /// make two cases incomparable while looking like the same suite.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDef>,
     /// Test sources: inline cases, `file://` globs, or generator commands.
     #[serde(default)]
     pub tests: Vec<TestSource>,
@@ -58,6 +68,23 @@ pub struct Suite {
     pub runner: Option<Runner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheCfg>,
+}
+
+/// A tool the model may call.
+///
+/// Anthropic's field names: `input_schema` says what the value is (a JSON
+/// Schema) where OpenAI's `parameters` does not, and one shape had to win. The
+/// mapping to the other vendor is mechanical and lives in `openai.rs`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolDef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON Schema for the tool's arguments. Passed to the provider verbatim
+    /// and never rendered — it is a contract, not a per-case value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Json>,
 }
 
 /// Values merged into every test before it runs.
@@ -112,6 +139,44 @@ pub enum HttpMethod {
     Head,
 }
 
+/// Which tokens a `tokens` assertion counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenCount {
+    /// Input plus output. The default, and what every existing suite means.
+    Total,
+    /// Everything the provider bills for, cache reads and writes included. On a
+    /// cache-heavy workload this can be several times `total`.
+    Billable,
+}
+
+/// A per-provider rate override, in USD per million tokens.
+///
+/// Merged field-wise over the built-in rate for the provider's model, so a
+/// suite can correct one stale number without restating a whole price sheet.
+/// Exists for the cases a shipped table cannot cover: a proxy or gateway with
+/// negotiated rates, a fine-tune, or a model the table has never heard of.
+///
+/// `f64` is right *here* and nowhere else — a human writes `3.00` in YAML, and
+/// it converts to integer micro-dollars once when the provider is built.
+///
+/// Never reaches a provider's `fingerprint()`, so setting it does not
+/// invalidate a single cache entry: cost is not request identity.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PricingCfg {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_per_mtok: Option<f64>,
+}
+
 /// The behavior of a provider, selected by `type`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -123,8 +188,13 @@ pub enum ProviderKind {
         env: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
-        /// Cache-busting token (e.g. a git SHA or binary hash). Without it, exec
-        /// providers default to no-cache so a rebuilt binary is never stale.
+        /// Extra cache-busting token (e.g. a git SHA or binary hash).
+        ///
+        /// Not normally needed: every `command` argument naming a readable file
+        /// contributes its path, size and mtime to the cache key, so a rebuild
+        /// busts the entry on its own. Set this when the program's behavior
+        /// depends on something that identity cannot see — a model downloaded at
+        /// startup, a remote config, a container image behind a wrapper script.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_salt: Option<String>,
     },
@@ -134,9 +204,18 @@ pub enum ProviderKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
+        api_key_env: Option<EnvNames>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
+        /// Rate override for this provider's model. See [`PricingCfg`].
+        ///
+        /// Boxed because `ProviderKind` is reachable from `AssertKind` (an
+        /// `llm-rubric` can carry its own grader, which carries a provider), so
+        /// five inline `Option<f64>` here would inflate every assertion in
+        /// every suite by 80 bytes. Transparent to serde and schemars — the
+        /// YAML is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pricing: Option<Box<PricingCfg>>,
     },
     /// OpenAI-compatible chat-completions client.
     Openai {
@@ -144,9 +223,18 @@ pub enum ProviderKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
+        api_key_env: Option<EnvNames>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
+        /// Rate override for this provider's model. See [`PricingCfg`].
+        ///
+        /// Boxed because `ProviderKind` is reachable from `AssertKind` (an
+        /// `llm-rubric` can carry its own grader, which carries a provider), so
+        /// five inline `Option<f64>` here would inflate every assertion in
+        /// every suite by 80 bytes. Transparent to serde and schemars — the
+        /// YAML is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pricing: Option<Box<PricingCfg>>,
     },
     /// Arbitrary HTTP endpoint.
     Http {
@@ -167,9 +255,14 @@ pub enum ProviderKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
+        api_key_env: Option<EnvNames>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
+        /// Rate override. Only `input_per_mtok` is read: an embedding call has
+        /// no output tokens and reports no cache counters, so the other fields
+        /// would price components that do not exist.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pricing: Option<Box<PricingCfg>>,
     },
 }
 
@@ -304,8 +397,9 @@ pub struct TestCase {
     pub skip_providers: Vec<String>,
 }
 
-/// A single assertion with its common controls.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// A single assertion with its common controls. `type: not-<kind>` is sugar for
+/// `negate: true` and works in every test source.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Assert {
     #[serde(default = "default_weight")]
     pub weight: f64,
@@ -313,6 +407,65 @@ pub struct Assert {
     pub negate: bool,
     #[serde(flatten)]
     pub kind: AssertKind,
+}
+
+/// The un-sugared shape [`Assert`]'s `Deserialize` delegates to, so the impl
+/// does not recurse into itself.
+#[derive(Deserialize)]
+struct AssertRepr {
+    #[serde(default = "default_weight")]
+    weight: f64,
+    #[serde(default)]
+    negate: bool,
+    #[serde(flatten)]
+    kind: AssertKind,
+}
+
+// `Deserialize` is hand-written so `type: not-<kind>` is desugared *here*,
+// during deserialization, rather than by a walk over the loaded YAML document.
+// That walk only ever ran on the composed suite file, so the sugar worked
+// inline and failed with `unknown variant \`not-contains\`` from a `file://`
+// glob, a JSON or JSONL test file, a CSV `__assert` column, or generator output
+// — five paths, against documentation promising it worked for any assertion
+// type. Doing it in the impl is reachable by construction: there is no way to
+// produce an `Assert` from serialized input that skips it.
+//
+// It also *narrows* the rewrite. The document walk recursed into every mapping
+// with a `type` key, so an `http` provider's `body: {type: "not-null"}`, an
+// `exec` assert's `config`, and a generator's `config` were all silently
+// rewritten. Now only assertions are.
+impl<'de> Deserialize<'de> for Assert {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        // Buffered through `serde_json::Value` the same way `TestSource`'s
+        // hand-written impl is, so one implementation covers every source
+        // format instead of one per serializer.
+        let mut value = Json::deserialize(deserializer).map_err(D::Error::custom)?;
+
+        let mut negated_by_sugar = false;
+        if let Json::Object(map) = &mut value {
+            if let Some(Json::String(ty)) = map.get("type") {
+                if let Some(stripped) = ty.strip_prefix("not-").map(str::to_string) {
+                    map.insert("type".into(), Json::String(stripped));
+                    negated_by_sugar = true;
+                }
+            }
+        }
+
+        let repr: AssertRepr = serde_json::from_value(value).map_err(D::Error::custom)?;
+        Ok(Assert {
+            weight: repr.weight,
+            // `not-` wins over an explicit `negate:`. Two spellings of the same
+            // intent disagreeing is a config bug, and `not-` is the more
+            // specific one.
+            negate: negated_by_sugar || repr.negate,
+            kind: repr.kind,
+        })
+    }
 }
 
 /// The assertion behavior, selected by `type`.
@@ -355,11 +508,48 @@ pub enum AssertKind {
         command: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config: Option<Json>,
+        /// Extra cache-busting token for this assertion's verdicts.
+        ///
+        /// Same rule as an `exec` *provider*'s: verdicts are cached by default,
+        /// keyed partly on the identity of every `command` argument that names a
+        /// readable file, so a rebuilt grader busts its own entries. Set this
+        /// when the grader's behavior depends on something that identity cannot
+        /// see.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_salt: Option<String>,
+    },
+    /// Assert that the model decided to call a tool.
+    ///
+    /// A *decision*, never an execution: domarinn does not run tools. This
+    /// grades what the model chose to do, which for a whole class of cases is
+    /// the only correct answer there is — before this, such a case produced no
+    /// prose, scored zero against every text assertion, and read as a model
+    /// failure rather than an evaluation that could not see the answer.
+    ///
+    /// Combine with `negate` (or the `not-tool-call` sugar) for the equally
+    /// important negative: the model must *not* have called `delete_account`.
+    ToolCall {
+        /// The tool that must have been called.
+        name: String,
+        /// Argument values that must all be present and equal. A subset match,
+        /// not an equality check — an assertion should not have to restate
+        /// every argument to pin the one that matters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args: Option<Val>,
+        /// A JSON Schema the call's arguments must satisfy. Not rendered, for
+        /// the same reason `contains-json`'s is not: a schema is a contract,
+        /// not a per-case value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<Val>,
     },
     LlmRubric {
         value: String,
+        /// Boxed because it is by far the largest thing an assertion can carry
+        /// (a whole `Grader`, including a `ProviderKind`), and every other
+        /// `AssertKind` variant pays for it inline otherwise. Transparent to
+        /// serde and schemars — the YAML is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        grader: Option<Grader>,
+        grader: Option<Box<Grader>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         threshold: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -373,9 +563,11 @@ pub enum AssertKind {
     Latency {
         max: u64,
     },
-    /// Total tokens must be <= max.
+    /// Token count must be <= max. See [`TokenCount`] for which tokens.
     Tokens {
         max: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<TokenCount>,
     },
     /// Embedding cosine similarity to a reference must be >= threshold.
     Similar {
@@ -407,6 +599,14 @@ pub struct Grader {
     /// `forced` (default) or `auto` — how the structured verdict is obtained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict_mode: Option<VerdictMode>,
+    /// How long to wait for a verdict, in milliseconds. Defaults to 120s.
+    ///
+    /// Reachable from config because the ceiling interacts with the grader's
+    /// own `max_tokens`: a reasoning grader given room to think can take
+    /// longer than a fixed constant allows, and the failure looks like a
+    /// transport fault rather than a budget one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -423,6 +623,25 @@ pub struct Runner {
     /// Whether deterministic asserts short-circuit the grader. Default true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short_circuit: Option<bool>,
+    /// Empty reasons that mark a case `skip` instead of grading it.
+    ///
+    /// A blank output is a *successful* call, so it gets graded and scores zero
+    /// against every assertion — for a reason that may have nothing to do with
+    /// the prompt. `skip` is the status for "this cell was not gradeable, and
+    /// that is not a verdict about the prompt": it is counted separately, and
+    /// does not drag a pass rate down.
+    ///
+    /// Opt-in and empty by default, because which reasons qualify is genuinely
+    /// suite-specific and domarinn should not invent the policy. A refusal is
+    /// usually a real result you want graded; `tool_use_only` against a harness
+    /// that declares no tools usually is not.
+    ///
+    /// ```yaml
+    /// runner:
+    ///   skip_on_empty_reason: [tool_use_only]
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_on_empty_reason: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -453,6 +672,45 @@ pub struct RateLimit {
     pub rps: f64,
 }
 
+/// One or more environment variable names holding an API key.
+///
+/// A bare string is the single-name form and serializes back to a bare string,
+/// so every existing suite's `config_digest` is unchanged and no `--against`
+/// comparison shows spurious drift. Pinned by
+/// `a_single_env_name_serializes_as_a_bare_string`.
+///
+/// The first name that resolves to a non-empty value wins. Which one that was
+/// is logged at debug rather than stored: the run document is shareable, and a
+/// variable name is a weak but real signal about someone's environment. That
+/// does mean two environments resolving different names produce runs that
+/// `config_digest` cannot tell apart — check the log if that matters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum EnvNames {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl EnvNames {
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        match self {
+            EnvNames::One(name) => Box::new(std::iter::once(name.as_str())),
+            EnvNames::Many(names) => Box::new(names.iter().map(String::as_str)),
+        }
+    }
+}
+
+impl From<&str> for EnvNames {
+    fn from(name: &str) -> Self {
+        EnvNames::One(name.to_string())
+    }
+}
+
+/// `serde(default)` helper for a flag that is on unless explicitly disabled.
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CacheCfg {
@@ -460,6 +718,18 @@ pub struct CacheCfg {
     pub backend: CacheBackendKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s3: Option<S3Cfg>,
+    /// Cache grader verdicts as well as provider responses. Default `true`.
+    ///
+    /// On by default because it is the dominant recurring cost of an LLM-graded
+    /// suite: without it the judge is re-paid on every run even when every
+    /// provider response was a cache hit. Every way a verdict could go stale is
+    /// in the key — the rubric, the grader's model and endpoint, its params, the
+    /// system prompt, and the graded output itself.
+    ///
+    /// Turn it off to measure judge variance deliberately, or use
+    /// `--no-grader-cache` for one run.
+    #[serde(default = "default_true")]
+    pub grader: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -530,5 +800,39 @@ mod tests {
             assert_eq!(parsed, variant);
         }
         assert!(serde_json::from_value::<VerdictMode>(serde_json::json!("manual")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod env_names_tests {
+    use super::*;
+
+    /// The load-bearing back-compat property: a single name must serialize back
+    /// to a bare string, or every existing suite's `config_digest` moves and
+    /// every `--against` comparison reports drift that did not happen.
+    #[test]
+    fn a_single_env_name_serializes_as_a_bare_string() {
+        let one: EnvNames = serde_json::from_str(r#""ANTHROPIC_API_KEY""#).unwrap();
+        assert_eq!(
+            serde_json::to_string(&one).unwrap(),
+            r#""ANTHROPIC_API_KEY""#
+        );
+    }
+
+    #[test]
+    fn a_list_round_trips_and_preserves_order() {
+        let raw = r#"["PRIMARY","FALLBACK"]"#;
+        let many: EnvNames = serde_json::from_str(raw).unwrap();
+        assert_eq!(serde_json::to_string(&many).unwrap(), raw);
+        assert_eq!(many.iter().collect::<Vec<_>>(), vec!["PRIMARY", "FALLBACK"]);
+    }
+
+    #[test]
+    fn both_forms_iterate_uniformly() {
+        assert_eq!(EnvNames::from("ONLY").iter().count(), 1);
+        assert_eq!(
+            EnvNames::Many(vec!["A".into(), "B".into()]).iter().count(),
+            2
+        );
     }
 }

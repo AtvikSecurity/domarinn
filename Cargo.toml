@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/domarinn-protocol",
     "crates/domarinn-types",
     "crates/domarinn-core",
     "crates/domarinn-cache",
@@ -19,6 +20,11 @@ repository = "https://github.com/AtvikSecurity/domarinn"
 authors = ["Atvik Security"]
 
 [workspace.dependencies]
+# Path-only, deliberately: release-please rewrites $.workspace.package.version
+# and nothing else, so a `version = "..."` here would go stale on the first
+# release and no test would notice. domarinn-protocol has no path dependencies
+# of its own, so it is publishable standalone without one.
+domarinn-protocol = { path = "crates/domarinn-protocol" }
 domarinn-types = { path = "crates/domarinn-types" }
 domarinn-core = { path = "crates/domarinn-core" }
 domarinn-cache = { path = "crates/domarinn-cache" }

@@ -8,6 +8,7 @@ import type { ErrorClass } from "./ErrorClass";
 import type { Output } from "./Output";
 import type { RenderedPrompt } from "./RenderedPrompt";
 import type { TokenUsage } from "./TokenUsage";
+import type { ToolCall } from "./ToolCall";
 import type { JsonValue } from "./serde_json/JsonValue";
 
 /**
@@ -45,7 +46,27 @@ vars?: { [key in string]: JsonValue }, status: CaseStatus, score: number, output
  * stored blobs written before this field existed; presence-gated by the web
  * UI. Never contains headers.
  */
-request?: unknown, stop_reason?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, 
+request?: unknown, stop_reason?: string, 
+/**
+ * The model the provider actually used, as reported by the provider —
+ * not the one the suite configured.
+ *
+ * The two diverge whenever a suite pins a floating alias and the vendor
+ * repoints it, which otherwise has no signal at all: the configured model
+ * is in the provider fingerprint, so the cache and every comparison agree
+ * nothing changed while the thing being measured did. `None` for providers
+ * with no model concept, and for runs recorded before this existed.
+ */
+model?: string, 
+/**
+ * The tool calls the model decided to make, in order.
+ *
+ * A *decision*, not an execution: domarinn never runs a tool. Recording
+ * them is what makes a case whose right answer is a tool call gradeable at
+ * all — previously such a case had no prose, scored zero, and looked like
+ * a model failure rather than an evaluation that could not see the answer.
+ */
+tool_calls?: Array<ToolCall>, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, 
 /**
  * Time the provider itself took, excluding retry backoff and (on a cache
  * hit) replayed from the entry rather than measured against the cache read.
@@ -80,6 +101,20 @@ provider_digest?: string,
  * weights and threshold, never the outcome.
  */
 assert_digest?: string, error?: string, 
+/**
+ * Structured detail for whatever `error` describes — the machine-readable
+ * half of a message that is otherwise prose.
+ *
+ * Provider-authored for a provider failure. It exists because `error` was
+ * the only field that survived a failed call, so anything structured had
+ * to be formatted into a sentence and parsed back out by whoever read it.
+ *
+ * Size-capped like `raw`, but deliberately **not** gated behind
+ * `--no-raw`: that flag exists to shrink documents by dropping bulky
+ * happy-path provenance, and an errored case has no `output` and no `raw`,
+ * so this is the only thing it carries.
+ */
+error_details?: unknown, 
 /**
  * What kind of failure `error` describes — see [`crate::error_class`].
  *

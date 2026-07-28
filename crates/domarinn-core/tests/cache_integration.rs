@@ -399,31 +399,37 @@ async fn repeat_trials_get_independent_entries() {
 // ── Gates: when the cache is not consulted at all ────────────────────────────
 
 #[tokio::test]
-async fn exec_without_a_provider_salt_is_never_cached() {
-    // An exec fingerprint is just its command, which does not change when the
-    // program behind it is rebuilt — so without a salt it must not be cached.
+async fn exec_is_cached_without_a_provider_salt() {
+    // This was `exec_without_a_provider_salt_is_never_cached`, and asserted the
+    // opposite. An exec fingerprint used to be argv alone, which does not move
+    // when the program behind it is rebuilt, so declining to cache was the only
+    // safe answer. The fingerprint now carries the program's own identity, so a
+    // rebuild busts the entry and caching by default is safe — the salt became
+    // an escape hatch rather than the entry ticket.
     let yaml = suite_with(None, "out", &[Case::new("case-a", "a")]);
     let cache = MemCache::default();
 
     run_default(&yaml, &cache).await;
     let second = run_default(&yaml, &cache).await;
 
-    assert_eq!(second.summary.cache_hits, 0);
-    assert_eq!(cache.entries(), 0, "nothing may be written");
+    assert_eq!(second.summary.cache_hits, 1);
+    assert_eq!(cache.entries(), 1);
 }
 
 #[tokio::test]
-async fn a_per_case_salt_alone_does_not_enable_caching() {
-    // The two salts answer different questions. A case salt says "this content
-    // is unchanged"; only the provider salt says "this build is unchanged".
+async fn a_per_case_salt_separates_entries_without_gating_them() {
+    // The two salts still answer different questions — a case salt says "this
+    // content is unchanged", a provider salt says "this build is unchanged" —
+    // but neither is what *enables* caching any more. A case salt now chooses
+    // the key of an entry that would have been written regardless.
     let yaml = suite_with(None, "out", &[Case::salted("case-a", "a", "digest-1")]);
     let cache = MemCache::default();
 
     run_default(&yaml, &cache).await;
     let second = run_default(&yaml, &cache).await;
 
-    assert_eq!(second.summary.cache_hits, 0);
-    assert_eq!(cache.entries(), 0);
+    assert_eq!(second.summary.cache_hits, 1);
+    assert_eq!(cache.entries(), 1);
 }
 
 #[tokio::test]
@@ -518,17 +524,15 @@ tests:
 
 // ── The grader-verdict cache ─────────────────────────────────────────────────
 
-/// Grader verdicts are **not** cached today. [`domarinn_core::runner::AssertGrader`]'s
-/// `grade` takes no cache backend, and `DefaultGrader` calls its endpoint through
-/// a bare `reqwest::Client`, so there is no path by which a verdict could be
-/// reused. An LLM-graded suite therefore re-pays for every verdict on every run,
-/// even when the provider response itself was a cache hit.
+/// Grader verdicts are reused across runs.
 ///
-/// This pins the real behavior so the gap is visible rather than assumed away.
-/// When verdict caching lands, the final assertion becomes `after_first` and this
-/// test should be renamed.
+/// This test was `grader_verdicts_are_not_cached_today`, and pinned the
+/// opposite: an LLM-graded suite re-paid its judge on every run even when every
+/// provider response was a cache hit, which is the dominant recurring cost of
+/// running one. Renamed rather than replaced so `git log -S` and `git blame`
+/// point at the commit that closed the gap.
 #[tokio::test]
-async fn grader_verdicts_are_not_cached_today() {
+async fn grader_verdicts_are_reused_across_runs() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -590,15 +594,14 @@ tests:
     .unwrap();
     assert_eq!(second.cases[0].status, CaseStatus::Pass);
 
-    // The provider response *is* reused — the gap is specific to grading.
     assert_eq!(
         second.summary.cache_hits, 1,
         "the provider response should still come from cache"
     );
     assert_eq!(
         server.received_requests().await.unwrap().len(),
-        2,
-        "known gap: the verdict is re-graded even though the response was cached"
+        1,
+        "the second run must reuse the verdict rather than re-pay the judge"
     );
 }
 

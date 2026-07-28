@@ -10,7 +10,7 @@ use std::path::Path;
 use serde_json::Value as Json;
 
 use crate::config::{Assert, Defaults, GeneratorSpec, Suite, TestCase, TestSource};
-use crate::filevars::resolve_file_vars;
+use crate::filevars::{resolve_assert_file_vals, resolve_digest_salts, resolve_file_vars};
 use crate::matrix::expand_matrix;
 use crate::sandbox::{self, SandboxError};
 use crate::val::{desugar_tags, Val};
@@ -46,6 +46,11 @@ pub struct Expanded {
     pub tests: Vec<TestCase>,
     /// Generators to run at execution time (resolved in a later phase).
     pub deferred_generators: Vec<GeneratorSpec>,
+    /// Per-`file://` source accounting, so a run that resolved to nothing can
+    /// name the glob that matched no files rather than reporting a total of
+    /// zero. Inline sources need no entry — they are one case each by
+    /// construction — and generators are accounted for after they run.
+    pub globs: Vec<crate::empty_run::GlobReport>,
 }
 
 /// Expand all `tests:` sources relative to `base_dir`.
@@ -60,7 +65,12 @@ pub fn expand_tests(suite: &Suite, base_dir: &Path) -> Result<Expanded, ResolveE
             }
             TestSource::Generator(g) => out.deferred_generators.push(g.generator.clone()),
             TestSource::Glob(spec) => {
-                let loaded = load_glob(spec, base_dir)?;
+                let (loaded, files) = load_glob(spec, base_dir)?;
+                out.globs.push(crate::empty_run::GlobReport {
+                    spec: spec.clone(),
+                    files,
+                    cases: loaded.len(),
+                });
                 out.tests.extend(loaded);
             }
         }
@@ -83,6 +93,12 @@ pub fn expand_tests(suite: &Suite, base_dir: &Path) -> Result<Expanded, ResolveE
     // fixtures pulled in by matrix axes or `defaults` are loaded too. Runs before
     // any rendering (the runner renders later), so a fixture is never a template.
     resolve_file_vars(&mut out.tests, base_dir)?;
+    resolve_assert_file_vals(&mut out.tests, base_dir)?;
+    resolve_digest_salts(
+        &mut out.tests,
+        base_dir,
+        &crate::template::TemplateEngine::new(),
+    )?;
 
     Ok(out)
 }
@@ -127,7 +143,10 @@ fn merge_defaults(tc: &mut TestCase, defaults: &Defaults) {
     }
 }
 
-fn load_glob(spec: &str, base_dir: &Path) -> Result<Vec<TestCase>, ResolveError> {
+/// Returns the loaded cases and how many files the glob matched — the two
+/// are different failures (`no such directory` versus `every file was empty`)
+/// and a zero-case run wants to name which one happened.
+fn load_glob(spec: &str, base_dir: &Path) -> Result<(Vec<TestCase>, usize), ResolveError> {
     let rel = spec
         .strip_prefix("file://")
         .ok_or_else(|| ResolveError::NotFileUrl(spec.to_string()))?;
@@ -151,11 +170,12 @@ fn load_glob(spec: &str, base_dir: &Path) -> Result<Vec<TestCase>, ResolveError>
     }
     files.sort();
 
+    let file_count = files.len();
     let mut out = Vec::new();
     for path in files {
         out.extend(load_test_file(&path)?);
     }
-    Ok(out)
+    Ok((out, file_count))
 }
 
 /// Load one test file, dispatching on extension.
@@ -660,5 +680,90 @@ tests: ["file://../evil.yaml"]
         .unwrap();
         let err = expand_tests(&suite, &base).unwrap_err();
         assert!(matches!(err, ResolveError::Sandbox(_)), "{err:?}");
+    }
+}
+
+#[cfg(test)]
+mod not_sugar_tests {
+    //! `type: not-<kind>` reaching every test source.
+    //!
+    //! One test per path that used to fail with `unknown variant
+    //! `not-contains`` while the docs promised the sugar worked for any
+    //! assertion type. They exercise the loaders rather than `Assert` directly,
+    //! because the bug was never in the type — it was in which inputs ever
+    //! reached the rewrite.
+
+    use super::*;
+
+    fn negated_contains(tests: &[TestCase]) -> &Assert {
+        let assert = &tests[0].assert[0];
+        assert!(assert.negate, "the `not-` prefix must set negate");
+        assert!(
+            matches!(assert.kind, crate::config::AssertKind::Contains { .. }),
+            "the prefix must be stripped from the kind, got {:?}",
+            assert.kind
+        );
+        assert
+    }
+
+    #[test]
+    fn not_asserts_desugar_in_a_yaml_test_file() {
+        let text = r#"
+- vars: {a: 1}
+  assert:
+    - {type: not-contains, value: "x"}
+"#;
+        let tests = parse_yaml_tests(text, std::path::Path::new("t.yaml")).unwrap();
+        negated_contains(&tests);
+    }
+
+    #[test]
+    fn not_asserts_desugar_in_a_json_test_file() {
+        let text = r#"[{"vars": {"a": 1}, "assert": [{"type": "not-contains", "value": "x"}]}]"#;
+        let tests = parse_json_tests(text, std::path::Path::new("t.json")).unwrap();
+        negated_contains(&tests);
+    }
+
+    #[test]
+    fn not_asserts_desugar_in_a_jsonl_test_file() {
+        let text = r#"{"vars": {"a": 1}, "assert": [{"type": "not-contains", "value": "x"}]}"#;
+        let tests = parse_jsonl_tests(text, std::path::Path::new("t.jsonl")).unwrap();
+        negated_contains(&tests);
+    }
+
+    #[test]
+    fn not_asserts_desugar_in_a_csv_assert_column() {
+        let text =
+            "a,__assert\n1,\"[{\"\"type\"\": \"\"not-contains\"\", \"\"value\"\": \"\"x\"\"}]\"\n";
+        let tests = parse_delimited_tests(text, std::path::Path::new("t.csv"), b',').unwrap();
+        negated_contains(&tests);
+    }
+
+    /// An explicit `negate` alongside `not-` loses: two spellings of one intent
+    /// disagreeing is a config bug, and `not-` is the more specific one.
+    #[test]
+    fn the_not_prefix_wins_over_an_explicit_negate_false() {
+        let text = r#"
+- assert:
+    - {type: not-contains, value: "x", negate: false}
+"#;
+        let tests = parse_yaml_tests(text, std::path::Path::new("t.yaml")).unwrap();
+        assert!(tests[0].assert[0].negate);
+    }
+
+    /// An unknown kind must still error, and name the kind rather than the
+    /// sugared spelling, so the message points at the real mistake.
+    #[test]
+    fn an_unknown_not_kind_still_errors() {
+        let text = r#"
+- assert:
+    - {type: not-frobnicate, value: "x"}
+"#;
+        let err = parse_yaml_tests(text, std::path::Path::new("t.yaml")).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("frobnicate"),
+            "error should name the unknown kind, got: {msg}"
+        );
     }
 }

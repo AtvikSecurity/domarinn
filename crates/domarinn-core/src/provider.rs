@@ -32,6 +32,10 @@ pub struct ProviderRequest {
     /// it exists so a suite can bust one case's entry when content domarinn
     /// cannot see (the system under test's own prompt files) changes.
     pub case_salt: Option<String>,
+    /// Tools the suite declared, offered to the model by whichever provider
+    /// knows how. Part of the *request*, so it is in the cache key: a call with
+    /// tools and one without are different questions.
+    pub tools: Vec<crate::config::ToolDef>,
 }
 
 /// A provider's response.
@@ -43,6 +47,9 @@ pub struct ProviderResponse {
     pub stop_reason: Option<String>,
     /// Raw payload, retained for `--verbose` / the UI.
     pub raw: Option<Json>,
+    /// The tool calls the model decided to make, in order. Empty when it made
+    /// none, or when the provider cannot report them.
+    pub tool_calls: Vec<domarinn_types::result::ToolCall>,
     /// The model's reasoning/thinking text, when it exposed any.
     ///
     /// A separate field rather than an [`Output`] variant on purpose: `Output`
@@ -51,6 +58,14 @@ pub struct ProviderResponse {
     pub reasoning: Option<String>,
     /// Why [`Self::output`] has nothing gradeable in it, when it does not.
     pub empty_reason: Option<EmptyReason>,
+    /// The model the provider actually used, as opposed to the one it was
+    /// asked for — an alias that silently repoints to a new snapshot has no
+    /// other signal, and a suite can pin a model that quietly stopped being
+    /// the model it names.
+    ///
+    /// Response metadata, not request identity: this never enters a cache key.
+    /// See `cache_key.rs` for why that is structural rather than a choice.
+    pub model: Option<String>,
 }
 
 impl ProviderResponse {
@@ -62,7 +77,9 @@ impl ProviderResponse {
             stop_reason: None,
             raw: None,
             reasoning: None,
+            model: None,
             empty_reason: None,
+            tool_calls: Vec::new(),
         }
     }
 }
@@ -80,7 +97,14 @@ impl ProviderResponse {
 /// The variant and the class are independent axes, not two names for one thing:
 /// a `Retry-After` longer than the retry budget becomes `Fatal`, and its class
 /// is still `provider_rate_limit`.
+///
+/// `details` is the structured half of a failure, alongside the prose in
+/// `source`. A provider that knows something specific — which model it asked
+/// for, what the endpoint said, how far a completion got — has somewhere to put
+/// it that survives to the stored case, instead of formatting JSON into a
+/// sentence and hoping the reader parses it back out.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProviderError {
     /// Transient — 429/5xx/timeout/connection. May carry a server `Retry-After`.
     #[error("retriable provider error: {source}")]
@@ -89,6 +113,7 @@ pub enum ProviderError {
         source: anyhow::Error,
         retry_after: Option<Duration>,
         class: ErrorClass,
+        details: Option<Json>,
     },
     /// Permanent — 4xx, bad protocol, misconfiguration.
     #[error("fatal provider error: {source}")]
@@ -96,6 +121,7 @@ pub enum ProviderError {
         #[source]
         source: anyhow::Error,
         class: ErrorClass,
+        details: Option<Json>,
     },
 }
 
@@ -105,6 +131,7 @@ impl ProviderError {
         ProviderError::Fatal {
             source,
             class: ErrorClass::new(class),
+            details: None,
         }
     }
 
@@ -115,12 +142,33 @@ impl ProviderError {
             source,
             retry_after,
             class: ErrorClass::new(class),
+            details: None,
         }
+    }
+
+    /// Attach structured diagnostics. Chained onto a constructor rather than
+    /// being a fourth positional argument, because the overwhelming majority of
+    /// failure sites have nothing structured to say and should stay short.
+    pub fn with_details(mut self, value: Option<Json>) -> Self {
+        match &mut self {
+            ProviderError::Retriable { details, .. } | ProviderError::Fatal { details, .. } => {
+                *details = value
+            }
+        }
+        self
     }
 
     pub fn class(&self) -> &ErrorClass {
         match self {
             ProviderError::Retriable { class, .. } | ProviderError::Fatal { class, .. } => class,
+        }
+    }
+
+    pub fn details(&self) -> Option<&Json> {
+        match self {
+            ProviderError::Retriable { details, .. } | ProviderError::Fatal { details, .. } => {
+                details.as_ref()
+            }
         }
     }
 }

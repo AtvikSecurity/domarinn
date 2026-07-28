@@ -89,3 +89,11 @@ domarinn run \
 
 The reusable GitHub Action wraps exactly this and posts the summary as a PR
 comment — see [ci.md](./ci.md).
+
+## pass@1 and repeats
+
+The stats footer reports pass@1 whenever a run had repeats. It differs from the
+plain pass rate exactly when a case's trials disagreed — which is the model or
+judge variance `--repeat` exists to measure, and which averaging into a single
+pass rate hides. With `--repeat 1` the two are identical, so it is omitted
+rather than printed twice under two names.

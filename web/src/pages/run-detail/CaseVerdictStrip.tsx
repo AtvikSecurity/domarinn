@@ -57,6 +57,15 @@ export function CaseVerdictStrip({
           {(detail.tags ?? []).map((t) => (
             <Chip key={t}>{t}</Chip>
           ))}
+          {/* The model the provider *reported* serving, which is not always the
+              one configured: an alias silently repointing to a new snapshot is
+              exactly the drift this exists to make visible. Absent on runs
+              stored before it was recorded. */}
+          {detail.model ? (
+            <Chip mono title="The model the provider reported using">
+              {detail.model}
+            </Chip>
+          ) : null}
           {detail.cached ? <Chip>cached</Chip> : null}
           {detail.attempts > 1 ? (
             <Chip tone="amber">{detail.attempts} attempts</Chip>

@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/AtvikSecurity/domarinn/main/domarinn.schema.json",
   "title": "Suite",
   "description": "The top-level eval suite.",
   "type": "object",
@@ -56,6 +57,13 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/Prompt"
+      }
+    },
+    "tools": {
+      "description": "Tools every provider in this suite may offer the model.\n\nDeclaring a tool does not make domarinn run one — it never executes a\ntool and never feeds a result back. What it wants is the model's\n*decision*, reported as `tool_calls` and graded by `tool-call`\nassertions. Suite-level rather than per-test because the tool surface is\na property of the system being evaluated, and varying it per case would\nmake two cases incomparable while looking like the same suite.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ToolDef"
       }
     },
     "tests": {
@@ -158,7 +166,7 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Cache-busting token (e.g. a git SHA or binary hash). Without it, exec\nproviders default to no-cache so a rebuilt binary is never stale.",
+              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path, size and mtime to the cache key, so a rebuild\nbusts the entry on its own. Set this when the program's behavior\ndepends on something that identity cannot see — a model downloaded at\nstartup, a remote config, a container image behind a wrapper script.",
               "type": [
                 "string",
                 "null"
@@ -188,9 +196,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -199,6 +211,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override for this provider's model. See [`PricingCfg`].\n\nBoxed because `ProviderKind` is reachable from `AssertKind` (an\n`llm-rubric` can carry its own grader, which carries a provider), so\nfive inline `Option<f64>` here would inflate every assertion in\nevery suite by 80 bytes. Transparent to serde and schemars — the\nYAML is unchanged.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -224,9 +247,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -235,6 +262,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override for this provider's model. See [`PricingCfg`].\n\nBoxed because `ProviderKind` is reachable from `AssertKind` (an\n`llm-rubric` can carry its own grader, which carries a provider), so\nfive inline `Option<f64>` here would inflate every assertion in\nevery suite by 80 bytes. Transparent to serde and schemars — the\nYAML is unchanged.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -301,9 +339,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -312,6 +354,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override. Only `input_per_mtok` is read: an embedding call has\nno output tokens and reports no cache counters, so the other fields\nwould price components that do not exist.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -324,6 +377,62 @@
           ]
         }
       ]
+    },
+    "EnvNames": {
+      "description": "One or more environment variable names holding an API key.\n\nA bare string is the single-name form and serializes back to a bare string,\nso every existing suite's `config_digest` is unchanged and no `--against`\ncomparison shows spurious drift. Pinned by\n`a_single_env_name_serializes_as_a_bare_string`.\n\nThe first name that resolves to a non-empty value wins. Which one that was\nis logged at debug rather than stored: the run document is shareable, and a\nvariable name is a weak but real signal about someone's environment. That\ndoes mean two environments resolving different names produce runs that\n`config_digest` cannot tell apart — check the log if that matters.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "PricingCfg": {
+      "description": "A per-provider rate override, in USD per million tokens.\n\nMerged field-wise over the built-in rate for the provider's model, so a\nsuite can correct one stale number without restating a whole price sheet.\nExists for the cases a shipped table cannot cover: a proxy or gateway with\nnegotiated rates, a fine-tune, or a model the table has never heard of.\n\n`f64` is right *here* and nowhere else — a human writes `3.00` in YAML, and\nit converts to integer micro-dollars once when the provider is built.\n\nNever reaches a provider's `fingerprint()`, so setting it does not\ninvalidate a single cache entry: cost is not request identity.",
+      "type": "object",
+      "properties": {
+        "input_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "output_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "cache_read_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "cache_write_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "cache_write_1h_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
     },
     "HttpMethod": {
       "description": "The HTTP method for a `type: http` provider. Authors may write either case\n(`get` or `GET`) in YAML; the wire method (and the request/cache\nfingerprint) is always the uppercase form.",
@@ -389,6 +498,28 @@
         "system",
         "user",
         "assistant"
+      ]
+    },
+    "ToolDef": {
+      "description": "A tool the model may call.\n\nAnthropic's field names: `input_schema` says what the value is (a JSON\nSchema) where OpenAI's `parameters` does not, and one shape had to win. The\nmapping to the other vendor is mechanical and lives in `openai.rs`.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_schema": {
+          "description": "JSON Schema for the tool's arguments. Passed to the provider verbatim\nand never rendered — it is a contract, not a per-case value."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
       ]
     },
     "TestSource": {
@@ -527,7 +658,7 @@
     },
     "Val": true,
     "Assert": {
-      "description": "A single assertion with its common controls.",
+      "description": "A single assertion with its common controls. `type: not-<kind>` is sugar for\n`negate: true` and works in every test source.",
       "type": "object",
       "properties": {
         "weight": {
@@ -728,6 +859,13 @@
               }
             },
             "config": true,
+            "cache_salt": {
+              "description": "Extra cache-busting token for this assertion's verdicts.\n\nSame rule as an `exec` *provider*'s: verdicts are cached by default,\nkeyed partly on the identity of every `command` argument that names a\nreadable file, so a rebuilt grader busts its own entries. Set this\nwhen the grader's behavior depends on something that identity cannot\nsee.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "exec"
@@ -739,12 +877,53 @@
           ]
         },
         {
+          "description": "Assert that the model decided to call a tool.\n\nA *decision*, never an execution: domarinn does not run tools. This\ngrades what the model chose to do, which for a whole class of cases is\nthe only correct answer there is — before this, such a case produced no\nprose, scored zero against every text assertion, and read as a model\nfailure rather than an evaluation that could not see the answer.\n\nCombine with `negate` (or the `not-tool-call` sugar) for the equally\nimportant negative: the model must *not* have called `delete_account`.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "The tool that must have been called.",
+              "type": "string"
+            },
+            "args": {
+              "description": "Argument values that must all be present and equal. A subset match,\nnot an equality check — an assertion should not have to restate\nevery argument to pin the one that matters.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Val"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "schema": {
+              "description": "A JSON Schema the call's arguments must satisfy. Not rendered, for\nthe same reason `contains-json`'s is not: a schema is a contract,\nnot a per-case value.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Val"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "tool-call"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ]
+        },
+        {
           "type": "object",
           "properties": {
             "value": {
               "type": "string"
             },
             "grader": {
+              "description": "Boxed because it is by far the largest thing an assertion can carry\n(a whole `Grader`, including a `ProviderKind`), and every other\n`AssertKind` variant pays for it inline otherwise. Transparent to\nserde and schemars — the YAML is unchanged.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Grader"
@@ -816,13 +995,23 @@
           ]
         },
         {
-          "description": "Total tokens must be <= max.",
+          "description": "Token count must be <= max. See [`TokenCount`] for which tokens.",
           "type": "object",
           "properties": {
             "max": {
               "type": "integer",
               "format": "uint64",
               "minimum": 0
+            },
+            "count": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TokenCount"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -885,6 +1074,15 @@
               "type": "null"
             }
           ]
+        },
+        "timeout_ms": {
+          "description": "How long to wait for a verdict, in milliseconds. Defaults to 120s.\n\nReachable from config because the ceiling interacts with the grader's\nown `max_tokens`: a reasoning grader given room to think can take\nlonger than a fixed constant allows, and the failure looks like a\ntransport fault rather than a budget one.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         }
       },
       "additionalProperties": false,
@@ -920,7 +1118,7 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Cache-busting token (e.g. a git SHA or binary hash). Without it, exec\nproviders default to no-cache so a rebuilt binary is never stale.",
+              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path, size and mtime to the cache key, so a rebuild\nbusts the entry on its own. Set this when the program's behavior\ndepends on something that identity cannot see — a model downloaded at\nstartup, a remote config, a container image behind a wrapper script.",
               "type": [
                 "string",
                 "null"
@@ -950,9 +1148,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -961,6 +1163,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override for this provider's model. See [`PricingCfg`].\n\nBoxed because `ProviderKind` is reachable from `AssertKind` (an\n`llm-rubric` can carry its own grader, which carries a provider), so\nfive inline `Option<f64>` here would inflate every assertion in\nevery suite by 80 bytes. Transparent to serde and schemars — the\nYAML is unchanged.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -986,9 +1199,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -997,6 +1214,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override for this provider's model. See [`PricingCfg`].\n\nBoxed because `ProviderKind` is reachable from `AssertKind` (an\n`llm-rubric` can carry its own grader, which carries a provider), so\nfive inline `Option<f64>` here would inflate every assertion in\nevery suite by 80 bytes. Transparent to serde and schemars — the\nYAML is unchanged.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -1063,9 +1291,13 @@
               ]
             },
             "api_key_env": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EnvNames"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "params": {
@@ -1074,6 +1306,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override. Only `input_per_mtok` is read: an embedding call has\nno output tokens and reports no cache counters, so the other fields\nwould price components that do not exist.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -1093,6 +1336,21 @@
       "enum": [
         "forced",
         "auto"
+      ]
+    },
+    "TokenCount": {
+      "description": "Which tokens a `tokens` assertion counts.",
+      "oneOf": [
+        {
+          "description": "Input plus output. The default, and what every existing suite means.",
+          "type": "string",
+          "const": "total"
+        },
+        {
+          "description": "Everything the provider bills for, cache reads and writes included. On a\ncache-heavy workload this can be several times `total`.",
+          "type": "string",
+          "const": "billable"
+        }
       ]
     },
     "Defaults": {
@@ -1182,6 +1440,13 @@
             "boolean",
             "null"
           ]
+        },
+        "skip_on_empty_reason": {
+          "description": "Empty reasons that mark a case `skip` instead of grading it.\n\nA blank output is a *successful* call, so it gets graded and scores zero\nagainst every assertion — for a reason that may have nothing to do with\nthe prompt. `skip` is the status for \"this cell was not gradeable, and\nthat is not a verdict about the prompt\": it is counted separately, and\ndoes not drag a pass rate down.\n\nOpt-in and empty by default, because which reasons qualify is genuinely\nsuite-specific and domarinn should not invent the policy. A refusal is\nusually a real result you want graded; `tool_use_only` against a harness\nthat declares no tools usually is not.\n\n```yaml\nrunner:\n  skip_on_empty_reason: [tool_use_only]\n```",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -1259,6 +1524,11 @@
               "type": "null"
             }
           ]
+        },
+        "grader": {
+          "description": "Cache grader verdicts as well as provider responses. Default `true`.\n\nOn by default because it is the dominant recurring cost of an LLM-graded\nsuite: without it the judge is re-paid on every run even when every\nprovider response was a cache hit. Every way a verdict could go stale is\nin the key — the rubric, the grader's model and endpoint, its params, the\nsystem prompt, and the graded output itself.\n\nTurn it off to measure judge variance deliberately, or use\n`--no-grader-cache` for one run.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false

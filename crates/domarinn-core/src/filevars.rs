@@ -32,7 +32,7 @@ use std::path::Path;
 
 use serde_json::Value as Json;
 
-use crate::config::TestCase;
+use crate::config::{AssertKind, TestCase};
 use crate::resolve::ResolveError;
 use crate::sandbox;
 use crate::val::{Val, FILE_KEY};
@@ -48,6 +48,135 @@ pub fn resolve_file_vars(tests: &mut [TestCase], base_dir: &Path) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// Resolve `{$file: …}` inside every assertion's `Val`-typed field, the same
+/// way [`resolve_file_vars`] does for test vars.
+///
+/// This closes a second silent pass hiding behind the first. `resolve_file_vars`
+/// walks only `tc.vars`, so `schema: {$file: "s.json"}` reached the assertion as
+/// the literal object `{"$file": "s.json"}` — which, read as a JSON Schema, is a
+/// document of entirely unknown keywords and therefore **matches everything**. A
+/// user who moved their schema into a file got a green check that validated
+/// nothing at all.
+///
+/// The same was true of `equals` and `similar`, which compared output against
+/// the marker object rather than the file's contents. Both are fixed here.
+///
+/// Runs inside `expand_tests`, so a schema is concrete content long before the
+/// runner evaluates anything, and inherits the same sandbox as every other
+/// `$file` reference.
+pub fn resolve_assert_file_vals(
+    tests: &mut [TestCase],
+    base_dir: &Path,
+) -> Result<(), ResolveError> {
+    for tc in tests.iter_mut() {
+        for assert in tc.assert.iter_mut() {
+            let val: Option<&mut crate::val::Val> = match &mut assert.kind {
+                AssertKind::ContainsJson { schema } => schema.as_mut(),
+                AssertKind::Equals { value } => Some(value),
+                AssertKind::Similar { value, .. } => Some(value),
+                _ => None,
+            };
+            let Some(val) = val else { continue };
+            if let Some(spec) = FileSpec::from_json(val.as_json())? {
+                *val = load_file_var(&spec, base_dir)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The key marking a computed content digest.
+const DIGEST_KEY: &str = "$digest";
+
+/// Resolve `cache_salt: {$digest: "glob"}` into the digest of the matched
+/// files' contents.
+///
+/// `cache_salt` is used verbatim and deliberately not templated, because a
+/// useful salt is a digest of something domarinn cannot see: the system under
+/// test's own prompt files, resolved across a process boundary. That left every
+/// consumer computing the digest outside the suite — in practice, writing a
+/// whole test *generator* whose only job was injecting one field.
+///
+/// This is the missing half. The glob is templated (so a case can digest the
+/// specific file it exercises, e.g. `prompts/{{ prompt_id }}.md`), the matched
+/// files are read in sorted order, and the digest of their contents becomes the
+/// salt. Same sandbox as every other file reference — the salt is a suite-
+/// authored path, and a suite must not be able to read outside its own tree.
+///
+/// Files are hashed with their relative paths interleaved, so moving content
+/// between two matched files changes the salt. Hashing contents alone would
+/// not, and "the same bytes in a different arrangement" is a real edit.
+pub fn resolve_digest_salts(
+    tests: &mut [TestCase],
+    base_dir: &Path,
+    engine: &crate::template::TemplateEngine,
+) -> Result<(), ResolveError> {
+    for tc in tests.iter_mut() {
+        let Some(salt) = &tc.cache_salt else { continue };
+        let Some(spec) = salt.strip_prefix("$digest:") else {
+            continue;
+        };
+        let vars = serde_json::Value::Object(
+            tc.vars
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_json().clone()))
+                .collect(),
+        );
+        let pattern = engine
+            .render_str(spec.trim(), &vars)
+            .map_err(|e| ResolveError::Parse {
+                path: DIGEST_KEY.to_string(),
+                message: format!("rendering `$digest` glob `{spec}`: {e}"),
+            })?;
+        tc.cache_salt = Some(digest_of_glob(&pattern, base_dir)?);
+    }
+    Ok(())
+}
+
+/// blake3 of every file matched by `pattern`, in sorted order.
+fn digest_of_glob(pattern: &str, base_dir: &Path) -> Result<String, ResolveError> {
+    sandbox::reject_bad_spec(base_dir, pattern)?;
+    let joined = base_dir.join(pattern);
+    let joined_str = joined.to_string_lossy().to_string();
+    let matches = glob::glob(&joined_str).map_err(|source| ResolveError::Glob {
+        pattern: joined_str.clone(),
+        source,
+    })?;
+
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for path in matches.flatten() {
+        if path.is_file() {
+            sandbox::assert_within(base_dir, &path, &path.to_string_lossy())?;
+            files.push(path);
+        }
+    }
+    files.sort();
+
+    // A glob that matches nothing is a mistake, not an empty digest: it would
+    // produce one constant salt shared by every such case, silently collapsing
+    // the cache separation the salt exists to provide.
+    if files.is_empty() {
+        return Err(ResolveError::Parse {
+            path: DIGEST_KEY.to_string(),
+            message: format!("`$digest: {pattern}` matched no files"),
+        });
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    for path in &files {
+        let rel = path.strip_prefix(base_dir).unwrap_or(path);
+        hasher.update(rel.to_string_lossy().as_bytes());
+        hasher.update(&[0]);
+        let bytes = std::fs::read(path).map_err(|source| ResolveError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        hasher.update(&bytes);
+        hasher.update(&[0]);
+    }
+    Ok(format!("blake3:{}", hasher.finalize().to_hex()))
 }
 
 /// The parsed options of a `{$file: …}` reference.
@@ -284,5 +413,112 @@ mod tests {
             cases[0].vars["plain"],
             Val::Tpl(Json::String("just a value".into()))
         );
+    }
+}
+
+#[cfg(test)]
+mod digest_salt_tests {
+    use super::*;
+    use crate::template::TemplateEngine;
+
+    fn case(salt: &str, vars: &[(&str, &str)]) -> TestCase {
+        let mut tc = TestCase {
+            cache_salt: Some(salt.to_string()),
+            ..Default::default()
+        };
+        for (k, v) in vars {
+            tc.vars
+                .insert(k.to_string(), crate::val::Val::Raw(serde_json::json!(v)));
+        }
+        tc
+    }
+
+    fn fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("prompts")).unwrap();
+        std::fs::write(dir.path().join("prompts/a.md"), "alpha").unwrap();
+        std::fs::write(dir.path().join("prompts/b.md"), "beta").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_digest_salt_is_replaced_by_the_content_hash() {
+        let dir = fixture();
+        let mut tests = vec![case("$digest: prompts/a.md", &[])];
+        resolve_digest_salts(&mut tests, dir.path(), &TemplateEngine::new()).unwrap();
+        let salt = tests[0].cache_salt.clone().unwrap();
+        assert!(salt.starts_with("blake3:"), "{salt}");
+        assert!(!salt.contains("$digest"));
+    }
+
+    /// The whole point: editing one prompt must bust only the cases that use
+    /// it, which is what a per-case content digest buys over a constant salt.
+    #[test]
+    fn editing_the_file_changes_the_salt() {
+        let dir = fixture();
+        let mut before = vec![case("$digest: prompts/a.md", &[])];
+        resolve_digest_salts(&mut before, dir.path(), &TemplateEngine::new()).unwrap();
+
+        std::fs::write(dir.path().join("prompts/a.md"), "alpha edited").unwrap();
+        let mut after = vec![case("$digest: prompts/a.md", &[])];
+        resolve_digest_salts(&mut after, dir.path(), &TemplateEngine::new()).unwrap();
+
+        assert_ne!(before[0].cache_salt, after[0].cache_salt);
+    }
+
+    /// Templated, so a case can digest exactly the file it exercises — the
+    /// thing that made consumers write a generator just to inject this field.
+    #[test]
+    fn the_glob_is_templated_from_the_case_vars() {
+        let dir = fixture();
+        let mut a = vec![case("$digest: prompts/{{ id }}.md", &[("id", "a")])];
+        let mut b = vec![case("$digest: prompts/{{ id }}.md", &[("id", "b")])];
+        resolve_digest_salts(&mut a, dir.path(), &TemplateEngine::new()).unwrap();
+        resolve_digest_salts(&mut b, dir.path(), &TemplateEngine::new()).unwrap();
+        assert_ne!(a[0].cache_salt, b[0].cache_salt);
+    }
+
+    /// Moving content between two matched files is a real edit, and hashing
+    /// contents without their paths would not notice it.
+    #[test]
+    fn moving_content_between_matched_files_changes_the_salt() {
+        let dir = fixture();
+        let mut before = vec![case("$digest: prompts/*.md", &[])];
+        resolve_digest_salts(&mut before, dir.path(), &TemplateEngine::new()).unwrap();
+
+        std::fs::write(dir.path().join("prompts/a.md"), "beta").unwrap();
+        std::fs::write(dir.path().join("prompts/b.md"), "alpha").unwrap();
+        let mut after = vec![case("$digest: prompts/*.md", &[])];
+        resolve_digest_salts(&mut after, dir.path(), &TemplateEngine::new()).unwrap();
+
+        assert_ne!(before[0].cache_salt, after[0].cache_salt);
+    }
+
+    /// An empty match would give every such case one shared constant salt,
+    /// silently collapsing the separation the salt exists to provide.
+    #[test]
+    fn a_glob_matching_nothing_is_an_error() {
+        let dir = fixture();
+        let mut tests = vec![case("$digest: prompts/missing-*.md", &[])];
+        let err = resolve_digest_salts(&mut tests, dir.path(), &TemplateEngine::new()).unwrap_err();
+        assert!(err.to_string().contains("matched no files"), "{err}");
+    }
+
+    /// A salt is a suite-authored path, and a suite must not read outside its
+    /// own tree.
+    #[test]
+    fn a_traversing_glob_is_rejected() {
+        let dir = fixture();
+        let mut tests = vec![case("$digest: ../../../etc/*", &[])];
+        assert!(resolve_digest_salts(&mut tests, dir.path(), &TemplateEngine::new()).is_err());
+    }
+
+    /// An ordinary opaque salt is untouched — this is opt-in by prefix.
+    #[test]
+    fn a_plain_salt_passes_through_unchanged() {
+        let dir = fixture();
+        let mut tests = vec![case("v1", &[])];
+        resolve_digest_salts(&mut tests, dir.path(), &TemplateEngine::new()).unwrap();
+        assert_eq!(tests[0].cache_salt.as_deref(), Some("v1"));
     }
 }

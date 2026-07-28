@@ -13,12 +13,18 @@ pub mod config;
 pub mod diff;
 pub mod digests;
 pub mod embeddings;
+pub mod empty_run;
 pub mod errors;
 
 // The wire contract lives in `domarinn-types`. Re-exported module-for-module so
 // `domarinn_core::result::RunResult` and friends keep resolving: the split is an
 // internal reorganisation, not a rename for every caller in the workspace.
 pub use domarinn_types::{empty, error_class, ids, result, types};
+
+// The exec protocol lives in `domarinn-protocol`, a serde-only crate an
+// external provider author can depend on. Re-exported under its own name so
+// embedders can reach it without guessing the path.
+pub use domarinn_protocol;
 pub mod exec;
 pub mod exec_protocol;
 pub mod exec_provider;
@@ -28,11 +34,14 @@ pub mod generate;
 pub mod grader;
 pub mod http_provider;
 pub mod interp;
+pub mod jsonschema_cache;
 pub mod loader;
 pub mod loader_validate;
 pub mod matrix;
 pub mod net;
 pub mod openai;
+pub mod preflight;
+pub mod pricing;
 pub mod progress;
 pub mod provenance;
 pub mod provider;
@@ -65,9 +74,45 @@ pub use val::Val;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Generate the JSON Schema for the suite config.
+/// The canonical location of the generated config schema.
+///
+/// Deliberately version-less. Embedding [`VERSION`] would make `schema-check`
+/// diff-fail on every standing release PR: release-please bumps the workspace
+/// version on the release branch, and the lockfile-sync job that follows runs
+/// `cargo update --workspace` and nothing else — so the committed schema would
+/// never be regenerated to match.
+///
+/// A pinned per-release copy is still addressable, because the file is
+/// committed at the repository root and tags are bare semver:
+/// `https://raw.githubusercontent.com/AtvikSecurity/domarinn/<version>/domarinn.schema.json`.
+pub const CONFIG_SCHEMA_ID: &str =
+    "https://raw.githubusercontent.com/AtvikSecurity/domarinn/main/domarinn.schema.json";
+
 pub fn config_schema() -> serde_json::Value {
     let schema = schemars::schema_for!(config::Suite);
-    serde_json::to_value(schema).expect("schema serializes")
+    let value = serde_json::to_value(schema).expect("schema serializes");
+    // Added after generation rather than via a schemars attribute so the
+    // constant stays the single place the URL is written.
+    // `schemars` is built with `preserve_order`, so a plain insert would append
+    // `$id` after 1400 lines of definitions. Rebuilt with it near the front,
+    // where a reader looks for it.
+    if let Some(obj) = value.as_object() {
+        let mut out = serde_json::Map::new();
+        if let Some(dialect) = obj.get("$schema") {
+            out.insert("$schema".into(), dialect.clone());
+        }
+        out.insert(
+            "$id".into(),
+            serde_json::Value::String(CONFIG_SCHEMA_ID.into()),
+        );
+        for (k, v) in obj {
+            if k != "$schema" {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+        return serde_json::Value::Object(out);
+    }
+    value
 }
 
 /// Generate the JSON Schema for [`RunResult`].

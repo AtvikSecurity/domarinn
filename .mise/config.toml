@@ -127,6 +127,12 @@ run = "cargo run -q -p domarinn-cli -- gen-types web/src/api/generated"
 # One task per CI job, so `mise run <task>` locally is byte-for-byte what CI
 # runs (ci.yml invokes these same tasks). `mise run ci` runs the whole matrix.
 
+[tasks.publish-dry-run]
+description = "Verify domarinn-protocol is publishable to crates.io, without publishing it."
+run = """
+cargo publish -p domarinn-protocol --dry-run --allow-dirty
+"""
+
 [tasks.schema-check]
 description = "Fail if the committed domarinn.schema.json has drifted from the generator (the CI schema-check job). Run `mise run schema` and commit to fix."
 run = '''

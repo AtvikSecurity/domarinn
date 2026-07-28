@@ -228,9 +228,14 @@ pub enum RunStatusFilter {
 }
 
 /// Cache filter for `GET /runs?cached=`. `exclude` hides runs that were fully
-/// cached AND passing (grader verdicts are never cached, so a fully-cached run
-/// can still fail — those always stay visible); `only` returns fully-cached
-/// runs regardless of verdict; `all` is the explicit no-op default.
+/// cached AND passing — a fully-cached run can still fail, and those stay
+/// visible; `only` returns fully-cached runs regardless of verdict; `all` is
+/// the explicit no-op default.
+///
+/// `cached` here counts provider responses, which is what `RunSummary.cache_hits`
+/// tracks. Grader verdicts are cached too, but separately: a run can replay
+/// every provider response and every verdict and still be a `fail`, because
+/// the *stored* verdict is what failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum CachedFilter {

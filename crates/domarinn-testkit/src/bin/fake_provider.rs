@@ -9,14 +9,32 @@
 //!   - `error:<retriable|fatal>` — return a protocol-level error.
 //!   - `exit:<n>`    — exit with code `<n>` before writing (infra error).
 //!   - `garbage`     — write non-JSON to stdout (protocol violation).
+//!   - `empty:<r>`   — empty output reported with `empty_reason: <r>`.
+//!   - `usage:cache` — echo, with cache-read and cache-write token counts.
+//!   - `tool:<name>` — empty output plus one tool call named `<name>`, the
+//!     shape a case answered by a tool call actually takes. Arguments come from
+//!     `FAKE_TOOL_ARGS`, defaulting to the request's own `vars` so a suite can
+//!     assert on a templated argument without configuring anything.
 //! * `FAKE_OUTPUT`   — the output string for `fixed` mode.
+//! * `FAKE_STOP_REASON` — sets `stop_reason` on the response.
+//! * `FAKE_MODEL`    — sets `model` (the model the child actually used).
+//! * `FAKE_TOOL_ARGS` — raw JSON for the `tool:` mode's arguments.
+//! * `FAKE_ERROR_CLASS`   — sets `error.class` in the `error:` modes.
+//! * `FAKE_ERROR_DETAILS` — raw JSON for `error.details` in the `error:` modes.
+//! * `FAKE_RETRY_AFTER_MS` — sets `error.retry_after_ms`.
 //! * `FAKE_CALL_LOG` — if set, append one line per invocation to this file, so a
 //!   test can assert how many times the provider was actually called (cache
 //!   hits, short-circuits, retries).
 //!
 //! It reads one JSON request from stdin and writes one JSON response to stdout.
+//!
+//! Responses are built through `domarinn_protocol`'s types rather than `json!`
+//! literals, so this doubles as the workspace's smoke test that the protocol
+//! crate is actually pleasant to write a provider against.
 
 use std::io::{Read, Write};
+
+use domarinn_protocol::{ProtocolError, ProviderResp, Usage};
 
 fn main() {
     let mode = std::env::var("FAKE_MODE").unwrap_or_else(|_| "echo".to_string());
@@ -50,12 +68,48 @@ fn main() {
         }
     }
     if let Some(kind) = mode.strip_prefix("error:") {
-        let retriable = kind == "retriable";
-        let resp = serde_json::json!({
-            "output": "",
-            "error": {"message": "scripted failure", "retriable": retriable}
+        emit(ProviderResp {
+            output: serde_json::Value::String(String::new()),
+            error: Some(ProtocolError {
+                message: "scripted failure".into(),
+                retriable: kind == "retriable",
+                class: env("FAKE_ERROR_CLASS"),
+                details: env("FAKE_ERROR_DETAILS").and_then(|raw| serde_json::from_str(&raw).ok()),
+                retry_after_ms: env("FAKE_RETRY_AFTER_MS").and_then(|v| v.parse().ok()),
+            }),
+            ..Default::default()
         });
-        let _ = writeln!(std::io::stdout(), "{resp}");
+        return;
+    }
+    if let Some(reason) = mode.strip_prefix("empty:") {
+        emit(ProviderResp {
+            output: serde_json::Value::String(String::new()),
+            empty_reason: Some(reason.to_string()),
+            stop_reason: env("FAKE_STOP_REASON"),
+            model: env("FAKE_MODEL"),
+            ..Default::default()
+        });
+        return;
+    }
+
+    if let Some(name) = mode.strip_prefix("tool:") {
+        let arguments = std::env::var("FAKE_TOOL_ARGS")
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| req.get("vars").cloned().unwrap_or(serde_json::Value::Null));
+        emit(ProviderResp {
+            output: serde_json::Value::String(String::new()),
+            // The pairing that makes such a case gradeable: the calls *are* the
+            // answer, and this says the blank output is not a model failure.
+            empty_reason: Some("tool_use_only".to_string()),
+            tool_calls: vec![domarinn_protocol::ToolCall {
+                id: Some("call_1".to_string()),
+                name: name.to_string(),
+                arguments,
+            }],
+            model: env("FAKE_MODEL"),
+            ..Default::default()
+        });
         return;
     }
 
@@ -70,9 +124,39 @@ fn main() {
         }
     };
 
-    let resp = serde_json::json!({
-        "output": output,
-        "usage": {"input_tokens": 1, "output_tokens": 1}
+    let usage = if mode == "usage:cache" {
+        Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: Some(100),
+            cache_write_tokens: Some(40),
+            cache_write_1h_tokens: Some(10),
+        }
+    } else {
+        Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            ..Default::default()
+        }
+    };
+
+    emit(ProviderResp {
+        output,
+        usage: Some(usage),
+        stop_reason: env("FAKE_STOP_REASON"),
+        model: env("FAKE_MODEL"),
+        ..Default::default()
     });
-    let _ = writeln!(std::io::stdout(), "{resp}");
+}
+
+/// Write the one response document this process is allowed to produce.
+fn emit(resp: ProviderResp) {
+    let body = serde_json::to_string(&resp).expect("a ProviderResp serializes");
+    let _ = writeln!(std::io::stdout(), "{body}");
+}
+
+/// A set, non-empty environment variable. Empty is treated as unset so a test
+/// can neutralize an inherited value without unsetting it.
+fn env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
 }

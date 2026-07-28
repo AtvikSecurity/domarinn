@@ -27,9 +27,12 @@ pub struct AnthropicProvider {
     id: String,
     model: String,
     base_url: String,
-    api_key_env: String,
+    api_key_env: crate::config::EnvNames,
     params: ParamMap,
     client: reqwest::Client,
+    /// The effective rate for `model`, resolved once at construction. `None`
+    /// means this provider's calls cannot be priced, so `cost_usd` stays absent.
+    rate: Option<crate::pricing::ModelRate>,
 }
 
 impl AnthropicProvider {
@@ -37,20 +40,29 @@ impl AnthropicProvider {
         id: impl Into<String>,
         model: impl Into<String>,
         base_url: Option<String>,
-        api_key_env: Option<String>,
+        api_key_env: Option<crate::config::EnvNames>,
         params: Option<ParamMap>,
+        pricing: Option<crate::config::PricingCfg>,
     ) -> Self {
+        let model = model.into();
+        let id = id.into();
+        // Resolved here, not per call: `build_provider` runs once per provider
+        // per run, so the unknown-model warning fires exactly once per run per
+        // id with no global state — and `validate`/`list`, which never build a
+        // provider, stay silent.
+        let rate = crate::pricing::resolve_rate(&id, &model, pricing.as_ref());
         AnthropicProvider {
-            id: id.into(),
-            model: model.into(),
+            id,
+            model,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            api_key_env: api_key_env.unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
+            api_key_env: api_key_env.unwrap_or_else(|| "ANTHROPIC_API_KEY".into()),
             params: params.unwrap_or_default(),
             client: http_client(DEFAULT_TIMEOUT),
+            rate,
         }
     }
 
-    fn build_body(&self, prompt: &RenderedPrompt) -> Json {
+    fn build_body(&self, prompt: &RenderedPrompt, tools: &[crate::config::ToolDef]) -> Json {
         let (system, messages) = to_messages(prompt);
         let mut body = serde_json::Map::new();
         // Caller params first, so model/messages below are authoritative but
@@ -65,6 +77,29 @@ impl AnthropicProvider {
         }
         body.entry("max_tokens")
             .or_insert_with(|| json!(DEFAULT_MAX_TOKENS));
+        // The suite's declarations, in this vendor's own shape — `ToolDef`
+        // borrows its field names, so the mapping is a rename of nothing. Only
+        // written when the suite declared tools, so a body with none is
+        // byte-identical to what it was before tools existed, and so is every
+        // cache entry keyed on it.
+        if !tools.is_empty() {
+            body.insert(
+                "tools".into(),
+                Json::Array(
+                    tools
+                        .iter()
+                        .map(|t| {
+                            json!({
+                                "name": t.name,
+                                "description": t.description.clone().unwrap_or_default(),
+                                "input_schema": t.input_schema.clone()
+                                    .unwrap_or_else(|| json!({"type": "object"})),
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
         Json::Object(body)
     }
 
@@ -101,7 +136,7 @@ impl Provider for AnthropicProvider {
             )
         })?;
         let key = api_key(&self.api_key_env)?;
-        let body = self.build_body(prompt);
+        let body = self.build_body(prompt, &req.tools);
         let url = self.endpoint();
 
         let response = self
@@ -122,7 +157,7 @@ impl Provider for AnthropicProvider {
         }
 
         let payload: Json = response.json().await.map_err(transport_error)?;
-        parse_messages_response(&payload)
+        parse_messages_response(&payload, self.rate.as_ref())
     }
 
     fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
@@ -130,7 +165,7 @@ impl Provider for AnthropicProvider {
         Some(http_request_preview(
             "POST",
             &self.endpoint(),
-            self.build_body(prompt),
+            self.build_body(prompt, &req.tools),
         ))
     }
 }
@@ -165,13 +200,64 @@ fn join_blocks(blocks: &[Json], kind: &str) -> String {
         .join("")
 }
 
+/// The `tool_use` blocks in a Messages response, in the order the model emitted
+/// them.
+///
+/// `input` is already a decoded object here — Anthropic sends it as JSON, not as
+/// a string, which is the half of the vendor split `openai.rs` has to undo.
+fn tool_calls_from_blocks(blocks: &[Json]) -> Vec<domarinn_types::result::ToolCall> {
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+        .filter_map(|b| {
+            Some(domarinn_types::result::ToolCall {
+                id: b.get("id").and_then(|v| v.as_str()).map(str::to_string),
+                // A block with no name is not a call we can attribute, and
+                // inventing a name would make a `tool-call` assertion match
+                // something that never happened.
+                name: b.get("name").and_then(|v| v.as_str())?.to_string(),
+                arguments: b.get("input").cloned().unwrap_or(Json::Null),
+            })
+        })
+        .collect()
+}
+
 fn has_block(blocks: &[Json], kind: &str) -> bool {
     blocks
         .iter()
         .any(|b| b.get("type").and_then(|t| t.as_str()) == Some(kind))
 }
 
-fn parse_messages_response(payload: &Json) -> Result<ProviderResponse, ProviderError> {
+/// The billable tokens in a Messages API response.
+///
+/// Shared with the llm-rubric grader, which calls the same endpoint: a second
+/// hand-rolled copy would be one refactor away from disagreeing with this one
+/// about which counters `input_tokens` already excludes.
+///
+/// Here it excludes *both* cache counters, so the three fields sum cleanly.
+/// See [`crate::openai::usage_from_payload`] for the vendor that does not.
+pub(crate) fn usage_from_payload(payload: &Json) -> Option<TokenUsage> {
+    payload.get("usage").map(|u| TokenUsage {
+        input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        cache_read_tokens: u.get("cache_read_input_tokens").and_then(|v| v.as_u64()),
+        cache_write_tokens: u
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64()),
+        // The per-TTL split, when the API reports it. Absent is not zero-ish
+        // guesswork: the default TTL is the short one, so "no split reported"
+        // and "all at the short TTL" are the same statement.
+        cache_write_1h_tokens: u
+            .get("cache_creation")
+            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
+            .and_then(|v| v.as_u64()),
+    })
+}
+
+fn parse_messages_response(
+    payload: &Json,
+    rate: Option<&crate::pricing::ModelRate>,
+) -> Result<ProviderResponse, ProviderError> {
     let blocks = payload.get("content").and_then(|c| c.as_array());
 
     let text = blocks.map(|b| join_blocks(b, "text")).unwrap_or_default();
@@ -196,11 +282,14 @@ fn parse_messages_response(payload: &Json) -> Result<ProviderResponse, ProviderE
 
     let empty_reason = if text.trim().is_empty() {
         let mut candidates = Vec::new();
-        match stop_reason.as_deref() {
-            Some("refusal") => candidates.push(EmptyReason::new(EmptyReason::REFUSAL)),
-            Some("max_tokens") => candidates.push(EmptyReason::new(EmptyReason::TRUNCATED)),
-            _ => {}
-        }
+        // Shared with every other provider, including exec children: one
+        // vocabulary rather than a hand-rolled match per call site, so a
+        // reason added for one provider is understood by all of them.
+        candidates.extend(
+            stop_reason
+                .as_deref()
+                .and_then(crate::empty::from_stop_reason),
+        );
         match blocks {
             None => candidates.push(EmptyReason::new(EmptyReason::NO_CONTENT_BLOCKS)),
             Some(b) if b.is_empty() => {
@@ -221,19 +310,34 @@ fn parse_messages_response(payload: &Json) -> Result<ProviderResponse, ProviderE
         None
     };
 
-    let usage = payload.get("usage").map(|u| TokenUsage {
-        input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        cache_read_tokens: u.get("cache_read_input_tokens").and_then(|v| v.as_u64()),
-    });
+    let usage = usage_from_payload(payload);
+    // Costed here, in the parse path, rather than in the runner. A cache hit
+    // replays `cost_usd` from its entry, so costing downstream would re-price a
+    // replayed hit against today's rate table — and a run's cost would then
+    // depend on when you read it. Computed once, with the rates in effect at
+    // the moment of the call, and replayed verbatim forever.
+    let cost_usd = rate
+        .and_then(|r| usage.as_ref().and_then(|u| crate::pricing::cost_of(u, r)))
+        .map(|c| c.to_usd());
+
     Ok(ProviderResponse {
+        tool_calls: blocks
+            .map(|b| tool_calls_from_blocks(b))
+            .unwrap_or_default(),
         output: Output::Text(text),
         usage,
-        cost_usd: None,
+        cost_usd,
         stop_reason,
         raw: Some(payload.clone()),
         reasoning,
         empty_reason,
+        // The model the API says it served, not the one configured. An alias
+        // like a floating snapshot pointer silently repointing is exactly the
+        // drift this exists to make visible.
+        model: payload
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
     })
 }
 
@@ -254,9 +358,91 @@ mod tests {
     /// If this fails, you have a cache migration to plan. New members belong
     /// here **conditionally**, only when configured, mirroring the `case_salt`
     /// discipline at `cache_key.rs:48-55`.
+    /// The regression this whole subsystem exists for: `cost_usd` was
+    /// hardcoded `None`, so `AssertKind::Cost` took its "not reported" branch
+    /// and every budget assertion passed no matter what the call cost.
+    #[test]
+    fn a_priced_model_reports_a_cost() {
+        let p = AnthropicProvider::new("p", "claude-haiku-4-5", None, None, None, None);
+        let resp = parse_messages_response(
+            &json!({
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+            }),
+            p.rate.as_ref(),
+        )
+        .unwrap();
+        // 1M in at $1 + 1M out at $5.
+        assert_eq!(resp.cost_usd, Some(6.0));
+    }
+
+    /// An unknown model must report nothing rather than a guess, so the
+    /// assertion keeps honestly saying "not reported".
+    #[test]
+    fn an_unpriced_model_reports_no_cost() {
+        let p = AnthropicProvider::new("p", "claude-from-2030", None, None, None, None);
+        assert!(p.rate.is_none());
+        let resp = parse_messages_response(
+            &json!({
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 10, "output_tokens": 10}
+            }),
+            p.rate.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(resp.cost_usd, None);
+    }
+
+    /// A `pricing:` block prices a model the table has never heard of.
+    #[test]
+    fn a_pricing_override_prices_an_unknown_model() {
+        let cfg = crate::config::PricingCfg {
+            input_per_mtok: Some(2.0),
+            output_per_mtok: Some(4.0),
+            cache_read_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+        };
+        let p = AnthropicProvider::new("p", "private-model", None, None, None, Some(cfg));
+        let resp = parse_messages_response(
+            &json!({
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+            }),
+            p.rate.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(resp.cost_usd, Some(6.0));
+    }
+
+    /// The load-bearing guarantee for the override: cost is not request
+    /// identity, so configuring a rate must not invalidate a single cache entry.
+    #[test]
+    fn pricing_does_not_reach_the_fingerprint() {
+        let plain = AnthropicProvider::new("p", "claude-x", None, None, None, None);
+        let priced = AnthropicProvider::new(
+            "p",
+            "claude-x",
+            None,
+            None,
+            None,
+            Some(crate::config::PricingCfg {
+                input_per_mtok: Some(99.0),
+                output_per_mtok: Some(99.0),
+                cache_read_per_mtok: None,
+                cache_write_per_mtok: None,
+                cache_write_1h_per_mtok: None,
+            }),
+        );
+        assert_eq!(
+            crate::cache::canonical_json(&plain.fingerprint()),
+            crate::cache::canonical_json(&priced.fingerprint())
+        );
+    }
+
     #[test]
     fn fingerprint_is_stable_for_default_config() {
-        let p = AnthropicProvider::new("p", "claude-x", None, None, None);
+        let p = AnthropicProvider::new("p", "claude-x", None, None, None, None);
         assert_eq!(
             crate::cache::canonical_json(&p.fingerprint()),
             r#"{"base_url":"https://api.anthropic.com","model":"claude-x","params":{},"type":"anthropic"}"#
@@ -265,6 +451,7 @@ mod tests {
 
     fn text_request() -> ProviderRequest {
         ProviderRequest {
+            tools: Vec::new(),
             prompt: Some(RenderedPrompt::Text("hi".into())),
             vars: BTreeMap::new(),
             params: serde_json::Map::new(),
@@ -277,8 +464,8 @@ mod tests {
     fn body_defaults_max_tokens_but_keeps_params() {
         let mut params = serde_json::Map::new();
         params.insert("temperature".into(), json!(0.5));
-        let p = AnthropicProvider::new("c", "claude-x", None, None, Some(params));
-        let body = p.build_body(&RenderedPrompt::Text("hi".into()));
+        let p = AnthropicProvider::new("c", "claude-x", None, None, Some(params), None);
+        let body = p.build_body(&RenderedPrompt::Text("hi".into()), &[]);
         assert_eq!(body["max_tokens"], json!(DEFAULT_MAX_TOKENS));
         assert_eq!(body["temperature"], json!(0.5));
         assert_eq!(body["model"], json!("claude-x"));
@@ -307,8 +494,9 @@ mod tests {
         // `system` out of the message list into a top-level field, so a preview
         // reconstructed from the stored `RenderedPrompt` in the browser would
         // show a system *message* that was never sent as one.
-        let p = AnthropicProvider::new("c", "claude-x", None, None, None);
+        let p = AnthropicProvider::new("c", "claude-x", None, None, None, None);
         let req = ProviderRequest {
+            tools: Vec::new(),
             prompt: Some(RenderedPrompt::Messages(vec![
                 crate::types::ChatMessage {
                     role: ChatRole::System,
@@ -339,10 +527,13 @@ mod tests {
 
     #[test]
     fn request_preview_matches_the_body_actually_built() {
-        let p = AnthropicProvider::new("c", "claude-x", None, None, None);
+        let p = AnthropicProvider::new("c", "claude-x", None, None, None, None);
         let req = text_request();
         let preview = p.request_preview(&req).unwrap();
-        assert_eq!(preview["body"], p.build_body(req.prompt.as_ref().unwrap()));
+        assert_eq!(
+            preview["body"],
+            p.build_body(req.prompt.as_ref().unwrap(), &req.tools)
+        );
     }
 
     #[tokio::test]
@@ -365,6 +556,7 @@ mod tests {
             Some(server.uri()),
             Some("ANTHROPIC_TEST_KEY".into()),
             None,
+            None,
         );
         let resp = p.call(&text_request(), &CallCtx::default()).await.unwrap();
         assert_eq!(resp.output, Output::Text("hello".into()));
@@ -385,6 +577,7 @@ mod tests {
             Some(server.uri()),
             Some("ANTHROPIC_TEST_KEY2".into()),
             None,
+            None,
         );
         let err = p
             .call(&text_request(), &CallCtx::default())
@@ -396,8 +589,16 @@ mod tests {
     #[tokio::test]
     async fn missing_prompt_is_fatal() {
         std::env::set_var("ANTHROPIC_TEST_KEY3", "sk-test");
-        let p = AnthropicProvider::new("c", "m", None, Some("ANTHROPIC_TEST_KEY3".into()), None);
+        let p = AnthropicProvider::new(
+            "c",
+            "m",
+            None,
+            Some("ANTHROPIC_TEST_KEY3".into()),
+            None,
+            None,
+        );
         let req = ProviderRequest {
+            tools: Vec::new(),
             prompt: None,
             vars: BTreeMap::new(),
             params: serde_json::Map::new(),
@@ -416,7 +617,7 @@ mod empty_classification_tests {
     use super::*;
 
     fn reason_of(payload: Json) -> Option<String> {
-        parse_messages_response(&payload)
+        parse_messages_response(&payload, None)
             .unwrap()
             .empty_reason
             .map(|r| r.as_str().to_string())
@@ -431,7 +632,7 @@ mod empty_classification_tests {
             "content": [{"type": "thinking", "thinking": "let me work through this"}],
             "stop_reason": "end_turn"
         });
-        let resp = parse_messages_response(&payload).unwrap();
+        let resp = parse_messages_response(&payload, None).unwrap();
 
         assert_eq!(resp.output, Output::Text(String::new()));
         assert_eq!(resp.reasoning.as_deref(), Some("let me work through this"));
@@ -477,7 +678,7 @@ mod empty_classification_tests {
             "content": [{"type": "redacted_thinking", "data": "opaque"}],
             "stop_reason": "end_turn"
         });
-        let resp = parse_messages_response(&payload).unwrap();
+        let resp = parse_messages_response(&payload, None).unwrap();
         assert!(resp.reasoning.is_none(), "there is no readable text");
         assert_eq!(
             resp.empty_reason.unwrap().as_str(),
@@ -499,7 +700,7 @@ mod empty_classification_tests {
             "content": [{"type": "text", "text": "the answer is 42"}],
             "stop_reason": "end_turn"
         });
-        let resp = parse_messages_response(&payload).unwrap();
+        let resp = parse_messages_response(&payload, None).unwrap();
         assert_eq!(resp.output, Output::Text("the answer is 42".into()));
         assert!(resp.empty_reason.is_none());
     }
@@ -515,9 +716,55 @@ mod empty_classification_tests {
             ],
             "stop_reason": "end_turn"
         });
-        let resp = parse_messages_response(&payload).unwrap();
+        let resp = parse_messages_response(&payload, None).unwrap();
         assert_eq!(resp.output, Output::Text("42".into()));
         assert_eq!(resp.reasoning.as_deref(), Some("6 times 7"));
         assert!(resp.empty_reason.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tool_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_use_blocks_become_tool_calls_in_order() {
+        let calls = tool_calls_from_blocks(&[
+            json!({"type": "text", "text": "let me check"}),
+            json!({"type": "tool_use", "id": "a", "name": "first", "input": {"x": 1}}),
+            json!({"type": "tool_use", "id": "b", "name": "second", "input": {}}),
+        ]);
+        assert_eq!(
+            calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        // Already an object on this vendor — no decode step, unlike `openai.rs`.
+        assert_eq!(calls[0].arguments["x"], 1);
+    }
+
+    /// A block with no name is not a call we can attribute, and inventing one
+    /// would make a `tool-call` assertion match something that never happened.
+    #[test]
+    fn a_nameless_block_is_dropped_rather_than_given_a_name() {
+        assert!(tool_calls_from_blocks(&[json!({"type": "tool_use", "input": {}})]).is_empty());
+    }
+
+    #[test]
+    fn a_tool_free_body_is_unchanged_and_a_declared_tool_keeps_its_field_names() {
+        let p = AnthropicProvider::new("p", "claude-haiku-4-5", None, None, None, None);
+        let prompt = RenderedPrompt::Text("hi".into());
+        assert!(p.build_body(&prompt, &[]).get("tools").is_none());
+
+        let body = p.build_body(
+            &prompt,
+            &[crate::config::ToolDef {
+                name: "get_weather".into(),
+                description: None,
+                input_schema: Some(json!({"type": "object"})),
+            }],
+        );
+        assert_eq!(body["tools"][0]["name"], "get_weather");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
     }
 }

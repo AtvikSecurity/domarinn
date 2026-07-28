@@ -15,9 +15,29 @@ vars produces a new key.
   content-addressed, two machines that compute the same request write identical
   bytes, so sharing is safe with no clobbering.
 - **Errors are never cached.** Only successful responses are stored.
-- **Grader verdicts are _not_ cached.** Only provider responses are. An
-  LLM-graded suite re-pays for grading on every run, even when every provider
-  response is a cache hit.
+- **Grader verdicts are cached too**, on by default like everything else. An
+  LLM-graded suite used to re-pay its judge on every run even when every
+  provider response was a cache hit, which is the dominant recurring cost of
+  running one. Disable with `cache.grader: false` or `--no-grader-cache`.
+- **A `threshold` is not in the verdict key.** The cached value is the raw
+  verdict, and the threshold is applied on read — so editing a `threshold:`
+  re-scores every case instantly instead of re-paying the judge for an answer
+  it already gave. This is structural: the cached type has no threshold in it.
+- **`--repeat` still samples the judge.** The trial index is in the key, so N
+  repeats produce N independent verdicts on the first run and replay those N
+  afterwards. Without that, two trials whose provider responses were
+  byte-identical — common at temperature 0 — would collapse into one verdict
+  and erase exactly the variance `--repeat` exists to measure.
+- **A `similar` verdict is keyed on the embedding model.** A cosine value is a
+  property of the model that produced the vectors, so switching embedders
+  re-embeds rather than replaying the previous model's answers.
+- **The model a provider *reports* having used is not in the key.** It cannot
+  be: the key is derived from a request, and a reported model only exists on a
+  response. The *requested* model is already covered (it is in the
+  `anthropic`/`openai` fingerprints, and inside `command` for `exec`). Hashing
+  the reported one would silently discard every cached entry the day a vendor
+  rolls a snapshot; `CaseResult.model` makes that drift visible and diffable
+  instead, which is the useful lever.
 - **`latency` assertions bypass the cache**, since a cached latency is
   meaningless. `cost` and `tokens` come from the stored response, so those are
   honored on a hit.
@@ -39,11 +59,16 @@ on every edit. That is what per-case salts exist to avoid.
 
 ### `exec` providers and the provider salt
 
-An `exec` provider is only cached when it sets a `cache_salt`. Its fingerprint is
-the command, which does **not** change when you rebuild the program behind it —
-so without a salt a rebuilt binary would be served stale output. Set
-`cache_salt` to something that changes with the program (a git SHA, a build
-hash):
+An `exec` provider is cached like every other kind. Its fingerprint includes the
+identity of the *program* — the path, size and modification time of every
+argument that names a readable file — not just the command line, so rebuilding
+the binary busts its entries automatically.
+
+That covers a compiled binary (`./target/release/appd`) and an interpreter plus
+a script (`python3 grade.py`). It does **not** cover a program resolved from
+`PATH` with no path separator, or one whose behavior depends on something not on
+disk. Set `cache_salt` for those — it composes with the automatic identity
+rather than replacing it:
 
 ```yaml
 providers:
@@ -75,6 +100,27 @@ Reach for it when the system under test loads content domarinn cannot see — an
 example. domarinn has no way to notice those files changed, so without a salt it
 would serve a stale response. Compute the digest over just the content that case
 actually depends on.
+
+#### Letting domarinn compute the digest
+
+Writing those digests by hand does not scale, and computing them outside the
+suite means a build step — in practice, a whole test generator whose only job is
+injecting one field per case. `$digest:` does it for you:
+
+```yaml
+tests:
+  - id: refuses-out-of-scope
+    vars: {prompt_id: pentest-session, user_message: "scan 10.0.0.1"}
+    cache_salt: "$digest: prompts/{{ prompt_id }}.md"
+```
+
+The glob is rendered against the case's own vars, so each case digests exactly
+the file it exercises rather than a constant that busts the whole suite on every
+edit. Matched files are hashed in sorted order **with their relative paths**, so
+moving content between two matched files counts as a change. A glob that matches
+nothing is an error, not an empty digest — an empty digest would be one constant
+salt shared by every such case, which is no separation at all wearing a hash.
+Paths are sandboxed to the suite directory, like every other file reference.
 
 You do **not** need this for ordinary suites: an edit to a `prompts:` template or
 to a case's `vars` already changes the rendered request, which is already in the

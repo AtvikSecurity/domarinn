@@ -181,6 +181,18 @@ jobs:
           jq -r '"\(.name): \(.spdxVersion), \(.packages | length) packages"' \
             "dist/domarinn_${version}.spdx.json"
 
+      # Shipped as a release asset so it inherits the checksums and the cosign
+      # signature. The file is also readable at a raw tag URL without any of
+      # this — but that URL is unsigned, and a schema is something editors fetch
+      # and trust.
+      - name: Stage the config schema
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          cp domarinn.schema.json "dist/domarinn_${version}.schema.json"
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom
@@ -227,6 +239,7 @@ jobs:
           version="${TAG#v}"
           cd dist
           sha256sum -- "domarinn_${version}_linux_"* "domarinn_${version}.spdx.json" \
+            "domarinn_${version}.schema.json" \
             > "domarinn_${version}_checksums.txt"
           cat "domarinn_${version}_checksums.txt"
 

@@ -186,6 +186,7 @@ mod tests {
 
     fn case(key: &str, status: CaseStatus, output: &str) -> CaseResult {
         CaseResult {
+            tool_calls: Vec::new(),
             cell: CellKey {
                 provider_id: "p".into(),
                 prompt_id: None,
@@ -220,6 +221,8 @@ mod tests {
             provider_digest: None,
             assert_digest: None,
             error: None,
+            error_details: None,
+            model: None,
             error_class: None,
         }
     }

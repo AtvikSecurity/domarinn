@@ -6,7 +6,7 @@ and write JSON to stdout, it can plug into domarinn — no Rust, no SDK, no
 linking required.
 
 > The canonical shapes live in
-> [`crates/domarinn-core/src/exec_protocol.rs`](../crates/domarinn-core/src/exec_protocol.rs).
+> [`crates/domarinn-protocol/src/lib.rs`](../crates/domarinn-protocol/src/lib.rs).
 > This document mirrors that file; if the two ever disagree, the Rust source
 > wins.
 
@@ -78,7 +78,14 @@ prompts, `prompt` is omitted and your provider works from `vars` alone (the
   "prompt": { "role": "user", "content": "..." },
   "vars": { "user_input": "hello world" },
   "params": { "temperature": 0.0 },
-  "test": { "id": "greeting/basic", "tags": ["smoke"] }
+  "test": { "id": "greeting/basic", "tags": ["smoke"] },
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Look up the current weather",
+      "input_schema": { "type": "object", "properties": { "city": { "type": "string" } } }
+    }
+  ]
 }
 ```
 
@@ -88,6 +95,7 @@ prompts, `prompt` is omitted and your provider works from `vars` alone (the
 | `vars`   | any JSON object | Template variables for this test case. Defaults to `{}`. |
 | `params` | any JSON object | Provider parameters from the suite (model, temperature, ...). Defaults to `{}`. |
 | `test`   | object          | `{ "id": string, "tags": string[] }`. `tags` defaults to `[]`. |
+| `tools`  | array           | Optional. Tools the suite declared. **Absent when it declared none**, so a tool-free request is exactly what it always was. See [Tools](#tools). |
 
 ### Response (your stdout -> domarinn)
 
@@ -102,13 +110,67 @@ Only `output` is required:
 }
 ```
 
-| Field      | Type            | Notes |
-|------------|-----------------|-------|
-| `output`   | any JSON        | **Required.** The output to assert against (string or structured JSON). |
-| `usage`    | object          | Optional. `{ "input_tokens": u64, "output_tokens": u64 }` (each defaults to `0`). |
-| `cost_usd` | number          | Optional. Dollar cost of the call. |
-| `error`    | object          | Optional. `{ "message": string, "retriable": bool }`. Report an upstream failure here **and still exit 0**. |
-| `metadata` | any JSON        | Optional. Free-form; surfaced in results. |
+| Field | Type | Notes |
+|---|---|---|
+| `output` | any JSON | **Required.** The output to assert against (string or structured JSON). |
+| `usage` | object | Optional. See [Usage](#usage). |
+| `cost_usd` | number | Optional. Dollar cost of the call. Wins over any configured rate — you know what you actually spent. |
+| `error` | object | Optional. See [Errors](#errors). Report an upstream failure here **and still exit 0**. |
+| `metadata` | any JSON | Optional. Free-form; surfaced in results. |
+| `stop_reason` | string | Optional. The vendor's finish reason, verbatim (`end_turn`, `length`, `refusal`, …). Never validated against a list. |
+| `empty_reason` | string | Optional. Why `output` has nothing gradeable in it. See [Empty outputs](#empty-outputs). |
+| `reasoning` | string | Optional. The model's reasoning/thinking text, when you can expose it. |
+| `model` | string | Optional. The model you *actually* used. Response metadata, never part of a cache key. |
+| `tool_calls` | array | Optional. The tool calls the model decided to make, in order. See [Tools](#tools). |
+
+#### Usage
+
+| Field | Notes |
+|---|---|
+| `input_tokens` | Tokens billed at the full input rate. Defaults to `0`. |
+| `output_tokens` | Defaults to `0`. |
+| `cache_read_tokens` | Optional. Input served from a provider-side prompt cache. |
+| `cache_write_tokens` | Optional. Input written *into* that cache. |
+| `cache_write_1h_tokens` | Optional. The subset of `cache_write_tokens` at a longer TTL. Absent means "all at the default TTL". |
+
+`input_tokens` **excludes** the cache counters, so the fields sum. If your
+upstream reports an inclusive total (OpenAI's `prompt_tokens` includes
+`cached_tokens`), subtract the cached span out before reporting — otherwise it
+is billed at the discounted rate *and* the full one.
+
+#### Errors
+
+| Field | Notes |
+|---|---|
+| `message` | **Required.** Prose, for a human. |
+| `retriable` | Defaults to `false`. Whether a retry could plausibly help. |
+| `details` | Optional. The machine-readable half of `message`. Surfaced on the stored case as `error_details`. |
+| `class` | Optional. What kind of failure this was, using domarinn's vocabulary — `provider_auth`, `provider_rate_limit`, `provider_timeout`, `provider_unavailable`, `provider_protocol`. Defaults to `exec_failed`. |
+| `retry_after_ms` | Optional. A `Retry-After` you received. Only meaningful with `retriable: true`. |
+
+Naming a `class` is worth doing: without it every failure from every exec
+provider is indistinguishable, so a rejected credential looks exactly like a
+crash. Unrecognized values are kept verbatim rather than rejected.
+
+#### Empty outputs
+
+A blank `output` is a *successful* call, so nothing upstream raises — and every
+assertion then scores zero for a reason that has nothing to do with the prompt.
+Set `empty_reason` when you know why:
+
+| Value | Means |
+|---|---|
+| `refusal` | The model declined. Genuine model behavior, not a harness fault. |
+| `truncated` | Cut off before any text. Fix: raise `max_tokens`. |
+| `content_filter` | A provider-side safety filter removed the content. |
+| `tool_use_only` | The model called a tool and said nothing else. |
+| `thinking_only` | It reasoned but never emitted a final message. |
+| `no_content_blocks`, `empty_body`, `blank` | Protocol-shaped faults, or a genuinely blank answer. |
+
+An unrecognized value is carried through verbatim and is **never** an error —
+the list grows at model-release cadence, with no domarinn release in the loop.
+If you report `stop_reason` but not `empty_reason`, domarinn derives one when
+(and only when) the output really is blank.
 
 To signal a recoverable upstream failure (e.g. a rate limit) without crashing:
 
@@ -117,6 +179,95 @@ To signal a recoverable upstream failure (e.g. a rate limit) without crashing:
 ```
 
 ---
+
+## Tools
+
+domarinn can hand your provider a set of tool declarations and grade what the
+model decided to do with them.
+
+**It never runs a tool.** There is no agent loop, no result fed back, no second
+turn. What an eval wants from a tool-using model is the *decision* — did it
+reach for `get_weather` with the right city, and did it stay away from
+`delete_account` — and that decision is fully observable in one turn. Executing
+the tool would make domarinn part of the system under test.
+
+### Offering them
+
+`tools` arrives on the request when the suite declared any, in Anthropic's
+shape (`input_schema` is a JSON Schema). Offer them to your model however your
+upstream expects; an OpenAI-compatible endpoint wants each one wrapped as
+`{"type": "function", "function": {name, description, parameters}}`.
+
+The key is absent, not empty, when the suite declared no tools — so a provider
+that ignores this field is unaffected, and so is every cache entry written
+before tools existed.
+
+### Reporting the decision
+
+```json
+{
+  "output": "",
+  "empty_reason": "tool_use_only",
+  "tool_calls": [
+    { "id": "call_1", "name": "get_weather", "arguments": { "city": "Oslo" } }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Optional. Your upstream's call id, so a multi-call response stays attributable. Never interpreted. |
+| `name` | string | **Required.** A call with no name is dropped: an assertion must not match something that cannot be attributed. |
+| `arguments` | any JSON | The **decoded** arguments object. |
+
+Two rules worth stating plainly:
+
+- **`arguments` is decoded, not a string.** OpenAI-compatible endpoints send
+  `function.arguments` as a JSON string; parse it before reporting. Forwarding
+  the string hands every assertion a parsing problem instead of an argument.
+- **Report calls even when there is also text.** A case whose right answer is a
+  tool call has no gradeable prose, and returning `""` alone scores it zero
+  against every assertion for a reason unrelated to the prompt. Set
+  `empty_reason: "tool_use_only"` alongside the calls when that is what
+  happened.
+
+Suite-side, these are graded by [`tool-call`
+assertions](./assertions.md#tool-call).
+
+## Writing a provider in Rust
+
+The wire types live in `domarinn-protocol` — a crate whose only dependencies
+are `serde` and `serde_json`, enforced by a test. It is deliberately separate
+from `domarinn-types` (the *run document* contract, which carries a schema
+generator and a TypeScript exporter): someone writing a provider should not
+inherit either.
+
+```toml
+[dependencies]
+domarinn-protocol = { git = "https://github.com/AtvikSecurity/domarinn", tag = "0.3.0" }
+```
+
+```rust
+use domarinn_protocol::{ProviderReq, ProviderResp};
+
+let req: ProviderReq = serde_json::from_reader(std::io::stdin())?;
+let resp = ProviderResp {
+    output: serde_json::Value::String(answer),
+    ..Default::default()
+};
+serde_json::to_writer(std::io::stdout(), &resp)?;
+```
+
+`Default` is derived precisely so this stays correct as optional fields are
+added.
+
+## Working directory
+
+Every child — provider, assertion, and generator — is spawned with its working
+directory set to the **suite's** directory, not wherever the CLI was invoked.
+A generator resolving `datasets/*.yaml` therefore resolves it relative to the
+suite file, which is almost always what you want and is not otherwise
+discoverable.
 
 ## Kind: `assert`
 

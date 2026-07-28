@@ -1,0 +1,19 @@
+[package]
+name = "domarinn-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Wire types for domarinn's exec protocol: write an eval provider, assertion, or test generator in Rust"
+readme = "README.md"
+keywords = ["eval", "llm", "testing", "protocol", "domarinn"]
+categories = ["development-tools::testing", "encoding"]
+
+# Two dependencies, and that is the point. A third-party provider author should
+# pay nothing to speak this protocol beyond what they already pay for serde.
+# `tests/deps.rs` enforces the list; read its comment before adding anything.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

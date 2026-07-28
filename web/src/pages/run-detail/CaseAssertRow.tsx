@@ -12,6 +12,7 @@ import {
   hasProseCriteria,
   verdictSource,
 } from "@/lib/assertView";
+import { formatCost } from "@/lib/format";
 
 /**
  * One assertion, as three attributed blocks instead of three anonymous ones.
@@ -82,6 +83,18 @@ export function CaseAssertRow({
           {threshold ? <span className="text-muted/80">{threshold}</span> : null}
           {showWeight ? (
             <span className="text-muted/80">· weight {assert.weight.toFixed(2)}</span>
+          ) : null}
+          {/* What this one verdict cost. Present only for the assertions that
+              call a model to decide, so it doubles as the marker for which
+              rows in a list are the expensive ones — the actionable fact when
+              a suite's grading bill is the surprise. */}
+          {assert.cost_usd != null ? (
+            <span
+              className="text-muted/80"
+              title="What this verdict cost to grade — not part of the case's cost"
+            >
+              · {formatCost(assert.cost_usd)}
+            </span>
           ) : null}
         </span>
       </div>

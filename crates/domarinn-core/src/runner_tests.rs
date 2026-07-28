@@ -2,8 +2,10 @@
 //! `#[path]` to keep that file under the repo's 1000-line source cap;
 //! this is still the runner's private child module (`use super::*`).
 
+use super::runner_cache::{entry_to_response, response_to_entry};
 use super::*;
-use crate::cache::{CacheError, CacheStats, PurgeFilter};
+use crate::cache::{CacheEntry, CacheError, CacheStats, PurgeFilter};
+use crate::provider::{ProviderError, ProviderResponse};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -52,13 +54,11 @@ impl Provider for FlakyProvider {
     ) -> Result<ProviderResponse, ProviderError> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n == 0 {
-            Err(ProviderError::Retriable {
-                class: crate::error_class::ErrorClass::new(
-                    crate::error_class::ErrorClass::PROVIDER_UNAVAILABLE,
-                ),
-                source: anyhow::anyhow!("boom"),
-                retry_after: None,
-            })
+            Err(ProviderError::retriable(
+                crate::error_class::ErrorClass::PROVIDER_UNAVAILABLE,
+                anyhow::anyhow!("boom"),
+                None,
+            ))
         } else {
             Ok(ProviderResponse::text("ok"))
         }
@@ -83,6 +83,7 @@ fn cache_entries_preserve_raw_provider_metadata() {
     };
     let raw = serde_json::json!({ "id": "resp_1", "model": "m", "finish_reason": "stop" });
     let response = ProviderResponse {
+        tool_calls: Vec::new(),
         output: crate::types::Output::Text("hi".to_string()),
         usage: None,
         cost_usd: None,
@@ -90,6 +91,7 @@ fn cache_entries_preserve_raw_provider_metadata() {
         raw: Some(raw.clone()),
         reasoning: None,
         empty_reason: None,
+        model: None,
     };
 
     let entry = response_to_entry(&provider, &response, test_stats());
@@ -113,11 +115,18 @@ fn cache_round_trip_preserves_every_response_field() {
         calls: AtomicU32::new(0),
     };
     let original = ProviderResponse {
+        tool_calls: vec![crate::result::ToolCall {
+            id: Some("call_1".to_string()),
+            name: "lookup_order".to_string(),
+            arguments: serde_json::json!({ "id": 42 }),
+        }],
         output: crate::types::Output::Text("answer".to_string()),
         usage: Some(crate::types::TokenUsage {
             input_tokens: 11,
             output_tokens: 7,
             cache_read_tokens: Some(3),
+            cache_write_tokens: Some(5),
+            cache_write_1h_tokens: Some(2),
         }),
         cost_usd: Some(0.0125),
         stop_reason: Some("end_turn".to_string()),
@@ -126,11 +135,13 @@ fn cache_round_trip_preserves_every_response_field() {
         empty_reason: Some(crate::empty::EmptyReason::new(
             crate::empty::EmptyReason::THINKING_ONLY,
         )),
+        model: Some("m-2026-01-01".to_string()),
     };
 
     let replayed = entry_to_response(response_to_entry(&provider, &original, test_stats()));
 
     let ProviderResponse {
+        tool_calls,
         output,
         usage,
         cost_usd,
@@ -138,6 +149,7 @@ fn cache_round_trip_preserves_every_response_field() {
         raw,
         reasoning,
         empty_reason,
+        model,
     } = replayed;
     assert_eq!(output, original.output);
     assert_eq!(usage, original.usage);
@@ -146,6 +158,10 @@ fn cache_round_trip_preserves_every_response_field() {
     assert_eq!(raw, original.raw);
     assert_eq!(reasoning, original.reasoning);
     assert_eq!(empty_reason, original.empty_reason);
+    assert_eq!(model, original.model);
+    // Without this a `tool-call` assertion passes on the first run of a suite
+    // and fails on every run after, which is the common path.
+    assert_eq!(tool_calls, original.tool_calls);
 }
 
 /// Entries written before the `raw` field existed keep deserializing (and
@@ -206,6 +222,7 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
                 calls: AtomicU32::new(0),
             };
             let req = ProviderRequest {
+                tools: Vec::new(),
                 prompt: None,
                 vars: std::collections::BTreeMap::new(),
                 params: serde_json::Map::new(),
@@ -246,4 +263,67 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
         logged.contains("\"delay_ms\""),
         "retry warn must record a `delay_ms` field; got: {logged}"
     );
+}
+
+// ── The grader-auth circuit breaker ──────────────────────────────────────────
+
+/// The first rejection is the cause; the rest are it happening again.
+#[test]
+fn the_abort_flag_keeps_the_first_reason() {
+    let flag = AbortFlag::default();
+    assert!(!flag.is_poisoned());
+    assert_eq!(flag.reason(), None);
+
+    flag.poison("grader credential rejected (HTTP 401)".into());
+    flag.poison("grader credential rejected (HTTP 403)".into());
+
+    assert!(flag.is_poisoned());
+    let reason = flag.reason().expect("poisoned");
+    assert!(reason.contains("401"), "{reason}");
+    assert!(
+        !reason.contains("403"),
+        "later failures must not overwrite: {reason}"
+    );
+    assert!(reason.starts_with("aborted: "), "{reason}");
+}
+
+/// A rejected credential is the caller's problem, not a flaky grader — the
+/// distinction that decides whether CI retries or stops.
+#[test]
+fn a_rejected_grader_credential_is_classified_as_auth() {
+    use crate::errors::Classify;
+    let auth = crate::errors::GraderError::AuthRejected { status: 401 };
+    let broke = crate::errors::GraderError::Transport("connection reset".into());
+    assert_eq!(auth.class().as_str(), ErrorClass::PROVIDER_AUTH);
+    assert_eq!(broke.class().as_str(), ErrorClass::GRADER_FAILED);
+}
+
+// ── CaseStatus::Skip ─────────────────────────────────────────────────────────
+
+/// `Skip` has been defined, counted, rendered and TS-exported since it shipped,
+/// and never produced. This is the policy that produces it.
+#[test]
+fn an_empty_reason_only_skips_when_the_suite_asked_for_it() {
+    let tool_use = crate::empty::EmptyReason::new(crate::empty::EmptyReason::TOOL_USE_ONLY);
+    let refusal = crate::empty::EmptyReason::new(crate::empty::EmptyReason::REFUSAL);
+    let configured = vec![crate::empty::EmptyReason::TOOL_USE_ONLY.to_string()];
+
+    assert!(reasoning_is_skippable(Some(&tool_use), &configured));
+    // A refusal is a real result about the prompt unless the suite says
+    // otherwise, so it is graded rather than skipped.
+    assert!(!reasoning_is_skippable(Some(&refusal), &configured));
+    // Opt-in: an empty list changes nothing, which is the default.
+    assert!(!reasoning_is_skippable(Some(&tool_use), &[]));
+    assert!(!reasoning_is_skippable(None, &configured));
+}
+
+/// `EmptyReason` is open by construction; this must not be the one place that
+/// closes it, so a vendor reason from the future can still be skipped.
+#[test]
+fn a_reason_this_build_has_never_heard_of_can_still_be_skipped() {
+    let future = crate::empty::EmptyReason::new("invented_next_year");
+    assert!(reasoning_is_skippable(
+        Some(&future),
+        &["invented_next_year".to_string()]
+    ));
 }

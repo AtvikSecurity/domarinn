@@ -9,6 +9,7 @@ authors.workspace = true
 description = "Core eval engine, config schema, and traits for domarinn"
 
 [dependencies]
+domarinn-protocol = { workspace = true }
 domarinn-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -39,6 +40,20 @@ chrono = { workspace = true }
 # bash *shell* variable rather than an exported one, so it is unset in exactly
 # the containers and CI runners where the value matters most.
 whoami = "2"
+# Approved new dependency: `contains-json`'s `schema` field was in the public
+# config schema, documented, and validated nothing — a user could write a schema
+# and get a pass that checked it against nothing.
+#
+# `default-features = false` is a security requirement, not a size one: it drops
+# `resolve-http` and `resolve-file`, so a `$ref` in a suite's schema can never
+# become an outbound request or a filesystem read during a run. The
+# network-refusal test in `jsonschema_cache.rs` is what keeps that true across a
+# Renovate bump, which this repo automerges after a soak.
+#
+# Pinned below 0.49 deliberately: that release requires rustc 1.85 and would
+# silently raise the MSRV declared in the workspace manifest, which no CI job
+# builds at.
+jsonschema = { version = "0.46", default-features = false }
 
 [dev-dependencies]
 serde_json = { workspace = true }

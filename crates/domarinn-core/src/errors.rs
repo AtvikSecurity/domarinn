@@ -59,6 +59,17 @@ pub enum GraderError {
     #[error("grader transport: {0}")]
     Transport(String),
 
+    /// The grader's credential was rejected (401/403).
+    ///
+    /// Its own variant because it is the one grader failure that will happen to
+    /// *every* remaining case: a rejected credential does not become valid on
+    /// the next call. Collapsed into `Transport` it read as a transient fault,
+    /// so a whole suite would error one case at a time and exit 3 — an
+    /// infrastructure fault, after burning the run's entire provider spend.
+    /// The runner short-circuits on this; see `runner::AbortFlag`.
+    #[error("grader credential rejected (HTTP {status})")]
+    AuthRejected { status: u16 },
+
     /// The verdict was cut off before it was complete. Fail closed: a truncated
     /// verdict must never be read as a pass. Fix: raise the grader's
     /// `max_tokens`.
@@ -87,6 +98,9 @@ impl Classify for GraderError {
             GraderError::Unconfigured { .. }
             | GraderError::Unsupported { .. }
             | GraderError::Misconfigured(_) => ErrorClass::GRADER_MISSING,
+            // The credential, not the grader — same distinction the provider
+            // path draws, so a rejected key does not land in a flakiness graph.
+            GraderError::AuthRejected { .. } => ErrorClass::PROVIDER_AUTH,
             GraderError::Transport(_)
             | GraderError::TruncatedVerdict { .. }
             | GraderError::InvalidVerdict(_)
@@ -131,6 +145,10 @@ impl Classify for crate::runner::RunError {
             crate::runner::RunError::Factory(_) => ErrorClass::new(ErrorClass::PROVIDER_REQUEST),
             crate::runner::RunError::Resolve(e) => e.class(),
             crate::runner::RunError::Generate(_) => ErrorClass::new(ErrorClass::EXEC_FAILED),
+            // The suite resolved to nothing. Nothing rendered, nothing was
+            // requested, nothing executed — the config is what is wrong.
+            crate::runner::RunError::NothingToRun(_) => ErrorClass::new(ErrorClass::RENDER_FAILED),
+            crate::runner::RunError::Credentials(_) => ErrorClass::new(ErrorClass::PROVIDER_AUTH),
         }
     }
 }

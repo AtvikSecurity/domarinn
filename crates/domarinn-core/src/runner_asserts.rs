@@ -12,7 +12,9 @@ use std::path::Path;
 use serde_json::Value as Json;
 
 use crate::assertion::AssertOutcome;
-use crate::asserts::{evaluate_local, is_local, MetricCtx};
+use crate::asserts::{evaluate_local, is_local, EvalCtx, MetricCtx};
+use crate::cache::{CacheBackend, CacheMode, Graded};
+use crate::cache_key::grader_cache_key;
 use crate::config::{Assert, AssertKind};
 use crate::error_class::ErrorClass;
 use crate::errors::Classify;
@@ -23,19 +25,55 @@ use crate::types::Output;
 
 use super::AssertGrader;
 
+/// The parts of the assert path that are fixed for a whole run.
+///
+/// Fields rather than parameters, deliberately. `evaluate_asserts` reached
+/// eight arguments and a `too_many_arguments` allow by growing one at a time,
+/// and everything still queued to be threaded through here — a compiled-schema
+/// cache, a verdict cache, an abort flag — is run-scoped in the same way. A
+/// struct absorbs those without the signature moving again, and makes it
+/// obvious at a glance which inputs vary per cell and which do not.
+pub(super) struct AssertCtx<'a> {
+    pub provider_id: &'a str,
+    pub test_id: &'a str,
+    pub test_tags: &'a [String],
+    pub engine: &'a TemplateEngine,
+    pub grader: Option<&'a dyn AssertGrader>,
+    pub base_dir: &'a Path,
+    pub schemas: &'a crate::jsonschema_cache::SchemaCache,
+    /// This cell's reported tool calls, for `tool-call` assertions.
+    pub tool_calls: &'a [crate::result::ToolCall],
+    pub cache: &'a dyn CacheBackend,
+    pub cache_mode: CacheMode,
+    /// Whether verdict caching is enabled (`cache.grader`, `--no-grader-cache`).
+    pub grader_cache: bool,
+    /// The trial index. In the key so `--repeat N` still samples the judge N
+    /// times: two trials whose provider responses are byte-identical — common
+    /// at temperature 0, or with a warm provider cache — would otherwise
+    /// collapse to one verdict and erase exactly the variance `--repeat`
+    /// exists to measure.
+    pub repeat: u32,
+    /// Set once the grader's credential is rejected. See [`super::AbortFlag`].
+    pub aborted: &'a super::AbortFlag,
+}
+
 /// Evaluate all asserts: local first, then (if they can still change the
 /// outcome) the graded ones; otherwise mark them skipped.
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn evaluate_asserts(
+    ctx: &AssertCtx<'_>,
     asserts: &[Assert],
     output: &Output,
     vars: &Json,
-    engine: &TemplateEngine,
-    grader: Option<&dyn AssertGrader>,
-    base_dir: &Path,
     metrics: &MetricCtx,
     threshold: Option<f64>,
 ) -> (Vec<AssertResult>, Vec<Scored>, Vec<ErrorClass>) {
+    let eval = EvalCtx {
+        engine: ctx.engine,
+        vars,
+        metrics,
+        schemas: ctx.schemas,
+        tool_calls: ctx.tool_calls,
+    };
     // Slot results by original index so output order matches config order.
     let mut results: Vec<Option<AssertResult>> = vec![None; asserts.len()];
     let mut scored: Vec<Scored> = Vec::new();
@@ -47,8 +85,8 @@ pub(super) async fn evaluate_asserts(
     let mut deferred_indices: Vec<usize> = Vec::new();
     for (i, assert) in asserts.iter().enumerate() {
         if is_local(&assert.kind) {
-            let outcome = evaluate_local(assert, output, engine, vars, metrics)
-                .expect("local assert yields an outcome");
+            let outcome =
+                evaluate_local(assert, output, &eval).expect("local assert yields an outcome");
             scored.push(scored_of(assert, &outcome));
             results[i] = Some(assert_result(
                 assert,
@@ -70,21 +108,39 @@ pub(super) async fn evaluate_asserts(
             results[i] = Some(skipped_result(assert));
             continue;
         }
-        match grader {
-            Some(g) => match g.grade(assert, output, vars, engine, Some(base_dir)).await {
-                Ok(outcome) => {
+        // Checked before every grading call, not just at the top of the loop:
+        // with concurrency N, cells already in flight when the credential was
+        // rejected must not each pay for their own 401 to find out.
+        if let Some(reason) = ctx.aborted.reason() {
+            classes.push(ErrorClass::new(ErrorClass::PROVIDER_AUTH));
+            results[i] = Some(error_assert(assert, reason));
+            continue;
+        }
+        match ctx.grader {
+            Some(g) => match graded_verdict(g, ctx, assert, output, vars).await {
+                Ok((graded, cached)) => {
+                    let outcome = graded
+                        .verdict
+                        .to_outcome(assert_threshold(assert))
+                        .negated(assert.negate);
                     scored.push(scored_of(assert, &outcome));
-                    results[i] = Some(assert_result(
-                        assert,
-                        &outcome,
-                        AssertStatus::from_pass(outcome.passed),
-                    ));
+                    let mut result =
+                        assert_result(assert, &outcome, AssertStatus::from_pass(outcome.passed));
+                    result.cached = cached;
+                    result.cost_usd = graded.cost_usd;
+                    results[i] = Some(result);
                 }
                 // Fail closed: a grader problem is an error, not a plain fail.
                 // The class comes off the error itself, so "no grader is
                 // configured" and "the grader broke" stay distinguishable all
                 // the way to the stored case.
                 Err(e) => {
+                    // A rejected credential will reject every remaining call
+                    // too, so poison the run rather than discovering it once
+                    // per case at full provider cost.
+                    if let crate::errors::GraderError::AuthRejected { .. } = e {
+                        ctx.aborted.poison(e.to_string());
+                    }
                     classes.push(e.class());
                     results[i] = Some(error_assert(assert, e.to_string()));
                 }
@@ -108,6 +164,152 @@ pub(super) async fn evaluate_asserts(
         scored,
         classes,
     )
+}
+
+/// The threshold this assertion applies to its verdict, if any.
+///
+/// Read here rather than inside the grader, which is what keeps `threshold` out
+/// of the cache key: the cached value is the raw verdict, and this is the only
+/// place a threshold is consulted.
+fn assert_threshold(assert: &Assert) -> Option<f64> {
+    match &assert.kind {
+        AssertKind::LlmRubric { threshold, .. } | AssertKind::Similar { threshold, .. } => {
+            *threshold
+        }
+        _ => None,
+    }
+}
+
+/// Grade one assertion, consulting the verdict cache. Returns the verdict and
+/// whether it came from cache.
+///
+/// The policy lives here rather than inside [`AssertGrader`] so any
+/// implementation gets caching for free, while the *identity* stays with the
+/// grader that knows what can move its verdict.
+async fn graded_verdict(
+    grader: &dyn AssertGrader,
+    ctx: &AssertCtx<'_>,
+    assert: &Assert,
+    output: &Output,
+    vars: &Json,
+) -> Result<(Graded, bool), crate::errors::GraderError> {
+    let key = (ctx.grader_cache && ctx.cache_mode != CacheMode::Disabled)
+        .then(|| grader.grading_fingerprint(assert))
+        .flatten()
+        .map(|fp| grader_cache_key(&fp, &graded_payload(assert, output), ctx.repeat));
+
+    if let Some(key) = &key {
+        match ctx.cache.get(key).await {
+            // An entry without a verdict is a provider response, not a grading
+            // result: a miss, never an error.
+            Ok(Some(entry)) => {
+                if let Some(verdict) = entry.verdict {
+                    // The cost replays with the verdict, so a run's grading
+                    // cost is what the grading is worth rather than a figure
+                    // that collapses as the cache warms. Which calls were
+                    // actually paid for is already visible per assertion via
+                    // `AssertResult.cached`.
+                    return Ok((
+                        Graded {
+                            verdict,
+                            usage: entry.usage,
+                            cost_usd: entry.cost_usd,
+                            model: entry.model,
+                        },
+                        true,
+                    ));
+                }
+            }
+            Ok(None) => {
+                if ctx.cache_mode == CacheMode::ReadOnlyStrict {
+                    // A `--cache-only` run that quietly called a live grader
+                    // would be lying about being offline.
+                    return Err(crate::errors::GraderError::Transport(format!(
+                        "cache-only: miss for grader verdict {key}"
+                    )));
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "grader cache read failed; grading live"),
+        }
+    }
+
+    let graded = grader
+        .grade(
+            assert,
+            output,
+            &super::GradeCtx {
+                vars,
+                engine: ctx.engine,
+                working_dir: Some(ctx.base_dir),
+                provider_id: ctx.provider_id,
+                test_id: ctx.test_id,
+                test_tags: ctx.test_tags,
+            },
+        )
+        .await?;
+
+    if let Some(key) = &key {
+        if ctx.cache_mode == CacheMode::ReadWrite {
+            let entry = verdict_entry(grader, assert, &graded);
+            // A cache write failure must not fail the run.
+            if let Err(e) = ctx.cache.put(key, &entry).await {
+                tracing::warn!(error = %e, "grader cache write failed");
+            }
+        }
+    }
+    Ok((graded, false))
+}
+
+/// What was graded — the half of the key that varies per case.
+fn graded_payload(assert: &Assert, output: &Output) -> Json {
+    let output = output
+        .as_json()
+        .unwrap_or_else(|| Json::String(output.as_text().into_owned()));
+    match &assert.kind {
+        // The rubric is *rendered* before it reaches here, so a var that can
+        // move the verdict has already moved this.
+        AssertKind::LlmRubric { value, .. } => {
+            serde_json::json!({"assert": "llm-rubric", "rubric": value, "output": output})
+        }
+        AssertKind::Similar { value, .. } => {
+            serde_json::json!({"assert": "similar", "reference": value, "output": output})
+        }
+        AssertKind::Exec { config, .. } => {
+            serde_json::json!({"assert": "exec", "config": config, "output": output})
+        }
+        other => serde_json::json!({"assert": other.name().as_str(), "output": output}),
+    }
+}
+
+/// A verdict entry. The non-verdict fields are *used*, not stubbed: `output`
+/// carries the judge's reasoning so `domarinn cache` inspection shows something
+/// a human can read, and `usage`/`cost_usd`/`model` carry what the judge cost so
+/// a replayed verdict reports it rather than silently dropping to nothing.
+fn verdict_entry(
+    grader: &dyn AssertGrader,
+    assert: &Assert,
+    graded: &Graded,
+) -> crate::cache::CacheEntry {
+    let reason = graded.verdict.to_outcome(None).reason;
+    crate::cache::CacheEntry {
+        created_at: chrono::Utc::now(),
+        provider_fingerprint: grader.grading_fingerprint(assert).unwrap_or(Json::Null),
+        output: Output::Text(reason),
+        usage: graded.usage.clone(),
+        cost_usd: graded.cost_usd,
+        stop_reason: None,
+        attempts: None,
+        provider_latency_ms: None,
+        reasoning: None,
+        empty_reason: None,
+        model: graded.model.clone(),
+        raw: None,
+        // A verdict is not a provider response and has no tool calls of its
+        // own; its absence is part of what marks this entry as a grading result.
+        tool_calls: Vec::new(),
+        verdict: Some(graded.verdict.clone()),
+        domarinn_version: crate::VERSION.to_string(),
+    }
 }
 
 fn scored_of(assert: &Assert, outcome: &AssertOutcome) -> Scored {
@@ -145,6 +347,7 @@ fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus)
         details: outcome.details.clone(),
         criteria: assert_criteria(assert),
         cached: false,
+        cost_usd: None,
     }
 }
 
@@ -158,6 +361,7 @@ fn error_assert(assert: &Assert, reason: String) -> AssertResult {
         details: None,
         criteria: assert_criteria(assert),
         cached: false,
+        cost_usd: None,
     }
 }
 
@@ -171,6 +375,7 @@ fn skipped_result(assert: &Assert) -> AssertResult {
         details: None,
         criteria: assert_criteria(assert),
         cached: false,
+        cost_usd: None,
     }
 }
 
@@ -225,6 +430,7 @@ mod tests {
             details: None,
             criteria: None,
             cached: false,
+            cost_usd: None,
         }
     }
 

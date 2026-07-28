@@ -177,6 +177,11 @@ pub fn render_case_detail(case: &CaseResult, palette: &Palette, show_raw: bool) 
         ident.push_str(&format!(" · prompt {prompt_id}"));
     }
     ident.push_str(&format!(" · test {}", case.cell.test_id));
+    // The model the provider *reported*, which is the point: when a suite pins
+    // a floating alias, this is the only place the actual snapshot shows up.
+    if let Some(model) = &case.model {
+        ident.push_str(&format!(" · model {model}"));
+    }
     ident.push_str(&format!(" · repeat {}", case.cell.repeat));
     ident.push_str(&format!(" · {}", pluralize(case.attempts, "attempt")));
     if case.cached {
@@ -222,6 +227,15 @@ pub fn render_case_detail(case: &CaseResult, palette: &Palette, show_raw: bool) 
 
     if let Some(error) = &case.error {
         out.push_str(&render_error(error, palette));
+    }
+
+    // Not gated on `show_raw`: an errored case has no output and no raw
+    // payload, so this is the only structured thing it carries. Hiding it
+    // behind a flag would leave the reader with prose and nothing else.
+    if let Some(details) = &case.error_details {
+        out.push_str(&format!("  {}\n", palette.dim("error details")));
+        out.push_str(&indent(&pretty_json(details), 4));
+        out.push('\n');
     }
 
     if show_raw {
@@ -394,6 +408,7 @@ mod tests {
     /// A bare case with the given cell; callers mutate the fields they test.
     fn case(cell: CellKey, status: CaseStatus) -> CaseResult {
         CaseResult {
+            tool_calls: Vec::new(),
             case_key: cell.case_key(),
             cell,
             name: None,
@@ -405,6 +420,7 @@ mod tests {
             prompt: None,
             request: None,
             stop_reason: None,
+            model: None,
             raw: None,
             asserts: vec![],
             usage: None,
@@ -419,6 +435,7 @@ mod tests {
             provider_digest: None,
             assert_digest: None,
             error: None,
+            error_details: None,
             error_class: None,
         }
     }
@@ -620,7 +637,7 @@ mod tests {
         c.usage = Some(TokenUsage {
             input_tokens: 123,
             output_tokens: 45,
-            cache_read_tokens: None,
+            ..Default::default()
         });
         c.cost_usd = Some(0.0012);
         c.stop_reason = Some("end_turn".into());
@@ -647,6 +664,7 @@ mod tests {
                 details: None,
                 criteria: None,
                 cached: false,
+                cost_usd: None,
             },
             AssertResult {
                 kind: AssertName::LlmRubric,
@@ -657,6 +675,7 @@ mod tests {
                 details: Some(serde_json::json!({"pass": false})),
                 criteria: None,
                 cached: false,
+                cost_usd: None,
             },
         ];
 

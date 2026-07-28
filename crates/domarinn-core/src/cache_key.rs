@@ -20,6 +20,15 @@
 //!   resolves its own prompts across a process boundary and domarinn never sees
 //!   them. Use a per-case `cache_salt` for that; keep this a pure hash of what
 //!   it is handed, with no filesystem or prompt-source resolution.
+//! - **The model a provider *reports* having used.** This one is enforced by
+//!   the signature rather than by discipline: [`provider_cache_key`] is handed
+//!   a request, and the reported model only exists on a response, so a lookup
+//!   could not depend on it even if that were wanted. Nor should it — the
+//!   *requested* model is already covered (it is in the `anthropic`/`openai`
+//!   fingerprints, and inside `command` for `exec`). Hashing the reported one
+//!   would silently discard every cache entry on the day a vendor rolls a
+//!   snapshot, which is the opposite of useful; `CaseResult.model` makes that
+//!   drift visible and diffable instead, which is the right lever.
 //! - **`req.test` (the test id and tags).** Adding it would change every
 //!   existing key, and identity is not what makes two calls interchangeable —
 //!   the request is. Two cases with identical vars and no prompt therefore share
@@ -30,6 +39,27 @@ use serde_json::Value as Json;
 
 use crate::cache::CacheKey;
 use crate::provider::ProviderRequest;
+
+/// Compute the cache key for one grading call.
+///
+/// **The "only when set" discipline above does not apply here.** That rule
+/// exists to keep keys written before a member existed valid, and this key
+/// space is new — it has no legacy entries to preserve. Every member is
+/// therefore included unconditionally, which is simpler and is the right
+/// default for a fresh key. Do not copy the conditional-insert pattern from
+/// `provider_cache_key` into this function; it would be cargo-culting a
+/// constraint that does not exist here.
+///
+/// `kind` discriminates the two key spaces, so a grader key can never collide
+/// with a provider key even if their other members coincided.
+pub fn grader_cache_key(fingerprint: &Json, graded: &Json, repeat: u32) -> CacheKey {
+    CacheKey::compute(&serde_json::json!({
+        "kind": "grader-verdict",
+        "fingerprint": fingerprint,
+        "graded": graded,
+        "repeat": repeat,
+    }))
+}
 
 /// Compute the cache key for one provider call.
 pub fn provider_cache_key(fingerprint: &Json, req: &ProviderRequest, repeat: u32) -> CacheKey {
@@ -45,6 +75,15 @@ pub fn provider_cache_key(fingerprint: &Json, req: &ProviderRequest, repeat: u32
         "params": Json::Object(req.params.clone()),
         "repeat": repeat,
     });
+    // Same "only when present" discipline as `case_salt` below, and for the
+    // same reason: every entry written before tools existed must keep its key.
+    // An empty list is not a declaration, it is the absence of one.
+    if !req.tools.is_empty() {
+        parts.as_object_mut().expect("json! object literal").insert(
+            "tools".to_string(),
+            serde_json::to_value(&req.tools).unwrap_or(Json::Null),
+        );
+    }
     // Only when set — see the module docs. An empty salt is a real value and is
     // deliberately not normalized to "unset".
     if let Some(salt) = &req.case_salt {
@@ -70,6 +109,7 @@ mod tests {
         let mut vars = BTreeMap::new();
         vars.insert("x".to_string(), Json::String(var.into()));
         ProviderRequest {
+            tools: Vec::new(),
             prompt: None,
             vars,
             params: serde_json::Map::new(),
@@ -181,6 +221,39 @@ mod tests {
         assert_ne!(
             provider_cache_key(&fp(), &a, 0),
             provider_cache_key(&fp(), &b, 0)
+        );
+    }
+
+    /// Tools are part of the *request*: a call offering a tool and one that does
+    /// not are different questions, and replaying one for the other would report
+    /// "no tools were called" for a call that was never given any.
+    #[test]
+    fn declared_tools_change_the_key_but_declaring_none_does_not() {
+        let with_tools = |names: &[&str]| {
+            let mut r = req("a");
+            r.tools = names
+                .iter()
+                .map(|n| crate::config::ToolDef {
+                    name: (*n).to_string(),
+                    description: None,
+                    input_schema: None,
+                })
+                .collect();
+            r
+        };
+        assert_ne!(
+            provider_cache_key(&fp(), &req("a"), 0),
+            provider_cache_key(&fp(), &with_tools(&["get_weather"]), 0)
+        );
+        assert_ne!(
+            provider_cache_key(&fp(), &with_tools(&["get_weather"]), 0),
+            provider_cache_key(&fp(), &with_tools(&["get_weather", "get_time"]), 0)
+        );
+        // The load-bearing negative: an empty declaration is the absence of one,
+        // so every entry written before tools existed keeps its key.
+        assert_eq!(
+            provider_cache_key(&fp(), &req("a"), 0),
+            provider_cache_key(&fp(), &with_tools(&[]), 0)
         );
     }
 }

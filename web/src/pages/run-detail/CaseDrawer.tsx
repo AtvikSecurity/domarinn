@@ -5,7 +5,7 @@ import { CenteredSpinner } from "@/components/ui/Spinner";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
 import { ErrorState } from "@/components/States";
-import { OutputViewer } from "@/components/output";
+import { JsonTree, OutputViewer, RawText, outputToString } from "@/components/output";
 import { BaselineDiffSection } from "./BaselineDiffSection";
 import { CaseAssertRow } from "./CaseAssertRow";
 import { CaseInputSection } from "./CaseInputSection";
@@ -115,6 +115,33 @@ export function CaseDrawer({
                         Error
                       </div>
                       <p className="text-sm text-fail">{detail.data.error}</p>
+                      {/* The structured diagnostic a provider sent alongside
+                          the message — a rate-limit window, a validation
+                          payload, a child's own error object. An errored case
+                          has no output and no raw metadata, so this is the
+                          only thing it carries; it is deliberately exempt from
+                          `--no-raw` for that reason. Rendered inline rather
+                          than collapsed: you opened an errored case to read
+                          exactly this. */}
+                      {detail.data.error_details != null ? (
+                        <div className="mt-2.5">
+                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-fail/70">
+                            Details
+                          </div>
+                          {typeof detail.data.error_details === "object" ? (
+                            <JsonTree
+                              data={detail.data.error_details}
+                              className="text-[11px]/relaxed"
+                            />
+                          ) : (
+                            <RawText
+                              text={outputToString(detail.data.error_details)}
+                              wrap
+                              className="text-[11px]/relaxed"
+                            />
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 

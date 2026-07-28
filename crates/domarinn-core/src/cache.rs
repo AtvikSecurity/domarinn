@@ -101,6 +101,118 @@ fn write_canonical(value: &Json, out: &mut String) {
     }
 }
 
+/// A grading result *before* any threshold is applied.
+///
+/// The shape decision that makes verdict caching correct. `grade_llm_rubric`
+/// used to fold `threshold` into `AssertOutcome.passed` before returning, and
+/// caching that would have forced `threshold` into the cache key — so editing
+/// a threshold would re-pay the judge for an answer it had already given.
+///
+/// Keeping the raw verdict makes "threshold is not in the key" *structural*
+/// rather than a comment that can rot: it is not reachable from this type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GradedVerdict {
+    /// An `llm-rubric` judge's structured verdict.
+    Rubric {
+        score: f64,
+        pass: bool,
+        #[serde(default)]
+        reasoning: String,
+    },
+    /// A `similar` assertion's cosine similarity, in `[-1, 1]`.
+    Similarity { cosine: f64 },
+    /// An `exec` assertion's protocol response.
+    Exec {
+        pass: bool,
+        score: f64,
+        #[serde(default)]
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<Json>,
+    },
+}
+
+impl GradedVerdict {
+    /// Apply this assertion's threshold and shape the reason string.
+    ///
+    /// The only place a threshold is consulted, which is why changing one
+    /// re-scores instantly from cache instead of re-grading.
+    pub fn to_outcome(&self, threshold: Option<f64>) -> crate::assertion::AssertOutcome {
+        use crate::assertion::AssertOutcome;
+        match self {
+            GradedVerdict::Rubric {
+                score,
+                pass,
+                reasoning,
+            } => AssertOutcome {
+                score: *score,
+                passed: match threshold {
+                    Some(t) => *score >= t,
+                    None => *pass,
+                },
+                reason: reasoning.clone(),
+                details: None,
+            },
+            GradedVerdict::Similarity { cosine } => {
+                let threshold = threshold.unwrap_or(0.8);
+                AssertOutcome {
+                    score: ((cosine + 1.0) / 2.0).clamp(0.0, 1.0),
+                    passed: *cosine >= threshold,
+                    reason: if *cosine >= threshold {
+                        format!("cosine similarity {cosine:.3} >= {threshold:.3}")
+                    } else {
+                        format!("cosine similarity {cosine:.3} < {threshold:.3}")
+                    },
+                    details: None,
+                }
+            }
+            GradedVerdict::Exec {
+                pass,
+                score,
+                reason,
+                details,
+            } => AssertOutcome {
+                score: *score,
+                passed: *pass,
+                reason: reason.clone(),
+                details: details.clone(),
+            },
+        }
+    }
+}
+
+/// A verdict plus what producing it cost.
+///
+/// Separate from [`GradedVerdict`] rather than folded into it, because only the
+/// verdict decides an outcome: keeping cost out preserves the property that
+/// nothing reachable from a cached answer can be keyed on a threshold. The cost
+/// still rides along so a verdict cache entry replays it, exactly as a provider
+/// entry replays its own `cost_usd` — a run's grading cost must not depend on
+/// whether the verdicts came from cache.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Graded {
+    pub verdict: GradedVerdict,
+    pub usage: Option<TokenUsage>,
+    pub cost_usd: Option<f64>,
+    /// The judge model that produced this verdict, as the API reported it —
+    /// which is not necessarily the one configured, when an alias repoints.
+    pub model: Option<String>,
+}
+
+impl Graded {
+    /// A verdict with no cost attached: the `exec` path, where the child spends
+    /// whatever it spends and domarinn has no way to see it.
+    pub fn unpriced(verdict: GradedVerdict) -> Graded {
+        Graded {
+            verdict,
+            usage: None,
+            cost_usd: None,
+            model: None,
+        }
+    }
+}
+
 /// A cached provider response, plus provenance for stats/debugging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
@@ -132,6 +244,21 @@ pub struct CacheEntry {
     /// `s3`, where it is simply a different measurement wearing the same name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_latency_ms: Option<u64>,
+    /// The model the original call actually used.
+    ///
+    /// Mandatory to replay, not optional-in-spirit: without it a cache hit
+    /// comes back with no model, so the field would be present on the first
+    /// run of a suite and gone on every run after — which is the common path,
+    /// not the rare one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Present only on grader-verdict entries.
+    ///
+    /// Its absence is exactly what "this is a provider response" means, so the
+    /// two never need a discriminator beyond this field. A grader lookup that
+    /// returns an entry without one is treated as a miss, never an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<GradedVerdict>,
     /// Reasoning/thinking text from the original call. Without this a cache hit
     /// replays with no reasoning and no explanation for an empty output — and a
     /// hit is the common path, so the diagnostic would be present on the first
@@ -140,6 +267,13 @@ pub struct CacheEntry {
     pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub empty_reason: Option<crate::empty::EmptyReason>,
+    /// The tool calls the original response reported.
+    ///
+    /// Replayed for the same reason as `model` and `reasoning`: a hit is the
+    /// common path, so without this a `tool-call` assertion would pass on the
+    /// first run of a suite and fail on every run after.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<domarinn_types::result::ToolCall>,
     pub domarinn_version: String,
 }
 

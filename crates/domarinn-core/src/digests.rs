@@ -267,6 +267,7 @@ prompts:
             details: None,
             criteria: Some(criteria),
             cached: false,
+            cost_usd: None,
         }
     }
 

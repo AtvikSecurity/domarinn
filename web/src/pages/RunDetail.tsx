@@ -43,6 +43,19 @@ const STATUS_CHIPS: { value: string; label: string }[] = [
   { value: "skip", label: "Skip" },
 ];
 
+/** Header stat-row widths, keyed by how many stats the run actually has.
+ *
+ * Enumerated rather than interpolated because Tailwind scans for literal class
+ * names — a computed `lg:grid-cols-${n}` produces no CSS at all, which fails as
+ * a silent fallback to the two-column base rather than as a build error.
+ */
+const STAT_COLUMNS: Record<number, string> = {
+  6: "lg:grid-cols-6",
+  7: "lg:grid-cols-7",
+  8: "lg:grid-cols-8",
+  9: "lg:grid-cols-9",
+};
+
 export function RunDetail() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
@@ -187,6 +200,21 @@ export function RunDetail() {
   // The fresh/cached case filter only means something when the run actually
   // mixes both; on a fully-fresh or fully-cached run it would be a no-op chip.
   const partiallyCached = (r.cache_hits ?? 0) > 0 && (r.cache_misses ?? 0) > 0;
+  // Provider-side prompt caching. Null for runs stored before the columns
+  // existed, which is not the same as zero — either way there is nothing to
+  // show, so both collapse to "hide the stat".
+  const promptCacheTokens = (r.cache_read_tokens ?? 0) + (r.cache_write_tokens ?? 0);
+  const showGraderCost = r.grader_cost_usd != null;
+  const showPromptCache = promptCacheTokens > 0;
+  // Six unconditional stats plus whichever of the three optional ones this run
+  // has data for. Derived rather than hardcoded: the column count used to be a
+  // literal that mirrored the JSX below, and adding a stat silently wrapped the
+  // row — costing the cases grid a whole row of height, which only the app-shell
+  // scroll e2e caught.
+  const statColumns =
+    STAT_COLUMNS[
+      6 + Number(showGraderCost) + Number(cacheKnown) + Number(showPromptCache)
+    ];
   const siblingRuns = suiteRuns.data?.pages.flatMap((p) => p.runs) ?? [];
   // Older run in the suite = the default compare base for this run.
   // Undefined when `r` is the oldest loaded run in its suite — the real
@@ -295,9 +323,7 @@ export function RunDetail() {
           </div>
         </div>
 
-        <div
-          className={`mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 ${cacheKnown ? "lg:grid-cols-7" : "lg:grid-cols-6"}`}
-        >
+        <div className={`mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 ${statColumns}`}>
           <Stat label="Pass rate">
             <PassRateBadge
               pass={r.pass_count}
@@ -327,7 +353,31 @@ export function RunDetail() {
           >
             {formatTokens(r.prompt_tokens + r.completion_tokens)}
           </Stat>
-          <Stat label="Cost">{formatCost(r.cost_usd)}</Stat>
+          <Stat
+            label="Cost"
+            // What the run *avoided* only means something beside the number it
+            // is a fraction of, so it rides on this stat rather than getting
+            // its own. Actual spend is the difference.
+            sub={
+              r.cache_savings_usd != null && r.cache_savings_usd > 0
+                ? `${formatCost(r.cache_savings_usd)} saved by cache`
+                : undefined
+            }
+          >
+            {formatCost(r.cost_usd)}
+          </Stat>
+          {/* Its own stat, never added to Cost above. Cost is what the systems
+              under test cost — the number a `cost:` assertion budgets. This is
+              what measuring them cost, and on a suite judged by a bigger model
+              than it tests it is the larger of the two. Presence-gated: a
+              suite with no model-graded assertions has nothing to report, and
+              a run stored before the column existed reports null, which is not
+              the same as zero. */}
+          {showGraderCost ? (
+            <Stat label="Grading" sub="not included in cost">
+              {formatCost(r.grader_cost_usd)}
+            </Stat>
+          ) : null}
           <Stat label="Duration">{formatDuration(r.duration_ms)}</Stat>
           {cacheKnown ? (
             <Stat
@@ -342,6 +392,18 @@ export function RunDetail() {
                   ? `${Math.round(((r.cache_hits ?? 0) / cacheTotal) * 100)}% cached`
                   : "—"}
               </span>
+            </Stat>
+          ) : null}
+          {/* Provider-side prompt caching, which is a different mechanism from
+              domarinn's own response cache above and dominates spend on a
+              cache-heavy suite. Shown only when the run reported any, so it
+              stays absent for suites that never enabled it. */}
+          {showPromptCache ? (
+            <Stat
+              label="Prompt cache"
+              sub={`${formatTokens(r.cache_write_tokens)} written`}
+            >
+              {formatTokens(r.cache_read_tokens)} read
             </Stat>
           ) : null}
         </div>

@@ -348,6 +348,14 @@ token has no owning user and gets a `403` here.
 | GET    | `/api/v1/runs/{id}/compare/{other}`     | `read`  | Diff two runs (regressions/improvements per case). |
 | DELETE | `/api/v1/runs/{id}`                      | `admin` | Delete a run. `204` on success. |
 
+`GET /runs/{id}` reports two cost figures, and they are never summed:
+`cost_usd` is what the systems under test cost, `grader_cost_usd` is what
+grading them cost. It also carries `cache_read_tokens`, `cache_write_tokens`
+and `cache_savings_usd`. All four are `null` for runs ingested before the
+columns existed — which is **not** the same as zero, and readers render it as
+unknown rather than as "no activity". There is no backfill; see the migration
+note in `storage/schema.rs` for why.
+
 <a id="run-ingest"></a>**Ingest** (`POST /api/v1/runs`) accepts a `RunResult`
 JSON document (see [`./protocol.md`](./protocol.md) and `domarinn schema
 result`). The body must carry a `schema_version` within the supported window

@@ -10,6 +10,11 @@ description = "Fake exec-protocol programs for domarinn's tests (not published)"
 publish = false
 
 [dependencies]
+# Deliberately built through the published protocol types rather than ad-hoc
+# `json!` literals: this binary is the workspace's stand-in for a third-party
+# provider, so if `domarinn-protocol` ever grows an awkward shape or a heavy
+# dependency, it shows up here first.
+domarinn-protocol = { workspace = true }
 serde_json = { workspace = true }
 
 [[bin]]

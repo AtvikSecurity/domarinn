@@ -156,6 +156,11 @@ report to produce them.
 | `errored`        | Number of cases that errored (a subset of `failed`). |
 | `total`          | Total number of cases. |
 | `pass-rate`      | Percentage of cases that passed, one decimal (e.g. `91.7`). |
+| `cost-usd` | Cost of the work this run represents, in USD (empty when unpriced). |
+| `cache-savings-usd` | What the cached cases would have cost. Actual spend is `cost-usd` minus this. |
+| `grader-cost-usd` | What the graders cost, in USD. **Not** part of `cost-usd`, which is what the systems under test cost. |
+| `cache-read-tokens` | Input tokens served from a provider-side prompt cache. |
+| `cache-write-tokens` | Input tokens written into that cache. |
 | `cache-hit-rate` | Percentage of cases served from the cache, one decimal. |
 | `regressed`      | Number of tests newly regressed vs the baseline (`0` without `against`). |
 | `run-url`        | URL of the uploaded run on the results server (empty without `server-url`). |
@@ -277,6 +282,11 @@ total=3
 pass-rate=33.3
 cache-hits=2
 cache-misses=1
+cost-usd=0.041200
+cache-savings-usd=0.018700
+grader-cost-usd=0.009400
+cache-read-tokens=104000
+cache-write-tokens=8200
 cache-hit-rate=66.7
 regressed=0
 run-url=

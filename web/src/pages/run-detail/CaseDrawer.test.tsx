@@ -282,6 +282,10 @@ function v2Detail(fields: {
   raw?: unknown;
   vars?: Record<string, unknown>;
   asserts?: unknown[];
+  model?: string;
+  status?: string;
+  error?: string;
+  error_details?: unknown;
 }): CaseDetail {
   return {
     isPending: false,
@@ -525,5 +529,58 @@ describe("CaseDrawer schema-v2 sections", () => {
       screen.queryByRole("button", { name: /Provider metadata/ }),
     ).not.toBeInTheDocument();
     expect(screen.queryByTitle("Provider stop reason")).not.toBeInTheDocument();
+  });
+
+  it("shows the model the provider reported, which is not the one configured", () => {
+    mockUseCaseDetail.mockReturnValue(v2Detail({ model: "claude-haiku-4-5-20251001" }));
+    renderDrawer();
+    expect(screen.getByText("claude-haiku-4-5-20251001")).toBeInTheDocument();
+  });
+
+  // An errored case has no output and no raw metadata, so the structured detail
+  // is the only diagnostic it carries. Dropping it left the drawer showing a
+  // one-line message and nothing else.
+  it("renders a provider's structured error details beside the message", () => {
+    mockUseCaseDetail.mockReturnValue(
+      v2Detail({
+        status: "error",
+        error: "rate limited",
+        error_details: { retry_after_ms: 4000, upstream: "gateway-7" },
+      }),
+    );
+    renderDrawer();
+    expect(screen.getByText("rate limited")).toBeInTheDocument();
+    expect(screen.getByText("Details")).toBeInTheDocument();
+    expect(screen.getByText(/retry_after_ms/)).toBeInTheDocument();
+  });
+
+  it("shows what a graded assertion cost, and nothing for a local one", () => {
+    mockUseCaseDetail.mockReturnValue(
+      v2Detail({
+        asserts: [
+          {
+            kind: "llm-rubric",
+            status: "pass",
+            score: 0.9,
+            weight: 1,
+            reason: "meets the rubric",
+            cached: false,
+            cost_usd: 0.0042,
+          },
+          {
+            kind: "contains",
+            status: "pass",
+            score: 1,
+            weight: 1,
+            reason: "found",
+            cached: false,
+          },
+        ],
+      }),
+    );
+    renderDrawer();
+    // One priced row, and exactly one — a `contains` assertion calls no model,
+    // so a cost there would be a claim that local evaluation is billable.
+    expect(screen.getAllByText(/\$0\.0042/)).toHaveLength(1);
   });
 });

@@ -242,37 +242,47 @@ pub fn suite_base_dir(suite_file: &Path) -> PathBuf {
 }
 
 /// Apply every YAML-level normalization pass.
+/// `not-<kind>` desugaring deliberately does *not* happen here any more: it
+/// lives in `Assert`'s own `Deserialize`, so it reaches every test source
+/// rather than only the composed suite file. See that impl for why.
 fn normalize(value: Yaml) -> Yaml {
-    desugar_not_asserts(desugar_tags(value))
-}
-
-/// Rewrite `type: not-<kind>` into `type: <kind>` + `negate: true`, so the
-/// negation sugar never reaches the typed assertion enum.
-fn desugar_not_asserts(value: Yaml) -> Yaml {
-    match value {
-        Yaml::Mapping(mut map) => {
-            let type_key = Yaml::String("type".to_string());
-            if let Some(Yaml::String(ty)) = map.get(&type_key) {
-                if let Some(stripped) = ty.strip_prefix("not-") {
-                    let stripped = stripped.to_string();
-                    map.insert(type_key.clone(), Yaml::String(stripped));
-                    map.insert(Yaml::String("negate".to_string()), Yaml::Bool(true));
-                }
-            }
-            Yaml::Mapping(
-                map.into_iter()
-                    .map(|(k, v)| (k, desugar_not_asserts(v)))
-                    .collect(),
-            )
-        }
-        Yaml::Sequence(seq) => Yaml::Sequence(seq.into_iter().map(desugar_not_asserts).collect()),
-        other => other,
-    }
+    desugar_tags(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The other half of moving desugaring into `Assert`: the old document walk
+    /// recursed into *every* mapping with a `type` key, so a free-form payload
+    /// that happened to contain one was silently rewritten. An `http` provider's
+    /// body is user data, not an assertion.
+    #[test]
+    fn a_type_key_inside_a_free_form_bag_is_not_rewritten() {
+        let yaml = r#"
+version: 1
+providers:
+  - id: h
+    type: http
+    url: https://example.invalid/
+    body:
+      type: not-null
+"#;
+        let suite = load_str(yaml).expect("loads");
+        let crate::config::ProviderKind::Http { body, .. } = &suite.providers[0].kind else {
+            panic!("expected an http provider");
+        };
+        let body = body.as_ref().expect("body present");
+        assert_eq!(
+            body.get("type").and_then(|v| v.as_str()),
+            Some("not-null"),
+            "a free-form body must survive verbatim"
+        );
+        assert!(
+            body.get("negate").is_none(),
+            "nothing should have been negated here"
+        );
+    }
     use crate::config::AssertKind;
     use crate::val::Val;
 
