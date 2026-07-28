@@ -158,6 +158,7 @@ report to produce them.
 | `pass-rate`      | Percentage of cases that passed, one decimal (e.g. `91.7`). |
 | `cost-usd` | Cost of the work this run represents, in USD (empty when unpriced). |
 | `cache-savings-usd` | What the cached cases would have cost. Actual spend is `cost-usd` minus this. |
+| `grader-cost-usd` | What the graders cost, in USD. **Not** part of `cost-usd`, which is what the systems under test cost. |
 | `cache-read-tokens` | Input tokens served from a provider-side prompt cache. |
 | `cache-write-tokens` | Input tokens written into that cache. |
 | `cache-hit-rate` | Percentage of cases served from the cache, one decimal. |
@@ -283,6 +284,7 @@ cache-hits=2
 cache-misses=1
 cost-usd=0.041200
 cache-savings-usd=0.018700
+grader-cost-usd=0.009400
 cache-read-tokens=104000
 cache-write-tokens=8200
 cache-hit-rate=66.7

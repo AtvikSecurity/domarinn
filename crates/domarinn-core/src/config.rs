@@ -135,7 +135,7 @@ pub enum TokenCount {
 ///
 /// Never reaches a provider's `fingerprint()`, so setting it does not
 /// invalidate a single cache entry: cost is not request identity.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PricingCfg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,8 +161,13 @@ pub enum ProviderKind {
         env: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
-        /// Cache-busting token (e.g. a git SHA or binary hash). Without it, exec
-        /// providers default to no-cache so a rebuilt binary is never stale.
+        /// Extra cache-busting token (e.g. a git SHA or binary hash).
+        ///
+        /// Not normally needed: every `command` argument naming a readable file
+        /// contributes its path, size and mtime to the cache key, so a rebuild
+        /// busts the entry on its own. Set this when the program's behavior
+        /// depends on something that identity cannot see — a model downloaded at
+        /// startup, a remote config, a container image behind a wrapper script.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_salt: Option<String>,
     },
@@ -226,6 +231,11 @@ pub enum ProviderKind {
         api_key_env: Option<EnvNames>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
+        /// Rate override. Only `input_per_mtok` is read: an embedding call has
+        /// no output tokens and reports no cache counters, so the other fields
+        /// would price components that do not exist.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pricing: Option<Box<PricingCfg>>,
     },
 }
 
@@ -471,14 +481,13 @@ pub enum AssertKind {
         command: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config: Option<Json>,
-        /// Opt this assertion's verdicts into the cache, and bust them when the
-        /// value changes.
+        /// Extra cache-busting token for this assertion's verdicts.
         ///
-        /// Required for the same reason an `exec` *provider* needs one: `command`
-        /// does not move when the program behind it is rebuilt, so caching by
-        /// default would serve stale verdicts after a rebuild — silently, and in
-        /// CI. Set it to something that tracks the program (a git SHA, a build
-        /// id, a content digest).
+        /// Same rule as an `exec` *provider*'s: verdicts are cached by default,
+        /// keyed partly on the identity of every `command` argument that names a
+        /// readable file, so a rebuilt grader busts its own entries. Set this
+        /// when the grader's behavior depends on something that identity cannot
+        /// see.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_salt: Option<String>,
     },

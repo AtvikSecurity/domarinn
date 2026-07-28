@@ -207,6 +207,12 @@ fn write_github_output(
                 .unwrap_or_default(),
         ),
         (
+            "grader-cost-usd",
+            s.grader_cost_usd
+                .map(|c| format!("{c:.6}"))
+                .unwrap_or_default(),
+        ),
+        (
             "regressed",
             diff.map_or(0, |d| d.summary.newly_failing).to_string(),
         ),

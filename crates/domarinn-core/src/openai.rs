@@ -151,6 +151,45 @@ fn to_messages(prompt: &RenderedPrompt) -> Vec<Json> {
 /// the DeepSeek / vLLM spelling.
 const REASONING_FIELDS: [&str; 2] = ["reasoning", "reasoning_content"];
 
+/// The billable tokens in a chat-completions response.
+///
+/// The vendors disagree about what "input tokens" counts, and getting this
+/// backwards double-charges every cached call at the full rate.
+///
+/// Anthropic's `input_tokens` *excludes* its cache counters. OpenAI's
+/// `prompt_tokens` *includes* `cached_tokens`. [`TokenUsage`] follows
+/// Anthropic's shape — the fields sum, and `input_tokens` means "tokens billed
+/// at the full input rate" — so the cached span is subtracted out here rather
+/// than counted twice.
+///
+/// Shared with the llm-rubric grader, which calls the same endpoint. That is
+/// the point of it being a function: this subtraction is exactly the thing a
+/// second implementation would forget.
+pub(crate) fn usage_from_payload(payload: &Json) -> Option<TokenUsage> {
+    payload.get("usage").map(|u| {
+        let prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cache_read_tokens = u
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64());
+        TokenUsage {
+            // Saturating because the subtraction is over numbers a server sent
+            // us: a provider reporting `cached_tokens > prompt_tokens` should
+            // not underflow.
+            input_tokens: prompt_tokens.saturating_sub(cache_read_tokens.unwrap_or(0)),
+            output_tokens: u
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            cache_read_tokens,
+            // OpenAI's prompt caching is automatic and has no write step to
+            // bill for, so there is nothing to report rather than a zero.
+            cache_write_tokens: None,
+            cache_write_1h_tokens: None,
+        }
+    })
+}
+
 fn parse_completion_response(
     payload: &Json,
     rate: Option<&crate::pricing::ModelRate>,
@@ -186,36 +225,7 @@ fn parse_completion_response(
         .and_then(|s| s.as_str())
         .map(String::from);
 
-    // The vendors disagree about what "input tokens" counts, and getting this
-    // backwards double-charges every cached call at the full rate.
-    //
-    // Anthropic's `input_tokens` *excludes* its cache counters. OpenAI's
-    // `prompt_tokens` *includes* `cached_tokens`. [`TokenUsage`] follows
-    // Anthropic's shape — the fields sum, and `input_tokens` means "tokens
-    // billed at the full input rate" — so the cached span is subtracted out
-    // here rather than counted twice.
-    //
-    // Saturating because the subtraction is over numbers a server sent us: a
-    // provider reporting `cached_tokens > prompt_tokens` should not underflow.
-    let usage = payload.get("usage").map(|u| {
-        let prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let cache_read_tokens = u
-            .get("prompt_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(|v| v.as_u64());
-        TokenUsage {
-            input_tokens: prompt_tokens.saturating_sub(cache_read_tokens.unwrap_or(0)),
-            output_tokens: u
-                .get("completion_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0),
-            cache_read_tokens,
-            // OpenAI's prompt caching is automatic and has no write step to
-            // bill for, so there is nothing to report rather than a zero.
-            cache_write_tokens: None,
-            cache_write_1h_tokens: None,
-        }
-    });
+    let usage = usage_from_payload(payload);
 
     // Record which field the scored text came from, so the UI can label an
     // answer that is really exposed reasoning instead of presenting it as the

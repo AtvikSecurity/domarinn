@@ -28,6 +28,9 @@ vars produces a new key.
   afterwards. Without that, two trials whose provider responses were
   byte-identical — common at temperature 0 — would collapse into one verdict
   and erase exactly the variance `--repeat` exists to measure.
+- **A `similar` verdict is keyed on the embedding model.** A cosine value is a
+  property of the model that produced the vectors, so switching embedders
+  re-embeds rather than replaying the previous model's answers.
 - **The model a provider *reports* having used is not in the key.** It cannot
   be: the key is derived from a request, and a reported model only exists on a
   response. The *requested* model is already covered (it is in the

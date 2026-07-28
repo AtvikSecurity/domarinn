@@ -32,4 +32,16 @@ cache_write_tokens: number,
  * `cost_usd` above is the cost of the *work*, so money actually spent this
  * run is `cost_usd - cache_savings_usd`.
  */
-cache_savings_usd?: number, };
+cache_savings_usd?: number, 
+/**
+ * What the graders cost, summed over every assertion that called a model
+ * to reach its verdict.
+ *
+ * Separate from `cost_usd` rather than added to it, because the two answer
+ * different questions: `cost_usd` is what the systems under test cost — the
+ * number a `cost:` assertion budgets and a model-selection decision turns
+ * on — while this is what measuring them cost. On a suite graded by a
+ * larger model than it tests, this is the bigger of the two, and adding
+ * them would hide that rather than report it.
+ */
+grader_cost_usd?: number, };

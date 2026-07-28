@@ -85,3 +85,22 @@ exact:
 # match, so a dated snapshot of a listed model needs no entry — these are for
 # families whose members are not enumerated above.
 families: {}
+
+# Embedding models, used by `similar` assertions. Their own section, with its
+# own row shape, because an embedding call has exactly one billable component:
+# there are no output tokens and no prompt cache. Writing `output: 0.0` into the
+# chat table instead would make a zero rate indistinguishable from a rate nobody
+# filled in — and the sanity test that catches exactly that mistake would have
+# to be weakened to let it through.
+#
+# Same rule as above: a row here means a human checked it on `as_of`. Resolution
+# is exact, plus the same trailing `-YYYYMMDD` strip; there is no family
+# fallback, because embedding ids do not share prefixes with anything they
+# should inherit a price from.
+embeddings:
+  text-embedding-3-small:
+    input: 0.02
+    as_of: "2026-07-28"
+  text-embedding-3-large:
+    input: 0.13
+    as_of: "2026-07-28"

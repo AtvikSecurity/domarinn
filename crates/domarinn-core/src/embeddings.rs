@@ -7,9 +7,18 @@ use serde_json::{json, Value as Json};
 
 use crate::config::ParamMap;
 use crate::net::{api_key, http_client};
+use crate::pricing::{MicroUsd, ModelRate};
+use crate::types::TokenUsage;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// One embedding call's vector plus what it cost.
+pub struct Embedded {
+    pub vector: Vec<f64>,
+    pub usage: Option<TokenUsage>,
+    pub cost: Option<MicroUsd>,
+}
 
 /// An OpenAI-compatible embeddings client.
 pub struct EmbeddingsProvider {
@@ -17,18 +26,26 @@ pub struct EmbeddingsProvider {
     base_url: String,
     api_key_env: crate::config::EnvNames,
     params: ParamMap,
+    /// Resolved once at construction, so the unknown-model warning fires once
+    /// per run rather than once per `similar` assertion — the same discipline
+    /// the chat providers follow, and the reason neither needs global state.
+    rate: Option<ModelRate>,
     client: reqwest::Client,
 }
 
 impl EmbeddingsProvider {
     pub fn new(
+        provider_id: &str,
         model: impl Into<String>,
         base_url: Option<String>,
         api_key_env: Option<crate::config::EnvNames>,
         params: Option<ParamMap>,
+        pricing: Option<&crate::config::PricingCfg>,
     ) -> Self {
+        let model = model.into();
         EmbeddingsProvider {
-            model: model.into(),
+            rate: crate::pricing::resolve_embedding_rate(provider_id, &model, pricing),
+            model,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".into()),
             params: params.unwrap_or_default(),
@@ -36,8 +53,21 @@ impl EmbeddingsProvider {
         }
     }
 
+    /// What this client *is*, for a verdict cache key.
+    ///
+    /// The api key env var is excluded, same rule as `Provider::fingerprint`;
+    /// so is `pricing`, which cannot move a cosine value.
+    pub fn identity(&self) -> Json {
+        json!({
+            "type": "embeddings",
+            "model": self.model,
+            "base_url": self.base_url,
+            "params": self.params,
+        })
+    }
+
     /// Embed a single string, returning its vector.
-    pub async fn embed(&self, text: &str) -> Result<Vec<f64>, String> {
+    pub async fn embed(&self, text: &str) -> Result<Embedded, String> {
         let key = api_key(&self.api_key_env).map_err(|e| e.to_string())?;
         let mut body = serde_json::Map::new();
         for (k, v) in &self.params {
@@ -63,7 +93,7 @@ impl EmbeddingsProvider {
             ));
         }
         let payload: Json = resp.json().await.map_err(|e| e.to_string())?;
-        payload
+        let vector = payload
             .get("data")
             .and_then(|d| d.as_array())
             .and_then(|d| d.first())
@@ -71,8 +101,38 @@ impl EmbeddingsProvider {
             .and_then(|e| e.as_array())
             .map(|arr| arr.iter().filter_map(|v| v.as_f64()).collect::<Vec<f64>>())
             .filter(|v| !v.is_empty())
-            .ok_or_else(|| "embeddings response missing data[0].embedding".to_string())
+            .ok_or_else(|| "embeddings response missing data[0].embedding".to_string())?;
+        let usage = usage_from_payload(&payload);
+        let cost = self
+            .rate
+            .as_ref()
+            .zip(usage.as_ref())
+            .and_then(|(rate, usage)| crate::pricing::cost_of(usage, rate));
+        Ok(Embedded {
+            vector,
+            usage,
+            cost,
+        })
     }
+}
+
+/// The billable tokens in an embeddings response.
+///
+/// `prompt_tokens` only. The endpoint emits `total_tokens` as well, but for
+/// embeddings the two are the same number, and adding both would double the
+/// bill. There are no completion tokens and no cache counters to read.
+fn usage_from_payload(payload: &Json) -> Option<TokenUsage> {
+    let prompt_tokens = payload
+        .get("usage")
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())?;
+    Some(TokenUsage {
+        input_tokens: prompt_tokens,
+        output_tokens: 0,
+        cache_read_tokens: None,
+        cache_write_tokens: None,
+        cache_write_1h_tokens: None,
+    })
 }
 
 /// Cosine similarity of two vectors, in [-1, 1] (0 if either is empty or zero).
@@ -113,5 +173,42 @@ mod tests {
     fn cosine_mismatched_or_empty_is_zero() {
         assert_eq!(cosine(&[1.0], &[1.0, 2.0]), 0.0);
         assert_eq!(cosine(&[], &[]), 0.0);
+    }
+
+    /// `total_tokens` equals `prompt_tokens` on this endpoint, so reading both
+    /// would bill every embedding call twice.
+    #[test]
+    fn usage_counts_prompt_tokens_once() {
+        let payload = json!({"usage": {"prompt_tokens": 42, "total_tokens": 42}});
+        let usage = usage_from_payload(&payload).expect("usage parses");
+        assert_eq!(usage.input_tokens, 42);
+        assert_eq!(usage.output_tokens, 0);
+    }
+
+    /// An endpoint that reports no usage must produce no cost, not a zero one:
+    /// zero is a claim that the call was free.
+    #[test]
+    fn a_response_without_usage_reports_none() {
+        assert!(usage_from_payload(&json!({"data": []})).is_none());
+    }
+
+    /// The identity feeds the verdict cache key, so swapping the embedding model
+    /// must change it — otherwise a `similar` assertion replays cosine values
+    /// computed by a different model.
+    #[test]
+    fn identity_moves_with_the_model_and_never_carries_the_key_env() {
+        let one = EmbeddingsProvider::new("e", "text-embedding-3-small", None, None, None, None);
+        let two = EmbeddingsProvider::new("e", "text-embedding-3-large", None, None, None, None);
+        assert_ne!(one.identity(), two.identity());
+
+        let named = EmbeddingsProvider::new(
+            "e",
+            "text-embedding-3-small",
+            None,
+            Some("SECRET_KEY_VAR".into()),
+            None,
+            None,
+        );
+        assert_eq!(named.identity(), one.identity());
     }
 }

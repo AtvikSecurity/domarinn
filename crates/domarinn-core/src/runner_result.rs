@@ -125,7 +125,9 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
     // end, where the wire type is a float.
     let mut cost = crate::pricing::MicroUsd::ZERO;
     let mut saved = crate::pricing::MicroUsd::ZERO;
+    let mut grader_cost = crate::pricing::MicroUsd::ZERO;
     let mut any_cost = false;
+    let mut any_grader_cost = false;
     for c in cases {
         match c.status {
             CaseStatus::Pass => s.passed += 1,
@@ -150,6 +152,16 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
             }
             any_cost = true;
         }
+        // Judge cost, kept in its own accumulator rather than added to `cost`.
+        // A `cost:` assertion budgets the system under test, and a run's
+        // headline cost is what that system cost — grading it is a separate
+        // line item, often the larger one when the judge is the bigger model.
+        for a in &c.asserts {
+            if let Some(cst) = a.cost_usd {
+                grader_cost = grader_cost.saturating_add(crate::pricing::MicroUsd::from_usd(cst));
+                any_grader_cost = true;
+            }
+        }
         if c.cached {
             s.cache_hits += 1;
         } else {
@@ -164,5 +176,6 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
     s.cost_usd = any_cost.then(|| cost.to_usd());
     s.cache_savings_usd =
         (any_cost && saved > crate::pricing::MicroUsd::ZERO).then(|| saved.to_usd());
+    s.grader_cost_usd = any_grader_cost.then(|| grader_cost.to_usd());
     s
 }

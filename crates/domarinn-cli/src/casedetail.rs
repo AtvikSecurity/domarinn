@@ -663,6 +663,7 @@ mod tests {
                 details: None,
                 criteria: None,
                 cached: false,
+                cost_usd: None,
             },
             AssertResult {
                 kind: AssertName::LlmRubric,
@@ -673,6 +674,7 @@ mod tests {
                 details: Some(serde_json::json!({"pass": false})),
                 criteria: None,
                 cached: false,
+                cost_usd: None,
             },
         ];
 

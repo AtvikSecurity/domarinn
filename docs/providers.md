@@ -231,6 +231,25 @@ entirely.
 `pricing` never reaches a provider's fingerprint, so setting it does not
 invalidate a single cache entry. Cost is not request identity.
 
+### Graders are priced too, and reported separately
+
+`pricing` also works on a `grader.provider` block and on the `embeddings`
+provider, so the models doing the *scoring* are priced by the same table and
+the same override. What they cost is reported as `grader_cost_usd`, next to
+`cost_usd` rather than added to it:
+
+- `cost_usd` is what the **systems under test** cost. That is the number a
+  `cost:` assertion budgets, and the one a model-selection decision turns on. A
+  judge's price must not move a budget gate on the model being judged.
+- `grader_cost_usd` is what **measuring them** cost. On a suite scored by a
+  larger model than it tests, this is the bigger of the two; merging them would
+  hide that rather than report it.
+
+Per-assertion, the same figure appears as `AssertResult.cost_usd`. An `exec`
+grader reports nothing — the child spends against whatever endpoint it chose and
+the protocol gives it no way to say so, and a zero there would claim custom
+grading is free.
+
 ## Credential preflight
 
 Before the first call, domarinn checks that every credential the run will
@@ -307,6 +326,7 @@ provider in the suite is handed to the grader.
 | `base_url`    | string    | `https://api.openai.com/v1`  | API base. |
 | `api_key_env` | string    | `OPENAI_API_KEY`             | Env var holding the API key (sent as a bearer token). |
 | `params`      | object    | `{}`                         | Extra request-body params, passed through verbatim. |
+| `pricing`     | object    | built-in rate                | Rate override. Only `input_per_mtok` is read — see below. |
 
 Behavior:
 
@@ -317,6 +337,11 @@ Behavior:
 - Listing an `embeddings` provider as a *direct* system under test is
   unsupported (the provider factory rejects it); it exists only to serve
   `similar`.
+- Each `similar` assertion embeds **two** strings (the output and the
+  reference), and both calls are priced and reported as that assertion's
+  grading cost. Only `input_per_mtok` applies: an embedding call has no output
+  tokens and the endpoint reports no cache counters, so the other `pricing`
+  fields would price components that do not exist.
 
 ```yaml
 providers:

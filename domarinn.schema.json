@@ -159,7 +159,7 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Cache-busting token (e.g. a git SHA or binary hash). Without it, exec\nproviders default to no-cache so a rebuilt binary is never stale.",
+              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path, size and mtime to the cache key, so a rebuild\nbusts the entry on its own. Set this when the program's behavior\ndepends on something that identity cannot see — a model downloaded at\nstartup, a remote config, a container image behind a wrapper script.",
               "type": [
                 "string",
                 "null"
@@ -347,6 +347,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override. Only `input_per_mtok` is read: an embedding call has\nno output tokens and reports no cache counters, so the other fields\nwould price components that do not exist.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -820,7 +831,7 @@
             },
             "config": true,
             "cache_salt": {
-              "description": "Opt this assertion's verdicts into the cache, and bust them when the\nvalue changes.\n\nRequired for the same reason an `exec` *provider* needs one: `command`\ndoes not move when the program behind it is rebuilt, so caching by\ndefault would serve stale verdicts after a rebuild — silently, and in\nCI. Set it to something that tracks the program (a git SHA, a build\nid, a content digest).",
+              "description": "Extra cache-busting token for this assertion's verdicts.\n\nSame rule as an `exec` *provider*'s: verdicts are cached by default,\nkeyed partly on the identity of every `command` argument that names a\nreadable file, so a rebuilt grader busts its own entries. Set this\nwhen the grader's behavior depends on something that identity cannot\nsee.",
               "type": [
                 "string",
                 "null"
@@ -1038,7 +1049,7 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Cache-busting token (e.g. a git SHA or binary hash). Without it, exec\nproviders default to no-cache so a rebuilt binary is never stale.",
+              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path, size and mtime to the cache key, so a rebuild\nbusts the entry on its own. Set this when the program's behavior\ndepends on something that identity cannot see — a model downloaded at\nstartup, a remote config, a container image behind a wrapper script.",
               "type": [
                 "string",
                 "null"
@@ -1226,6 +1237,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override. Only `input_per_mtok` is read: an embedding call has\nno output tokens and reports no cache counters, so the other fields\nwould price components that do not exist.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",

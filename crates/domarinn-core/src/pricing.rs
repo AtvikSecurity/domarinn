@@ -96,12 +96,27 @@ pub struct ModelRate {
     pub as_of: String,
 }
 
+/// One embedding model's rate, in USD per million input tokens.
+///
+/// Its own type rather than a [`ModelRate`] with zeros: an embedding call bills
+/// exactly one component, so the other fields would not be "unknown" or "free",
+/// they would be meaningless. Keeping them unrepresentable is also what lets
+/// the table's sanity test keep insisting a chat row has a positive output rate.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EmbeddingRate {
+    pub input: f64,
+    /// The date a human last checked this row. Same rule as [`ModelRate`].
+    pub as_of: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct RateTable {
     #[serde(default)]
     exact: BTreeMap<String, ModelRate>,
     #[serde(default)]
     families: BTreeMap<String, ModelRate>,
+    #[serde(default)]
+    embeddings: BTreeMap<String, EmbeddingRate>,
 }
 
 static TABLE: LazyLock<RateTable> = LazyLock::new(|| {
@@ -159,6 +174,16 @@ pub fn built_in_rate(model_id: &str) -> Option<&'static ModelRate> {
         .filter(|(prefix, _)| id.starts_with(prefix.as_str()))
         .max_by_key(|(prefix, _)| prefix.len())
         .map(|(_, rate)| rate)
+}
+
+/// The built-in rate for an embedding model id, or `None` if the table does not
+/// know it. Exact plus the snapshot-date strip; no family fallback.
+pub fn built_in_embedding_rate(model_id: &str) -> Option<&'static EmbeddingRate> {
+    let id = normalize(model_id);
+    TABLE
+        .embeddings
+        .get(id)
+        .or_else(|| strip_snapshot_date(id).and_then(|base| TABLE.embeddings.get(base)))
 }
 
 /// Cost the tokens in `usage` at `rate`, or `None` if any *reported* component
@@ -278,6 +303,45 @@ pub fn resolve_rate(
     Some(merged)
 }
 
+/// The effective rate for an embeddings provider.
+///
+/// Written out rather than routed through [`resolve_rate`]'s merge because the
+/// two disagree on what "unpriced" means: a chat model with no output rate
+/// cannot be priced, whereas an embedding model has no output tokens to price,
+/// so `input` alone is a complete answer. `cache_*` stay absent for the same
+/// reason — the embeddings endpoint reports no cache counters, so a rate for
+/// them would price nothing.
+pub fn resolve_embedding_rate(
+    provider_id: &str,
+    model_id: &str,
+    override_cfg: Option<&crate::config::PricingCfg>,
+) -> Option<ModelRate> {
+    let built_in = built_in_embedding_rate(model_id);
+    let input = override_cfg
+        .and_then(|c| c.input_per_mtok)
+        .or_else(|| built_in.map(|r| r.input))?;
+    if built_in.is_none() && override_cfg.and_then(|c| c.input_per_mtok).is_none() {
+        tracing::warn!(
+            provider = provider_id,
+            model = model_id,
+            "no built-in rate for this embedding model, so similarity grading \
+             will not be costed; set `pricing:` on the provider to price it"
+        );
+    }
+    Some(ModelRate {
+        input,
+        // Not a rate of zero dollars — zero tokens. An embedding response
+        // reports none, so this multiplies out to nothing either way.
+        output: 0.0,
+        cache_read: None,
+        cache_write_5m: None,
+        cache_write_1h: None,
+        as_of: built_in
+            .map(|r| r.as_of.clone())
+            .unwrap_or_else(|| "configured".to_string()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +382,54 @@ mod tests {
                 rate.as_of
             );
         }
+
+        assert!(
+            !TABLE.embeddings.is_empty(),
+            "embedding rows must not vanish"
+        );
+        for (id, rate) in &TABLE.embeddings {
+            assert!(rate.input > 0.0, "{id}: input rate must be positive");
+            assert!(
+                rate.as_of.len() == 10 && rate.as_of.split('-').count() == 3,
+                "{id}: as_of must be an ISO date, got {:?}",
+                rate.as_of
+            );
+        }
+    }
+
+    #[test]
+    fn an_embedding_id_resolves_and_prices_only_its_input() {
+        let rate = resolve_embedding_rate("e", "text-embedding-3-small", None).expect("known id");
+        assert_eq!(rate.output, 0.0);
+        // 1M input at $0.02, and no output tokens to bill for.
+        assert_eq!(
+            cost_of(&usage(1_000_000, 0), &rate).unwrap(),
+            MicroUsd(20_000)
+        );
+    }
+
+    /// The two tables are separate namespaces on purpose: an embedding id must
+    /// not pick up a chat family's rate, and a chat id must not silently resolve
+    /// to an embedding row that prices its output at nothing.
+    #[test]
+    fn the_chat_and_embedding_tables_do_not_bleed_into_each_other() {
+        assert!(built_in_rate("text-embedding-3-small").is_none());
+        assert!(built_in_embedding_rate("claude-haiku-4-5").is_none());
+    }
+
+    /// An unknown embedding model behaves like an unknown chat model: nothing is
+    /// reported, rather than a plausible-looking guess.
+    #[test]
+    fn an_unknown_embedding_id_prices_nothing_without_an_override() {
+        assert!(resolve_embedding_rate("e", "some-embedder-from-2030", None).is_none());
+        let cfg = crate::config::PricingCfg {
+            input_per_mtok: Some(0.05),
+            ..Default::default()
+        };
+        let rate = resolve_embedding_rate("e", "some-embedder-from-2030", Some(&cfg))
+            .expect("an override prices it");
+        assert_eq!(rate.input, 0.05);
+        assert_eq!(rate.as_of, "configured");
     }
 
     #[test]

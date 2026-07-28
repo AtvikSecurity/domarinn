@@ -182,6 +182,37 @@ impl GradedVerdict {
     }
 }
 
+/// A verdict plus what producing it cost.
+///
+/// Separate from [`GradedVerdict`] rather than folded into it, because only the
+/// verdict decides an outcome: keeping cost out preserves the property that
+/// nothing reachable from a cached answer can be keyed on a threshold. The cost
+/// still rides along so a verdict cache entry replays it, exactly as a provider
+/// entry replays its own `cost_usd` — a run's grading cost must not depend on
+/// whether the verdicts came from cache.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Graded {
+    pub verdict: GradedVerdict,
+    pub usage: Option<TokenUsage>,
+    pub cost_usd: Option<f64>,
+    /// The judge model that produced this verdict, as the API reported it —
+    /// which is not necessarily the one configured, when an alias repoints.
+    pub model: Option<String>,
+}
+
+impl Graded {
+    /// A verdict with no cost attached: the `exec` path, where the child spends
+    /// whatever it spends and domarinn has no way to see it.
+    pub fn unpriced(verdict: GradedVerdict) -> Graded {
+        Graded {
+            verdict,
+            usage: None,
+            cost_usd: None,
+            model: None,
+        }
+    }
+}
+
 /// A cached provider response, plus provenance for stats/debugging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {

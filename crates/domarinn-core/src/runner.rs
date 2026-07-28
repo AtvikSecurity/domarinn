@@ -230,6 +230,11 @@ pub struct GradeCtx<'a> {
 /// include everything that can move a verdict — the grader's model and
 /// endpoint, the rendered rubric, the system prompt.
 ///
+/// The returned [`crate::cache::Graded`] carries what the judge cost alongside
+/// its verdict. Reporting it is optional — [`crate::cache::Graded::unpriced`]
+/// is the honest answer when an implementation cannot see what it spent — but
+/// an implementation that *can* should, because a run whose judges cost more
+/// than its systems under test currently reports only the smaller half.
 #[async_trait]
 pub trait AssertGrader: Send + Sync {
     async fn grade(
@@ -237,7 +242,7 @@ pub trait AssertGrader: Send + Sync {
         assert: &Assert,
         output: &Output,
         ctx: &GradeCtx<'_>,
-    ) -> Result<crate::cache::GradedVerdict, crate::errors::GraderError>;
+    ) -> Result<crate::cache::Graded, crate::errors::GraderError>;
 
     /// A stable identity for the grading this assertion will perform, or `None`
     /// to opt out of caching it.

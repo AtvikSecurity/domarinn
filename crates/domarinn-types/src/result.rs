@@ -131,6 +131,16 @@ pub struct AssertResult {
     pub criteria: Option<serde_json::Value>,
     #[serde(default)]
     pub cached: bool,
+    /// What producing this verdict cost, for the assertions that call a model
+    /// to decide (`llm-rubric`, `similar`). Absent for a locally-evaluated
+    /// assertion, which costs nothing, and for an `exec` grader, whose spending
+    /// domarinn cannot see.
+    ///
+    /// Deliberately *not* folded into `CaseResult.cost_usd`: that number is what
+    /// the system under test cost, which is what a `cost:` assertion budgets. A
+    /// judge's price should not move a budget gate on the model being judged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 /// The result of one matrix cell.
@@ -328,6 +338,17 @@ pub struct RunSummary {
     /// run is `cost_usd - cache_savings_usd`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_savings_usd: Option<f64>,
+    /// What the graders cost, summed over every assertion that called a model
+    /// to reach its verdict.
+    ///
+    /// Separate from `cost_usd` rather than added to it, because the two answer
+    /// different questions: `cost_usd` is what the systems under test cost — the
+    /// number a `cost:` assertion budgets and a model-selection decision turns
+    /// on — while this is what measuring them cost. On a suite graded by a
+    /// larger model than it tests, this is the bigger of the two, and adding
+    /// them would hide that rather than report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grader_cost_usd: Option<f64>,
 }
 
 /// `skip_serializing_if` helper for counters that must stay absent at zero.
@@ -559,6 +580,11 @@ mod tests {
         // server uses for ingest idempotency.
         assert!(!reserialized.contains("\"model\""));
         assert!(!reserialized.contains("error_details"));
+        // The per-assertion grading cost. It sits inside every assert of every
+        // case, so it is the densest of these keys: emitting it as `null` would
+        // move the content hash of every stored run that has any assertions.
+        assert!(case.asserts[0].cost_usd.is_none());
+        assert!(!reserialized.contains("cost_usd"));
     }
 
     /// The run-level counterpart of the guard above.
@@ -600,6 +626,7 @@ mod tests {
         assert!(!reserialized.contains("cache_read_tokens"));
         assert!(!reserialized.contains("cache_write_tokens"));
         assert!(!reserialized.contains("cache_savings_usd"));
+        assert!(!reserialized.contains("grader_cost_usd"));
     }
 
     #[test]

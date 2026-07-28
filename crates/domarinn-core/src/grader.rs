@@ -5,21 +5,24 @@
 //! `json_schema` response. Everything fails closed — a missing, unparseable, or
 //! truncated verdict is a failure, never a silent pass.
 
+#[path = "grader_llm.rs"]
+mod grader_llm;
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
-use crate::cache::GradedVerdict;
+use crate::cache::{Graded, GradedVerdict};
 use crate::config::{Assert, AssertKind, Grader, ProviderKind};
 use crate::errors::GraderError;
 use crate::exec::run_exec_json;
 use crate::exec_protocol::{AssertReq, AssertResp, Envelope, Kind, ProviderRef, TestRef};
-use crate::net::{api_key, http_client};
+use crate::net::http_client;
 use crate::runner::{AssertGrader, GradeCtx};
 use crate::template::TemplateEngine;
-use crate::types::Output;
+use crate::types::{Output, TokenUsage};
 
 /// Default ceiling on a grading call. Overridable per suite via
 /// `grader.timeout_ms`, because a reasoning grader given a generous
@@ -37,6 +40,19 @@ rubric asks; do not reward effort.";
 pub struct DefaultGrader {
     default_grader: Option<Grader>,
     embeddings: Option<crate::embeddings::EmbeddingsProvider>,
+    /// Resolved judge rates, memoized per `(model, pricing)`.
+    ///
+    /// The chat providers resolve their rate once at construction, which is what
+    /// makes the unknown-model warning fire once per run. A grader cannot: a
+    /// per-assert `grader:` block is only known when that assertion is graded.
+    /// This memo restores the same property without process-global state — one
+    /// map per grader, so a shared test binary cannot leak a warning between
+    /// runs. The mutex is held for a map lookup, never across a request.
+    rates: std::sync::Mutex<BTreeMap<String, Option<crate::pricing::ModelRate>>>,
+    /// The resolved per-call ceiling. Kept alongside the client that already
+    /// carries it, because an `exec` assert has no client to carry it — without
+    /// this, `grader.timeout_ms` silently applied to the HTTP judges only.
+    timeout: Duration,
     client: reqwest::Client,
 }
 
@@ -52,8 +68,31 @@ impl DefaultGrader {
         DefaultGrader {
             default_grader,
             embeddings: None,
+            rates: std::sync::Mutex::new(BTreeMap::new()),
+            timeout,
             client: http_client(timeout),
         }
+    }
+
+    /// The rate for a judge model, resolved once per distinct `(model, pricing)`
+    /// pair in this run.
+    fn judge_rate(
+        &self,
+        model: &str,
+        pricing: Option<&crate::config::PricingCfg>,
+    ) -> Option<crate::pricing::ModelRate> {
+        let key = crate::cache::canonical_json(&json!({"model": model, "pricing": pricing}));
+        let mut rates = match self.rates.lock() {
+            Ok(guard) => guard,
+            // A poisoned mutex means another thread panicked while resolving a
+            // rate. Cost is instrumentation, so recover the guard and carry on
+            // rather than propagating a panic into every remaining grading.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        rates
+            .entry(key)
+            .or_insert_with(|| crate::pricing::resolve_rate("grader", model, pricing))
+            .clone()
     }
 
     /// Attach an embeddings provider (enables `similar` assertions).
@@ -71,7 +110,7 @@ impl AssertGrader for DefaultGrader {
         assert: &Assert,
         output: &Output,
         ctx: &GradeCtx<'_>,
-    ) -> Result<GradedVerdict, GraderError> {
+    ) -> Result<Graded, GraderError> {
         let GradeCtx {
             vars,
             engine,
@@ -121,9 +160,43 @@ impl AssertGrader for DefaultGrader {
     fn grading_fingerprint(&self, assert: &Assert) -> Option<Json> {
         grading_fingerprint(
             self.default_grader.as_ref(),
-            self.embeddings.is_some(),
+            self.embeddings.as_ref().map(|e| e.identity()),
             assert,
         )
+    }
+}
+
+fn output_to_json(output: &Output) -> Json {
+    match output {
+        Output::Text(s) => Json::String(s.clone()),
+        Output::Json(v) => v.clone(),
+    }
+}
+
+/// Add two token counts, treating "neither reported" as nothing reported.
+///
+/// `None + Some(u)` is `Some(u)`: one call reporting usage and the other not is
+/// a partial count, but it is the only count there is, and reporting nothing
+/// would lose it entirely. The *cost* is stricter — see `grade_similar`.
+fn sum_usage(a: Option<TokenUsage>, b: Option<TokenUsage>) -> Option<TokenUsage> {
+    fn add(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+        match (a, b) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+        }
+    }
+    match (a, b) {
+        (None, None) => None,
+        (a, b) => {
+            let (a, b) = (a.unwrap_or_default(), b.unwrap_or_default());
+            Some(TokenUsage {
+                input_tokens: a.input_tokens.saturating_add(b.input_tokens),
+                output_tokens: a.output_tokens.saturating_add(b.output_tokens),
+                cache_read_tokens: add(a.cache_read_tokens, b.cache_read_tokens),
+                cache_write_tokens: add(a.cache_write_tokens, b.cache_write_tokens),
+                cache_write_1h_tokens: add(a.cache_write_1h_tokens, b.cache_write_1h_tokens),
+            })
+        }
     }
 }
 
@@ -147,7 +220,7 @@ impl AssertGrader for DefaultGrader {
 /// up further needs no cache-version bump.
 fn grading_fingerprint(
     default_grader: Option<&Grader>,
-    has_embeddings: bool,
+    embeddings: Option<Json>,
     assert: &Assert,
 ) -> Option<Json> {
     fn provider_identity(kind: &ProviderKind) -> Option<Json> {
@@ -194,7 +267,13 @@ fn grading_fingerprint(
                 "system_prompt": system_digest,
             }))
         }
-        AssertKind::Similar { .. } => has_embeddings.then(|| json!({"assert": "similar"})),
+        // The embeddings client's identity, not merely "one exists": a cosine
+        // value is a property of the model that produced the vectors, so a key
+        // that omitted the model would replay one embedder's answers after the
+        // suite switched to another.
+        AssertKind::Similar { .. } => {
+            embeddings.map(|e| json!({"assert": "similar", "embeddings": e}))
+        }
         // Cached by default, like everything else that can be. `program` is
         // what makes that safe: argv alone does not move when the binary behind
         // it is rebuilt, so a key over `command` would serve stale verdicts
@@ -266,7 +345,7 @@ impl DefaultGrader {
         vars: &Json,
         working_dir: Option<&std::path::Path>,
         ctx: &GradeCtx<'_>,
-    ) -> Result<GradedVerdict, GraderError> {
+    ) -> Result<Graded, GraderError> {
         // `test` and `provider` used to be sent as empty strings, and `vars`
         // was discarded outright — three fields the wire format declares as
         // populated, so a child written against `docs/protocol.md` received
@@ -291,7 +370,7 @@ impl DefaultGrader {
             command,
             &BTreeMap::new(),
             working_dir,
-            GRADER_TIMEOUT,
+            self.timeout,
             &request,
         )
         .await
@@ -299,12 +378,15 @@ impl DefaultGrader {
         let resp: AssertResp = serde_json::from_value(value)
             .map_err(|e| GraderError::InvalidVerdict(format!("bad assert response: {e}")))?;
         let score = resp.score.unwrap_or(if resp.pass { 1.0 } else { 0.0 });
-        Ok(GradedVerdict::Exec {
+        // Unpriced: the child spends whatever it spends against whatever
+        // endpoint it chose, and the protocol gives it no way to say so. A
+        // zero here would claim custom grading is free.
+        Ok(Graded::unpriced(GradedVerdict::Exec {
             pass: resp.pass,
             score,
             reason: resp.reason.unwrap_or_default(),
             details: resp.details,
-        })
+        }))
     }
 
     async fn grade_similar(
@@ -314,7 +396,7 @@ impl DefaultGrader {
         output: &Output,
         vars: &Json,
         engine: &TemplateEngine,
-    ) -> Result<GradedVerdict, GraderError> {
+    ) -> Result<Graded, GraderError> {
         let embeddings = self
             .embeddings
             .as_ref()
@@ -332,8 +414,20 @@ impl DefaultGrader {
         // The threshold is applied by `to_outcome`, so the cached verdict is the
         // raw similarity and changing a threshold costs nothing.
         let _ = threshold;
-        Ok(GradedVerdict::Similarity {
-            cosine: crate::embeddings::cosine(&a, &b),
+        // Two calls, so both halves are summed. Either half being unpriced
+        // makes the pair unpriced — half a cost presented as a whole one is the
+        // same lie the rate table refuses to tell elsewhere.
+        let cost_usd = a
+            .cost
+            .zip(b.cost)
+            .map(|(a, b)| a.saturating_add(b).to_usd());
+        Ok(Graded {
+            verdict: GradedVerdict::Similarity {
+                cosine: crate::embeddings::cosine(&a.vector, &b.vector),
+            },
+            usage: sum_usage(a.usage, b.usage),
+            cost_usd,
+            model: None,
         })
     }
 
@@ -345,7 +439,7 @@ impl DefaultGrader {
         output: &Output,
         assert_params: Option<&crate::config::ParamMap>,
         ctx: &GradeCtx<'_>,
-    ) -> Result<GradedVerdict, GraderError> {
+    ) -> Result<Graded, GraderError> {
         let (vars, engine) = (ctx.vars, ctx.engine);
         // The variant that motivated the whole type: nothing ran, and the fix is
         // to add a `grader:` block — not to retry.
@@ -363,21 +457,24 @@ impl DefaultGrader {
             None => format!("RUBRIC:\n{rubric}\n\nASSISTANT OUTPUT:\n{output_text}"),
         };
 
+        // A judge's cost is not a case's cost — no assertion grades it, and
+        // folding it into `cost_usd` would make a `cost:` budget depend on which
+        // model you picked to score with. It is still real money, so it is
+        // priced here and reported separately.
         let verdict = match &grader.provider {
             ProviderKind::Anthropic {
                 model,
                 base_url,
                 api_key_env,
                 params,
-                // A grader's cost is not a case's cost, and no assertion grades
-                // it, so a rate here would price nothing.
-                pricing: _,
+                pricing,
             } => {
                 self.anthropic_verdict(
                     model,
                     base_url.as_deref(),
                     api_key_env.as_ref(),
                     merge_params(params.as_ref(), assert_params).as_ref(),
+                    self.judge_rate(model, pricing.as_deref()).as_ref(),
                     &user,
                 )
                 .await
@@ -387,13 +484,14 @@ impl DefaultGrader {
                 base_url,
                 api_key_env,
                 params,
-                pricing: _,
+                pricing,
             } => {
                 self.openai_verdict(
                     model,
                     base_url.as_deref(),
                     api_key_env.as_ref(),
                     merge_params(params.as_ref(), assert_params).as_ref(),
+                    self.judge_rate(model, pricing.as_deref()).as_ref(),
                     &user,
                 )
                 .await
@@ -409,249 +507,15 @@ impl DefaultGrader {
         // what erased the distinction between "unconfigured" and "broke".
         let v = verdict?;
         let _ = threshold;
-        Ok(GradedVerdict::Rubric {
-            score: v.score,
-            pass: v.pass,
-            reasoning: v.reasoning,
-        })
-    }
-
-    async fn anthropic_verdict(
-        &self,
-        model: &str,
-        base_url: Option<&str>,
-        api_key_env: Option<&crate::config::EnvNames>,
-        params: Option<&crate::config::ParamMap>,
-        user: &str,
-    ) -> Result<Verdict, GraderError> {
-        reject_thinking(params)?;
-        let key = api_key(
-            api_key_env.unwrap_or(&crate::config::EnvNames::One("ANTHROPIC_API_KEY".into())),
-        )
-        .map_err(|e| GraderError::Transport(e.to_string()))?;
-        let base = base_url
-            .unwrap_or("https://api.anthropic.com")
-            .trim_end_matches('/');
-
-        let mut body = serde_json::Map::new();
-        if let Some(p) = params {
-            for (k, v) in p {
-                body.insert(k.clone(), v.clone());
-            }
-        }
-        body.insert("model".into(), json!(model));
-        body.insert("system".into(), json!(SYSTEM_PROMPT));
-        body.insert(
-            "messages".into(),
-            json!([{"role": "user", "content": user}]),
-        );
-        body.entry("max_tokens")
-            .or_insert_with(|| json!(DEFAULT_GRADER_MAX_TOKENS));
-        body.insert("tools".into(), json!([verdict_tool()]));
-        body.insert(
-            "tool_choice".into(),
-            json!({"type": "tool", "name": "submit_verdict"}),
-        );
-
-        let resp = self
-            .client
-            .post(format!("{base}/v1/messages"))
-            .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&Json::Object(body))
-            .send()
-            .await
-            .map_err(|e| GraderError::Transport(e.to_string()))?;
-        if !resp.status().is_success() {
-            let code = resp.status().as_u16();
-            // 401/403 gets its own variant: a rejected credential will reject
-            // every remaining call too, so the runner short-circuits rather
-            // than erroring the whole suite one case at a time.
-            if code == 401 || code == 403 {
-                return Err(GraderError::AuthRejected { status: code });
-            }
-            return Err(GraderError::Transport(format!(
-                "HTTP {code}: {}",
-                resp.text().await.unwrap_or_default()
-            )));
-        }
-        let payload: Json = resp
-            .json()
-            .await
-            .map_err(|e| GraderError::Transport(e.to_string()))?;
-        if payload.get("stop_reason").and_then(|s| s.as_str()) == Some("max_tokens") {
-            return Err(GraderError::TruncatedVerdict {
-                signal: "stop_reason=max_tokens",
-            });
-        }
-        let input = payload
-            .get("content")
-            .and_then(|c| c.as_array())
-            .and_then(|blocks| {
-                blocks
-                    .iter()
-                    .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
-            })
-            .and_then(|b| b.get("input"))
-            .ok_or_else(|| GraderError::InvalidVerdict("no tool_use verdict in response".into()))?;
-        Verdict::from_json(input)
-    }
-
-    async fn openai_verdict(
-        &self,
-        model: &str,
-        base_url: Option<&str>,
-        api_key_env: Option<&crate::config::EnvNames>,
-        params: Option<&crate::config::ParamMap>,
-        user: &str,
-    ) -> Result<Verdict, GraderError> {
-        let key =
-            api_key(api_key_env.unwrap_or(&crate::config::EnvNames::One("OPENAI_API_KEY".into())))
-                .map_err(|e| GraderError::Transport(e.to_string()))?;
-        let base = base_url
-            .unwrap_or("https://api.openai.com/v1")
-            .trim_end_matches('/');
-
-        let mut body = serde_json::Map::new();
-        if let Some(p) = params {
-            for (k, v) in p {
-                body.insert(k.clone(), v.clone());
-            }
-        }
-        body.insert("model".into(), json!(model));
-        body.insert(
-            "messages".into(),
-            json!([
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user}
-            ]),
-        );
-        body.insert(
-            "response_format".into(),
-            json!({
-                "type": "json_schema",
-                "json_schema": {"name": "verdict", "strict": true, "schema": verdict_schema()}
-            }),
-        );
-
-        let resp = self
-            .client
-            .post(format!("{base}/chat/completions"))
-            .bearer_auth(key)
-            .json(&Json::Object(body))
-            .send()
-            .await
-            .map_err(|e| GraderError::Transport(e.to_string()))?;
-        if !resp.status().is_success() {
-            let code = resp.status().as_u16();
-            // 401/403 gets its own variant: a rejected credential will reject
-            // every remaining call too, so the runner short-circuits rather
-            // than erroring the whole suite one case at a time.
-            if code == 401 || code == 403 {
-                return Err(GraderError::AuthRejected { status: code });
-            }
-            return Err(GraderError::Transport(format!(
-                "HTTP {code}: {}",
-                resp.text().await.unwrap_or_default()
-            )));
-        }
-        let payload: Json = resp
-            .json()
-            .await
-            .map_err(|e| GraderError::Transport(e.to_string()))?;
-        let choice = payload
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|c| c.first());
-        if choice
-            .and_then(|c| c.get("finish_reason"))
-            .and_then(|s| s.as_str())
-            == Some("length")
-        {
-            return Err(GraderError::TruncatedVerdict {
-                signal: "finish_reason=length",
-            });
-        }
-        let content = choice
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-            .ok_or_else(|| GraderError::InvalidVerdict("no content in response".into()))?;
-        let value: Json = serde_json::from_str(content)
-            .map_err(|e| GraderError::InvalidVerdict(format!("verdict not JSON: {e}")))?;
-        Verdict::from_json(&value)
-    }
-}
-
-/// The reject-list for grader params incompatible with forced tool use.
-fn reject_thinking(params: Option<&crate::config::ParamMap>) -> Result<(), GraderError> {
-    if let Some(p) = params {
-        if p.contains_key("thinking") || p.contains_key("reasoning") {
-            return Err(GraderError::Misconfigured(
-                "grader params must not enable extended thinking: forced tool use is rejected \
-                 when thinking is on. Remove `thinking`/`reasoning`."
-                    .into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn verdict_schema() -> Json {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "reasoning": {"type": "string"},
-            "pass": {"type": "boolean"},
-            "score": {"type": "number"}
-        },
-        "required": ["reasoning", "pass", "score"]
-    })
-}
-
-fn verdict_tool() -> Json {
-    json!({
-        "name": "submit_verdict",
-        "description": "Submit the grading verdict.",
-        "input_schema": verdict_schema()
-    })
-}
-
-fn output_to_json(output: &Output) -> Json {
-    match output {
-        Output::Text(s) => Json::String(s.clone()),
-        Output::Json(v) => v.clone(),
-    }
-}
-
-/// A parsed grader verdict.
-struct Verdict {
-    reasoning: String,
-    pass: bool,
-    score: f64,
-}
-
-impl Verdict {
-    fn from_json(v: &Json) -> Result<Verdict, GraderError> {
-        let pass = v
-            .get("pass")
-            .and_then(|p| p.as_bool())
-            .ok_or_else(|| GraderError::InvalidVerdict("verdict missing `pass`".into()))?;
-        let score = v
-            .get("score")
-            .and_then(|s| s.as_f64())
-            .ok_or_else(|| GraderError::InvalidVerdict("verdict missing `score`".into()))?
-            .clamp(0.0, 1.0);
-        let reasoning = v
-            .get("reasoning")
-            .and_then(|r| r.as_str())
-            .unwrap_or("")
-            .to_string();
-        Ok(Verdict {
-            reasoning,
-            pass,
-            score,
+        Ok(Graded {
+            verdict: GradedVerdict::Rubric {
+                score: v.score,
+                pass: v.pass,
+                reasoning: v.reasoning,
+            },
+            usage: v.usage,
+            cost_usd: v.cost_usd,
+            model: v.model,
         })
     }
 }
@@ -730,9 +594,96 @@ mod tests {
             )
             .await
             .unwrap()
+            .verdict
             .to_outcome(None);
         assert!(outcome.passed);
         assert!((outcome.score - 0.9).abs() < 1e-9);
+    }
+
+    /// The judge's own bill. `pricing:` on a `grader.provider` used to be parsed
+    /// and ignored, so the model doing the scoring was the one part of a run
+    /// that cost nothing according to the run itself.
+    #[tokio::test]
+    async fn a_judge_call_is_priced_by_the_graders_own_pricing_block() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "stop_reason": "tool_use",
+                "model": "claude-x-20260101",
+                "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+                "content": [{
+                    "type": "tool_use", "name": "submit_verdict",
+                    "input": {"reasoning": "ok", "pass": true, "score": 1.0}
+                }]
+            })))
+            .mount(&server)
+            .await;
+        std::env::set_var("GRADER_TEST_KEY", "sk-test");
+
+        // `claude-x` is not in the built-in table, so without the override this
+        // is unpriced — which is the second half of what this pins.
+        let mut cfg = anthropic_grader(&server.uri());
+        let unpriced = DefaultGrader::new(Some(cfg.clone()))
+            .grade(
+                &rubric_assert(),
+                &Output::Text("x".into()),
+                &grade_ctx(&json!({}), &TemplateEngine::new()),
+            )
+            .await
+            .unwrap();
+        assert!(unpriced.cost_usd.is_none(), "unknown model prices nothing");
+
+        if let ProviderKind::Anthropic { pricing, .. } = &mut cfg.provider {
+            *pricing = Some(Box::new(crate::config::PricingCfg {
+                input_per_mtok: Some(3.0),
+                output_per_mtok: Some(15.0),
+                ..Default::default()
+            }));
+        }
+        let graded = DefaultGrader::new(Some(cfg))
+            .grade(
+                &rubric_assert(),
+                &Output::Text("x".into()),
+                &grade_ctx(&json!({}), &TemplateEngine::new()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(graded.cost_usd, Some(18.0));
+        // The model the judge reported, not the one configured.
+        assert_eq!(graded.model.as_deref(), Some("claude-x-20260101"));
+    }
+
+    /// A cosine value belongs to the model that produced the vectors, so the
+    /// verdict key must move when the embedder does. It did not: the key was the
+    /// constant `{"assert": "similar"}`, so switching embedding models replayed
+    /// the previous one's answers.
+    #[test]
+    fn a_similar_verdict_key_moves_with_the_embedding_model() {
+        let assert = Assert {
+            weight: 1.0,
+            negate: false,
+            kind: AssertKind::Similar {
+                value: crate::val::Val::Tpl(json!("hello")),
+                threshold: None,
+            },
+        };
+        let with = |model: &str| {
+            DefaultGrader::new(None)
+                .with_embeddings(crate::embeddings::EmbeddingsProvider::new(
+                    "e", model, None, None, None, None,
+                ))
+                .grading_fingerprint(&assert)
+        };
+        assert_ne!(
+            with("text-embedding-3-small"),
+            with("text-embedding-3-large")
+        );
+        // And with no embeddings provider there is nothing to key on, so the
+        // assertion opts out of caching entirely rather than caching an error.
+        assert!(DefaultGrader::new(None)
+            .grading_fingerprint(&assert)
+            .is_none());
     }
 
     #[tokio::test]
@@ -836,6 +787,7 @@ mod tests {
             )
             .await
             .unwrap()
+            .verdict
             .to_outcome(None);
         assert!(outcome.passed);
     }

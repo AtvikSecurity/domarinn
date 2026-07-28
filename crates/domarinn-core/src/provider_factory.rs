@@ -90,11 +90,14 @@ pub fn build_embeddings(suite: &Suite) -> Option<EmbeddingsProvider> {
             base_url,
             api_key_env,
             params,
+            pricing,
         } => Some(EmbeddingsProvider::new(
+            &p.id,
             model.clone(),
             base_url.clone(),
             api_key_env.clone(),
             params.clone(),
+            pricing.as_deref(),
         )),
         _ => None,
     })

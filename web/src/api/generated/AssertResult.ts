@@ -14,4 +14,15 @@ export type AssertResult = { kind: AssertName, status: AssertStatus, score: numb
  * (already a field above). Absent on pre-v2.1 stored blobs; presence-gated
  * by the web UI.
  */
-criteria?: JsonValue, cached: boolean, };
+criteria?: JsonValue, cached: boolean, 
+/**
+ * What producing this verdict cost, for the assertions that call a model
+ * to decide (`llm-rubric`, `similar`). Absent for a locally-evaluated
+ * assertion, which costs nothing, and for an `exec` grader, whose spending
+ * domarinn cannot see.
+ *
+ * Deliberately *not* folded into `CaseResult.cost_usd`: that number is what
+ * the system under test cost, which is what a `cost:` assertion budgets. A
+ * judge's price should not move a budget gate on the model being judged.
+ */
+cost_usd?: number, };

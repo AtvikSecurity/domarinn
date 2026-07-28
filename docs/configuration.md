@@ -250,6 +250,7 @@ needs an embedding.
 | `base_url` | string | no | Override the API base URL. |
 | `api_key_env` | string | no | Env var holding the key. |
 | `params` | map | no | Passed to the API verbatim. |
+| `pricing` | object | no | Rate override; only `input_per_mtok` applies. See [providers.md](./providers.md#embeddings). |
 
 ```yaml
 providers:

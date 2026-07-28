@@ -305,6 +305,12 @@ fn stats_line(s: &RunSummary, run_cases: &[domarinn_core::result::CaseResult]) -
             }
         }
     }
+    // Its own segment, never added to the line above: a suite judged by a
+    // larger model than it tests spends more here than on the run itself, and
+    // one merged number would hide exactly that.
+    if let Some(cost) = s.grader_cost_usd.filter(|c| *c > 0.0) {
+        segments.push(format!("${cost:.4} grading"));
+    }
     if s.cache_hits > 0 {
         segments.push(format!("{} cache hits", s.cache_hits));
     }
@@ -387,6 +393,9 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
     }
     if let Some(saved) = s.cache_savings_usd.filter(|c| *c > 0.0) {
         out.push_str(&format!("| Saved by cache | ${saved:.4} |\n"));
+    }
+    if let Some(cost) = s.grader_cost_usd.filter(|c| *c > 0.0) {
+        out.push_str(&format!("| Grading cost | ${cost:.4} |\n"));
     }
     if s.retried_cases > 0 {
         out.push_str(&format!("| Retries | {} cases |\n", s.retried_cases));
@@ -839,6 +848,7 @@ mod tests {
                 details: None,
                 criteria: None,
                 cached: false,
+                cost_usd: None,
             }],
             _ => vec![],
         };

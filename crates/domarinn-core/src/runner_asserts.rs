@@ -13,7 +13,7 @@ use serde_json::Value as Json;
 
 use crate::assertion::AssertOutcome;
 use crate::asserts::{evaluate_local, is_local, EvalCtx, MetricCtx};
-use crate::cache::{CacheBackend, CacheMode, GradedVerdict};
+use crate::cache::{CacheBackend, CacheMode, Graded};
 use crate::cache_key::grader_cache_key;
 use crate::config::{Assert, AssertKind};
 use crate::error_class::ErrorClass;
@@ -115,14 +115,16 @@ pub(super) async fn evaluate_asserts(
         }
         match ctx.grader {
             Some(g) => match graded_verdict(g, ctx, assert, output, vars).await {
-                Ok((verdict, cached)) => {
-                    let outcome = verdict
+                Ok((graded, cached)) => {
+                    let outcome = graded
+                        .verdict
                         .to_outcome(assert_threshold(assert))
                         .negated(assert.negate);
                     scored.push(scored_of(assert, &outcome));
                     let mut result =
                         assert_result(assert, &outcome, AssertStatus::from_pass(outcome.passed));
                     result.cached = cached;
+                    result.cost_usd = graded.cost_usd;
                     results[i] = Some(result);
                 }
                 // Fail closed: a grader problem is an error, not a plain fail.
@@ -187,7 +189,7 @@ async fn graded_verdict(
     assert: &Assert,
     output: &Output,
     vars: &Json,
-) -> Result<(GradedVerdict, bool), crate::errors::GraderError> {
+) -> Result<(Graded, bool), crate::errors::GraderError> {
     let key = (ctx.grader_cache && ctx.cache_mode != CacheMode::Disabled)
         .then(|| grader.grading_fingerprint(assert))
         .flatten()
@@ -199,7 +201,20 @@ async fn graded_verdict(
             // result: a miss, never an error.
             Ok(Some(entry)) => {
                 if let Some(verdict) = entry.verdict {
-                    return Ok((verdict, true));
+                    // The cost replays with the verdict, so a run's grading
+                    // cost is what the grading is worth rather than a figure
+                    // that collapses as the cache warms. Which calls were
+                    // actually paid for is already visible per assertion via
+                    // `AssertResult.cached`.
+                    return Ok((
+                        Graded {
+                            verdict,
+                            usage: entry.usage,
+                            cost_usd: entry.cost_usd,
+                            model: entry.model,
+                        },
+                        true,
+                    ));
                 }
             }
             Ok(None) => {
@@ -215,7 +230,7 @@ async fn graded_verdict(
         }
     }
 
-    let verdict = grader
+    let graded = grader
         .grade(
             assert,
             output,
@@ -232,14 +247,14 @@ async fn graded_verdict(
 
     if let Some(key) = &key {
         if ctx.cache_mode == CacheMode::ReadWrite {
-            let entry = verdict_entry(grader, assert, &verdict);
+            let entry = verdict_entry(grader, assert, &graded);
             // A cache write failure must not fail the run.
             if let Err(e) = ctx.cache.put(key, &entry).await {
                 tracing::warn!(error = %e, "grader cache write failed");
             }
         }
     }
-    Ok((verdict, false))
+    Ok((graded, false))
 }
 
 /// What was graded — the half of the key that varies per case.
@@ -265,27 +280,28 @@ fn graded_payload(assert: &Assert, output: &Output) -> Json {
 
 /// A verdict entry. The non-verdict fields are *used*, not stubbed: `output`
 /// carries the judge's reasoning so `domarinn cache` inspection shows something
-/// a human can read.
+/// a human can read, and `usage`/`cost_usd`/`model` carry what the judge cost so
+/// a replayed verdict reports it rather than silently dropping to nothing.
 fn verdict_entry(
     grader: &dyn AssertGrader,
     assert: &Assert,
-    verdict: &GradedVerdict,
+    graded: &Graded,
 ) -> crate::cache::CacheEntry {
-    let reason = verdict.to_outcome(None).reason;
+    let reason = graded.verdict.to_outcome(None).reason;
     crate::cache::CacheEntry {
         created_at: chrono::Utc::now(),
         provider_fingerprint: grader.grading_fingerprint(assert).unwrap_or(Json::Null),
         output: Output::Text(reason),
-        usage: None,
-        cost_usd: None,
+        usage: graded.usage.clone(),
+        cost_usd: graded.cost_usd,
         stop_reason: None,
         attempts: None,
         provider_latency_ms: None,
         reasoning: None,
         empty_reason: None,
-        model: None,
+        model: graded.model.clone(),
         raw: None,
-        verdict: Some(verdict.clone()),
+        verdict: Some(graded.verdict.clone()),
         domarinn_version: crate::VERSION.to_string(),
     }
 }
@@ -325,6 +341,7 @@ fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus)
         details: outcome.details.clone(),
         criteria: assert_criteria(assert),
         cached: false,
+        cost_usd: None,
     }
 }
 
@@ -338,6 +355,7 @@ fn error_assert(assert: &Assert, reason: String) -> AssertResult {
         details: None,
         criteria: assert_criteria(assert),
         cached: false,
+        cost_usd: None,
     }
 }
 
@@ -351,6 +369,7 @@ fn skipped_result(assert: &Assert) -> AssertResult {
         details: None,
         criteria: assert_criteria(assert),
         cached: false,
+        cost_usd: None,
     }
 }
 
@@ -405,6 +424,7 @@ mod tests {
             details: None,
             criteria: None,
             cached: false,
+            cost_usd: None,
         }
     }
 

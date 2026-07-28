@@ -123,6 +123,11 @@ outputs:
       What the cached cases would have cost, in USD. Actual spend is
       `cost-usd` minus this.
     value: ${{ steps.summary.outputs.cache-savings-usd }}
+  grader-cost-usd:
+    description: >-
+      What the graders cost, in USD (empty when unpriced). Not included in
+      `cost-usd`, which is what the systems under test cost.
+    value: ${{ steps.summary.outputs.grader-cost-usd }}
   cache-read-tokens:
     description: Input tokens served from a provider-side prompt cache.
     value: ${{ steps.summary.outputs.cache-read-tokens }}
