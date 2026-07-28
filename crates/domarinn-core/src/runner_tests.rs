@@ -53,6 +53,9 @@ impl Provider for FlakyProvider {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n == 0 {
             Err(ProviderError::Retriable {
+                class: crate::error_class::ErrorClass::new(
+                    crate::error_class::ErrorClass::PROVIDER_UNAVAILABLE,
+                ),
                 source: anyhow::anyhow!("boom"),
                 retry_after: None,
             })

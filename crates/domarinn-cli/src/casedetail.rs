@@ -415,7 +415,11 @@ mod tests {
             empty_reason: None,
             cached: false,
             attempts: 1,
+            prompt_digest: None,
+            provider_digest: None,
+            assert_digest: None,
             error: None,
+            error_class: None,
         }
     }
 
@@ -432,6 +436,9 @@ mod tests {
             config_snapshot: serde_json::json!({}),
             git: None,
             ci: None,
+            digests: None,
+            origin: None,
+            share_url: None,
             filters: Default::default(),
             cases,
             summary: RunSummary::default(),

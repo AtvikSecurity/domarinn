@@ -4,6 +4,7 @@ import type { CaseKey } from "./CaseKey";
 import type { CaseStatus } from "./CaseStatus";
 import type { CellKey } from "./CellKey";
 import type { EmptyReason } from "./EmptyReason";
+import type { ErrorClass } from "./ErrorClass";
 import type { Output } from "./Output";
 import type { RenderedPrompt } from "./RenderedPrompt";
 import type { TokenUsage } from "./TokenUsage";
@@ -58,7 +59,36 @@ latency_ms: number,
  * Total wall time for the cell, *including* retry backoff and cache I/O.
  * Absent on blobs written before this field existed.
  */
-wall_ms?: number, cached: boolean, attempts: number, error?: string, 
+wall_ms?: number, cached: boolean, attempts: number, 
+/**
+ * Identity of what this case asked the model — rendered prompt, rendered
+ * vars, params, cache salt. Deliberately excludes the provider (that is
+ * `provider_digest`) and `repeat`. See [`crate::digests::prompt_digest`].
+ */
+prompt_digest?: string, 
+/**
+ * Identity of the model and its settings, from the provider fingerprint.
+ *
+ * **Not backfillable**: the fingerprint appears nowhere in a stored run
+ * document (`request` is a preview envelope and is absent under
+ * `--no-raw`), so change classification only works between two runs that
+ * both post-date this field. Readers must treat `None` as unknown.
+ */
+provider_digest?: string, 
+/**
+ * Identity of this case's grading definition — the authored criteria,
+ * weights and threshold, never the outcome.
+ */
+assert_digest?: string, error?: string, 
+/**
+ * What kind of failure `error` describes — see [`crate::error_class`].
+ *
+ * Strictly additive: `error` stays the verbatim prose it always was, and
+ * neither field is ever derived from the other at read time.
+ * `error_class.is_some()` implies `error.is_some()`; the converse does not
+ * hold, because blobs written before this field have prose and no class.
+ */
+error_class?: ErrorClass, 
 /**
  * The model's reasoning/thinking text, when it exposed any.
  */

@@ -9,9 +9,11 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod baseline;
 mod cachecfg;
 mod cachecmd;
 mod casedetail;
+mod cisummary;
 mod diffcmd;
 mod diffrender;
 mod import;
@@ -73,6 +75,8 @@ enum Command {
     Run(run::RunArgs),
     /// Upload a completed run to a results server and print its URL.
     Share(share::ShareArgs),
+    /// Summarize a run for CI: a markdown report plus GitHub Actions outputs.
+    CiSummary(cisummary::CiSummaryArgs),
     /// List stored runs (newest first).
     Runs(runscmd::RunsArgs),
     /// Diff two runs (regressions, fixes, output changes, significance).
@@ -188,6 +192,7 @@ fn main() -> ExitCode {
     let code = match cli.command {
         Command::Run(args) => run::execute(args, cli.server_url, palette, cli.verbose),
         Command::Share(args) => share::execute(args, cli.server_url),
+        Command::CiSummary(args) => cisummary::execute(args, cli.server_url),
         Command::Runs(args) => runscmd::execute(args, cli.server_url, palette),
         Command::Diff(args) => diffcmd::execute_diff(args, palette),
         Command::View(args) => diffcmd::execute_view(args, palette),

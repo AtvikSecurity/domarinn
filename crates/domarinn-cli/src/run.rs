@@ -70,7 +70,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Compare against a baseline run (id, path, or `latest`); regressions fail.
+    /// Compare against a baseline run; regressions fail.
+    ///
+    /// `server:baseline` uses the baseline pinned for this suite on the results
+    /// server — the only reference that works in CI, where a fresh checkout has
+    /// no local run store. `latest` uses the newest local run *of this same
+    /// suite*. Also accepts a run id or a `result.json` path. Unlike a missing
+    /// baseline, a baseline that cannot be resolved is a usage error, so a gate
+    /// can never report green without having compared.
     #[arg(long)]
     pub against: Option<String>,
 
@@ -90,6 +97,21 @@ pub struct RunArgs {
     /// Disable the live progress bar.
     #[arg(long)]
     pub no_progress: bool,
+
+    /// A short human label for this run ("trying temperature 0.3"), stored on
+    /// the run and searchable on the server. Defaults to the suite's
+    /// `description`.
+    #[arg(long)]
+    pub note: Option<String>,
+
+    /// Do not record the OS username or hostname on this run. Git, CI and
+    /// version metadata are still recorded; the run is marked as redacted so a
+    /// reader can tell suppression from an older client.
+    ///
+    /// `DOMARINN_PROVENANCE=off` suppresses git and CI as well, and is the right
+    /// lever for a whole machine or container image.
+    #[arg(long)]
+    pub no_provenance: bool,
 }
 
 pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verbose: u8) -> u8 {
@@ -136,6 +158,16 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
             args.retries
         },
         include_raw: !args.no_raw,
+        provenance: {
+            // Env sets the machine-wide policy; `--no-provenance` can only
+            // tighten it, never re-enable identity the environment turned off.
+            let mut p = domarinn_core::provenance::ProvenanceOptions::from_env();
+            if args.no_provenance && p.mode == domarinn_core::provenance::ProvenanceMode::Full {
+                p.mode = domarinn_core::provenance::ProvenanceMode::Anonymous;
+            }
+            p.note = args.note.clone();
+            p
+        },
     };
 
     let cache = cachecfg::build_cache(&suite, server_url.as_deref());
@@ -178,7 +210,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         bar.finish();
     }
 
-    let result = match run_result {
+    let mut result = match run_result {
         Ok(r) => r,
         Err(e) => {
             eprintln!("run error: {e}");
@@ -207,16 +239,47 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
     // Baseline comparison. Keep the loaded base run alongside the diff so the
     // markdown (output diffs, config drift) can join base↔head cases.
     let mut regressed = false;
+    // A baseline was asked for and could not be produced. Tracked rather than
+    // returned immediately so the run still shares and still writes its summary
+    // — the results are real and worth keeping — while the exit code below
+    // refuses to call the job green.
+    let mut baseline_unresolved = false;
     let mut baseline: Option<(domarinn_core::RunResult, domarinn_core::diff::RunDiff)> = None;
     if let Some(reference) = &args.against {
-        match crate::loadrun::load_run(reference) {
+        match crate::baseline::resolve(reference, &result, server_url.as_deref()) {
             Ok(base) => {
                 let d = domarinn_core::diff_runs(&base, &result);
                 eprintln!("{}", crate::diffrender::render_markdown(&base, &result, &d));
                 regressed = d.has_regression();
                 baseline = Some((base, d));
             }
-            Err(e) => tracing::warn!(error = %e, "--against baseline unavailable"),
+            // Nothing to compare against yet — a suite's first run. Not a
+            // failure: there is no regression to miss.
+            Err(crate::baseline::BaselineError::Absent(msg)) => {
+                tracing::info!("--against: {msg}; skipping the comparison");
+            }
+            // A baseline that should have been there was not. Silently
+            // continuing here is exactly what let a regression exit 0.
+            Err(crate::baseline::BaselineError::Failed(msg)) => {
+                eprintln!("error: --against: {msg}");
+                baseline_unresolved = true;
+            }
+        }
+    }
+
+    // Share before writing the summary, so the summary can carry the run's URL —
+    // but after the human output above, so a slow upload never holds back the
+    // table. On success the URL is recorded on the run and re-persisted, which
+    // is how a later `ci-summary` links to it.
+    if args.share {
+        match crate::share::upload_run(&result, server_url.as_deref(), false) {
+            Ok(url) => {
+                result.share_url = Some(url);
+                if let Err(e) = output::persist(&result) {
+                    tracing::warn!(error = %e, "could not persist run URL");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "share failed"),
         }
     }
 
@@ -227,15 +290,13 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         }
     }
 
-    if args.share {
-        if let Err(e) = crate::share::upload_run(&result, server_url.as_deref(), false) {
-            tracing::warn!(error = %e, "share failed");
-        }
-    }
-
-    // Exit code: infra errors win over assertion failures/regressions.
+    // Exit code: infra errors win over everything, then an unresolved baseline
+    // (the gate could not do its job, so its silence means nothing), then
+    // assertion failures and regressions.
     if result.summary.errored > 0 {
         exit::INFRA
+    } else if baseline_unresolved {
+        exit::USAGE
     } else if result.summary.failed > 0 || regressed {
         exit::ASSERT_FAIL
     } else {

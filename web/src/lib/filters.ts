@@ -10,6 +10,13 @@ export const RUNS_FILTER_KEYS = [
   "until",
   "status",
   "cached",
+  // `origin` (ci | local) separates the canonical CI stream from developer
+  // iteration; `actor` narrows to one person, matching either who ran a run or
+  // who uploaded it. Both are server filters — the runs list is cursor
+  // paginated, so filtering client-side would silently only apply to the pages
+  // already loaded.
+  "origin",
+  "actor",
 ] as const;
 export type RunsFilterKey = (typeof RUNS_FILTER_KEYS)[number];
 export type RunsFilters = Partial<Record<RunsFilterKey, string>>;
@@ -28,6 +35,9 @@ export const CASE_FILTER_KEYS = [
   "provider",
   "prompt",
   "cached",
+  // Also a SERVER filter (migration 10): narrows the grid to one kind of
+  // failure, which is how the error breakdown's rows drill in.
+  "error_class",
   "case",
   "sort",
   "view",

@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value as Json;
 
 use crate::empty::EmptyReason;
+use crate::error_class::ErrorClass;
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
 /// Metadata about the test a call belongs to (exec providers receive this).
@@ -67,6 +68,18 @@ impl ProviderResponse {
 }
 
 /// Provider failures, split by whether a retry could help.
+///
+/// Both variants carry an [`ErrorClass`], set at the point of failure. That
+/// placement is the point: `net.rs` collapses 429, 5xx, timeout and 4xx into a
+/// variant plus a prose string, so by the time the runner builds a
+/// `CaseResult` the status code exists *only* inside the display text.
+/// Re-deriving the class by sniffing `"HTTP 429"` back out would couple
+/// classification to a message format, which is exactly what it exists to
+/// escape.
+///
+/// The variant and the class are independent axes, not two names for one thing:
+/// a `Retry-After` longer than the retry budget becomes `Fatal`, and its class
+/// is still `provider_rate_limit`.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     /// Transient — 429/5xx/timeout/connection. May carry a server `Retry-After`.
@@ -75,10 +88,41 @@ pub enum ProviderError {
         #[source]
         source: anyhow::Error,
         retry_after: Option<Duration>,
+        class: ErrorClass,
     },
     /// Permanent — 4xx, bad protocol, misconfiguration.
-    #[error("fatal provider error: {0}")]
-    Fatal(#[source] anyhow::Error),
+    #[error("fatal provider error: {source}")]
+    Fatal {
+        #[source]
+        source: anyhow::Error,
+        class: ErrorClass,
+    },
+}
+
+impl ProviderError {
+    /// A permanent failure. `class` is one of the [`ErrorClass`] constants.
+    pub fn fatal(class: &str, source: anyhow::Error) -> Self {
+        ProviderError::Fatal {
+            source,
+            class: ErrorClass::new(class),
+        }
+    }
+
+    /// A transient failure worth retrying, optionally honouring a server
+    /// `Retry-After`.
+    pub fn retriable(class: &str, source: anyhow::Error, retry_after: Option<Duration>) -> Self {
+        ProviderError::Retriable {
+            source,
+            retry_after,
+            class: ErrorClass::new(class),
+        }
+    }
+
+    pub fn class(&self) -> &ErrorClass {
+        match self {
+            ProviderError::Retriable { class, .. } | ProviderError::Fatal { class, .. } => class,
+        }
+    }
 }
 
 /// Build the [`Provider::request_preview`] envelope for an HTTP-style provider.

@@ -11,6 +11,7 @@ import { CaseAssertRow } from "./CaseAssertRow";
 import { CaseInputSection } from "./CaseInputSection";
 import { CaseVerdictStrip } from "./CaseVerdictStrip";
 import { RawMetadataSection, reasoningNotice } from "./CaseDrawerSections";
+import { DrawerResizer, useDrawerWidth } from "./DrawerResizer";
 
 export function CaseDrawer({
   runId,
@@ -27,6 +28,7 @@ export function CaseDrawer({
 }) {
   const open = !!caseKey;
   const detail = useCaseDetail(runId, caseKey);
+  const drawer = useDrawerWidth();
 
   // Shareable deep link to this exact case (the drawer re-opens from `?case=`).
   const permalink = caseKey
@@ -38,9 +40,18 @@ export function CaseDrawer({
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] data-[state=open]:animate-[overlay-in_120ms_ease-out]" />
         <Dialog.Content
-          className="fixed inset-y-0 right-0 z-50 flex w-[min(44rem,100vw)] flex-col border-l border-border bg-surface shadow-2xl outline-none data-[state=open]:animate-[drawer-in_160ms_ease-out]"
+          className="fixed inset-y-0 right-0 z-50 flex max-w-full flex-col border-l border-border bg-surface shadow-2xl outline-none data-[state=open]:animate-[drawer-in_160ms_ease-out]"
+          style={{ width: drawer.width }}
           aria-describedby={undefined}
+          // Radix focuses the first tabbable node on open; without this that is
+          // the resize handle, which is a confusing place to land.
+          onOpenAutoFocus={(e) => e.preventDefault()}
         >
+          <DrawerResizer
+            width={drawer.width}
+            onResize={drawer.set}
+            onToggle={drawer.toggle}
+          />
           <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-3">
             <div className="min-w-0">
               <Dialog.Title className="truncate text-sm font-semibold">
@@ -52,6 +63,20 @@ export function CaseDrawer({
               {caseKey ? (
                 <CopyButton value={permalink} label="Copy link" />
               ) : null}
+              {/* The drag handle is a hairline and nobody finds it. This is the
+                  discoverable path to the same width, and the one that reaches
+                  full width in a single click. */}
+              <button
+                type="button"
+                onClick={drawer.toggle}
+                aria-label="Toggle panel width"
+                title="Expand / collapse (or drag the left edge)"
+                className="rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 4l-5 8 5 8M15 4l5 8-5 8" />
+                </svg>
+              </button>
               <Dialog.Close className="rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <path d="M6 6l12 12M18 6L6 18" />

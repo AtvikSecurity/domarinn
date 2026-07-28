@@ -16,7 +16,7 @@ export function ForbiddenState({
       <p className="mt-2 text-muted">{message}</p>
       <Link to="/" className="mt-4 inline-block">
         <Button variant="secondary" size="sm">
-          Back to runs
+          Back to overview
         </Button>
       </Link>
     </div>

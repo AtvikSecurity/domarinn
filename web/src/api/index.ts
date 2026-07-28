@@ -46,6 +46,8 @@ export type { CaseListItem } from "./generated/CaseListItem";
 export type { CaseListResponse } from "./generated/CaseListResponse";
 export type { CaseResult } from "./generated/CaseResult";
 export type { CaseStatus } from "./generated/CaseStatus";
+// What kind of failure a case hit — see the Rust `error_class` module.
+export type { ErrorClass } from "./generated/ErrorClass";
 export type { CellKey } from "./generated/CellKey";
 export type { Output } from "./generated/Output";
 export type { TokenUsage } from "./generated/TokenUsage";
@@ -56,6 +58,10 @@ export type { ChatMessage } from "./generated/ChatMessage";
 export type { ChatRole } from "./generated/ChatRole";
 
 export type { IngestResponse } from "./generated/IngestResponse";
+// Run provenance: who ran it, where, on what build, with what note.
+export type { RunOrigin } from "./generated/RunOrigin";
+export type { GitMeta } from "./generated/GitMeta";
+export type { CiMeta } from "./generated/CiMeta";
 export type { RunDetailResponse } from "./generated/RunDetailResponse";
 export type { RunId } from "./generated/RunId";
 export type { RunListItem } from "./generated/RunListItem";
@@ -64,6 +70,7 @@ export type { SearchResponse } from "./generated/SearchResponse";
 export type { RunSearchHit } from "./generated/RunSearchHit";
 export type { CaseSearchHit } from "./generated/CaseSearchHit";
 export type { RunStatusFilter } from "./generated/RunStatusFilter";
+export type { OriginFilter } from "./generated/OriginFilter";
 export type { CachedFilter } from "./generated/CachedFilter";
 
 // Provider × prompt × test matrix (`GET /runs/{id}/matrix`). Columns are the
@@ -75,6 +82,11 @@ export type { MatrixCell } from "./generated/MatrixCell";
 
 export type { CompareCaseRow } from "./generated/CompareCaseRow";
 export type { CompareDelta } from "./generated/CompareDelta";
+// What moved between two runs of a case (prompt / provider / asserts / drift /
+// unstable grader), as opposed to whether the verdict moved.
+export type { CaseChange } from "./generated/CaseChange";
+export type { ComponentDrift } from "./generated/ComponentDrift";
+export type { ConfigDigests } from "./generated/ConfigDigests";
 export type { CompareResponse } from "./generated/CompareResponse";
 export type { CompareSummary } from "./generated/CompareSummary";
 export type { BaselineBody } from "./generated/BaselineBody";

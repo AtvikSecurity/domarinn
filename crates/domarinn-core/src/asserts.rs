@@ -5,10 +5,7 @@
 //! (`exec`, `llm-rubric`, `similar`) are handled by the runner's async path and
 //! return `None` here.
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
-use ts_rs::TS;
 
 use crate::assertion::AssertOutcome;
 use crate::config::{Assert, AssertKind};
@@ -23,53 +20,10 @@ pub struct MetricCtx {
     pub total_tokens: Option<u64>,
 }
 
-/// A field-less mirror of every [`AssertKind`] variant, recorded in results as
-/// the stable "kind" name (matches the config `type` tag). Kept in sync with
-/// `AssertKind` by [`AssertKind::name`] and the pin test below.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "kebab-case")]
-pub enum AssertName {
-    Contains,
-    Icontains,
-    IcontainsAny,
-    Regex,
-    Equals,
-    StartsWith,
-    IsJson,
-    ContainsJson,
-    Length,
-    Jinja,
-    Exec,
-    LlmRubric,
-    Cost,
-    Latency,
-    Tokens,
-    Similar,
-}
-
-impl AssertName {
-    /// The wire string for this kind (identical to its serde encoding).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AssertName::Contains => "contains",
-            AssertName::Icontains => "icontains",
-            AssertName::IcontainsAny => "icontains-any",
-            AssertName::Regex => "regex",
-            AssertName::Equals => "equals",
-            AssertName::StartsWith => "starts-with",
-            AssertName::IsJson => "is-json",
-            AssertName::ContainsJson => "contains-json",
-            AssertName::Length => "length",
-            AssertName::Jinja => "jinja",
-            AssertName::Exec => "exec",
-            AssertName::LlmRubric => "llm-rubric",
-            AssertName::Cost => "cost",
-            AssertName::Latency => "latency",
-            AssertName::Tokens => "tokens",
-            AssertName::Similar => "similar",
-        }
-    }
-}
+// `AssertName` lives in `domarinn-types`: it is a wire value (it appears on
+// every stored `AssertResult`), whereas the evaluation logic in this module is
+// engine-only. Re-exported so `crate::asserts::AssertName` keeps resolving.
+pub use domarinn_types::assert_name::AssertName;
 
 impl AssertKind {
     /// The stable kind name recorded in results (matches the config `type`).

@@ -239,6 +239,21 @@ pub enum CachedFilter {
     All,
 }
 
+/// Origin filter for `GET /runs?origin=` — the facet that separates the CI
+/// stream from developer iteration.
+///
+/// Keyed on `ci_provider IS NOT NULL`, which is exact: `provenance::collect_ci`
+/// returns a provider (`"ci"`) even for a bare `CI` environment variable, so
+/// there is no run that ran in CI without one. Runs uploaded before provenance
+/// moved into the engine have no `ci_provider` unless they were shared from CI,
+/// and so read as `local` — which is what they were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum OriginFilter {
+    Ci,
+    Local,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

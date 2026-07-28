@@ -115,6 +115,8 @@ function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
   const until = p.get("until");
   const status = p.get("status");
   const cached = p.get("cached");
+  const origin = p.get("origin");
+  const actor = p.get("actor");
   return runs.filter((r) => {
     if (project && r.project !== project) return false;
     if (suite && r.suite !== suite) return false;
@@ -125,6 +127,11 @@ function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
     if (status && derivedRunStatus(r) !== status) return false;
     if (cached === "exclude" && hiddenByCachedExclude(r)) return false;
     if (cached === "only" && !fullyCached(r)) return false;
+    // Mirrors the server: `ci_provider IS NOT NULL` is the exact CI predicate,
+    // and `actor` matches either who ran a run or who uploaded it.
+    if (origin === "ci" && r.ci_provider == null) return false;
+    if (origin === "local" && r.ci_provider != null) return false;
+    if (actor && r.actor !== actor && r.uploaded_by !== actor) return false;
     return true;
   });
 }
@@ -139,8 +146,10 @@ function filterCases(cases: MockCaseRow[], p: URLSearchParams): MockCaseRow[] {
   const prompt = p.get("prompt");
   const test = p.get("test");
   const cached = p.get("cached");
+  const errorClass = p.get("error_class");
   return cases.filter((c) => {
     if (status && c.status !== status) return false;
+    if (errorClass && c.error_class !== errorClass) return false;
     if (tag && !c.tags.includes(tag)) return false;
     if (provider && c.provider_id !== provider) return false;
     if (prompt && c.prompt_id !== prompt) return false;
@@ -310,6 +319,12 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       } catch {
         return notFound();
       }
+    }
+    // DELETE /runs/:id — 204, matching the server. The fixtures are generated
+    // and immutable, so this does not actually remove the run; the UI's job is
+    // to navigate away on success, and that is what the e2e asserts.
+    if (method === "DELETE" && seg.length === 2) {
+      return new Response(null, { status: 204 });
     }
     if (seg[2] === "cases") {
       // GET /runs/:id/cases

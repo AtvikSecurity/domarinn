@@ -200,6 +200,12 @@ pub struct CaseSpec {
     pub rendered_prompt: Option<&'static str>,
     pub error: Option<&'static str>,
     pub cached: bool,
+    /// Component digests. `None` models a run from a client that predates them,
+    /// which comparison must report as *unknown* rather than *unchanged*.
+    pub prompt_digest: Option<&'static str>,
+    pub provider_digest: Option<&'static str>,
+    pub assert_digest: Option<&'static str>,
+    pub error_class: Option<&'static str>,
 }
 
 impl CaseSpec {
@@ -217,6 +223,10 @@ impl CaseSpec {
             latency_ms: 42,
             rendered_prompt: None,
             error: None,
+            error_class: None,
+            prompt_digest: None,
+            provider_digest: None,
+            assert_digest: None,
             cached: false,
         }
     }
@@ -231,6 +241,12 @@ impl CaseSpec {
     /// Set the case's provider error string (default: none).
     pub fn error(mut self, error: &'static str) -> Self {
         self.error = Some(error);
+        self
+    }
+
+    /// Set the structured class alongside the prose message.
+    pub fn error_class(mut self, class: &'static str) -> Self {
+        self.error_class = Some(class);
         self
     }
 
@@ -277,6 +293,20 @@ impl CaseSpec {
     /// Mark the case's provider response as a cache hit (default: false).
     pub fn cached(mut self, cached: bool) -> Self {
         self.cached = cached;
+        self
+    }
+
+    /// Set all three component digests at once — the common case, where a test
+    /// wants one axis to differ and the others to hold.
+    pub fn digests(
+        mut self,
+        prompt: &'static str,
+        provider: &'static str,
+        asserts: &'static str,
+    ) -> Self {
+        self.prompt_digest = Some(prompt);
+        self.provider_digest = Some(provider);
+        self.assert_digest = Some(asserts);
         self
     }
 }
@@ -339,7 +369,13 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         empty_reason: None,
         cached: spec.cached,
         attempts: 1,
+        prompt_digest: spec.prompt_digest.map(str::to_string),
+        provider_digest: spec.provider_digest.map(str::to_string),
+        assert_digest: spec.assert_digest.map(str::to_string),
         error: spec.error.map(str::to_string),
+        error_class: spec
+            .error_class
+            .map(domarinn_core::error_class::ErrorClass::new),
     }
 }
 
@@ -403,6 +439,9 @@ pub fn make_run(
             provider: Some("ci".to_string()),
             run_url: Some("https://ci.example/run/1".to_string()),
         }),
+        digests: None,
+        origin: None,
+        share_url: None,
         filters: FilterSpec {
             tags: tags.iter().map(|t| t.to_string()).collect(),
             ..Default::default()
@@ -425,6 +464,7 @@ pub fn default_case_filter(run_id: RunId) -> CaseListFilter {
         prompt: None,
         test: None,
         stop_reason: None,
+        error_class: None,
         cached: None,
         limit: 200,
         cursor: None,

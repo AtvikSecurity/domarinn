@@ -338,7 +338,7 @@ token has no owning user and gets a `403` here.
 | Method | Path                                    | Scope   | Notes |
 |--------|-----------------------------------------|---------|-------|
 | POST   | `/api/v1/runs`                          | `write` | Ingest a run document. See [ingest](#run-ingest). |
-| GET    | `/api/v1/runs`                          | `read`  | List runs (filterable, paginated). |
+| GET    | `/api/v1/runs`                          | `read`  | List runs (filterable, paginated). Filters: `project`, `suite`, `tag`, `branch`, `since`, `until`, `status`, `cached`, `origin` (`ci`\|`local`), `actor`. |
 | GET    | `/api/v1/runs/{id}`                      | `read`  | Full run detail. `404` if unknown. |
 | GET    | `/api/v1/runs/{id}/cases`               | `read`  | Lean list of the run's cases (filterable, paginated). |
 | GET    | `/api/v1/runs/{id}/cases/{case_key}`    | `read`  | One case's full detail. |
@@ -457,6 +457,7 @@ being silently ignored and masking the mistake.
 | `DOMARINN_CACHE_MAX_ENTRY_BYTES` | `4194304` (4 MiB)   | Max size of a single cache entry. |
 | `DOMARINN_CACHE_MAX_BYTES`    | `1073741824` (1 GiB) | Total cache size target for retention. |
 | `DOMARINN_CACHE_MAX_AGE_DAYS` | `30`           | Cache entry max age for retention. |
+| `DOMARINN_RUN_MAX_AGE_DAYS`   | *(unset)*      | Delete runs older than this many days. **Unset means never delete** — eval history is expensive to produce and impossible to recreate, so retention is opt-in. Two runs are exempt at any age: a pinned baseline (deleting it breaks `--against server:baseline`) and the newest run of each `(project, suite, branch)` (a suite that has not run in a while must go stale, not vanish). Swept hourly, alongside cache retention. |
 | `DOMARINN_LOG_FORMAT`         | (auto)         | Log rendering: `pretty` \| `compact` \| `json`. Auto-selected from the terminal when unset — see [Logging & observability](#logging--observability). |
 | `RUST_LOG`                      | (unset)        | Overrides the default log filter wholesale, e.g. `RUST_LOG=domarinn=debug,tower_http=off`. When unset the server logs at `info`. Logs go to stderr. |
 
@@ -533,7 +534,8 @@ service its own hostname, not a path prefix).
 
 | Path                          | Page | What it does |
 |-------------------------------|------|--------------|
-| `/`                           | Runs list | Browse and filter runs (project, suite, tag, branch, status). |
+| `/`                           | Overview  | Per-suite status: the latest CI run, its trend, and staleness. Sorted by severity, never by recency. |
+| `/runs`                       | Runs list | Browse and filter runs (project, suite, tag, branch, status, origin, actor). |
 | `/runs/:id`                   | Run detail | The **cases × asserts grid**; click a cell to open the **detail drawer** with the case's output and assertion evidence. |
 | `/runs/:id/compare[/:other]`  | Compare | Base/head run pickers with **regression highlighting** (newly failing cases stand out). |
 | `/cache`                      | Cache stats | Entry count, total size, hit/miss counters. |

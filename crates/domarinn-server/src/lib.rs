@@ -148,6 +148,10 @@ pub struct Settings {
     pub cache_max_entry_bytes: Option<usize>,
     pub cache_max_bytes: Option<u64>,
     pub cache_max_age_days: Option<u64>,
+    /// Delete runs older than this many days (`DOMARINN_RUN_MAX_AGE_DAYS`).
+    /// `None` (the default) never deletes a run — eval history is expensive to
+    /// produce and impossible to recreate, so retention is opt-in.
+    pub run_max_age_days: Option<u64>,
     /// Bootstrap admin username (`DOMARINN_ADMIN_USER`).
     pub admin_user: Option<String>,
     /// Bootstrap admin password (`DOMARINN_ADMIN_PASSWORD`).
@@ -175,6 +179,7 @@ impl Settings {
                 .and_then(|v| v.parse().ok()),
             cache_max_bytes: env("DOMARINN_CACHE_MAX_BYTES").and_then(|v| v.parse().ok()),
             cache_max_age_days: env("DOMARINN_CACHE_MAX_AGE_DAYS").and_then(|v| v.parse().ok()),
+            run_max_age_days: env("DOMARINN_RUN_MAX_AGE_DAYS").and_then(|v| v.parse().ok()),
             admin_user: env("DOMARINN_ADMIN_USER"),
             admin_password: env("DOMARINN_ADMIN_PASSWORD"),
             cookie_secure: parse_bool_env("DOMARINN_COOKIE_SECURE", env("DOMARINN_COOKIE_SECURE"))?,
@@ -215,6 +220,8 @@ pub struct AppState {
     pub(crate) auth_mode: AuthMode,
     pub(crate) public_url: Option<String>,
     pub(crate) cache_limits: CacheLimits,
+    /// Run-retention window, or `None` to keep every run forever (the default).
+    pub(crate) run_max_age_days: Option<u64>,
     /// Whether session cookies carry the `Secure` attribute.
     pub(crate) cookie_secure: bool,
     pub(crate) sso: Arc<sso::SsoRegistry>,
@@ -255,6 +262,7 @@ impl AppState {
             auth_mode,
             public_url: settings.public_url,
             cache_limits,
+            run_max_age_days: settings.run_max_age_days,
             cookie_secure,
             sso: sso_registry,
         })
@@ -461,7 +469,8 @@ pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
 }
 
 /// Hourly LRU/age retention against the configured cache limits, plus the
-/// SSO login-transaction / SAML-replay-cache sweep.
+/// SSO login-transaction / SAML-replay-cache sweep and, when configured, the
+/// run sweep.
 fn spawn_cache_retention(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
@@ -482,6 +491,19 @@ fn spawn_cache_retention(state: AppState) {
             }
             if let Err(e) = state.storage.sso_gc().await {
                 tracing::warn!(error = %e, "sso gc failed");
+            }
+            // Opt-in: `None` never deletes a run. See storage::retention.
+            if let Some(days) = state.run_max_age_days {
+                match state.storage.sweep_runs(days).await {
+                    Ok(swept) if swept.deleted > 0 || swept.kept > 0 => tracing::info!(
+                        deleted = swept.deleted,
+                        kept = swept.kept,
+                        max_age_days = days,
+                        "run retention swept"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "run retention failed"),
+                }
             }
         }
     });
@@ -524,7 +546,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     use ts_rs::Config;
 
     use crate::accounts::{CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody};
-    use crate::domain::{CachedFilter, RunStatusFilter};
+    use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
     use crate::dto::accounts::{
         ApiKeyCreatedResponse, ApiKeyListResponse, AuthSessionResponse, MeResponse, OkResponse,
         UserListResponse,
@@ -576,6 +598,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     // above) but still part of the web-facing TypeScript contract.
     RunStatusFilter::export_all(&cfg)?;
     CachedFilter::export_all(&cfg)?;
+    OriginFilter::export_all(&cfg)?;
 
     Ok(())
 }

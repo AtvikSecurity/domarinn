@@ -237,6 +237,107 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE cases ADD COLUMN error TEXT;
         "#,
         ),
+        // Migration 8: run provenance columns, plus the indexes the
+        // origin/actor/branch facets need.
+        //
+        // Unlike migrations 3/6/7 this needs **no backfill and no sentinel**.
+        // Those promoted facts that already existed inside the blobs, so NULL
+        // was ambiguous ("not yet extracted" vs "genuinely absent") and had to
+        // be disambiguated. `RunOrigin` is new: no run written before it can
+        // carry one, so NULL here means exactly "the client did not record an
+        // actor" and always will. Adding a backfill pass would decompress every
+        // historical blob to discover nothing.
+        //
+        // `git_dirty`/`ci_provider` are deliberately not re-added — they have
+        // been columns since migration 1 and were simply never surfaced.
+        M::up(
+            r#"
+        ALTER TABLE runs ADD COLUMN actor TEXT;
+        ALTER TABLE runs ADD COLUMN host TEXT;
+        ALTER TABLE runs ADD COLUMN domarinn_version TEXT;
+
+        CREATE INDEX idx_runs_actor ON runs(actor, created_at DESC);
+        CREATE INDEX idx_runs_ci ON runs(ci_provider, created_at DESC);
+        CREATE INDEX idx_runs_uploaded_by ON runs(uploaded_by, created_at DESC);
+        -- Not a prefix of idx_runs_proj_suite_created: that one still serves
+        -- branch-agnostic ordering without a sort, so both earn their keep.
+        CREATE INDEX idx_runs_proj_suite_branch_created
+            ON runs(project, suite, git_branch, created_at DESC);
+        "#,
+        ),
+        // Migration 9: component digests, promoted so a comparison can say
+        // *what* changed without decompressing two blobs, and the runs list can
+        // say it from the row.
+        //
+        // No backfill, and the reason differs per column — worth stating
+        // precisely, because two of these ARE recoverable and we are choosing
+        // not to:
+        //
+        // - `cases.provider_digest` is genuinely unrecoverable: the provider
+        //   fingerprint appears nowhere in a stored run document (`request` is
+        //   a preview envelope, absent under `--no-raw`).
+        // - `cases.assert_digest` is recomputable from stored `criteria`, but
+        //   buys nothing alone: `classify_change` reports Unknown unless every
+        //   axis is known, and `provider_digest` never will be.
+        // - The five run-level digests over `prompts`/`providers`/`grader` ARE
+        //   recoverable from `config_snapshot` in each blob, and `ComponentDrift`
+        //   treats each component independently, so backfilling them WOULD light
+        //   up the change chips for historical comparisons. We skip it anyway:
+        //   the pass is O(runs) with a zstd decompress each, inside
+        //   `open_blocking` before the server accepts traffic. The cost is that
+        //   comparisons against pre-deploy runs report `changed: null` — which
+        //   every reader already renders as unknown rather than unchanged.
+        //
+        // The consequence is a contract, not an accident: change classification
+        // only works between two runs that both post-date this migration, and
+        // every reader must render that as unknown rather than unchanged.
+        M::up(
+            r#"
+        ALTER TABLE runs ADD COLUMN prompts_digest   TEXT;
+        ALTER TABLE runs ADD COLUMN providers_digest TEXT;
+        ALTER TABLE runs ADD COLUMN tests_digest     TEXT;
+        ALTER TABLE runs ADD COLUMN asserts_digest   TEXT;
+        ALTER TABLE runs ADD COLUMN grader_digest    TEXT;
+
+        ALTER TABLE cases ADD COLUMN prompt_digest   TEXT;
+        ALTER TABLE cases ADD COLUMN provider_digest TEXT;
+        ALTER TABLE cases ADD COLUMN assert_digest   TEXT;
+        "#,
+        ),
+        // Migration 10: promote the structured failure class, so a run's errors
+        // can be aggregated instead of read one case at a time. `provider_*` is
+        // "not your model's fault", `grader_*` is "the eval did not run" — a UI
+        // that renders both as "14 errors" makes you open fourteen cases to
+        // learn that none of them were about the model.
+        //
+        // NULL is unambiguous here (no run written before this carries a class)
+        // and therefore needs no sentinel — unlike migration 7's `error`, where
+        // NULL was also the honest value for every passing case.
+        M::up(
+            r#"
+        ALTER TABLE cases ADD COLUMN error_class TEXT;
+        CREATE INDEX idx_cases_run_error_class ON cases(run_id, error_class);
+        "#,
+        ),
+        // Migration 11: index the hidden-cached-runs predicate.
+        //
+        // The runs list defaults to `cached=exclude`, and on every first page
+        // that computes `COUNT(*)` over the whole `runs` table with a predicate
+        // no index could serve. It is the hottest read in the product and it was
+        // O(rows) unbounded, against a reader pool of four.
+        //
+        // A partial index matching the predicate exactly. SQLite will only use
+        // one when the query's WHERE provably implies the index's, which is why
+        // `FULLY_CACHED` had to drop its `COALESCE` wrapper first — the two
+        // forms are semantically identical, but a function call around a column
+        // blocks the match.
+        M::up(
+            r#"
+        CREATE INDEX idx_runs_cached_passing ON runs(created_at DESC)
+        WHERE cache_misses = 0 AND cache_hits > 0
+          AND fail_count = 0 AND error_count = 0;
+        "#,
+        ),
     ])
 }
 

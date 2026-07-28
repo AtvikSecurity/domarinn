@@ -6,6 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value as Json;
 
+use crate::error_class::ErrorClass;
 use crate::exec::run_exec_json;
 use crate::exec_protocol::{Envelope, Kind, ProviderReq, TestRef};
 use crate::provider::{
@@ -76,20 +77,21 @@ impl Provider for ExecProvider {
         req: &ProviderRequest,
         ctx: &CallCtx,
     ) -> Result<ProviderResponse, ProviderError> {
-        let request = serde_json::to_value(protocol_request(req))
-            .map_err(|e| ProviderError::Fatal(anyhow::anyhow!("serializing exec request: {e}")))?;
+        let request = serde_json::to_value(protocol_request(req)).map_err(|e| {
+            ProviderError::fatal(
+                ErrorClass::EXEC_FAILED,
+                anyhow::anyhow!("serializing exec request: {e}"),
+            )
+        })?;
 
         let cwd = ctx.working_dir.as_deref();
         let response = run_exec_json(&self.command, &self.env, cwd, self.timeout, &request)
             .await
             .map_err(|e| {
                 if e.is_retriable() {
-                    ProviderError::Retriable {
-                        source: anyhow::Error::new(e),
-                        retry_after: None,
-                    }
+                    ProviderError::retriable(ErrorClass::EXEC_FAILED, anyhow::Error::new(e), None)
                 } else {
-                    ProviderError::Fatal(anyhow::Error::new(e))
+                    ProviderError::fatal(ErrorClass::EXEC_FAILED, anyhow::Error::new(e))
                 }
             })?;
 
@@ -138,17 +140,20 @@ fn rendered_prompt_json(prompt: &RenderedPrompt) -> Json {
 /// Parse a provider protocol response into a [`ProviderResponse`], surfacing a
 /// clean provider-level error if the child reported one.
 fn parse_response(value: Json) -> Result<ProviderResponse, ProviderError> {
-    let resp: crate::exec_protocol::ProviderResp = serde_json::from_value(value)
-        .map_err(|e| ProviderError::Fatal(anyhow::anyhow!("bad provider response: {e}")))?;
+    let resp: crate::exec_protocol::ProviderResp = serde_json::from_value(value).map_err(|e| {
+        ProviderError::fatal(
+            ErrorClass::EXEC_FAILED,
+            anyhow::anyhow!("bad provider response: {e}"),
+        )
+    })?;
 
     if let Some(err) = resp.error {
         return Err(if err.retriable {
-            ProviderError::Retriable {
-                source: anyhow::anyhow!(err.message),
-                retry_after: None,
-            }
+            // The child said it was retriable; it did not say why, and a
+            // future child may name its own class here.
+            ProviderError::retriable(ErrorClass::EXEC_FAILED, anyhow::anyhow!(err.message), None)
         } else {
-            ProviderError::Fatal(anyhow::anyhow!(err.message))
+            ProviderError::fatal(ErrorClass::EXEC_FAILED, anyhow::anyhow!(err.message))
         });
     }
 

@@ -14,10 +14,11 @@ use futures::StreamExt;
 use serde_json::Value as Json;
 
 use crate::assertion::AssertOutcome;
-use crate::asserts::{evaluate_local, is_local, MetricCtx};
+use crate::asserts::MetricCtx;
 use crate::cache::{CacheBackend, CacheEntry, CacheMode};
 use crate::cache_key::provider_cache_key;
-use crate::config::{Assert, AssertKind, Suite, TestCase};
+use crate::config::{Assert, Suite, TestCase};
+use crate::error_class::ErrorClass;
 use crate::filter::{Filter, FilterOpts};
 use crate::generate::resolve_generators;
 use crate::ids::{CaseKey, RunId};
@@ -29,13 +30,16 @@ use crate::provider_factory::build_provider;
 use crate::render::{self, render_prompt};
 use crate::resolve::expand_tests;
 use crate::result::{
-    AssertResult, AssertStatus, CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary,
-    RESULT_SCHEMA_VERSION,
+    CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary, RESULT_SCHEMA_VERSION,
 };
 use crate::retry::{with_retry, RetryPolicy, RetryStats};
-use crate::scoring::{case_verdict, remaining_can_change_outcome, Scored};
+use crate::scoring::case_verdict;
 use crate::template::TemplateEngine;
 use crate::types::{Output, RenderedPrompt};
+
+#[path = "runner_asserts.rs"]
+mod runner_asserts;
+use runner_asserts::{assert_error_message, evaluate_asserts, has_latency_assert};
 
 /// Upper bound on the raw provider metadata persisted per case. A payload over
 /// this size is dropped wholesale (truncated JSON is useless) rather than stored.
@@ -71,6 +75,9 @@ pub struct RunOptions {
     /// keep result documents small. Both are bulky provenance rather than
     /// results, and both are dropped whole above [`RAW_MAX_BYTES`].
     pub include_raw: bool,
+    /// What to record about who and where this run came from. A run option
+    /// rather than a suite field for the same reason as `retries` above.
+    pub provenance: crate::provenance::ProvenanceOptions,
 }
 
 impl Default for RunOptions {
@@ -82,17 +89,23 @@ impl Default for RunOptions {
             concurrency: None,
             retries: None,
             include_raw: true,
+            provenance: crate::provenance::ProvenanceOptions::default(),
         }
     }
 }
 
 /// A grader for the non-local assert kinds (`exec`, `llm-rubric`, `similar`).
 ///
-/// `Ok(outcome)` is a real verdict (pass or fail). `Err(reason)` is a grader
-/// problem — a missing/unconfigured grader, a transport error, or a truncated
-/// verdict — which the runner records as an `Error` (fail closed), distinct from
-/// a graded-and-failed assertion. When no grader is provided at all, deferred
-/// asserts likewise fail closed as errors.
+/// `Ok(outcome)` is a real verdict (pass or fail). `Err` is a
+/// [`crate::errors::GraderError`] — which the runner records as an `Error`
+/// (fail closed), distinct from a graded-and-failed assertion.
+///
+/// The error is typed rather than a `String` because the variants have
+/// different owners: a suite with no `grader:` block is the author's problem,
+/// while a truncated verdict is a settings problem and a transport failure is
+/// the provider's. Collapsing them into prose made every one of them report as
+/// `grader_failed`, which sent first-time users hunting for a transient fault
+/// that did not exist. See [`crate::errors::Classify`].
 ///
 /// **Verdicts are not cached.** Note the absence of a [`CacheBackend`] here:
 /// grading runs live on every call, so an LLM-graded suite re-pays its grader on
@@ -112,7 +125,7 @@ pub trait AssertGrader: Send + Sync {
         vars: &Json,
         engine: &TemplateEngine,
         working_dir: Option<&Path>,
-    ) -> Result<AssertOutcome, String>;
+    ) -> Result<AssertOutcome, crate::errors::GraderError>;
 }
 
 /// Run a suite and produce a [`RunResult`].
@@ -328,6 +341,20 @@ pub async fn run_with_progress(
         blake3::hash(crate::cache::canonical_json(&config_snapshot).as_bytes()).to_hex()
     );
 
+    // A run with no explicit `--note` inherits the suite's `description`, which
+    // is otherwise parsed and read by nothing. Collected after the work so a
+    // long run records the dirty state it actually finished with.
+    let mut provenance_opts = opts.provenance.clone();
+    if provenance_opts.note.is_none() {
+        provenance_opts.note = suite.description.clone();
+    }
+    let provenance = crate::provenance::collect(&provenance_opts, base_dir);
+
+    // Over the WHOLE expanded test set, before the cell-loop filter: otherwise
+    // `--tag smoke` and a full run of an identical suite disagree and every
+    // filtered CI job reads as "the tests changed".
+    let digests = crate::digests::config_digests(suite, &tests);
+
     Ok(RunResult {
         schema_version: RESULT_SCHEMA_VERSION,
         run_id: RunId::generate(),
@@ -337,8 +364,11 @@ pub async fn run_with_progress(
         finished_at,
         config_digest,
         config_snapshot,
-        git: None,
-        ci: None,
+        git: provenance.git,
+        ci: provenance.ci,
+        origin: provenance.origin,
+        digests: Some(digests),
+        share_url: None,
         filters: FilterSpec {
             tags: opts.filter.tags.clone(),
             filters: opts.filter.filters.clone(),
@@ -398,7 +428,10 @@ async fn run_cell(
                 case_key,
                 name,
                 test,
-                CallFailure::before_any_attempt(format!("rendering vars: {e}")),
+                CallFailure::before_any_attempt(
+                    ErrorClass::RENDER_FAILED,
+                    format!("rendering vars: {e}"),
+                ),
                 0,
                 CaseInputs::default(),
             )
@@ -417,7 +450,10 @@ async fn run_cell(
                     case_key,
                     name,
                     test,
-                    CallFailure::before_any_attempt(format!("rendering prompt: {e}")),
+                    CallFailure::before_any_attempt(
+                        ErrorClass::RENDER_FAILED,
+                        format!("rendering prompt: {e}"),
+                    ),
                     0,
                     CaseInputs {
                         vars: case_vars,
@@ -440,6 +476,13 @@ async fn run_cell(
         // Keys this case's cache entry only; never reaches the provider.
         case_salt: test.cache_salt.clone(),
     };
+
+    // Computed here, not inside `call_with_cache`'s `use_cache` gate: the cache
+    // key is skipped entirely under `--no-cache`, for a case with a `latency`
+    // assert, and for an unsalted `exec` provider — which is exactly the set of
+    // runs a CI comparison cares about. Identity must not depend on caching.
+    let prompt_digest = Some(crate::digests::prompt_digest(&req));
+    let provider_digest = Some(crate::digests::provider_digest(&provider.fingerprint()));
 
     // What this provider will actually send, built by the provider itself from
     // the same code path as the call. Captured *before* the call so a failed
@@ -480,6 +523,8 @@ async fn run_cell(
                     prompt: rendered_prompt,
                     vars: case_vars,
                     request,
+                    prompt_digest,
+                    provider_digest,
                 },
             );
         }
@@ -509,7 +554,7 @@ async fn run_cell(
         total_tokens: response.usage.as_ref().map(|u| u.total()),
     };
 
-    let (assert_results, scored) = evaluate_asserts(
+    let (assert_results, scored, assert_error_classes) = evaluate_asserts(
         &test.assert,
         &response.output,
         &var_ctx,
@@ -521,11 +566,14 @@ async fn run_cell(
     )
     .await;
 
-    let any_error = assert_results
-        .iter()
-        .any(|a| a.status == AssertStatus::Error);
+    // `Some` exactly when at least one assert errored, so it carries both the
+    // diagnosis and the "did anything error" verdict input.
+    let assert_error = assert_error_message(&assert_results);
+    // Computed before the results are moved into the case below.
+    let assert_digest = crate::digests::assert_digest(&assert_results, test.threshold);
+    let assert_error_class = crate::error_class::most_specific(&assert_error_classes);
     let verdict = case_verdict(&scored, test.threshold);
-    let status = if any_error {
+    let status = if assert_error.is_some() {
         CaseStatus::Error
     } else if verdict.passed {
         CaseStatus::Pass
@@ -553,7 +601,11 @@ async fn run_cell(
         wall_ms: Some(wall_ms),
         cached,
         attempts,
-        error: any_error.then(|| "one or more assertions errored".to_string()),
+        prompt_digest,
+        provider_digest,
+        assert_digest,
+        error: assert_error,
+        error_class: assert_error_class,
         reasoning,
         empty_reason,
     }
@@ -578,15 +630,19 @@ struct CallOutcome {
 struct CallFailure {
     message: String,
     attempts: u32,
+    /// What kind of failure this was, carried alongside the prose rather than
+    /// re-derived from it. See [`crate::error_class`].
+    class: ErrorClass,
 }
 
 impl CallFailure {
     /// A failure that never reached the provider (cache read error, cache-only
     /// miss) — no attempt was made against the system under test.
-    fn before_any_attempt(message: String) -> Self {
+    fn before_any_attempt(class: &str, message: String) -> Self {
         CallFailure {
             message,
             attempts: 0,
+            class: ErrorClass::new(class),
         }
     }
 }
@@ -622,15 +678,17 @@ async fn call_with_cache(
             Ok(None) => {
                 tracing::debug!(%key, "cache miss");
                 if mode == CacheMode::ReadOnlyStrict {
-                    return Err(CallFailure::before_any_attempt(format!(
-                        "cache-only: miss for key {key}"
-                    )));
+                    return Err(CallFailure::before_any_attempt(
+                        ErrorClass::CACHE_MISS,
+                        format!("cache-only: miss for key {key}"),
+                    ));
                 }
             }
             Err(e) => {
-                return Err(CallFailure::before_any_attempt(format!(
-                    "cache read error: {e}"
-                )))
+                return Err(CallFailure::before_any_attempt(
+                    ErrorClass::CACHE_UNAVAILABLE,
+                    format!("cache read error: {e}"),
+                ))
             }
         }
     }
@@ -655,173 +713,24 @@ async fn call_with_cache(
                 provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
             })
         }
-        Err(ProviderError::Retriable { source, .. }) => Err(CallFailure {
+        Err(ProviderError::Retriable {
+            source, ref class, ..
+        }) => Err(CallFailure {
             message: format!(
                 "provider error after {} attempt(s): {source}",
                 stats.attempts
             ),
             attempts: stats.attempts,
+            class: class.clone(),
         }),
-        Err(ProviderError::Fatal(e)) => Err(CallFailure {
-            message: format!("provider error: {e}"),
+        Err(ProviderError::Fatal {
+            source, ref class, ..
+        }) => Err(CallFailure {
+            message: format!("provider error: {source}"),
             attempts: stats.attempts,
+            class: class.clone(),
         }),
     }
-}
-
-/// Evaluate all asserts: local first, then (if they can still change the
-/// outcome) the graded ones; otherwise mark them skipped.
-#[allow(clippy::too_many_arguments)]
-async fn evaluate_asserts(
-    asserts: &[Assert],
-    output: &Output,
-    vars: &Json,
-    engine: &TemplateEngine,
-    grader: Option<&dyn AssertGrader>,
-    base_dir: &Path,
-    metrics: &MetricCtx,
-    threshold: Option<f64>,
-) -> (Vec<AssertResult>, Vec<Scored>) {
-    // Slot results by original index so output order matches config order.
-    let mut results: Vec<Option<AssertResult>> = vec![None; asserts.len()];
-    let mut scored: Vec<Scored> = Vec::new();
-
-    // Local (deterministic) asserts first.
-    let mut deferred_indices: Vec<usize> = Vec::new();
-    for (i, assert) in asserts.iter().enumerate() {
-        if is_local(&assert.kind) {
-            let outcome = evaluate_local(assert, output, engine, vars, metrics)
-                .expect("local assert yields an outcome");
-            scored.push(scored_of(assert, &outcome));
-            results[i] = Some(assert_result(
-                assert,
-                &outcome,
-                AssertStatus::from_pass(outcome.passed),
-            ));
-        } else {
-            deferred_indices.push(i);
-        }
-    }
-
-    // Decide whether the deferred asserts still matter.
-    let remaining_weight: f64 = deferred_indices.iter().map(|i| asserts[*i].weight).sum();
-    let matters = remaining_can_change_outcome(&scored, remaining_weight, threshold);
-
-    for i in deferred_indices {
-        let assert = &asserts[i];
-        if !matters {
-            results[i] = Some(skipped_result(assert));
-            continue;
-        }
-        match grader {
-            Some(g) => match g.grade(assert, output, vars, engine, Some(base_dir)).await {
-                Ok(outcome) => {
-                    scored.push(scored_of(assert, &outcome));
-                    results[i] = Some(assert_result(
-                        assert,
-                        &outcome,
-                        AssertStatus::from_pass(outcome.passed),
-                    ));
-                }
-                // Fail closed: a grader problem is an error, not a plain fail.
-                Err(reason) => {
-                    results[i] = Some(error_assert(assert, reason));
-                }
-            },
-            None => {
-                // Fail closed: a deferred assert with no grader is an error.
-                results[i] = Some(error_assert(
-                    assert,
-                    format!(
-                        "no grader available for '{}' assertions in this run",
-                        assert.kind.name().as_str()
-                    ),
-                ));
-            }
-        }
-    }
-
-    (results.into_iter().map(|r| r.unwrap()).collect(), scored)
-}
-
-fn scored_of(assert: &Assert, outcome: &AssertOutcome) -> Scored {
-    Scored {
-        weight: assert.weight,
-        score: outcome.score,
-        passed: outcome.passed,
-    }
-}
-
-/// The assertion's authored definition, for the UI's Input view: the flattened
-/// `AssertKind` (its `type` tag plus the type-specific criteria — the `contains`
-/// substring, the `llm-rubric` rubric text + threshold, …) as a JSON object,
-/// with a `negate: true` entry added when the assertion is negated. `weight` is
-/// intentionally omitted (already carried by `AssertResult.weight`). Returns
-/// `None` only if the kind fails to serialize, which does not happen in practice
-/// (every `AssertKind` variant is an internally-tagged object).
-fn assert_criteria(assert: &Assert) -> Option<serde_json::Value> {
-    let mut value = serde_json::to_value(&assert.kind).ok()?;
-    if assert.negate {
-        if let serde_json::Value::Object(map) = &mut value {
-            map.insert("negate".to_string(), serde_json::Value::Bool(true));
-        }
-    }
-    Some(value)
-}
-
-fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus) -> AssertResult {
-    AssertResult {
-        kind: assert.kind.name(),
-        status,
-        score: outcome.score,
-        weight: assert.weight,
-        reason: outcome.reason.clone(),
-        details: outcome.details.clone(),
-        criteria: assert_criteria(assert),
-        cached: false,
-    }
-}
-
-fn error_assert(assert: &Assert, reason: String) -> AssertResult {
-    AssertResult {
-        kind: assert.kind.name(),
-        status: AssertStatus::Error,
-        score: 0.0,
-        weight: assert.weight,
-        reason,
-        details: None,
-        criteria: assert_criteria(assert),
-        cached: false,
-    }
-}
-
-fn skipped_result(assert: &Assert) -> AssertResult {
-    AssertResult {
-        kind: assert.kind.name(),
-        status: AssertStatus::Skipped,
-        score: 0.0,
-        weight: assert.weight,
-        reason: "skipped: outcome already decided".into(),
-        details: None,
-        criteria: assert_criteria(assert),
-        cached: false,
-    }
-}
-
-impl AssertStatus {
-    fn from_pass(pass: bool) -> AssertStatus {
-        if pass {
-            AssertStatus::Pass
-        } else {
-            AssertStatus::Fail
-        }
-    }
-}
-
-fn has_latency_assert(asserts: &[Assert]) -> bool {
-    asserts
-        .iter()
-        .any(|a| matches!(a.kind, AssertKind::Latency { .. }))
 }
 
 /// Everything a case knows about its own inputs before a provider responds:
@@ -835,6 +744,11 @@ struct CaseInputs {
     prompt: Option<RenderedPrompt>,
     vars: serde_json::Map<String, serde_json::Value>,
     request: Option<Json>,
+    /// Identity of what was going to be sent. Present for every failure after
+    /// the request was built; `None` for the two earlier ones (rendering vars,
+    /// rendering the prompt), which honestly have no input identity yet.
+    prompt_digest: Option<String>,
+    provider_digest: Option<String>,
 }
 
 fn error_case(
@@ -868,6 +782,12 @@ fn error_case(
         wall_ms: Some(wall_ms),
         cached: false,
         attempts: failure.attempts,
+        error_class: Some(failure.class),
+        prompt_digest: inputs.prompt_digest,
+        provider_digest: inputs.provider_digest,
+        // An errored case never graded anything, so there is no assert
+        // definition to identify.
+        assert_digest: None,
         error: Some(failure.message),
         reasoning: None,
         empty_reason: None,

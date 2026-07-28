@@ -9,6 +9,7 @@ authors.workspace = true
 description = "Core eval engine, config schema, and traits for domarinn"
 
 [dependencies]
+domarinn-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
@@ -33,6 +34,11 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 globset = { workspace = true }
 chrono = { workspace = true }
+# Approved new dependency: run provenance (`RunOrigin.actor`/`host`) needs the OS
+# username and hostname. Env-var sniffing is not a substitute — `HOSTNAME` is a
+# bash *shell* variable rather than an exported one, so it is unset in exactly
+# the containers and CI runners where the value matters most.
+whoami = "2"
 
 [dev-dependencies]
 serde_json = { workspace = true }

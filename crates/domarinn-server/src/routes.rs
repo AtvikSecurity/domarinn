@@ -21,7 +21,7 @@ use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::{CaseStatus, RunResult, RESULT_SCHEMA_VERSION};
 
 use crate::auth::{Admin, Read, Scoped, Write};
-use crate::domain::{CachedFilter, RunStatusFilter};
+use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
 use crate::dto::cache::PruneResponse;
 use crate::dto::meta::{MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
@@ -422,6 +422,11 @@ struct RunQuery {
     until: Option<String>,
     status: Option<RunStatusFilter>,
     cached: Option<CachedFilter>,
+    /// `ci` | `local` — the facet that separates the canonical CI stream from
+    /// developer iteration.
+    origin: Option<OriginFilter>,
+    /// Matches either the recorded actor or the authenticated uploader.
+    actor: Option<String>,
     limit: Option<i64>,
     cursor: Option<String>,
 }
@@ -440,6 +445,8 @@ async fn list_runs(
         until_ms: q.until.as_deref().and_then(storage::parse_time_ms),
         status: q.status,
         cached: q.cached,
+        origin: q.origin,
+        actor: q.actor,
         limit: clamp_limit(q.limit),
         cursor: q.cursor.as_deref().and_then(storage::decode_cursor),
     };
@@ -473,6 +480,8 @@ struct CaseQuery {
     prompt: Option<String>,
     test: Option<String>,
     stop_reason: Option<String>,
+    /// Exact-match on the structured failure class.
+    error_class: Option<String>,
     cached: Option<bool>,
     limit: Option<i64>,
     cursor: Option<String>,
@@ -496,6 +505,7 @@ async fn list_cases(
         prompt: q.prompt,
         test: q.test,
         stop_reason: q.stop_reason,
+        error_class: q.error_class,
         cached: q.cached,
         limit: clamp_limit(q.limit),
         cursor: q.cursor.as_deref().and_then(|c| c.parse::<i64>().ok()),

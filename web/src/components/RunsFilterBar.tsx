@@ -5,8 +5,10 @@ import {
   activeRunsFilterCount,
   mergeParams,
   parseRunsFilters,
+  RUNS_FILTER_KEYS,
 } from "@/lib/filters";
 import { Button } from "./ui/Button";
+import { SegmentedControl } from "./ui/SegmentedControl";
 
 const controlCls =
   "h-8 rounded-md border border-border bg-surface px-2 text-sm text-fg outline-none focus:ring-2 focus:ring-ring";
@@ -118,6 +120,36 @@ export function RunsFilterBar() {
         />
       </Field>
 
+      {/* The facet that separates the canonical CI stream from developer
+          iteration. A segmented control rather than a select: three mutually
+          exclusive states, all worth seeing at once. */}
+      <Field label="Origin">
+        <SegmentedControl
+          ariaLabel="Origin"
+          value={filters.origin ?? "all"}
+          onChange={(v) => patch({ origin: v === "all" ? undefined : v })}
+          options={[
+            { value: "all", label: "All" },
+            { value: "ci", label: "CI" },
+            { value: "local", label: "Local" },
+          ]}
+        />
+      </Field>
+
+      <Field label="Actor">
+        <input
+          className={controlCls}
+          placeholder="e.g. alice"
+          defaultValue={filters.actor ?? ""}
+          key={`actor-${filters.actor ?? ""}`}
+          onKeyDown={(e) => {
+            if (e.key === "Enter")
+              patch({ actor: (e.target as HTMLInputElement).value || undefined });
+          }}
+          onBlur={(e) => patch({ actor: e.target.value || undefined })}
+        />
+      </Field>
+
       <Field label="Since">
         <input
           type="date"
@@ -181,18 +213,15 @@ export function RunsFilterBar() {
           variant="ghost"
           size="sm"
           className="mb-0.5"
+          // Derived from RUNS_FILTER_KEYS rather than listed by hand: the count
+          // above already iterates that array, so a hand-maintained list here
+          // drifts into counting filters it cannot clear.
           onClick={() =>
             setParams(
-              mergeParams(params, {
-                project: undefined,
-                suite: undefined,
-                tag: undefined,
-                branch: undefined,
-                since: undefined,
-                until: undefined,
-                status: undefined,
-                cached: undefined,
-              }),
+              mergeParams(
+                params,
+                Object.fromEntries(RUNS_FILTER_KEYS.map((k) => [k, undefined])),
+              ),
               { replace: true },
             )
           }

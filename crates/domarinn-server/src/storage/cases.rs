@@ -38,6 +38,8 @@ pub struct CaseListFilter {
     pub prompt: Option<String>,
     pub test: Option<String>,
     pub stop_reason: Option<String>,
+    /// Exact-match on the promoted failure class (migration 10).
+    pub error_class: Option<String>,
     /// `Some(false)` = fresh (non-cached) responses only; `Some(true)` =
     /// cache hits only. Legacy rows (NULL/sentinel `cached`) count as fresh —
     /// never hide what we can't classify.
@@ -46,13 +48,19 @@ pub struct CaseListFilter {
     pub cursor: Option<i64>,
 }
 
+/// The wire value for "errored, but from a run written before error classes
+/// existed". Shared with the web UI's `aggregateErrorClasses`, which buckets
+/// unclassified errors under the same string so the breakdown's counts still
+/// add up to the run's error count.
+pub const UNCLASSIFIED_ERROR: &str = "unknown";
+
 impl CaseListFilter {
     fn query(self, conn: &Connection) -> anyhow::Result<CaseListResponse> {
         let mut sql = String::from(
             "SELECT case_key, idx, name, status, output_preview, asserts,
                     prompt_tokens, completion_tokens, cost_microusd, latency_ms,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason,
-                    cached, error
+                    cached, error, error_class
              FROM cases WHERE run_id = ?1",
         );
         let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
@@ -90,6 +98,19 @@ impl CaseListFilter {
         if let Some(stop_reason) = &self.stop_reason {
             args.push(stop_reason.clone().into());
             sql.push_str(&format!(" AND stop_reason = ?{}", args.len()));
+        }
+        if let Some(error_class) = &self.error_class {
+            // `unknown` is the UI's bucket for cases that errored before this
+            // column existed — every run predating migration 10, which is not
+            // backfilled. Those rows hold NULL, and `NULL = 'unknown'` is NULL,
+            // so without this branch the breakdown offers a filter that always
+            // returns nothing.
+            if error_class == UNCLASSIFIED_ERROR {
+                sql.push_str(" AND status = 'error' AND error_class IS NULL");
+            } else {
+                args.push(error_class.clone().into());
+                sql.push_str(&format!(" AND error_class = ?{}", args.len()));
+            }
         }
         match self.cached {
             // Cache hits are exactly the rows stamped 1; NULL (legacy) and the
@@ -149,6 +170,7 @@ impl CaseListFilter {
                     // '' means "known: no error"; NULL means "not backfilled
                     // yet". Both read as `None` on the wire.
                     error: empty_to_none(row.get::<_, Option<String>>(17)?),
+                    error_class: row.get::<_, Option<String>>(18)?,
                 },
             ))
         })?;

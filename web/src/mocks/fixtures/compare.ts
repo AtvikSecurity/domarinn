@@ -1,10 +1,39 @@
-import type { CompareCaseRow, CompareResponse, CompareSummary } from "@/api";
+import type {
+  CaseChange,
+  CompareCaseRow,
+  CompareResponse,
+  CompareSummary,
+} from "@/api";
 import { classifyDelta } from "@/lib/compare";
 import { round2, round4 } from "./rng";
 import { RUN_META_BY_ID } from "./runMeta";
 import { caseScore, generateCases, outputRevision, type MockCaseRow } from "./cases";
 import { runStats, type RunStats } from "./runStats";
 import { configDigest } from "./config";
+
+/** The suite components, in the order the server reports them. */
+const COMPONENTS = ["prompts", "providers", "tests", "asserts", "grader"] as const;
+
+/**
+ * The mock's stand-in for the server's `classify_change`.
+ *
+ * Not a re-implementation of the real precedence rules — it only has to produce
+ * every variant the UI must render, deterministically. A case present on one
+ * side only knows nothing; a config change is attributed to the prompts (the
+ * component the mock drifts); otherwise the output/verdict pair decides, and an
+ * identical output with a flipped verdict indicts the grader.
+ */
+function mockCaseChange(i: {
+  present: boolean;
+  configChanged: boolean;
+  output_changed: boolean;
+  verdictChanged: boolean;
+}): CaseChange {
+  if (!i.present) return "unknown";
+  if (i.configChanged) return "prompt_changed";
+  if (i.output_changed) return i.verdictChanged ? "model_drift" : "output_drift";
+  return i.verdictChanged ? "unstable_grader" : "stable";
+}
 
 /** `GET /runs/{base}/compare/{head}` response: base/head are the run ids
  *  themselves (see generated `CompareResponse` — the server never embeds the
@@ -27,6 +56,11 @@ export function compareRuns(baseId: string, headId: string): CompareResponse | u
     added: 0,
     removed: 0,
   };
+
+  // Declared before the row loop: the per-case change classification below
+  // needs to know whether the suite config moved.
+  const baseDigest = configDigest(baseId);
+  const headDigest = configDigest(headId);
 
   for (const key of keys) {
     const b = baseCases.get(key);
@@ -55,6 +89,15 @@ export function compareRuns(baseId: string, headId: string): CompareResponse | u
           ? round2(headScore - baseScore)
           : null,
       assert_flips: b && h ? assertFlips(b, h) : [],
+      // Mirrors the server: a config change is attributed to the component that
+      // moved, a verdict flip with everything else identical indicts the
+      // grader, and a one-sided case can know nothing.
+      change: mockCaseChange({
+        present: Boolean(b && h),
+        configChanged: baseDigest !== headDigest,
+        output_changed,
+        verdictChanged: (b?.status ?? null) !== (h?.status ?? null),
+      }),
     });
     if (delta === "newly_failing") summary.newly_failing++;
     else if (delta === "newly_passing") summary.newly_passing++;
@@ -68,8 +111,6 @@ export function compareRuns(baseId: string, headId: string): CompareResponse | u
 
   const baseStats = runStats(baseId);
   const headStats = runStats(headId);
-  const baseDigest = configDigest(baseId);
-  const headDigest = configDigest(headId);
   const basePass = wilson(baseStats.pass_count, baseStats.case_count);
   const headPass = wilson(headStats.pass_count, headStats.case_count);
   // McNemar over the discordant pairs (regressions vs fixes), with the
@@ -102,6 +143,14 @@ export function compareRuns(baseId: string, headId: string): CompareResponse | u
       // Drift is exactly digest inequality: on within the drift suite's
       // 11→12 pair, on across suites, off for every same-config pair.
       changed: baseDigest !== headDigest,
+      components: COMPONENTS.map((component) => ({
+        component,
+        base: `${baseDigest}:${component}`,
+        head: `${headDigest}:${component}`,
+        // Only the prompts move in the mock's drifted pair, so the UI has a
+        // realistic "one component changed" case to render rather than five.
+        changed: baseDigest !== headDigest && component === "prompts",
+      })),
     },
   };
 }

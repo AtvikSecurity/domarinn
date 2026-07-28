@@ -10,7 +10,7 @@ use super::{
     compress, content_hash, decompress, empty_to_none, encode_cursor, from_microusd, ms_to_rfc3339,
     now_ms, sha256_hex, to_microusd, IngestOutcome, Storage,
 };
-use crate::domain::{CachedFilter, RunStatusFilter};
+use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
 use crate::dto::config::RunConfigResponse;
 use crate::dto::runs::{CaseAssertLean, RunDetailResponse, RunListItem};
 
@@ -122,6 +122,13 @@ struct PreparedCase {
     /// Also promoted to a `cases` column (migration 7), because an errored case
     /// has no output and therefore no `output_preview` to show in the grid.
     error: Option<String>,
+    // Migration-9 columns: component identity, promoted so `compare` can
+    // classify what moved from columns alone.
+    prompt_digest: Option<String>,
+    provider_digest: Option<String>,
+    assert_digest: Option<String>,
+    /// Migration-10 column: the structured failure class beside the prose.
+    error_class: Option<String>,
 }
 
 struct PreparedRun {
@@ -146,6 +153,28 @@ struct PreparedRun {
     content_hash: String,
     uploaded_by: Option<String>,
     config_digest: String,
+    /// The run's human label: `origin.note` (from `--note`, itself falling back
+    /// to the suite's `description`), or the snapshot's `description` for runs
+    /// from clients that predate provenance collection. Feeds both the
+    /// `description` column and its `runs_fts` slot, which existed and were
+    /// never populated until now.
+    ///
+    /// Forward-only: existing rows keep their NULL and stay unsearchable by
+    /// note, even though `config_snapshot.description` is sitting in their
+    /// blobs. Backfilling would mean decompressing every historical run at
+    /// startup for a search convenience — the same trade migration 9 declines.
+    description: Option<String>,
+    // Migration-8 columns, promoted from `RunOrigin` so the run list can render
+    // and filter on who produced a run without decompressing every blob.
+    actor: Option<String>,
+    host: Option<String>,
+    domarinn_version: Option<String>,
+    // Migration-9 columns, promoted from `ConfigDigests`.
+    prompts_digest: Option<String>,
+    providers_digest: Option<String>,
+    tests_digest: Option<String>,
+    asserts_digest: Option<String>,
+    grader_digest: Option<String>,
     // Migration-6 columns, promoted from `RunSummary` so the run list can
     // filter fully-cached CI runs at SQL level.
     cache_hits: i64,
@@ -215,6 +244,10 @@ impl PreparedRun {
                 tags: case.tags.clone(),
                 prompt_text: case.prompt.as_ref().map(super::search::flatten_prompt),
                 error: case.error.clone(),
+                prompt_digest: case.prompt_digest.clone(),
+                provider_digest: case.provider_digest.clone(),
+                assert_digest: case.assert_digest.clone(),
+                error_class: case.error_class.as_ref().map(|c| c.as_str().to_string()),
             });
         }
 
@@ -229,6 +262,25 @@ impl PreparedRun {
             git_dirty: git.map(|g| g.dirty as i64),
             ci_provider: ci.and_then(|c| c.provider.clone()),
             ci_run_url: ci.and_then(|c| c.run_url.clone()),
+            description: run
+                .origin
+                .as_ref()
+                .and_then(|o| o.note.clone())
+                .or_else(|| {
+                    run.config_snapshot
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .map(str::to_string)
+                })
+                .filter(|d| !d.trim().is_empty()),
+            actor: run.origin.as_ref().and_then(|o| o.actor.clone()),
+            host: run.origin.as_ref().and_then(|o| o.host.clone()),
+            domarinn_version: run.origin.as_ref().and_then(|o| o.version.clone()),
+            prompts_digest: run.digests.as_ref().and_then(|d| d.prompts.clone()),
+            providers_digest: run.digests.as_ref().and_then(|d| d.providers.clone()),
+            tests_digest: run.digests.as_ref().and_then(|d| d.tests.clone()),
+            asserts_digest: run.digests.as_ref().and_then(|d| d.asserts.clone()),
+            grader_digest: run.digests.as_ref().and_then(|d| d.grader.clone()),
             case_count: run.summary.total as i64,
             pass_count: run.summary.passed as i64,
             fail_count: run.summary.failed as i64,
@@ -271,13 +323,17 @@ impl PreparedRun {
                 git_branch, git_commit, git_dirty, ci_provider, ci_run_url,
                 case_count, pass_count, fail_count, error_count,
                 prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                content_hash, uploaded_by, config_digest, cache_hits, cache_misses
+                content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
+                actor, host, domarinn_version,
+                prompts_digest, providers_digest, tests_digest, asserts_digest, grader_digest
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19, ?20,
-                ?21, ?22, ?23, ?24, ?25
+                ?21, ?22, ?23, ?24, ?25,
+                ?26, ?27, ?28,
+                ?29, ?30, ?31, ?32, ?33
             )",
             params![
                 self.id,
@@ -286,7 +342,7 @@ impl PreparedRun {
                 self.created_at,
                 now_ms(),
                 self.schema_version,
-                Option::<String>::None,
+                self.description,
                 self.git_branch,
                 self.git_commit,
                 self.git_dirty,
@@ -305,6 +361,14 @@ impl PreparedRun {
                 self.config_digest,
                 self.cache_hits,
                 self.cache_misses,
+                self.actor,
+                self.host,
+                self.domarinn_version,
+                self.prompts_digest,
+                self.providers_digest,
+                self.tests_digest,
+                self.asserts_digest,
+                self.grader_digest,
             ],
         )?;
 
@@ -327,10 +391,10 @@ impl PreparedRun {
                     output_hash, asserts, prompt_tokens, completion_tokens, cost_microusd,
                     latency_ms, detail,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached,
-                    error
+                    error, prompt_digest, provider_digest, assert_digest, error_class
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
                 )",
                 params![
                     self.id,
@@ -357,6 +421,14 @@ impl PreparedRun {
                     // '' rather than NULL for "no error": NULL is reserved for
                     // "not yet backfilled" (see storage::backfill).
                     case.error.as_deref().unwrap_or_default(),
+                    // Plain NULL here, unlike `error` above: these columns are
+                    // never backfilled, so NULL is unambiguous — the client did
+                    // not record a digest — and a sentinel would add a state
+                    // with no reader.
+                    case.prompt_digest,
+                    case.provider_digest,
+                    case.assert_digest,
+                    case.error_class,
                 ],
             )?;
             for tag in &case.tags {
@@ -387,10 +459,7 @@ impl PreparedRun {
                 suite: self.suite.as_deref(),
                 branch: self.git_branch.as_deref(),
                 commit: self.git_commit.as_deref(),
-                // `runs.description` is not part of the upload document today;
-                // it is inserted NULL above. Indexed anyway so it becomes
-                // searchable the moment ingest starts populating it.
-                description: None,
+                description: self.description.as_deref(),
                 tags: &self.tags,
             },
         )?;
@@ -415,6 +484,14 @@ pub struct RunListFilter {
     pub until_ms: Option<i64>,
     pub status: Option<RunStatusFilter>,
     pub cached: Option<CachedFilter>,
+    /// CI vs developer runs — the facet that separates the canonical stream
+    /// from iteration noise.
+    pub origin: Option<OriginFilter>,
+    /// Matches either the recorded `origin.actor` (who ran it) or the
+    /// authenticated `uploaded_by` (who pushed it). They answer different
+    /// questions and are often different values — a filter that matched only
+    /// one would silently miss half the runs a person is responsible for.
+    pub actor: Option<String>,
     pub limit: i64,
     pub cursor: Option<(i64, RunId)>,
 }
@@ -428,10 +505,18 @@ pub struct RunListPage {
     pub cached_hidden: Option<i64>,
 }
 
-/// A run whose every provider call was a cache hit. NULL-safe: legacy rows
-/// (NULL, pre-backfill) and the -1 undecodable-blob sentinel both fail the
-/// `= 0` / `> 0` checks, so "unknown" never counts as cached.
-const FULLY_CACHED: &str = "COALESCE(cache_misses, -1) = 0 AND COALESCE(cache_hits, 0) > 0";
+/// A run whose every provider call was a cache hit. NULL-safe by construction:
+/// `NULL = 0` and `NULL > 0` are both NULL (never true), so legacy rows and the
+/// -1 undecodable-blob sentinel fail these checks and "unknown" never counts as
+/// cached.
+///
+/// Written without `COALESCE` deliberately. It is exactly equivalent —
+/// `COALESCE(x, -1) = 0` is true iff `x = 0` and `x` is not null, which is what
+/// `x = 0` already means — but a function call around the column defeats index
+/// matching, and this predicate runs an unbounded `COUNT(*)` over the whole
+/// `runs` table on every first page of the default view (see `cached_hidden`
+/// below). The bare form lets migration 11's partial index serve it.
+const FULLY_CACHED: &str = "cache_misses = 0 AND cache_hits > 0";
 
 impl RunListFilter {
     fn query(self, conn: &Connection) -> anyhow::Result<RunListPage> {
@@ -439,7 +524,9 @@ impl RunListFilter {
             "SELECT id, project, suite, created_at, git_branch, git_commit, git_dirty,
                     case_count, pass_count, fail_count, error_count,
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                    cache_hits, cache_misses
+                    cache_hits, cache_misses,
+                    actor, host, uploaded_by, ci_provider, ci_run_url,
+                    description, domarinn_version
              FROM runs",
         );
         let mut clauses: Vec<String> = Vec::new();
@@ -472,6 +559,18 @@ impl RunListFilter {
             ));
             args.push(tag.clone().into());
         }
+        match self.origin {
+            Some(OriginFilter::Ci) => clauses.push("ci_provider IS NOT NULL".into()),
+            Some(OriginFilter::Local) => clauses.push("ci_provider IS NULL".into()),
+            None => {}
+        }
+        if let Some(actor) = &self.actor {
+            clauses.push(format!(
+                "(actor = ?{a} OR uploaded_by = ?{a})",
+                a = args.len() + 1
+            ));
+            args.push(actor.clone().into());
+        }
         match self.status {
             Some(RunStatusFilter::Fail) => clauses.push("fail_count > 0".into()),
             Some(RunStatusFilter::Error) => clauses.push("error_count > 0".into()),
@@ -501,7 +600,14 @@ impl RunListFilter {
             None
         };
         match self.cached {
-            Some(CachedFilter::Exclude) => clauses.push(format!("NOT {hidden_predicate}")),
+            // `IS NOT 1` rather than `NOT (...)`, and it is not a style choice:
+            // a legacy row has NULL cache counters, so the predicate evaluates
+            // to NULL and `NOT NULL` is NULL — which SQLite filters out, hiding
+            // exactly the rows the "never hide what we cannot classify" rule
+            // exists to protect. `IS NOT 1` is NULL-safe: NULL IS NOT 1 is true.
+            // (Pinned by `legacy_null_cache_columns_are_never_hidden`, which
+            // caught this the moment the COALESCE wrapper came off.)
+            Some(CachedFilter::Exclude) => clauses.push(format!("{hidden_predicate} IS NOT 1")),
             Some(CachedFilter::Only) => clauses.push(format!("({FULLY_CACHED})")),
             Some(CachedFilter::All) | None => {}
         }
@@ -547,6 +653,13 @@ impl RunListFilter {
                 duration_ms: row.get(14)?,
                 cache_hits: row.get(15)?,
                 cache_misses: row.get(16)?,
+                actor: row.get(17)?,
+                host: row.get(18)?,
+                uploaded_by: row.get(19)?,
+                ci_provider: row.get(20)?,
+                ci_run_url: row.get(21)?,
+                description: row.get(22)?,
+                domarinn_version: row.get(23)?,
             })
         })?;
         let mut collected: Vec<RunRow> = Vec::new();
@@ -596,6 +709,13 @@ struct RunRow {
     duration_ms: i64,
     cache_hits: Option<i64>,
     cache_misses: Option<i64>,
+    actor: Option<String>,
+    host: Option<String>,
+    uploaded_by: Option<String>,
+    ci_provider: Option<String>,
+    ci_run_url: Option<String>,
+    description: Option<String>,
+    domarinn_version: Option<String>,
 }
 
 /// Map a stored cache counter to its wire value: NULL (legacy, pre-backfill)
@@ -630,6 +750,13 @@ impl RunRow {
             duration_ms: self.duration_ms,
             cache_hits: clean_cache_count(self.cache_hits),
             cache_misses: clean_cache_count(self.cache_misses),
+            actor: self.actor.clone(),
+            host: self.host.clone(),
+            uploaded_by: self.uploaded_by.clone(),
+            ci_provider: self.ci_provider.clone(),
+            ci_run_url: self.ci_run_url.clone(),
+            note: self.description.clone(),
+            domarinn_version: self.domarinn_version.clone(),
             tags,
         }
     }
@@ -652,7 +779,8 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     git_branch, git_commit, git_dirty, ci_provider, ci_run_url,
                     case_count, pass_count, fail_count, error_count,
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                    content_hash, uploaded_by, config_digest, cache_hits, cache_misses
+                    content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
+                    actor, host, description, domarinn_version
              FROM runs WHERE id = ?1",
             params![id.as_str()],
             |row| {
@@ -682,6 +810,10 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     config_digest: empty_to_none(row.get::<_, Option<String>>(21)?),
                     cache_hits: clean_cache_count(row.get::<_, Option<i64>>(22)?),
                     cache_misses: clean_cache_count(row.get::<_, Option<i64>>(23)?),
+                    actor: row.get::<_, Option<String>>(24)?,
+                    host: row.get::<_, Option<String>>(25)?,
+                    note: row.get::<_, Option<String>>(26)?,
+                    domarinn_version: row.get::<_, Option<String>>(27)?,
                     // Filled in below, after the row is loaded.
                     tags: Vec::new(),
                     assert_labels: Vec::new(),

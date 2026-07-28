@@ -43,6 +43,11 @@ pub struct CaseListItem {
     /// why. `None` for a case that did not error, and for legacy pre-backfill
     /// rows.
     pub error: Option<String>,
+    /// What kind of failure `error` describes (migration-10 `cases` column).
+    /// Lets a run's errors be grouped — `provider_*` is not the model's fault,
+    /// `grader_*` means the eval did not run — instead of read one at a time.
+    /// `None` for a case that did not error and for rows written before this.
+    pub error_class: Option<String>,
 }
 
 /// `GET /runs/{id}/cases` response.
@@ -91,6 +96,7 @@ mod tests {
             stop_reason: Some("stop".to_string()),
             cached: Some(true),
             error: None,
+            error_class: None,
         };
         assert_eq!(
             serde_json::to_value(&dto).unwrap(),
@@ -115,6 +121,7 @@ mod tests {
                 "stop_reason": "stop",
                 "cached": true,
                 "error": null,
+                "error_class": null,
             })
         );
     }
@@ -140,6 +147,7 @@ mod tests {
             stop_reason: None,
             cached: None,
             error: None,
+            error_class: None,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["asserts"], json!([]));

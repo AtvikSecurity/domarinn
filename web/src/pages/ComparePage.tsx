@@ -18,6 +18,7 @@ import { CompareRowExpansion } from "./compare/CompareRowExpansion";
 import { AggregateDeltas, type AggregateStatsInput } from "./compare/AggregateDeltas";
 import { McNemarPanel } from "./compare/McNemarPanel";
 import { ConfigDrift } from "./compare/ConfigDrift";
+import { changedComponents, componentLabel } from "@/lib/digests";
 import type { DiffMode } from "./compare/DiffView";
 
 type ChipKey =
@@ -119,6 +120,13 @@ export function ComparePage() {
   const head = headRun.data;
   const runOptions = suiteRuns.data?.pages.flatMap((p) => p.runs) ?? [];
   const configChanged = config.changed === true;
+  // Name what moved when the component digests can say; fall back to the
+  // generic label when one side predates them.
+  const changed = changedComponents(config.components);
+  const changedLabel =
+    changed.length > 0
+      ? `${changed.map(componentLabel).join(" + ")} changed`
+      : "Config changed";
 
   return (
     <div className="space-y-5">
@@ -207,7 +215,11 @@ export function ComparePage() {
               >
                 <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
               </svg>
-              Config changed
+              {/* Names the components that moved rather than saying "config
+                  changed", which is the same answer for a prompt rewrite and a
+                  typo in a description. Falls back to the generic label only
+                  when the digests cannot say (one side predates them). */}
+              {changedLabel}
             </button>
           ) : null}
         </div>

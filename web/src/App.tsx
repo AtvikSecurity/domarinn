@@ -7,6 +7,7 @@ import { Layout } from "@/components/Layout";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { NotFound } from "@/components/NotFound";
 import { RouteError } from "@/components/RouteError";
+import { OverviewPage } from "@/pages/OverviewPage";
 import { RunsList } from "@/pages/RunsList";
 import { RunDetail } from "@/pages/RunDetail";
 import { ComparePage } from "@/pages/ComparePage";
@@ -56,7 +57,12 @@ const router = createBrowserRouter([
         // header and navigation usable.
         errorElement: <RouteError />,
         children: [
-          { index: true, element: <RunsList /> },
+          // `/` is the status surface and `/runs` is the stream. Two routes
+          // rather than one page, because they sort incompatibly: the stream is
+          // newest-first by definition, while a status surface must stay put
+          // when somebody iterates locally.
+          { index: true, element: <OverviewPage /> },
+          { path: "runs", element: <RunsList /> },
           { path: "runs/:id", element: <RunDetail /> },
           // No target-less `runs/:id/compare` route: the real server route is
           // `Path((id, other))` and requires both segments, so there is

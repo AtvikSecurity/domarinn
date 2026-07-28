@@ -46,6 +46,134 @@ async fn seed(app: &axum::Router) {
     }
 }
 
+fn run_ids(body: &serde_json::Value) -> Vec<String> {
+    body["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The facet that makes a shared board usable: CI runs and developer iteration
+/// are separable, and a run can be traced to a person.
+#[tokio::test]
+async fn list_runs_filters_by_origin_and_actor() {
+    use domarinn_core::result::{CiMeta, RunOrigin};
+
+    let (app, _dir) = test_app(Settings::default()).await;
+
+    let mut ci_run = make_run(
+        "r-ci",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Pass)],
+    );
+    ci_run.ci = Some(CiMeta {
+        provider: Some("github".into()),
+        run_url: Some("https://ci.example/1".into()),
+    });
+    ci_run.origin = Some(RunOrigin {
+        actor: Some("alice".into()),
+        host: Some("runner-01".into()),
+        ..Default::default()
+    });
+
+    let mut local_run = make_run(
+        "r-local",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("feat/x"),
+        10,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Pass)],
+    );
+    // `make_run` attaches CI metadata to every fixture run, so a run that is
+    // meant to read as developer-local has to say so explicitly.
+    local_run.ci = None;
+    local_run.origin = Some(RunOrigin {
+        actor: Some("bob".into()),
+        host: Some("bob-laptop".into()),
+        ..Default::default()
+    });
+
+    // A run from a client that predates provenance: no origin, no CI. It must
+    // read as `local` rather than vanishing from both sides of the facet.
+    let mut legacy = make_run(
+        "r-legacy",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        20,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Pass)],
+    );
+    legacy.ci = None;
+
+    for run in [&ci_run, &local_run, &legacy] {
+        let reply = post_json(&app, "/api/v1/runs", None, &run_value(run)).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "seed {}", run.run_id);
+    }
+
+    let ci = get(&app, "/api/v1/runs?origin=ci").await;
+    assert_eq!(run_ids(&ci.json()), vec!["r-ci"]);
+
+    let local = get(&app, "/api/v1/runs?origin=local").await;
+    assert_eq!(run_ids(&local.json()), vec!["r-legacy", "r-local"]);
+
+    let alice = get(&app, "/api/v1/runs?actor=alice").await;
+    assert_eq!(run_ids(&alice.json()), vec!["r-ci"]);
+
+    let nobody = get(&app, "/api/v1/runs?actor=nobody").await;
+    assert!(run_ids(&nobody.json()).is_empty());
+
+    // The two facets compose.
+    let combined = get(&app, "/api/v1/runs?origin=local&actor=bob").await;
+    assert_eq!(run_ids(&combined.json()), vec!["r-local"]);
+}
+
+/// Provenance reaches the list rows, so the UI can render who ran a run without
+/// opening it. These are promoted columns, not blob reads.
+#[tokio::test]
+async fn list_runs_carries_provenance_fields() {
+    use domarinn_core::result::RunOrigin;
+
+    let (app, _dir) = test_app(Settings::default()).await;
+    let mut run = make_run(
+        "r-prov",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Pass)],
+    );
+    run.ci = None;
+    run.origin = Some(RunOrigin {
+        actor: Some("dana".into()),
+        host: Some("dana-laptop".into()),
+        version: Some("0.2.0".into()),
+        note: Some("checking the tokenizer fix".into()),
+        ..Default::default()
+    });
+    post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+
+    let body = get(&app, "/api/v1/runs").await.json();
+    let row = &body["runs"][0];
+    assert_eq!(row["actor"], "dana");
+    assert_eq!(row["host"], "dana-laptop");
+    assert_eq!(row["domarinn_version"], "0.2.0");
+    assert_eq!(row["note"], "checking the tokenizer fix");
+    assert!(row["ci_provider"].is_null());
+
+    let detail = get(&app, "/api/v1/runs/r-prov").await.json();
+    assert_eq!(detail["actor"], "dana");
+    assert_eq!(detail["note"], "checking the tokenizer fix");
+}
+
 #[tokio::test]
 async fn list_runs_orders_newest_first_and_filters_by_project() {
     let (app, _dir) = test_app(Settings::default()).await;
@@ -244,4 +372,88 @@ async fn missing_run_is_404() {
         get(&app, "/api/v1/runs/nope/export").await.status,
         StatusCode::NOT_FOUND
     );
+}
+
+/// Errors are aggregatable and filterable, so a run reporting "14 errors" can
+/// say that twelve were rate limits and none were about the model.
+#[tokio::test]
+async fn cases_carry_and_filter_by_error_class() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let run = make_run(
+        "r-errs",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Error)
+                .output(None)
+                .error("provider error: HTTP 429")
+                .error_class("provider_rate_limit"),
+            CaseSpec::new("openai", "t2", CaseStatus::Error)
+                .output(None)
+                .error("provider error: HTTP 429")
+                .error_class("provider_rate_limit"),
+            CaseSpec::new("openai", "t3", CaseStatus::Error)
+                .output(None)
+                .error("grader returned a truncated verdict")
+                .error_class("grader_failed"),
+            CaseSpec::new("openai", "t4", CaseStatus::Pass),
+        ],
+    );
+    post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+
+    let all = get(&app, "/api/v1/runs/r-errs/cases").await.json();
+    let classes: Vec<Option<&str>> = all["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["error_class"].as_str())
+        .collect();
+    assert_eq!(
+        classes,
+        vec![
+            Some("provider_rate_limit"),
+            Some("provider_rate_limit"),
+            Some("grader_failed"),
+            // A passing case has no class, and must not be given one.
+            None,
+        ]
+    );
+
+    let limited = get(
+        &app,
+        "/api/v1/runs/r-errs/cases?error_class=provider_rate_limit",
+    )
+    .await;
+    assert_eq!(limited.json()["cases"].as_array().unwrap().len(), 2);
+
+    let grader = get(&app, "/api/v1/runs/r-errs/cases?error_class=grader_failed").await;
+    assert_eq!(grader.json()["cases"].as_array().unwrap().len(), 1);
+}
+
+/// An unrecognized class — from a newer client, or from an `exec` child
+/// domarinn did not compile — must round-trip rather than failing ingest. This
+/// is why the type is an open string newtype and not an enum.
+#[tokio::test]
+async fn an_unknown_error_class_is_stored_not_rejected() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let run = make_run(
+        "r-future",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Error)
+            .output(None)
+            .error("something new")
+            .error_class("invented_by_a_newer_child")],
+    );
+    let reply = post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+
+    let body = get(&app, "/api/v1/runs/r-future/cases").await.json();
+    assert_eq!(body["cases"][0]["error_class"], "invented_by_a_newer_child");
 }

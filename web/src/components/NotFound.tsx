@@ -6,7 +6,7 @@ export function NotFound() {
       <div className="text-4xl font-semibold">404</div>
       <p className="mt-2 text-muted">This page does not exist.</p>
       <Link to="/" className="mt-4 inline-block text-accent hover:underline">
-        Back to runs
+        Back to overview
       </Link>
     </div>
   );

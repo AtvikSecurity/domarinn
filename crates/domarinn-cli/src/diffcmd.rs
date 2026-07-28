@@ -242,10 +242,5 @@ pub fn write_summary_md(
     head: &RunResult,
     comparison: Option<(&RunResult, &RunDiff)>,
 ) -> std::io::Result<()> {
-    let mut out = output::render_run_md(head);
-    if let Some((base, diff)) = comparison {
-        out.push('\n');
-        out.push_str(&render_markdown(base, head, diff));
-    }
-    std::fs::write(path, out)
+    std::fs::write(path, crate::cisummary::render(head, comparison))
 }

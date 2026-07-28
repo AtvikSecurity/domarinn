@@ -7,6 +7,7 @@ import {
   parseRunsFilters,
   pickParams,
   runsRequestFilters,
+  RUNS_FILTER_KEYS,
   toggleValue,
 } from "./filters";
 
@@ -126,5 +127,45 @@ describe("activeRunsFilterCount", () => {
   it("counts only active filter keys", () => {
     expect(activeRunsFilterCount(sp("project=a&tag=b&cursor=20&case=x"))).toBe(2);
     expect(activeRunsFilterCount(sp(""))).toBe(0);
+  });
+
+  it("counts the origin and actor facets", () => {
+    expect(activeRunsFilterCount(sp("origin=ci"))).toBe(1);
+    expect(activeRunsFilterCount(sp("origin=local&actor=alice"))).toBe(2);
+  });
+});
+
+describe("origin + actor facets", () => {
+  it("parses both out of the URL", () => {
+    expect(parseRunsFilters(sp("origin=ci&actor=alice"))).toEqual({
+      origin: "ci",
+      actor: "alice",
+    });
+  });
+
+  // Both are SERVER filters: the runs list is cursor-paginated, so a
+  // client-side origin filter would silently apply only to loaded pages and
+  // read as "there are no CI runs" on a page that happens to hold none.
+  it("passes both through to the request", () => {
+    expect(runsRequestFilters({ origin: "ci", actor: "alice" })).toEqual({
+      origin: "ci",
+      actor: "alice",
+      cached: "exclude",
+    });
+  });
+
+  // The filter bar's clear-all is derived from RUNS_FILTER_KEYS; if a key is
+  // counted but not listed there, the button offers to clear a filter it
+  // cannot reach.
+  it("every counted key is clearable", () => {
+    const active = sp(
+      RUNS_FILTER_KEYS.map((k) => `${k}=x`).join("&"),
+    );
+    expect(activeRunsFilterCount(active)).toBe(RUNS_FILTER_KEYS.length);
+    const cleared = mergeParams(
+      active,
+      Object.fromEntries(RUNS_FILTER_KEYS.map((k) => [k, undefined])),
+    );
+    expect(activeRunsFilterCount(cleared)).toBe(0);
   });
 });

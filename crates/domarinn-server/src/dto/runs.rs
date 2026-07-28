@@ -48,6 +48,25 @@ pub struct RunListItem {
     /// `None`. A run is "fully cached" when `cache_misses == 0 && cache_hits > 0`.
     pub cache_hits: Option<i64>,
     pub cache_misses: Option<i64>,
+    /// Who ran it, as recorded by the client (`RunOrigin.actor`). `None` for
+    /// runs from clients that predate provenance, and for runs whose author
+    /// suppressed it.
+    pub actor: Option<String>,
+    /// The machine it ran on. Same caveats as `actor`.
+    pub host: Option<String>,
+    /// Who *uploaded* it, from the authenticated identity. Distinct from
+    /// `actor` on purpose: this one is verified and server-side, that one is
+    /// client-supplied and covers local runs. A shared CI token shows up here
+    /// as the token's label, which is why both are surfaced.
+    pub uploaded_by: Option<String>,
+    /// The CI system that ran it, if any. Its presence *is* the "was this CI?"
+    /// flag — see `OriginFilter`.
+    pub ci_provider: Option<String>,
+    pub ci_run_url: Option<String>,
+    /// The run's human label (`--note`, else the suite's `description`).
+    pub note: Option<String>,
+    /// The domarinn build that produced the run.
+    pub domarinn_version: Option<String>,
     pub tags: Vec<String>,
 }
 
@@ -97,6 +116,11 @@ pub struct RunDetailResponse {
     /// Provider-call cache counters (see [`RunListItem::cache_hits`]).
     pub cache_hits: Option<i64>,
     pub cache_misses: Option<i64>,
+    /// Run provenance — see the same-named fields on [`RunListItem`].
+    pub actor: Option<String>,
+    pub host: Option<String>,
+    pub note: Option<String>,
+    pub domarinn_version: Option<String>,
     pub tags: Vec<String>,
     pub assert_labels: Vec<String>,
 }
@@ -155,6 +179,13 @@ mod tests {
             duration_ms: 30000,
             cache_hits: Some(1),
             cache_misses: Some(1),
+            actor: Some("alice".to_string()),
+            host: Some("runner-07".to_string()),
+            uploaded_by: Some("ci-token".to_string()),
+            ci_provider: Some("github".to_string()),
+            ci_run_url: Some("https://ci.example/run/1".to_string()),
+            note: Some("nightly smoke".to_string()),
+            domarinn_version: Some("0.2.0".to_string()),
             tags: vec!["nightly".to_string()],
         };
         assert_eq!(
@@ -178,6 +209,13 @@ mod tests {
                 "duration_ms": 30000,
                 "cache_hits": 1,
                 "cache_misses": 1,
+                "actor": "alice",
+                "host": "runner-07",
+                "uploaded_by": "ci-token",
+                "ci_provider": "github",
+                "ci_run_url": "https://ci.example/run/1",
+                "note": "nightly smoke",
+                "domarinn_version": "0.2.0",
                 "tags": ["nightly"],
             })
         );
@@ -206,6 +244,13 @@ mod tests {
             duration_ms: 0,
             cache_hits: None,
             cache_misses: None,
+            actor: None,
+            host: None,
+            uploaded_by: None,
+            ci_provider: None,
+            ci_run_url: None,
+            note: None,
+            domarinn_version: None,
             tags: vec![],
         };
         let v = serde_json::to_value(&dto).unwrap();
@@ -218,6 +263,13 @@ mod tests {
             "cost_usd",
             "cache_hits",
             "cache_misses",
+            "actor",
+            "host",
+            "uploaded_by",
+            "ci_provider",
+            "ci_run_url",
+            "note",
+            "domarinn_version",
         ] {
             assert!(v.get(key).is_some(), "missing key {key}");
             assert!(
@@ -255,6 +307,10 @@ mod tests {
             config_digest: Some("sha256:cfg".to_string()),
             cache_hits: Some(1),
             cache_misses: Some(0),
+            actor: Some("alice".to_string()),
+            host: Some("runner-07".to_string()),
+            note: Some("nightly smoke".to_string()),
+            domarinn_version: Some("0.2.0".to_string()),
             tags: vec!["nightly".to_string()],
             assert_labels: vec!["contains".to_string(), "regex".to_string()],
         };
@@ -285,6 +341,10 @@ mod tests {
                 "config_digest": "sha256:cfg",
                 "cache_hits": 1,
                 "cache_misses": 0,
+                "actor": "alice",
+                "host": "runner-07",
+                "note": "nightly smoke",
+                "domarinn_version": "0.2.0",
                 "tags": ["nightly"],
                 "assert_labels": ["contains", "regex"],
             })
@@ -320,6 +380,10 @@ mod tests {
             config_digest: None,
             cache_hits: None,
             cache_misses: None,
+            actor: None,
+            host: None,
+            note: None,
+            domarinn_version: None,
             tags: vec![],
             assert_labels: vec![],
         };

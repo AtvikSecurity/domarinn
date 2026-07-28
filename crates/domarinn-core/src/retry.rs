@@ -142,12 +142,14 @@ where
             Err(ProviderError::Retriable {
                 source,
                 retry_after,
+                class,
             }) => {
                 if attempts > policy.max {
                     return (
                         Err(ProviderError::Retriable {
                             source,
                             retry_after,
+                            class,
                         }),
                         stats,
                     );
@@ -161,12 +163,18 @@ where
                 if let Some(hint) = retry_after {
                     if hint > ceiling {
                         return (
-                            Err(ProviderError::Fatal(anyhow::anyhow!(
-                                "server asked to retry after {}s, above the {}s ceiling \
-                                 (runner.retries.retry_after_max_ms): {source}",
-                                hint.as_secs(),
-                                ceiling.as_secs()
-                            ))),
+                            // Fatal now, but still a rate limit: the variant
+                            // says whether retrying could help, the class says
+                            // what went wrong. They are independent axes.
+                            Err(ProviderError::Fatal {
+                                source: anyhow::anyhow!(
+                                    "server asked to retry after {}s, above the {}s ceiling \
+                                     (runner.retries.retry_after_max_ms): {source}",
+                                    hint.as_secs(),
+                                    ceiling.as_secs()
+                                ),
+                                class,
+                            }),
                             stats,
                         );
                     }
@@ -200,6 +208,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error_class::ErrorClass;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
@@ -243,6 +252,7 @@ mod tests {
         };
         let (result, stats) = with_retry(&policy, |_| async {
             Err::<(), _>(ProviderError::Retriable {
+                class: ErrorClass::new(ErrorClass::PROVIDER_UNAVAILABLE),
                 source: anyhow::anyhow!("boom"),
                 retry_after: None,
             })
@@ -263,7 +273,12 @@ mod tests {
         let calls = AtomicU32::new(0);
         let (result, stats) = with_retry(&policy, |_| {
             calls.fetch_add(1, Ordering::SeqCst);
-            async { Err::<(), _>(ProviderError::Fatal(anyhow::anyhow!("bad request"))) }
+            async {
+                Err::<(), _>(ProviderError::fatal(
+                    ErrorClass::PROVIDER_REQUEST,
+                    anyhow::anyhow!("bad request"),
+                ))
+            }
         })
         .await;
         assert!(result.is_err());
@@ -315,13 +330,14 @@ mod tests {
         };
         let (result, stats) = with_retry(&policy, |_| async {
             Err::<(), _>(ProviderError::Retriable {
+                class: ErrorClass::new(ErrorClass::PROVIDER_UNAVAILABLE),
                 source: anyhow::anyhow!("rate limited"),
                 retry_after: Some(Duration::from_secs(600)),
             })
         })
         .await;
 
-        assert!(matches!(result, Err(ProviderError::Fatal(_))));
+        assert!(matches!(result, Err(ProviderError::Fatal { .. })));
         assert_eq!(stats.attempts, 1, "no further attempt is made");
         let message = format!("{}", result.unwrap_err());
         assert!(

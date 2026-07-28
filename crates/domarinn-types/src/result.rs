@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
-use crate::asserts::AssertName;
+use crate::assert_name::AssertName;
 use crate::ids::{CaseKey, RunId};
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
@@ -94,6 +94,20 @@ pub enum AssertStatus {
     Error,
     /// Not evaluated because the case was already decided (short-circuit).
     Skipped,
+}
+
+impl AssertStatus {
+    /// The status of a graded assertion from its boolean outcome.
+    ///
+    /// A constructor for the wire value, so it lives with the type rather than
+    /// with whichever engine module happens to call it.
+    pub fn from_pass(pass: bool) -> AssertStatus {
+        if pass {
+            AssertStatus::Pass
+        } else {
+            AssertStatus::Fail
+        }
+    }
 }
 
 /// The result of a single assertion.
@@ -198,9 +212,38 @@ pub struct CaseResult {
     pub cached: bool,
     #[serde(default)]
     pub attempts: u32,
+    /// Identity of what this case asked the model — rendered prompt, rendered
+    /// vars, params, cache salt. Deliberately excludes the provider (that is
+    /// `provider_digest`) and `repeat`. See [`crate::digests::prompt_digest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub prompt_digest: Option<String>,
+    /// Identity of the model and its settings, from the provider fingerprint.
+    ///
+    /// **Not backfillable**: the fingerprint appears nowhere in a stored run
+    /// document (`request` is a preview envelope and is absent under
+    /// `--no-raw`), so change classification only works between two runs that
+    /// both post-date this field. Readers must treat `None` as unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider_digest: Option<String>,
+    /// Identity of this case's grading definition — the authored criteria,
+    /// weights and threshold, never the outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub assert_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
+    /// What kind of failure `error` describes — see [`crate::error_class`].
+    ///
+    /// Strictly additive: `error` stays the verbatim prose it always was, and
+    /// neither field is ever derived from the other at read time.
+    /// `error_class.is_some()` implies `error.is_some()`; the converse does not
+    /// hold, because blobs written before this field have prose and no class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error_class: Option<crate::error_class::ErrorClass>,
     /// The model's reasoning/thinking text, when it exposed any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -258,6 +301,74 @@ pub struct CiMeta {
     pub run_url: Option<String>,
 }
 
+/// Who and what produced a run.
+///
+/// Collected by the engine (see [`crate::provenance`]) so a plain `domarinn run`
+/// carries it too. Before this existed, git and CI metadata were attached only
+/// on the upload path, so every `result.json` on disk had `git: null` and there
+/// was no notion of an actor at all.
+///
+/// [`RunResult::git`] and [`RunResult::ci`] deliberately stay as their own
+/// fields rather than moving in here: they already have server columns and a
+/// share-time backfill path, so folding them in would be a breaking rename for
+/// no gain.
+///
+/// One optional struct rather than five optional fields, also deliberately. The
+/// byte-stable-reserialization contract is about keys staying *absent* on
+/// documents that never had them; nesting costs exactly one
+/// `skip_serializing_if` at the [`RunResult`] level and leaves every field
+/// inside it unconstrained for legacy blobs, which carry no `origin` key at all.
+/// It also gives the privacy opt-out a single lever: `origin: None`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
+pub struct RunOrigin {
+    /// Who this run is attributable to: the CI actor when running in CI
+    /// (`GITHUB_ACTOR` and friends — of a CI run people ask "who pushed the
+    /// change", not "which service account ran the container"), otherwise the OS
+    /// username. `None` when suppressed or undeterminable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Hostname of the machine that ran it. `None` when suppressed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// The domarinn build that produced this document ([`crate::VERSION`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// A free-form human label (`domarinn run --note "…"`), falling back to the
+    /// suite's `description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Set when the identity fields were suppressed by policy. Distinguishes "the
+    /// operator opted out" from "an older client wrote this document" — without
+    /// it a reader cannot tell the two apart, since both look like absence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted: Option<bool>,
+}
+
+/// Component digests of the suite that produced a run — see [`crate::digests`].
+///
+/// [`RunResult::config_digest`] is one hash over the whole suite: it answers
+/// "did anything change" and nothing else. These answer *what*, so a comparison
+/// can say "the prompts changed" instead of "config changed", and the runs list
+/// can say it from the row without fetching a config snapshot per run.
+///
+/// All optional: a run written before this existed has none, and `None` must
+/// read as "unknown", never as "unchanged".
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
+pub struct ConfigDigests {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompts: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub providers: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asserts: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grader: Option<String>,
+}
+
 /// Which filters produced this run (for reproducibility and the UI).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FilterSpec {
@@ -289,6 +400,20 @@ pub struct RunResult {
     pub git: Option<GitMeta>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci: Option<CiMeta>,
+    /// Who and where this run came from. See [`RunOrigin`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<RunOrigin>,
+    /// Per-component digests of the suite. See [`ConfigDigests`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digests: Option<ConfigDigests>,
+    /// Where this run was published, recorded by `--share` from the URL the
+    /// results server returned. Absent when the run was never shared.
+    ///
+    /// Stored rather than re-derived so a later reader — `ci-summary` building a
+    /// PR comment, most of all — can link to the run without re-uploading it or
+    /// parsing it back out of an earlier command's stdout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_url: Option<String>,
     #[serde(default)]
     pub filters: FilterSpec,
     pub cases: Vec<CaseResult>,
@@ -363,6 +488,49 @@ mod tests {
         assert!(!reserialized.contains("\"raw\""));
         assert!(!reserialized.contains("vars"));
         assert!(!reserialized.contains("criteria"));
+        // The later-added digest and classification fields. `prompt_digest`
+        // would be caught by the `prompt` assertion above only by accident;
+        // the other three had no guard at all, so dropping a
+        // `skip_serializing_if` from any of them used to pass silently — and
+        // every historical run's content hash would shift on re-ingest.
+        assert!(!reserialized.contains("prompt_digest"));
+        assert!(!reserialized.contains("provider_digest"));
+        assert!(!reserialized.contains("assert_digest"));
+        assert!(!reserialized.contains("error_class"));
+    }
+
+    /// The run-level counterpart of the guard above.
+    ///
+    /// The server's ingest idempotency key is `sha256(canonical_json(run))` over
+    /// the *whole* document, so a stored run that never carried `origin` (or
+    /// `git`, `ci`, `share_url`) must not grow the key on a load/store round
+    /// trip — that would change its content hash and turn an idempotent
+    /// re-upload into a 409 Conflict.
+    #[test]
+    fn a_run_without_optional_provenance_does_not_grow_it_on_re_serialization() {
+        let stored = r#"{
+            "schema_version": 2,
+            "run_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "started_at": "2026-01-01T00:00:00Z",
+            "finished_at": "2026-01-01T00:00:01Z",
+            "config_digest": "blake3:abc",
+            "config_snapshot": {},
+            "cases": [],
+            "summary": {"total": 0, "passed": 0, "failed": 0, "errored": 0, "skipped": 0}
+        }"#;
+        let run: RunResult = serde_json::from_str(stored).unwrap();
+        assert!(run.origin.is_none());
+        assert!(run.digests.is_none());
+        assert!(run.git.is_none());
+        assert!(run.ci.is_none());
+        assert!(run.share_url.is_none());
+
+        let reserialized = serde_json::to_string(&run).unwrap();
+        assert!(!reserialized.contains("origin"));
+        assert!(!reserialized.contains("\"git\""));
+        assert!(!reserialized.contains("\"ci\""));
+        assert!(!reserialized.contains("share_url"));
+        assert!(!reserialized.contains("digests"));
     }
 
     #[test]

@@ -1,8 +1,11 @@
 # domarinn-eval — run a domarinn suite in CI and gate the PR on the result.
 #
-# Fully functional: resolves a `domarinn` binary, runs a suite, parses the
-# result, uploads the JUnit report, comments the Markdown summary on the PR, and
-# gates the job on the CLI's exit code.
+# Fully functional: resolves a `domarinn` binary, runs a suite, summarizes it
+# with `domarinn ci-summary`, uploads the JUnit report, comments the Markdown
+# summary on the PR, and gates the job on the CLI's exit code.
+#
+# The headline numbers come from `ci-summary`, which writes them straight to
+# $GITHUB_OUTPUT — nothing here regex-parses a report.
 #
 # Usage:
 #   - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@0.1.0
@@ -10,7 +13,7 @@
 #       config: eval/domarinn.yaml
 #       server-url: https://domarinn.example.com   # optional (enables --share)
 #       token: ${{ secrets.DOMARINN_TOKEN }}        # optional bearer token
-#       against: latest                               # optional baseline to diff
+#       against: server:baseline                      # optional baseline to diff
 #       fail-on-regression: "true"
 #
 # Exit-code contract (from the CLI): 0 = all pass; 1 = assertion failure or
@@ -53,9 +56,14 @@ inputs:
     default: ""
   against:
     description: >-
-      Baseline to diff this run against (e.g. "latest", a run id, or a
-      result.json path). Empty disables the diff. A regression against the
-      baseline makes the CLI exit 1.
+      Baseline to diff this run against. Use "server:baseline" in CI: it
+      resolves the baseline pinned for this suite on the results server, and
+      needs `server-url` plus `project:`/`suite:` in the config. "latest" reads
+      the local .domarinn/runs store, which a fresh checkout does not have — in
+      CI it silently finds nothing and the gate never fires. Also accepts a run
+      id or a result.json path. Empty disables the diff. A regression makes the
+      CLI exit 1; a baseline that was requested but could not be resolved makes
+      it exit 2.
     required: false
     default: ""
   fail-on-regression:
@@ -80,16 +88,31 @@ outputs:
     value: ${{ steps.eval.outputs.exit-code }}
   passed:
     description: Number of test cases that passed.
-    value: ${{ steps.eval.outputs.passed }}
+    value: ${{ steps.summary.outputs.passed }}
   failed:
     description: Number of test cases that failed or errored.
-    value: ${{ steps.eval.outputs.failed }}
+    value: ${{ steps.summary.outputs.failed-or-errored }}
+  errored:
+    description: Number of test cases that errored (a subset of `failed`).
+    value: ${{ steps.summary.outputs.errored }}
+  total:
+    description: Total number of test cases.
+    value: ${{ steps.summary.outputs.total }}
+  pass-rate:
+    description: Percentage of cases that passed, one decimal place (e.g. "91.7").
+    value: ${{ steps.summary.outputs.pass-rate }}
+  cache-hit-rate:
+    description: Percentage of cases served from the cache, one decimal place.
+    value: ${{ steps.summary.outputs.cache-hit-rate }}
   regressed:
     description: Number of tests that newly regressed vs the baseline (0 without `against`).
-    value: ${{ steps.eval.outputs.regressed }}
+    value: ${{ steps.summary.outputs.regressed }}
+  run-url:
+    description: URL of the uploaded run on the results server (empty without `server-url`).
+    value: ${{ steps.summary.outputs.run-url }}
   summary-path:
-    description: Path to the Markdown summary written by the run.
-    value: ${{ steps.eval.outputs.summary-path }}
+    description: Path to the Markdown summary.
+    value: ${{ steps.summary.outputs.summary-path }}
   results-path:
     description: Path to the JUnit XML report written by the run.
     value: ${{ steps.eval.outputs.results-path }}
@@ -170,7 +193,7 @@ runs:
         fi
         echo "path=${root}/bin/domarinn" >> "$GITHUB_OUTPUT"
 
-    # -- Run the suite: JUnit report + Markdown summary, optional baseline. -----
+    # -- Run the suite: JUnit report, optional baseline + upload. ---------------
     - name: Run eval
       id: eval
       shell: bash
@@ -182,15 +205,16 @@ runs:
         INPUT_AGAINST: ${{ inputs.against }}
       run: |
         # No `set -e`: we must capture the CLI exit code and keep going so the
-        # artifact upload, PR comment, and gate step still run.
+        # summary, artifact upload, PR comment, and gate step still run.
         set -uo pipefail
 
         results="results.xml"
-        summary="summary.md"
 
-        args=(run "${INPUT_CONFIG}" --format junit --out "${results}" --summary-md "${summary}")
+        args=(run "${INPUT_CONFIG}" --format junit --out "${results}")
         [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
         # Upload the run when a server is configured (token via DOMARINN_TOKEN).
+        # `--share` also records the run's URL on the stored run, which is where
+        # the summary step reads it from.
         [ -n "${DOMARINN_SERVER_URL}" ] && args+=(--share)
 
         echo "Running: domarinn ${args[*]}"
@@ -198,34 +222,45 @@ runs:
         code=$?
         echo "domarinn exited with $code"
 
-        # Parse headline numbers from the JUnit report:
-        #   <testsuite ... tests="T" failures="F" errors="E">
-        attr() { grep -oE "$1=\"[0-9]+\"" "$results" 2>/dev/null | head -1 | grep -oE '[0-9]+'; }
-        tests="$(attr tests)";     tests="${tests:-0}"
-        failures="$(attr failures)"; failures="${failures:-0}"
-        errors="$(attr errors)";   errors="${errors:-0}"
-        passed=$(( tests - failures - errors ))
-        [ "$passed" -lt 0 ] && passed=0
-        failed=$(( failures + errors ))
-
-        # Regressions come from the baseline comparison table in the summary:
-        #   | Newly failing | N |
-        regressed="$(grep -oE '^\| Newly failing \| [0-9]+ \|' "$summary" 2>/dev/null | grep -oE '[0-9]+' | head -1)"
-        regressed="${regressed:-0}"
-
         {
           echo "exit-code=$code"
-          echo "passed=$passed"
-          echo "failed=$failed"
-          echo "regressed=$regressed"
-          echo "summary-path=${summary}"
           echo "results-path=${results}"
         } >> "$GITHUB_OUTPUT"
 
-        # Surface the summary in the job's step summary too.
-        if [ -f "$summary" ]; then
-          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+    # -- Summarize: markdown for the PR/job summary + the headline numbers as
+    # step outputs. `ci-summary` writes the `key=value` pairs to $GITHUB_OUTPUT
+    # itself, so nothing here parses the report. It is a reporter and always
+    # exits 0 on a completed run; the gate step below owns the verdict.
+    - name: Summarize
+      id: summary
+      if: ${{ always() && steps.eval.conclusion != 'skipped' }}
+      shell: bash
+      env:
+        DOMARINN_BIN: ${{ steps.bin.outputs.path }}
+        # The same server credentials the eval step gets. Without them
+        # `--against server:baseline` cannot resolve anything here, so the PR
+        # comment silently loses its comparison table and the `regressed`
+        # output is hard-zero for every caller using the documented CI default.
+        DOMARINN_SERVER_URL: ${{ inputs.server-url }}
+        DOMARINN_TOKEN: ${{ inputs.token }}
+        INPUT_AGAINST: ${{ inputs.against }}
+      run: |
+        set -uo pipefail
+
+        summary="summary.md"
+        args=(ci-summary latest --out "${summary}")
+        [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
+
+        if ! "${DOMARINN_BIN}" "${args[@]}"; then
+          # A suite that never ran (bad config, missing binary) persists no run,
+          # so there is nothing to summarize. Say so rather than leaving the PR
+          # comment and job summary blank.
+          echo "::warning::no completed run to summarize"
+          printf '### domarinn eval\n\n_The suite did not produce a run; see the job log._\n' > "${summary}"
         fi
+
+        echo "summary-path=${summary}" >> "$GITHUB_OUTPUT"
+        cat "${summary}" >> "$GITHUB_STEP_SUMMARY"
 
     # -- Upload the JUnit report + summary as an artifact (always). -------------
     - name: Upload results
@@ -235,7 +270,7 @@ runs:
         name: ${{ inputs.artifact-name }}
         path: |
           ${{ steps.eval.outputs.results-path }}
-          ${{ steps.eval.outputs.summary-path }}
+          ${{ steps.summary.outputs.summary-path }}
         if-no-files-found: warn
 
     # -- Comment the summary on the PR (create-or-update a single comment). -----
@@ -243,7 +278,7 @@ runs:
       if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0 # pin to SHA
       env:
-        SUMMARY_PATH: ${{ steps.eval.outputs.summary-path }}
+        SUMMARY_PATH: ${{ steps.summary.outputs.summary-path }}
       with:
         script: |
           const fs = require('fs');

@@ -8,7 +8,7 @@ const SMOKE_RUN = "checkout-agent-smoke-08";
 
 test.describe("Runs list", () => {
   test("renders suites grouped with pass-rate, and lists runs", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/runs");
 
     // Page shell.
     await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
@@ -32,7 +32,7 @@ test.describe("Runs list", () => {
   });
 
   test("marks the suite's pinned baseline run with a chip", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/runs");
 
     // The default baseline for checkout-agent/regression is the run before the
     // latest (see BASELINE_BY_SUITE in src/mocks/fixtures.ts) — its row carries
@@ -46,7 +46,7 @@ test.describe("Runs list", () => {
   });
 
   test("project filter narrows the list and writes the URL param", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/runs");
 
     // Runs from every project are present initially.
     await expect(
@@ -75,7 +75,7 @@ test.describe("Runs list", () => {
   });
 
   test("suite filter narrows within a project", async ({ page }) => {
-    await page.goto("/?project=checkout-agent");
+    await page.goto("/runs?project=checkout-agent");
 
     // Both regression and smoke suites belong to checkout-agent.
     await expect(page.getByRole("link", { name: MONEY_RUN, exact: true })).toBeVisible();
@@ -94,7 +94,7 @@ test.describe("Runs list", () => {
   });
 
   test("a URL filter param is reflected in the controls", async ({ page }) => {
-    await page.goto("/?project=checkout-agent");
+    await page.goto("/runs?project=checkout-agent");
 
     await expect(page.getByRole("combobox", { name: "Project" })).toHaveValue(
       "checkout-agent",

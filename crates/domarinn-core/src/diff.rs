@@ -21,6 +21,11 @@ pub enum Delta {
     Removed,
 }
 
+// The change axis lives in `domarinn-types`: it is a wire value carried on
+// every compare row. Re-exported so `domarinn_core::diff::CaseChange` and
+// friends keep resolving for existing callers.
+pub use domarinn_types::change::{classify_change, CaseChange, ChangeInputs};
+
 /// A per-case delta record.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct CaseDelta {
@@ -211,7 +216,11 @@ mod tests {
             empty_reason: None,
             cached: false,
             attempts: 1,
+            prompt_digest: None,
+            provider_digest: None,
+            assert_digest: None,
             error: None,
+            error_class: None,
         }
     }
 
@@ -227,6 +236,9 @@ mod tests {
             config_snapshot: serde_json::Value::Null,
             git: None,
             ci: None,
+            digests: None,
+            origin: None,
+            share_url: None,
             filters: Default::default(),
             summary: RunSummary::default(),
             cases,
