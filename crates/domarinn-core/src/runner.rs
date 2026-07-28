@@ -133,29 +133,21 @@ impl Default for RunOptions {
     }
 }
 
-/// A grader for the non-local assert kinds (`exec`, `llm-rubric`, `similar`).
+/// Whether this cell's empty reason is one the suite asked to skip.
 ///
-/// `Ok(outcome)` is a real verdict (pass or fail). `Err` is a
-/// [`crate::errors::GraderError`] — which the runner records as an `Error`
-/// (fail closed), distinct from a graded-and-failed assertion.
+/// The distinction `skip` exists to draw: a blank output is a *successful*
+/// call, so it gets graded and scores zero against every assertion — which
+/// reads as a prompt failure whether or not it was one. `skip` says "not
+/// gradeable, and that is not a verdict", and is counted separately rather
+/// than dragging the pass rate down.
 ///
-/// The error is typed rather than a `String` because the variants have
-/// different owners: a suite with no `grader:` block is the author's problem,
-/// while a truncated verdict is a settings problem and a transport failure is
-/// the provider's. Collapsing them into prose made every one of them report as
-/// `grader_failed`, which sent first-time users hunting for a transient fault
-/// that did not exist. See [`crate::errors::Classify`].
-///
-/// `grade` returns the verdict **before** any threshold, which is what makes
-/// caching it correct: a threshold is a decision *about* a verdict, not part of
-/// one, so editing a `threshold:` re-scores every case from cache instead of
-/// re-paying the judge for an answer it already gave.
-///
-/// [`Self::grading_fingerprint`] is the cacheability lever, mirroring
-/// [`crate::provider::Provider::cacheable`]: `None` means "do not cache this
-/// grading". Like a provider fingerprint it must exclude secrets, and it must
-/// include everything that can move a verdict — the grader's model and
-/// endpoint, the rendered rubric, the system prompt.
+/// Compared as a plain string against the configured list, so a reason this
+/// build has never heard of still works — `EmptyReason` is open by design and
+/// this must not become the one place that closes it.
+fn reasoning_is_skippable(reason: Option<&crate::empty::EmptyReason>, skip: &[String]) -> bool {
+    reason.is_some_and(|r| skip.iter().any(|s| s == r.as_str()))
+}
+
 /// A one-way latch that stops a run once continuing is pointless.
 ///
 /// Set when the grader's credential is rejected. That failure will repeat for
@@ -214,6 +206,30 @@ pub struct GradeCtx<'a> {
     pub test_tags: &'a [String],
 }
 
+/// A grader for the non-local assert kinds (`exec`, `llm-rubric`, `similar`).
+///
+/// `Ok(outcome)` is a real verdict (pass or fail). `Err` is a
+/// [`crate::errors::GraderError`] — which the runner records as an `Error`
+/// (fail closed), distinct from a graded-and-failed assertion.
+///
+/// The error is typed rather than a `String` because the variants have
+/// different owners: a suite with no `grader:` block is the author's problem,
+/// while a truncated verdict is a settings problem and a transport failure is
+/// the provider's. Collapsing them into prose made every one of them report as
+/// `grader_failed`, which sent first-time users hunting for a transient fault
+/// that did not exist. See [`crate::errors::Classify`].
+///
+/// `grade` returns the verdict **before** any threshold, which is what makes
+/// caching it correct: a threshold is a decision *about* a verdict, not part of
+/// one, so editing a `threshold:` re-scores every case from cache instead of
+/// re-paying the judge for an answer it already gave.
+///
+/// [`Self::grading_fingerprint`] is the cacheability lever, mirroring
+/// [`crate::provider::Provider::cacheable`]: `None` means "do not cache this
+/// grading". Like a provider fingerprint it must exclude secrets, and it must
+/// include everything that can move a verdict — the grader's model and
+/// endpoint, the rendered rubric, the system prompt.
+///
 #[async_trait]
 pub trait AssertGrader: Send + Sync {
     async fn grade(
@@ -271,6 +287,11 @@ pub async fn run_with_progress(
     // `--no-grader-cache`, then the suite's `cache.grader`, which defaults on.
     let grader_cache = opts.grader_cache && suite.cache.as_ref().is_none_or(|c| c.grader);
     let aborted = &AbortFlag::default();
+    let skip_on_empty_reason: &[String] = suite
+        .runner
+        .as_ref()
+        .map(|r| r.skip_on_empty_reason.as_slice())
+        .unwrap_or(&[]);
     let filter = Filter::build(&opts.filter).map_err(|e| {
         RunError::Resolve(crate::resolve::ResolveError::Parse {
             path: "<filter>".into(),
@@ -474,6 +495,7 @@ pub async fn run_with_progress(
                     schemas,
                     grader_cache,
                     aborted,
+                    skip_on_empty_reason,
                 )
                 .await;
                 if let Some(sink) = progress {
@@ -581,6 +603,7 @@ async fn run_cell(
     schemas: &crate::jsonschema_cache::SchemaCache,
     grader_cache: bool,
     aborted: &AbortFlag,
+    skip_on_empty_reason: &[String],
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
     let cell = CellKey {
@@ -776,8 +799,12 @@ async fn run_cell(
     let assert_digest = crate::digests::assert_digest(&assert_results, test.threshold);
     let assert_error_class = crate::error_class::most_specific(&assert_error_classes);
     let verdict = case_verdict(&scored, test.threshold);
+    // `Error` first: a grader that broke is a fact about the run, and outranks
+    // any statement about whether the output was gradeable.
     let status = if assert_error.is_some() {
         CaseStatus::Error
+    } else if reasoning_is_skippable(response.empty_reason.as_ref(), skip_on_empty_reason) {
+        CaseStatus::Skip
     } else if verdict.passed {
         CaseStatus::Pass
     } else {

@@ -286,3 +286,33 @@ fn a_rejected_grader_credential_is_classified_as_auth() {
     assert_eq!(auth.class().as_str(), ErrorClass::PROVIDER_AUTH);
     assert_eq!(broke.class().as_str(), ErrorClass::GRADER_FAILED);
 }
+
+// ── CaseStatus::Skip ─────────────────────────────────────────────────────────
+
+/// `Skip` has been defined, counted, rendered and TS-exported since it shipped,
+/// and never produced. This is the policy that produces it.
+#[test]
+fn an_empty_reason_only_skips_when_the_suite_asked_for_it() {
+    let tool_use = crate::empty::EmptyReason::new(crate::empty::EmptyReason::TOOL_USE_ONLY);
+    let refusal = crate::empty::EmptyReason::new(crate::empty::EmptyReason::REFUSAL);
+    let configured = vec![crate::empty::EmptyReason::TOOL_USE_ONLY.to_string()];
+
+    assert!(reasoning_is_skippable(Some(&tool_use), &configured));
+    // A refusal is a real result about the prompt unless the suite says
+    // otherwise, so it is graded rather than skipped.
+    assert!(!reasoning_is_skippable(Some(&refusal), &configured));
+    // Opt-in: an empty list changes nothing, which is the default.
+    assert!(!reasoning_is_skippable(Some(&tool_use), &[]));
+    assert!(!reasoning_is_skippable(None, &configured));
+}
+
+/// `EmptyReason` is open by construction; this must not be the one place that
+/// closes it, so a vendor reason from the future can still be skipped.
+#[test]
+fn a_reason_this_build_has_never_heard_of_can_still_be_skipped() {
+    let future = crate::empty::EmptyReason::new("invented_next_year");
+    assert!(reasoning_is_skippable(
+        Some(&future),
+        &["invented_next_year".to_string()]
+    ));
+}

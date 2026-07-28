@@ -1349,6 +1349,13 @@
             "boolean",
             "null"
           ]
+        },
+        "skip_on_empty_reason": {
+          "description": "Empty reasons that mark a case `skip` instead of grading it.\n\nA blank output is a *successful* call, so it gets graded and scores zero\nagainst every assertion — for a reason that may have nothing to do with\nthe prompt. `skip` is the status for \"this cell was not gradeable, and\nthat is not a verdict about the prompt\": it is counted separately, and\ndoes not drag a pass rate down.\n\nOpt-in and empty by default, because which reasons qualify is genuinely\nsuite-specific and domarinn should not invent the policy. A refusal is\nusually a real result you want graded; `tool_use_only` against a harness\nthat declares no tools usually is not.\n\n```yaml\nrunner:\n  skip_on_empty_reason: [tool_use_only]\n```",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

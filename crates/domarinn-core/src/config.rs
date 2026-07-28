@@ -563,6 +563,25 @@ pub struct Runner {
     /// Whether deterministic asserts short-circuit the grader. Default true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short_circuit: Option<bool>,
+    /// Empty reasons that mark a case `skip` instead of grading it.
+    ///
+    /// A blank output is a *successful* call, so it gets graded and scores zero
+    /// against every assertion — for a reason that may have nothing to do with
+    /// the prompt. `skip` is the status for "this cell was not gradeable, and
+    /// that is not a verdict about the prompt": it is counted separately, and
+    /// does not drag a pass rate down.
+    ///
+    /// Opt-in and empty by default, because which reasons qualify is genuinely
+    /// suite-specific and domarinn should not invent the policy. A refusal is
+    /// usually a real result you want graded; `tool_use_only` against a harness
+    /// that declares no tools usually is not.
+    ///
+    /// ```yaml
+    /// runner:
+    ///   skip_on_empty_reason: [tool_use_only]
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_on_empty_reason: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
