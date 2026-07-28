@@ -211,11 +211,14 @@ fn parse_messages_response(
 
     let empty_reason = if text.trim().is_empty() {
         let mut candidates = Vec::new();
-        match stop_reason.as_deref() {
-            Some("refusal") => candidates.push(EmptyReason::new(EmptyReason::REFUSAL)),
-            Some("max_tokens") => candidates.push(EmptyReason::new(EmptyReason::TRUNCATED)),
-            _ => {}
-        }
+        // Shared with every other provider, including exec children: one
+        // vocabulary rather than a hand-rolled match per call site, so a
+        // reason added for one provider is understood by all of them.
+        candidates.extend(
+            stop_reason
+                .as_deref()
+                .and_then(crate::empty::from_stop_reason),
+        );
         match blocks {
             None => candidates.push(EmptyReason::new(EmptyReason::NO_CONTENT_BLOCKS)),
             Some(b) if b.is_empty() => {

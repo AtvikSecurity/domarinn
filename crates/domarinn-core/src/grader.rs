@@ -21,6 +21,10 @@ use crate::runner::AssertGrader;
 use crate::template::TemplateEngine;
 use crate::types::Output;
 
+/// Default ceiling on a grading call. Overridable per suite via
+/// `grader.timeout_ms`, because a reasoning grader given a generous
+/// `max_tokens` can legitimately outlast a fixed constant — and when it does,
+/// the timeout reads as a transport fault rather than the budget problem it is.
 const GRADER_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_GRADER_MAX_TOKENS: u64 = 4096;
 
@@ -40,10 +44,15 @@ impl DefaultGrader {
     /// Construct with an optional default grader and an optional embeddings
     /// provider (required for `similar` assertions).
     pub fn new(default_grader: Option<Grader>) -> Self {
+        let timeout = default_grader
+            .as_ref()
+            .and_then(|g| g.timeout_ms)
+            .map(Duration::from_millis)
+            .unwrap_or(GRADER_TIMEOUT);
         DefaultGrader {
             default_grader,
             embeddings: None,
-            client: http_client(GRADER_TIMEOUT),
+            client: http_client(timeout),
         }
     }
 
@@ -491,6 +500,7 @@ mod tests {
             },
             template: None,
             verdict_mode: None,
+            timeout_ms: None,
         }
     }
 
@@ -604,6 +614,7 @@ mod tests {
             },
             template: None,
             verdict_mode: None,
+            timeout_ms: None,
         };
         let outcome = DefaultGrader::new(Some(grader))
             .grade(

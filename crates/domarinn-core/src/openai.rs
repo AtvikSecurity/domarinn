@@ -239,14 +239,10 @@ fn parse_completion_response(
 
     let empty_reason = if text.trim().is_empty() {
         let mut candidates = Vec::new();
-        match finish_reason {
-            Some("length") => candidates.push(EmptyReason::new(EmptyReason::TRUNCATED)),
-            Some("content_filter") => {
-                candidates.push(EmptyReason::new(EmptyReason::CONTENT_FILTER))
-            }
-            Some("tool_calls") => candidates.push(EmptyReason::new(EmptyReason::TOOL_USE_ONLY)),
-            _ => {}
-        }
+        // Shared with every other provider, including exec children: one
+        // vocabulary rather than a hand-rolled match per call site, so a
+        // reason added for one provider is understood by all of them.
+        candidates.extend(finish_reason.and_then(crate::empty::from_stop_reason));
         if message.is_none() {
             candidates.push(EmptyReason::new(EmptyReason::NO_CONTENT_BLOCKS));
         } else if reasoning.is_some() {

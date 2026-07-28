@@ -529,6 +529,14 @@ pub struct Grader {
     /// `forced` (default) or `auto` — how the structured verdict is obtained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict_mode: Option<VerdictMode>,
+    /// How long to wait for a verdict, in milliseconds. Defaults to 120s.
+    ///
+    /// Reachable from config because the ceiling interacts with the grader's
+    /// own `max_tokens`: a reasoning grader given room to think can take
+    /// longer than a fixed constant allows, and the failure looks like a
+    /// transport fault rather than a budget one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -188,7 +188,7 @@ fn render_table(result: &RunResult, palette: Palette, failed_only: bool) -> Stri
         errored,
         humanize_duration(duration_secs(result)),
     ));
-    out.push_str(&stats_line(s));
+    out.push_str(&stats_line(s, &result.cases));
     out.push('\n');
 
     if failed_only {
@@ -229,9 +229,43 @@ fn humanize_count(n: u64) -> String {
     }
 }
 
-/// The stats footer line: Wilson pass-rate interval, then token/cost/cache
-/// segments that are omitted when zero or absent, joined by ` · `.
-fn stats_line(s: &RunSummary) -> String {
+/// pass@1 across repeated trials, or `None` when the run had no repeats.
+///
+/// Groups cases by their cell minus the repeat index, so each group is one
+/// test's trials, and averages `pass_at_k(n, passed, 1)` over the groups.
+/// `stats::pass_at_k` has been implemented and unit-tested since it shipped
+/// and referenced nowhere; this is its first caller.
+fn pass_at_1(cases: &[domarinn_core::result::CaseResult]) -> Option<f64> {
+    use std::collections::BTreeMap;
+    let mut trials: BTreeMap<(String, Option<String>, String), (u64, u64)> = BTreeMap::new();
+    for c in cases {
+        let key = (
+            c.cell.provider_id.clone(),
+            c.cell.prompt_id.clone(),
+            c.cell.test_id.clone(),
+        );
+        let entry = trials.entry(key).or_insert((0, 0));
+        entry.0 += 1;
+        if c.status == domarinn_core::result::CaseStatus::Pass {
+            entry.1 += 1;
+        }
+    }
+    // No repeats means pass@1 is the pass rate, and printing it twice under two
+    // names is noise rather than information.
+    if trials.values().all(|(n, _)| *n <= 1) {
+        return None;
+    }
+    let total: f64 = trials
+        .values()
+        .map(|(n, passed)| domarinn_core::stats::pass_at_k(*n, *passed, 1))
+        .sum();
+    Some(total / trials.len() as f64)
+}
+
+/// The stats footer line: Wilson pass-rate interval, then pass@1 and the
+/// token/cost/cache segments that are omitted when zero or absent, joined
+/// by ` · `.
+fn stats_line(s: &RunSummary, run_cases: &[domarinn_core::result::CaseResult]) -> String {
     let mut segments = Vec::new();
     let rate = domarinn_core::stats::wilson(s.passed, s.total, domarinn_core::stats::Z_95);
     segments.push(format!(
@@ -246,6 +280,13 @@ fn stats_line(s: &RunSummary) -> String {
             humanize_count(s.prompt_tokens),
             humanize_count(s.completion_tokens),
         ));
+    }
+    // pass@1 over repeated trials. Only meaningful with `--repeat`, and only
+    // *different* from the plain pass rate when a case's trials disagreed —
+    // which is exactly the judge/model variance `--repeat` exists to measure,
+    // and which the pass rate alone averages away.
+    if let Some(p1) = pass_at_1(run_cases) {
+        segments.push(format!("pass@1 {:.1}%", p1 * 100.0));
     }
     if s.cache_read_tokens > 0 || s.cache_write_tokens > 0 {
         segments.push(format!(
@@ -595,7 +636,7 @@ mod tests {
             failed: 1,
             ..Default::default()
         };
-        let line = stats_line(&s);
+        let line = stats_line(&s, &[]);
         assert!(line.starts_with("pass rate 83.3% (95% CI "));
         // No tokens/cost/cache segments when they are zero/None.
         assert!(!line.contains("tokens"));
@@ -616,7 +657,7 @@ mod tests {
             cache_hits: 3,
             ..Default::default()
         };
-        let line = stats_line(&s);
+        let line = stats_line(&s, &[]);
         assert!(line.contains("12.3k in / 4.5k out tokens"));
         assert!(line.contains("$0.4200"));
         assert!(line.contains("3 cache hits"));

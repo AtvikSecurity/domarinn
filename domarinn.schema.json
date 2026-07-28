@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/AtvikSecurity/domarinn/main/domarinn.schema.json",
   "title": "Suite",
   "description": "The top-level eval suite.",
   "type": "object",
@@ -960,6 +961,15 @@
               "type": "null"
             }
           ]
+        },
+        "timeout_ms": {
+          "description": "How long to wait for a verdict, in milliseconds. Defaults to 120s.\n\nReachable from config because the ceiling interacts with the grader's\nown `max_tokens`: a reasoning grader given room to think can take\nlonger than a fixed constant allows, and the failure looks like a\ntransport fault rather than a budget one.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         }
       },
       "additionalProperties": false,
