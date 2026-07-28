@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
-use crate::asserts::AssertName;
+use crate::assert_name::AssertName;
 use crate::ids::{CaseKey, RunId};
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
@@ -94,6 +94,20 @@ pub enum AssertStatus {
     Error,
     /// Not evaluated because the case was already decided (short-circuit).
     Skipped,
+}
+
+impl AssertStatus {
+    /// The status of a graded assertion from its boolean outcome.
+    ///
+    /// A constructor for the wire value, so it lives with the type rather than
+    /// with whichever engine module happens to call it.
+    pub fn from_pass(pass: bool) -> AssertStatus {
+        if pass {
+            AssertStatus::Pass
+        } else {
+            AssertStatus::Fail
+        }
+    }
 }
 
 /// The result of a single assertion.

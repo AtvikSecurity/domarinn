@@ -13,9 +13,12 @@ pub mod config;
 pub mod diff;
 pub mod digests;
 pub mod embeddings;
-pub mod empty;
-pub mod error_class;
 pub mod errors;
+
+// The wire contract lives in `domarinn-types`. Re-exported module-for-module so
+// `domarinn_core::result::RunResult` and friends keep resolving: the split is an
+// internal reorganisation, not a rename for every caller in the workspace.
+pub use domarinn_types::{empty, error_class, ids, result, types};
 pub mod exec;
 pub mod exec_protocol;
 pub mod exec_provider;
@@ -24,7 +27,6 @@ pub mod filter;
 pub mod generate;
 pub mod grader;
 pub mod http_provider;
-pub mod ids;
 pub mod interp;
 pub mod loader;
 pub mod loader_validate;
@@ -37,7 +39,6 @@ pub mod provider;
 pub mod provider_factory;
 pub mod render;
 pub mod resolve;
-pub mod result;
 pub mod retry;
 pub mod runner;
 pub mod sandbox;
@@ -45,7 +46,6 @@ pub mod scoring;
 pub mod stats;
 pub mod template;
 pub mod template_fns;
-pub mod types;
 pub mod val;
 
 pub use config::Suite;

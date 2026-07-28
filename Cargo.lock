@@ -932,6 +932,7 @@ dependencies = [
  "blake3",
  "chrono",
  "csv",
+ "domarinn-types",
  "futures",
  "glob",
  "globset",
@@ -1011,6 +1012,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "domarinn-types"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "ts-rs",
+ "ulid",
 ]
 
 [[package]]

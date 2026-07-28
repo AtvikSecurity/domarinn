@@ -3,7 +3,7 @@
 /**
  * *What* moved between two runs of one case.
  *
- * Orthogonal to [`Delta`], which says whether the **verdict** moved. That
+ * Orthogonal to `Delta` (in `domarinn_core::diff`), which says whether the **verdict** moved. That
  * distinction is the whole point: "you changed the prompt" and "the model
  * regressed" both surface as `NewlyFailing` today, and they call for opposite
  * responses.

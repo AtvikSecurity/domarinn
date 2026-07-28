@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/domarinn-types",
     "crates/domarinn-core",
     "crates/domarinn-cache",
     "crates/domarinn-server",
@@ -18,6 +19,7 @@ repository = "https://github.com/AtvikSecurity/domarinn"
 authors = ["Atvik Security"]
 
 [workspace.dependencies]
+domarinn-types = { path = "crates/domarinn-types" }
 domarinn-core = { path = "crates/domarinn-core" }
 domarinn-cache = { path = "crates/domarinn-cache" }
 domarinn-server = { path = "crates/domarinn-server" }

@@ -174,16 +174,6 @@ fn skipped_result(assert: &Assert) -> AssertResult {
     }
 }
 
-impl AssertStatus {
-    fn from_pass(pass: bool) -> AssertStatus {
-        if pass {
-            AssertStatus::Pass
-        } else {
-            AssertStatus::Fail
-        }
-    }
-}
-
 /// The case-level `error` message for a case whose assertions errored, or
 /// `None` when none did — so it doubles as the "did anything error" predicate.
 ///
