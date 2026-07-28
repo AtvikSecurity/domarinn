@@ -69,11 +69,16 @@ and closes it, then reads one JSON response from stdout:
   `prompt` is **null / omitted** when the suite has no prompts (the "self-input"
   case) — the provider works from `vars` alone. A text prompt is sent as
   `{ "text": "…" }`; a chat prompt as `{ "messages": [...] }`.
-- **Response** (child stdout → domarinn):
-  `{ "output" (required), "usage"?, "cost_usd"?, "error"?, "metadata"? }`.
+- **Response** (child stdout → domarinn): `output` is the only required field;
+  see [the protocol reference](./protocol.md#response) for the full set.
   A string `output` becomes text; any other JSON becomes a structured output.
   `usage` fills token counts, `cost_usd` feeds the [`cost`](./assertions.md#budget-assertions-cost-latency-tokens)
   assertion, and `metadata` is retained as the raw payload.
+- Worth reporting even though all of it is optional: `empty_reason` (so a
+  refusal is diagnosed instead of scoring zero against every assertion),
+  `error.class` (so a rejected credential is distinguishable from a crash),
+  `error.details` (structured diagnostics that survive to the stored case), and
+  `model` (so an alias that silently repointed is visible).
 
 The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus
 your `env`. The full wire contract, exit-code rules, and minimal Bash/Python
@@ -131,8 +136,9 @@ Behavior:
   pulled out and joined with blank lines into the top-level `system` field; the
   rest become `messages`. A plain text prompt becomes a single `user` message.
 - Parses the response by concatenating `text` content blocks. Records token
-  `usage` (including `cache_read_input_tokens`) and `stop_reason`. It does not
-  compute `cost_usd`.
+  `usage` (cache reads and both cache-write TTLs included), `stop_reason`, and
+  the `model` the API reports having served. `cost_usd` is computed from the
+  built-in rate table; see [`pricing`](#pricing) to override it.
 - A missing prompt is a fatal error (this provider requires a prompt).
 
 ```yaml
@@ -168,7 +174,7 @@ Behavior:
   through with their roles.
 - Parses `choices[0].message.content` as the output, `finish_reason` as the
   stop reason, and `usage.prompt_tokens` / `usage.completion_tokens` as token
-  usage. It does not compute `cost_usd`.
+  usage. `cost_usd` is computed from domarinn's built-in rate table for known models; set `pricing:` to override the rates or price a model the table does not know.
 - A missing prompt is a fatal error.
 
 ```yaml
@@ -189,6 +195,57 @@ providers:
 ```
 
 ---
+
+## Pricing
+
+`anthropic` and `openai` providers cost each call from a built-in per-model
+rate table, so [`cost`](./assertions.md#budget-assertions-cost-latency-tokens)
+assertions and the run-level cost figure mean something without configuration.
+
+A model the table does not know reports **no cost at all** rather than a
+guessed one — the `cost` assertion keeps honestly saying "not reported", and
+the run warns once naming the id. A made-up number that silently passes or
+fails a budget is worse than a loud no-op.
+
+Override the rates, or price a model the table has never heard of, with
+`pricing` (USD per **million** tokens, merged field-wise over any built-in
+row):
+
+```yaml
+providers:
+  - id: via-gateway
+    type: anthropic
+    model: our-fine-tune
+    base_url: https://gateway.internal/v1
+    pricing:
+      input_per_mtok: 2.00
+      output_per_mtok: 8.00
+      cache_read_per_mtok: 0.20
+      cache_write_per_mtok: 2.50
+```
+
+An `exec` provider that reports its own `cost_usd` always wins: it is the only
+party that knows whether it hit a proxy, a batch endpoint, or a different model
+entirely.
+
+`pricing` never reaches a provider's fingerprint, so setting it does not
+invalidate a single cache entry. Cost is not request identity.
+
+## Credential preflight
+
+Before the first call, domarinn checks that every credential the run will
+actually read resolves to a non-empty value, and fails with exit 2 naming the
+provider and the variable if not. "Actually read" is the operative part: a
+grader key is only required when a rubric assertion survived your filters.
+
+It also rejects one known-wrong credential *shape* — an Anthropic OAuth access
+token (`sk-ant-oat…`), which the Messages API rejects as `x-api-key`. That is a
+hard failure only against `api.anthropic.com`; against any other `base_url` it
+is a warning, because a gateway may legitimately accept it.
+
+Without this, a wrong **grader** key errors every case in the suite and exits 3,
+which reads as an infrastructure fault after burning the run's entire provider
+spend.
 
 ## `http`
 

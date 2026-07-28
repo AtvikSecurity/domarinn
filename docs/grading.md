@@ -78,7 +78,7 @@ The `grader:` block wraps a provider plus grading options:
 |----------------|---------------|------------|---------|
 | `provider`     | provider spec | –          | The judge model. Only `anthropic` and `openai` are supported for grading. |
 | `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template. |
-| `verdict_mode` | string        | `forced`   | How the structured verdict is obtained: `forced` (default) or `auto`. |
+| `verdict_mode` | string        | `forced`   | How the structured verdict is obtained: `forced` (default) or `auto` (rejected at load — not implemented). |
 
 The `provider` is a standard [`ProviderKind`](./providers.md) — but only the
 `anthropic` and `openai` shapes are valid graders. Any other provider type

@@ -113,8 +113,8 @@ mistyped title ships the wrong version number.
 ```
 
 Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`,
-`ci`, `chore`, `revert`. Scopes in use: `core`, `cache`, `server`, `cli`, `web`,
-`logging`, `docker`, `mise`, `deps`.
+`ci`, `chore`, `revert`. Scopes in use: `core`, `types`, `protocol`, `cache`,
+`server`, `cli`, `web`, `logging`, `config`, `exec`, `docker`, `mise`, `deps`.
 
 A trailing `!` marks a breaking change. While domarinn is pre-`1.0`, `feat` and
 `fix` bump the patch version and `!` bumps the minor.

@@ -33,12 +33,12 @@ The `type` field selects the assertion. Names are kebab-case.
 | `equals`         | deterministic | `value: any` (may be `!raw`)           | output equals the (rendered) expected value |
 | `starts-with`    | deterministic | `value: string`                        | output starts with the prefix |
 | `is-json`        | deterministic | –                                      | the whole output parses as JSON |
-| `contains-json`  | deterministic | `schema?` (reserved)                   | a JSON object/array appears anywhere in the output |
+| `contains-json`  | deterministic | `schema?` (JSON Schema, `$file` ok)    | a JSON object/array appears anywhere in the output, and matches `schema` when given |
 | `length`         | deterministic | `min?: int`, `max?: int`               | character count is within `[min, max]` |
 | `jinja`          | deterministic | `value: string`                        | a minijinja boolean expression is true |
 | `cost`           | deterministic | `max: number`                          | reported cost in USD `<= max` (passes with a note if unreported) |
 | `latency`        | deterministic | `max: int` (ms)                        | measured latency `<= max` (this assert bypasses the cache) |
-| `tokens`         | deterministic | `max: int`                             | total tokens `<= max` (passes with a note if unreported) |
+| `tokens`         | deterministic | `max: int`, `count?: total\|billable`   | token count `<= max` (passes with a note if unreported) |
 | `exec`           | graded        | `command: [string]`, `config?`         | the subprocess returns `pass: true` |
 | `llm-rubric`     | graded        | `value: string`, `grader?`, `threshold?`, `params?` | the LLM grader's verdict passes (see [grading.md](./grading.md)) |
 | `similar`        | graded        | `value: any`, `threshold?` (default 0.8) | embedding cosine similarity `>= threshold` |
@@ -59,9 +59,14 @@ Every assertion, regardless of `type`, accepts two extra keys:
 
 ### `not-<type>` sugar
 
-`not-<type>` is sugar for `negate: true` on that type. The loader rewrites
-`type: not-contains` into `type: contains` + `negate: true` before the config
-is deserialized, so it works for **any** assertion type.
+`not-<type>` is sugar for `negate: true` on that type. domarinn rewrites
+`type: not-contains` into `type: contains` + `negate: true` while
+deserializing the assertion, so it works for **any** assertion type **in any
+test source** — inline, a `file://` YAML/JSON/JSONL glob, a CSV `__assert`
+column, or generator output.
+
+An explicit `negate:` written alongside `not-` loses: two spellings of one
+intent disagreeing is a config bug, and `not-` is the more specific one.
 
 ```yaml
 # These two are identical:
@@ -307,9 +312,37 @@ balanced `{…}` or `[…]` is found, even embedded in prose). Contrast with
 - type: contains-json
 ```
 
-> The `schema` field is **reserved**. Today `contains-json` only checks for the
-> *presence* of a JSON value; schema validation is not yet implemented, so a
-> `schema:` you provide is accepted but ignored.
+With a `schema`, the extracted JSON must also validate against it:
+
+```yaml
+- type: contains-json
+  schema:
+    type: object
+    required: [verdict, confidence]
+    properties:
+      verdict: {enum: [approve, reject]}
+      confidence: {type: number, minimum: 0, maximum: 1}
+```
+
+A schema usually belongs in its own file, which `$file` supports:
+
+```yaml
+- type: contains-json
+  schema: {$file: schemas/verdict.json}
+```
+
+Three things worth knowing:
+
+- **The first** balanced JSON value is the one validated. "No JSON at all" and
+  "the JSON does not match" are reported as different failures, so you can tell
+  which happened.
+- **The schema is not templated.** It is a contract, not a per-case value.
+- **Remote `$ref` does not resolve.** domarinn is built without the resolver, so
+  a `$ref` to a URL is a schema-compile error rather than an outbound request
+  mid-run. Keep referenced schemas local.
+
+`negate` composes, so `not-contains-json` with a schema means "no JSON here
+matches this shape".
 
 ### `length`
 
@@ -358,9 +391,9 @@ These read the call's **run metrics** rather than the output text:
 
 | Type      | Metric read            | Source |
 |-----------|------------------------|--------|
-| `cost`    | `cost_usd` (optional)  | reported by the provider (e.g. an `exec` provider's `cost_usd`) |
+| `cost`    | `cost_usd` (optional)  | computed from the rate table for `anthropic`/`openai`, or self-reported by an `exec` provider (which wins) |
 | `latency` | `latency_ms`           | measured by the runner (always available) |
-| `tokens`  | total tokens (optional)| `usage.input_tokens + usage.output_tokens` |
+| `tokens`  | token count (optional) | `count: total` (default) is `input + output`; `count: billable` adds cache reads and writes |
 
 ```yaml
 - type: latency

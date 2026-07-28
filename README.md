@@ -116,14 +116,16 @@ Full docs live in **[`docs/`](docs/README.md)**:
 
 ## Workspace layout
 
-| Crate              | Responsibility                                                                                                 |
-| ------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `domarinn-core`    | Config schema, template engine, providers, runner, grader, statistics, and the `RunResult` DTOs. Pure library. |
-| `domarinn-cache`   | Cache backends: local disk, remote HTTP, S3, layered.                                                          |
-| `domarinn-server`  | axum results server, SQLite storage, accounts/auth, and the embedded web UI.                                   |
-| `domarinn-cli`     | The `domarinn` binary.                                                                                         |
-| `domarinn-testkit` | Fake exec-protocol programs for tests (not published).                                                         |
-| `web/`             | The React + Vite + TypeScript UI, embedded into the server binary.                                             |
+| Crate               | Responsibility                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `domarinn-protocol` | The exec protocol's wire types. `serde` and nothing else, so a third-party provider can depend on it.          |
+| `domarinn-types`    | The run document and the vocabulary the engine, CLI, server and web UI share.                                  |
+| `domarinn-core`     | Config schema, template engine, providers, runner, grader, statistics, and the `RunResult` DTOs. Pure library. |
+| `domarinn-cache`    | Cache backends: local disk, remote HTTP, S3, layered.                                                          |
+| `domarinn-server`   | axum results server, SQLite storage, accounts/auth, and the embedded web UI.                                   |
+| `domarinn-cli`      | The `domarinn` binary.                                                                                         |
+| `domarinn-testkit`  | Fake exec-protocol programs for tests (not published).                                                         |
+| `web/`              | The React + Vite + TypeScript UI, embedded into the server binary.                                             |
 
 ## Development
 
@@ -160,8 +162,8 @@ Every source file is kept under 1000 lines (enforced by a ratchet test), and CI
 runs fmt, clippy `-D warnings`, the Rust and web (vitest) test suites, the web
 lint, musl static builds for x86_64 and aarch64, schema/type drift checks, and a
 zizmor workflow lint — each gate is a mise task invoked by name in `ci.yml`, so
-`mise run ci` reproduces the whole matrix locally. The Playwright e2e suite is
-not part of CI; run it locally with `mise run e2e`.
+`mise run ci` reproduces most of the matrix locally — the `saml` and `e2e` jobs
+are separate (`mise run test-saml`, `mise run e2e`).
 
 ## Contributing
 

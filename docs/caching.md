@@ -18,6 +18,13 @@ vars produces a new key.
 - **Grader verdicts are _not_ cached.** Only provider responses are. An
   LLM-graded suite re-pays for grading on every run, even when every provider
   response is a cache hit.
+- **The model a provider *reports* having used is not in the key.** It cannot
+  be: the key is derived from a request, and a reported model only exists on a
+  response. The *requested* model is already covered (it is in the
+  `anthropic`/`openai` fingerprints, and inside `command` for `exec`). Hashing
+  the reported one would silently discard every cached entry the day a vendor
+  rolls a snapshot; `CaseResult.model` makes that drift visible and diffable
+  instead, which is the useful lever.
 - **`latency` assertions bypass the cache**, since a cached latency is
   meaningless. `cost` and `tokens` come from the stored response, so those are
   honored on a hit.
@@ -75,6 +82,27 @@ Reach for it when the system under test loads content domarinn cannot see — an
 example. domarinn has no way to notice those files changed, so without a salt it
 would serve a stale response. Compute the digest over just the content that case
 actually depends on.
+
+#### Letting domarinn compute the digest
+
+Writing those digests by hand does not scale, and computing them outside the
+suite means a build step — in practice, a whole test generator whose only job is
+injecting one field per case. `$digest:` does it for you:
+
+```yaml
+tests:
+  - id: refuses-out-of-scope
+    vars: {prompt_id: pentest-session, user_message: "scan 10.0.0.1"}
+    cache_salt: "$digest: prompts/{{ prompt_id }}.md"
+```
+
+The glob is rendered against the case's own vars, so each case digests exactly
+the file it exercises rather than a constant that busts the whole suite on every
+edit. Matched files are hashed in sorted order **with their relative paths**, so
+moving content between two matched files counts as a change. A glob that matches
+nothing is an error, not an empty digest — an empty digest would be one constant
+salt shared by every such case, which is no separation at all wearing a hash.
+Paths are sandboxed to the suite directory, like every other file reference.
 
 You do **not** need this for ordinary suites: an edit to a `prompts:` template or
 to a case's `vars` already changes the rendered request, which is already in the

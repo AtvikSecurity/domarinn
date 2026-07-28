@@ -81,6 +81,14 @@ inputs:
     description: Name of the uploaded artifact holding results.xml and summary.md.
     required: false
     default: "domarinn-results"
+  allow-empty:
+    description: >-
+      If "true", succeed when the run resolves to zero test cases. Off by
+      default: a green result over no cells is indistinguishable from a green
+      result over every cell. Turn it on for a sharded matrix where a shard
+      legitimately has no work.
+    required: false
+    default: "false"
 
 outputs:
   exit-code:
@@ -107,6 +115,20 @@ outputs:
   regressed:
     description: Number of tests that newly regressed vs the baseline (0 without `against`).
     value: ${{ steps.summary.outputs.regressed }}
+  cost-usd:
+    description: Cost of the work this run represents, in USD (empty when unpriced).
+    value: ${{ steps.summary.outputs.cost-usd }}
+  cache-savings-usd:
+    description: >-
+      What the cached cases would have cost, in USD. Actual spend is
+      `cost-usd` minus this.
+    value: ${{ steps.summary.outputs.cache-savings-usd }}
+  cache-read-tokens:
+    description: Input tokens served from a provider-side prompt cache.
+    value: ${{ steps.summary.outputs.cache-read-tokens }}
+  cache-write-tokens:
+    description: Input tokens written into a provider-side prompt cache.
+    value: ${{ steps.summary.outputs.cache-write-tokens }}
   run-url:
     description: URL of the uploaded run on the results server (empty without `server-url`).
     value: ${{ steps.summary.outputs.run-url }}
@@ -203,6 +225,7 @@ runs:
         DOMARINN_TOKEN: ${{ inputs.token }}
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_AGAINST: ${{ inputs.against }}
+        INPUT_ALLOW_EMPTY: ${{ inputs.allow-empty }}
       run: |
         # No `set -e`: we must capture the CLI exit code and keep going so the
         # summary, artifact upload, PR comment, and gate step still run.
@@ -212,6 +235,7 @@ runs:
 
         args=(run "${INPUT_CONFIG}" --format junit --out "${results}")
         [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
+        [ "${INPUT_ALLOW_EMPTY}" = "true" ] && args+=(--allow-empty)
         # Upload the run when a server is configured (token via DOMARINN_TOKEN).
         # `--share` also records the run's URL on the stored run, which is where
         # the summary step reads it from.
