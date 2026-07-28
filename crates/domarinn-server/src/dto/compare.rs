@@ -15,7 +15,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use domarinn_core::asserts::AssertName;
-use domarinn_core::diff::McNemarView;
+use domarinn_core::diff::{CaseChange, McNemarView};
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 use domarinn_core::stats::PassRate;
@@ -55,6 +55,11 @@ pub struct CompareCaseRow {
     /// empty when nothing flipped or the case exists on only one side. See
     /// [`AssertFlip`] for the (necessarily heuristic) pairing.
     pub assert_flips: Vec<AssertFlip>,
+    /// *What* moved for this case, as opposed to whether the verdict did.
+    /// `unknown` whenever either side predates component digests — that is the
+    /// honest answer, and it is common against historical runs because
+    /// `provider_digest` can never be backfilled.
+    pub change: CaseChange,
 }
 
 /// A single assertion whose pass/fail flipped between the base and head runs
@@ -144,6 +149,21 @@ pub struct RunTotals {
 pub struct CompareConfig {
     pub base_digest: Option<String>,
     pub head_digest: Option<String>,
+    pub changed: Option<bool>,
+    /// Which parts of the suite moved. Lets a reader say "the prompts changed"
+    /// rather than "config changed" — the whole-suite `changed` above cannot
+    /// distinguish a prompt rewrite from a typo in a description.
+    pub components: Vec<ComponentDrift>,
+}
+
+/// One component of the suite across a comparison.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ComponentDrift {
+    /// `prompts` | `providers` | `tests` | `asserts` | `grader`.
+    pub component: String,
+    pub base: Option<String>,
+    pub head: Option<String>,
+    /// `None` when either side has no digest — unknown, not unchanged.
     pub changed: Option<bool>,
 }
 
@@ -240,6 +260,7 @@ mod tests {
                     base_score: 1.0,
                     head_score: 0.0,
                 }],
+                change: CaseChange::UnstableGrader,
             }],
             stats: sample_stats(),
             totals: sample_totals(),
@@ -247,6 +268,12 @@ mod tests {
                 base_digest: Some("sha256:aaa".to_string()),
                 head_digest: Some("sha256:bbb".to_string()),
                 changed: Some(true),
+                components: vec![ComponentDrift {
+                    component: "prompts".to_string(),
+                    base: Some("blake3:p1".to_string()),
+                    head: Some("blake3:p2".to_string()),
+                    changed: Some(true),
+                }],
             },
         };
         assert_eq!(
@@ -282,6 +309,7 @@ mod tests {
                                 "head_score": 0.0,
                             }
                         ],
+                        "change": "unstable_grader",
                     }
                 ],
                 "stats": {
@@ -328,6 +356,12 @@ mod tests {
                     "base_digest": "sha256:aaa",
                     "head_digest": "sha256:bbb",
                     "changed": true,
+                    "components": [{
+                        "component": "prompts",
+                        "base": "blake3:p1",
+                        "head": "blake3:p2",
+                        "changed": true,
+                    }],
                 },
             })
         );
@@ -366,10 +400,14 @@ mod tests {
             head_score: Some(1.0),
             score_delta: None,
             assert_flips: vec![],
+            // A case that exists on only one side has nothing to compare, so no
+            // axis can have held.
+            change: CaseChange::Unknown,
         };
         let v = serde_json::to_value(&row).unwrap();
         assert!(v["base_status"].is_null());
         assert_eq!(v["delta"], "added");
+        assert_eq!(v["change"], "unknown");
         // Optionals serialize as explicit `null`, and empty flips as `[]`.
         assert!(v["base_score"].is_null());
         assert!(v["score_delta"].is_null());
@@ -405,11 +443,21 @@ mod tests {
             base_digest: Some("sha256:aaa".to_string()),
             head_digest: None,
             changed: None,
+            components: vec![ComponentDrift {
+                component: "prompts".to_string(),
+                base: Some("blake3:p1".to_string()),
+                head: None,
+                changed: None,
+            }],
         };
         let v = serde_json::to_value(&cfg).unwrap();
         assert_eq!(v["base_digest"], "sha256:aaa");
         assert!(v["head_digest"].is_null());
         assert!(v["changed"].is_null());
+        // Unknown must serialize as an explicit null, never as `false`: a reader
+        // that saw `false` would report "the prompts held" for a comparison that
+        // cannot know.
+        assert!(v["components"][0]["changed"].is_null());
     }
 
     #[test]

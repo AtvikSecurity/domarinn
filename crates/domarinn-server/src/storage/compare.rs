@@ -13,6 +13,7 @@ use std::str::FromStr;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use domarinn_core::diff::{classify_change, CaseChange, ChangeInputs};
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 use domarinn_core::stats::{mcnemar, wilson, Z_95};
@@ -20,7 +21,7 @@ use domarinn_core::stats::{mcnemar, wilson, Z_95};
 use super::{empty_to_none, from_microusd, parse_stored_asserts, Storage};
 use crate::dto::compare::{
     AssertFlip, CompareCaseRow, CompareConfig, CompareDelta, CompareResponse, CompareStats,
-    CompareSummary, CompareTotals, RunTotals,
+    CompareSummary, CompareTotals, ComponentDrift, RunTotals,
 };
 use crate::dto::runs::CaseAssertLean;
 
@@ -42,6 +43,9 @@ struct CmpCase {
     output_hash: Option<String>,
     score: Option<f64>,
     asserts: Vec<CaseAssertLean>,
+    prompt_digest: Option<String>,
+    provider_digest: Option<String>,
+    assert_digest: Option<String>,
 }
 
 /// Per-run aggregate columns from the `runs` table (column-only; no blob load).
@@ -53,14 +57,21 @@ struct RunAgg {
     case_count: i64,
     pass_count: i64,
     config_digest: Option<String>,
+    /// Component digests in the fixed order of [`COMPONENTS`].
+    components: [Option<String>; 5],
 }
+
+/// The suite components, in the order they are stored and reported. Named here
+/// once so the column list, the array indices and the wire strings cannot drift.
+const COMPONENTS: [&str; 5] = ["prompts", "providers", "tests", "asserts", "grader"];
 
 fn load_compare_cases(
     conn: &Connection,
     run_id: &str,
 ) -> anyhow::Result<BTreeMap<String, CmpCase>> {
     let mut stmt = conn.prepare(
-        "SELECT case_key, name, status, output_hash, score, asserts
+        "SELECT case_key, name, status, output_hash, score, asserts,
+                prompt_digest, provider_digest, assert_digest
          FROM cases WHERE run_id = ?1",
     )?;
     let rows = stmt.query_map(params![run_id], |row| {
@@ -81,6 +92,9 @@ fn load_compare_cases(
                 output_hash: row.get(3)?,
                 score: row.get(4)?,
                 asserts,
+                prompt_digest: row.get(6)?,
+                provider_digest: row.get(7)?,
+                assert_digest: row.get(8)?,
             },
         ))
     })?;
@@ -98,7 +112,9 @@ fn load_run_agg(conn: &Connection, run_id: &str) -> anyhow::Result<Option<RunAgg
     let agg = conn
         .query_row(
             "SELECT prompt_tokens, completion_tokens, cost_microusd, duration_ms,
-                    case_count, pass_count, config_digest
+                    case_count, pass_count, config_digest,
+                    prompts_digest, providers_digest, tests_digest, asserts_digest,
+                    grader_digest
              FROM runs WHERE id = ?1",
             params![run_id],
             |row| {
@@ -110,6 +126,13 @@ fn load_run_agg(conn: &Connection, run_id: &str) -> anyhow::Result<Option<RunAgg
                     case_count: row.get(4)?,
                     pass_count: row.get(5)?,
                     config_digest: row.get(6)?,
+                    components: [
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                        row.get(11)?,
+                    ],
                 })
             },
         )
@@ -273,6 +296,22 @@ fn compare_runs(
             (Some(b), Some(h)) => compute_assert_flips(&b.asserts, &h.asserts),
             _ => Vec::new(),
         };
+        // A case present on only one side has nothing to compare, so no axis
+        // can have "held" — `Unknown` rather than a fabricated Stable.
+        let change = match (b, h) {
+            (Some(b), Some(h)) => classify_change(&ChangeInputs {
+                base_prompt: b.prompt_digest.as_deref(),
+                head_prompt: h.prompt_digest.as_deref(),
+                base_provider: b.provider_digest.as_deref(),
+                head_provider: h.provider_digest.as_deref(),
+                base_asserts: b.assert_digest.as_deref(),
+                head_asserts: h.assert_digest.as_deref(),
+                output_changed: out_changed,
+                verdict_changed: b.status != h.status,
+            }),
+            _ => CaseChange::Unknown,
+        };
+
         cases.push(CompareCaseRow {
             case_key: CaseKey::new(key),
             name,
@@ -284,6 +323,7 @@ fn compare_runs(
             head_score,
             score_delta,
             assert_flips,
+            change,
         });
     }
 
@@ -322,6 +362,26 @@ fn compare_runs(
         base_digest,
         head_digest,
         changed,
+        components: COMPONENTS
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                // Same three-state rule as the case axis: a missing digest on
+                // either side is unknown, never "unchanged".
+                let base = empty_to_none(base_agg.components[i].clone());
+                let head = empty_to_none(head_agg.components[i].clone());
+                let changed = match (&base, &head) {
+                    (Some(b), Some(h)) => Some(b != h),
+                    _ => None,
+                };
+                ComponentDrift {
+                    component: (*name).to_string(),
+                    base,
+                    head,
+                    changed,
+                }
+            })
+            .collect(),
     };
 
     Ok(Some(CompareResponse {

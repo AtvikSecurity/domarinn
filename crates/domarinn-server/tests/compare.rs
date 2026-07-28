@@ -335,3 +335,176 @@ async fn compare_reports_config_drift() {
     assert!(unknown["config"]["head_digest"].is_null());
     assert!(unknown["config"]["changed"].is_null());
 }
+
+/// The axis the component digests exist for: separating "you changed the
+/// prompt" from "the model moved" from "your grader is unstable" — all three of
+/// which surface identically as `newly_failing` without them.
+#[tokio::test]
+async fn compare_classifies_what_moved_not_just_whether_it_did() {
+    let (app, _dir) = test_app(Settings::default()).await;
+
+    // Four cases, each isolating one axis. Every case passes in base.
+    let base = make_run(
+        "d-base",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("p", "grader", CaseStatus::Pass)
+                .output(Some("same"))
+                .digests("blake3:p1", "blake3:m1", "blake3:a1"),
+            CaseSpec::new("p", "prompt", CaseStatus::Pass)
+                .output(Some("same"))
+                .digests("blake3:p1", "blake3:m1", "blake3:a1"),
+            CaseSpec::new("p", "model", CaseStatus::Pass)
+                .output(Some("same"))
+                .digests("blake3:p1", "blake3:m1", "blake3:a1"),
+            CaseSpec::new("p", "stable", CaseStatus::Pass)
+                .output(Some("same"))
+                .digests("blake3:p1", "blake3:m1", "blake3:a1"),
+        ],
+    );
+    let head = make_run(
+        "d-head",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        10,
+        &[
+            // Identical request, identical output, identical grading — and the
+            // verdict flipped anyway. Nothing but the grader is left.
+            CaseSpec::new("p", "grader", CaseStatus::Fail)
+                .output(Some("same"))
+                .digests("blake3:p1", "blake3:m1", "blake3:a1"),
+            CaseSpec::new("p", "prompt", CaseStatus::Fail)
+                .output(Some("different"))
+                .digests("blake3:p2", "blake3:m1", "blake3:a1"),
+            CaseSpec::new("p", "model", CaseStatus::Fail)
+                .output(Some("different"))
+                .digests("blake3:p1", "blake3:m2", "blake3:a1"),
+            CaseSpec::new("p", "stable", CaseStatus::Pass)
+                .output(Some("same"))
+                .digests("blake3:p1", "blake3:m1", "blake3:a1"),
+        ],
+    );
+    for run in [&base, &head] {
+        let reply = post_json(&app, "/api/v1/runs", None, &run_value(run)).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "seed {}", run.run_id);
+    }
+
+    let body = get(&app, "/api/v1/runs/d-base/compare/d-head").await.json();
+    let by_key: std::collections::HashMap<String, String> = body["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["case_key"].as_str().unwrap().to_string(),
+                c["change"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+
+    assert_eq!(by_key[&case_key("p", "grader")], "unstable_grader");
+    assert_eq!(by_key[&case_key("p", "prompt")], "prompt_changed");
+    assert_eq!(by_key[&case_key("p", "model")], "provider_changed");
+    assert_eq!(by_key[&case_key("p", "stable")], "stable");
+}
+
+/// Against a run that predates component digests the answer is *unknown*, and
+/// it must say so rather than reporting a change it cannot see — or, worse,
+/// reporting `stable` because both sides look equally absent.
+#[tokio::test]
+async fn compare_reports_unknown_against_a_run_without_digests() {
+    let (app, _dir) = test_app(Settings::default()).await;
+
+    let legacy = make_run(
+        "l-base",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[CaseSpec::new("p", "t1", CaseStatus::Pass).output(Some("same"))],
+    );
+    let modern = make_run(
+        "l-head",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        10,
+        &[CaseSpec::new("p", "t1", CaseStatus::Fail)
+            .output(Some("same"))
+            .digests("blake3:p1", "blake3:m1", "blake3:a1")],
+    );
+    for run in [&legacy, &modern] {
+        post_json(&app, "/api/v1/runs", None, &run_value(run)).await;
+    }
+
+    let body = get(&app, "/api/v1/runs/l-base/compare/l-head").await.json();
+    assert_eq!(body["cases"][0]["change"], "unknown");
+}
+
+/// Component drift names which part of the suite moved, where the whole-suite
+/// digest could only say "something did".
+#[tokio::test]
+async fn compare_reports_which_suite_component_changed() {
+    let (app, _dir) = test_app(Settings::default()).await;
+
+    let mut base = make_run(
+        "c-base",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[CaseSpec::new("p", "t1", CaseStatus::Pass)],
+    );
+    base.digests = Some(domarinn_core::result::ConfigDigests {
+        prompts: Some("blake3:p1".into()),
+        providers: Some("blake3:m1".into()),
+        tests: Some("blake3:t1".into()),
+        asserts: Some("blake3:a1".into()),
+        grader: Some("blake3:g1".into()),
+    });
+    let mut head = make_run(
+        "c-head",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        10,
+        &[CaseSpec::new("p", "t1", CaseStatus::Pass)],
+    );
+    head.digests = Some(domarinn_core::result::ConfigDigests {
+        // Only the prompts moved.
+        prompts: Some("blake3:p2".into()),
+        ..base.digests.clone().unwrap()
+    });
+    for run in [&base, &head] {
+        post_json(&app, "/api/v1/runs", None, &run_value(run)).await;
+    }
+
+    let body = get(&app, "/api/v1/runs/c-base/compare/c-head").await.json();
+    let drift: std::collections::HashMap<String, Value> = body["config"]["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["component"].as_str().unwrap().to_string(),
+                c["changed"].clone(),
+            )
+        })
+        .collect();
+
+    assert_eq!(drift["prompts"], json!(true));
+    assert_eq!(drift["providers"], json!(false));
+    assert_eq!(drift["tests"], json!(false));
+    assert_eq!(drift["asserts"], json!(false));
+    assert_eq!(drift["grader"], json!(false));
+}

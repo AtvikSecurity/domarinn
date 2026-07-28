@@ -58,7 +58,27 @@ latency_ms: number,
  * Total wall time for the cell, *including* retry backoff and cache I/O.
  * Absent on blobs written before this field existed.
  */
-wall_ms?: number, cached: boolean, attempts: number, error?: string, 
+wall_ms?: number, cached: boolean, attempts: number, 
+/**
+ * Identity of what this case asked the model — rendered prompt, rendered
+ * vars, params, cache salt. Deliberately excludes the provider (that is
+ * `provider_digest`) and `repeat`. See [`crate::digests::prompt_digest`].
+ */
+prompt_digest?: string, 
+/**
+ * Identity of the model and its settings, from the provider fingerprint.
+ *
+ * **Not backfillable**: the fingerprint appears nowhere in a stored run
+ * document (`request` is a preview envelope and is absent under
+ * `--no-raw`), so change classification only works between two runs that
+ * both post-date this field. Readers must treat `None` as unknown.
+ */
+provider_digest?: string, 
+/**
+ * Identity of this case's grading definition — the authored criteria and
+ * weights, never the outcome. See [`crate::digests::assert_digest`].
+ */
+assert_digest?: string, error?: string, 
 /**
  * The model's reasoning/thinking text, when it exposed any.
  */

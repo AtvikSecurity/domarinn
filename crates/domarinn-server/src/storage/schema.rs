@@ -265,6 +265,35 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
             ON runs(project, suite, git_branch, created_at DESC);
         "#,
         ),
+        // Migration 9: component digests, promoted so a comparison can say
+        // *what* changed without decompressing two blobs, and the runs list can
+        // say it from the row.
+        //
+        // No backfill, for the same reason as migration 8 plus one of its own:
+        // `provider_digest` is derived from the provider fingerprint, which
+        // appears nowhere in a stored run document (`request` is a preview
+        // envelope and is absent under `--no-raw`), so it is not recoverable at
+        // any price. `assert_digest` alone *is* recomputable from the stored
+        // `criteria`, but it would buy nothing — `classify_change` reports
+        // Unknown unless every axis is known — so paying a
+        // decompress-every-blob startup pass for it would be pure cost.
+        //
+        // The consequence is a contract, not an accident: change classification
+        // only works between two runs that both post-date this migration, and
+        // every reader must render that as unknown rather than unchanged.
+        M::up(
+            r#"
+        ALTER TABLE runs ADD COLUMN prompts_digest   TEXT;
+        ALTER TABLE runs ADD COLUMN providers_digest TEXT;
+        ALTER TABLE runs ADD COLUMN tests_digest     TEXT;
+        ALTER TABLE runs ADD COLUMN asserts_digest   TEXT;
+        ALTER TABLE runs ADD COLUMN grader_digest    TEXT;
+
+        ALTER TABLE cases ADD COLUMN prompt_digest   TEXT;
+        ALTER TABLE cases ADD COLUMN provider_digest TEXT;
+        ALTER TABLE cases ADD COLUMN assert_digest   TEXT;
+        "#,
+        ),
     ])
 }
 

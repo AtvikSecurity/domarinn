@@ -344,6 +344,11 @@ pub async fn run_with_progress(
     }
     let provenance = crate::provenance::collect(&provenance_opts, base_dir);
 
+    // Over the WHOLE expanded test set, before the cell-loop filter: otherwise
+    // `--tag smoke` and a full run of an identical suite disagree and every
+    // filtered CI job reads as "the tests changed".
+    let digests = crate::digests::config_digests(suite, &tests);
+
     Ok(RunResult {
         schema_version: RESULT_SCHEMA_VERSION,
         run_id: RunId::generate(),
@@ -356,6 +361,7 @@ pub async fn run_with_progress(
         git: provenance.git,
         ci: provenance.ci,
         origin: provenance.origin,
+        digests: Some(digests),
         share_url: None,
         filters: FilterSpec {
             tags: opts.filter.tags.clone(),
@@ -459,6 +465,13 @@ async fn run_cell(
         case_salt: test.cache_salt.clone(),
     };
 
+    // Computed here, not inside `call_with_cache`'s `use_cache` gate: the cache
+    // key is skipped entirely under `--no-cache`, for a case with a `latency`
+    // assert, and for an unsalted `exec` provider — which is exactly the set of
+    // runs a CI comparison cares about. Identity must not depend on caching.
+    let prompt_digest = Some(crate::digests::prompt_digest(&req));
+    let provider_digest = Some(crate::digests::provider_digest(&provider.fingerprint()));
+
     // What this provider will actually send, built by the provider itself from
     // the same code path as the call. Captured *before* the call so a failed
     // case still carries it — which is where it earns its keep: an HTTP 404
@@ -498,6 +511,8 @@ async fn run_cell(
                     prompt: rendered_prompt,
                     vars: case_vars,
                     request,
+                    prompt_digest,
+                    provider_digest,
                 },
             );
         }
@@ -542,6 +557,8 @@ async fn run_cell(
     // `Some` exactly when at least one assert errored, so it carries both the
     // diagnosis and the "did anything error" verdict input.
     let assert_error = assert_error_message(&assert_results);
+    // Computed before the results are moved into the case below.
+    let assert_digest = crate::digests::assert_digest(&assert_results);
     let verdict = case_verdict(&scored, test.threshold);
     let status = if assert_error.is_some() {
         CaseStatus::Error
@@ -571,6 +588,9 @@ async fn run_cell(
         wall_ms: Some(wall_ms),
         cached,
         attempts,
+        prompt_digest,
+        provider_digest,
+        assert_digest,
         error: assert_error,
         reasoning,
         empty_reason,
@@ -698,6 +718,11 @@ struct CaseInputs {
     prompt: Option<RenderedPrompt>,
     vars: serde_json::Map<String, serde_json::Value>,
     request: Option<Json>,
+    /// Identity of what was going to be sent. Present for every failure after
+    /// the request was built; `None` for the two earlier ones (rendering vars,
+    /// rendering the prompt), which honestly have no input identity yet.
+    prompt_digest: Option<String>,
+    provider_digest: Option<String>,
 }
 
 fn error_case(
@@ -731,6 +756,11 @@ fn error_case(
         wall_ms: Some(wall_ms),
         cached: false,
         attempts: failure.attempts,
+        prompt_digest: inputs.prompt_digest,
+        provider_digest: inputs.provider_digest,
+        // An errored case never graded anything, so there is no assert
+        // definition to identify.
+        assert_digest: None,
         error: Some(failure.message),
         reasoning: None,
         empty_reason: None,

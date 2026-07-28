@@ -198,6 +198,26 @@ pub struct CaseResult {
     pub cached: bool,
     #[serde(default)]
     pub attempts: u32,
+    /// Identity of what this case asked the model — rendered prompt, rendered
+    /// vars, params, cache salt. Deliberately excludes the provider (that is
+    /// `provider_digest`) and `repeat`. See [`crate::digests::prompt_digest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub prompt_digest: Option<String>,
+    /// Identity of the model and its settings, from the provider fingerprint.
+    ///
+    /// **Not backfillable**: the fingerprint appears nowhere in a stored run
+    /// document (`request` is a preview envelope and is absent under
+    /// `--no-raw`), so change classification only works between two runs that
+    /// both post-date this field. Readers must treat `None` as unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider_digest: Option<String>,
+    /// Identity of this case's grading definition — the authored criteria and
+    /// weights, never the outcome. See [`crate::digests::assert_digest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub assert_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
@@ -302,6 +322,30 @@ pub struct RunOrigin {
     pub redacted: Option<bool>,
 }
 
+/// Component digests of the suite that produced a run — see [`crate::digests`].
+///
+/// [`RunResult::config_digest`] is one hash over the whole suite: it answers
+/// "did anything change" and nothing else. These answer *what*, so a comparison
+/// can say "the prompts changed" instead of "config changed", and the runs list
+/// can say it from the row without fetching a config snapshot per run.
+///
+/// All optional: a run written before this existed has none, and `None` must
+/// read as "unknown", never as "unchanged".
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
+pub struct ConfigDigests {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompts: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub providers: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asserts: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grader: Option<String>,
+}
+
 /// Which filters produced this run (for reproducibility and the UI).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FilterSpec {
@@ -336,6 +380,9 @@ pub struct RunResult {
     /// Who and where this run came from. See [`RunOrigin`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<RunOrigin>,
+    /// Per-component digests of the suite. See [`ConfigDigests`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digests: Option<ConfigDigests>,
     /// Where this run was published, recorded by `--share` from the URL the
     /// results server returned. Absent when the run was never shared.
     ///

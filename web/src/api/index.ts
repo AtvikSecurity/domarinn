@@ -80,6 +80,11 @@ export type { MatrixCell } from "./generated/MatrixCell";
 
 export type { CompareCaseRow } from "./generated/CompareCaseRow";
 export type { CompareDelta } from "./generated/CompareDelta";
+// What moved between two runs of a case (prompt / provider / asserts / drift /
+// unstable grader), as opposed to whether the verdict moved.
+export type { CaseChange } from "./generated/CaseChange";
+export type { ComponentDrift } from "./generated/ComponentDrift";
+export type { ConfigDigests } from "./generated/ConfigDigests";
 export type { CompareResponse } from "./generated/CompareResponse";
 export type { CompareSummary } from "./generated/CompareSummary";
 export type { BaselineBody } from "./generated/BaselineBody";

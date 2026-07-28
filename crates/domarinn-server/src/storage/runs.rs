@@ -122,6 +122,11 @@ struct PreparedCase {
     /// Also promoted to a `cases` column (migration 7), because an errored case
     /// has no output and therefore no `output_preview` to show in the grid.
     error: Option<String>,
+    // Migration-9 columns: component identity, promoted so `compare` can
+    // classify what moved from columns alone.
+    prompt_digest: Option<String>,
+    provider_digest: Option<String>,
+    assert_digest: Option<String>,
 }
 
 struct PreparedRun {
@@ -157,6 +162,12 @@ struct PreparedRun {
     actor: Option<String>,
     host: Option<String>,
     domarinn_version: Option<String>,
+    // Migration-9 columns, promoted from `ConfigDigests`.
+    prompts_digest: Option<String>,
+    providers_digest: Option<String>,
+    tests_digest: Option<String>,
+    asserts_digest: Option<String>,
+    grader_digest: Option<String>,
     // Migration-6 columns, promoted from `RunSummary` so the run list can
     // filter fully-cached CI runs at SQL level.
     cache_hits: i64,
@@ -226,6 +237,9 @@ impl PreparedRun {
                 tags: case.tags.clone(),
                 prompt_text: case.prompt.as_ref().map(super::search::flatten_prompt),
                 error: case.error.clone(),
+                prompt_digest: case.prompt_digest.clone(),
+                provider_digest: case.provider_digest.clone(),
+                assert_digest: case.assert_digest.clone(),
             });
         }
 
@@ -254,6 +268,11 @@ impl PreparedRun {
             actor: run.origin.as_ref().and_then(|o| o.actor.clone()),
             host: run.origin.as_ref().and_then(|o| o.host.clone()),
             domarinn_version: run.origin.as_ref().and_then(|o| o.version.clone()),
+            prompts_digest: run.digests.as_ref().and_then(|d| d.prompts.clone()),
+            providers_digest: run.digests.as_ref().and_then(|d| d.providers.clone()),
+            tests_digest: run.digests.as_ref().and_then(|d| d.tests.clone()),
+            asserts_digest: run.digests.as_ref().and_then(|d| d.asserts.clone()),
+            grader_digest: run.digests.as_ref().and_then(|d| d.grader.clone()),
             case_count: run.summary.total as i64,
             pass_count: run.summary.passed as i64,
             fail_count: run.summary.failed as i64,
@@ -297,14 +316,16 @@ impl PreparedRun {
                 case_count, pass_count, fail_count, error_count,
                 prompt_tokens, completion_tokens, cost_microusd, duration_ms,
                 content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
-                actor, host, domarinn_version
+                actor, host, domarinn_version,
+                prompts_digest, providers_digest, tests_digest, asserts_digest, grader_digest
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19, ?20,
                 ?21, ?22, ?23, ?24, ?25,
-                ?26, ?27, ?28
+                ?26, ?27, ?28,
+                ?29, ?30, ?31, ?32, ?33
             )",
             params![
                 self.id,
@@ -335,6 +356,11 @@ impl PreparedRun {
                 self.actor,
                 self.host,
                 self.domarinn_version,
+                self.prompts_digest,
+                self.providers_digest,
+                self.tests_digest,
+                self.asserts_digest,
+                self.grader_digest,
             ],
         )?;
 
@@ -357,10 +383,10 @@ impl PreparedRun {
                     output_hash, asserts, prompt_tokens, completion_tokens, cost_microusd,
                     latency_ms, detail,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached,
-                    error
+                    error, prompt_digest, provider_digest, assert_digest
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
                 )",
                 params![
                     self.id,
@@ -387,6 +413,13 @@ impl PreparedRun {
                     // '' rather than NULL for "no error": NULL is reserved for
                     // "not yet backfilled" (see storage::backfill).
                     case.error.as_deref().unwrap_or_default(),
+                    // Plain NULL here, unlike `error` above: these columns are
+                    // never backfilled, so NULL is unambiguous — the client did
+                    // not record a digest — and a sentinel would add a state
+                    // with no reader.
+                    case.prompt_digest,
+                    case.provider_digest,
+                    case.assert_digest,
                 ],
             )?;
             for tag in &case.tags {
