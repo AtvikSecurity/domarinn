@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use crate::error_class::ErrorClass;
 use crate::provider::ProviderError;
 
 /// A shared reqwest client with sane timeouts, built once per provider.
@@ -20,12 +21,11 @@ pub fn http_client(timeout: Duration) -> reqwest::Client {
 /// is a timeout or connection problem).
 pub fn transport_error(e: reqwest::Error) -> ProviderError {
     if e.is_timeout() || e.is_connect() || e.is_request() {
-        ProviderError::Retriable {
-            source: anyhow::Error::new(e),
-            retry_after: None,
-        }
+        ProviderError::retriable(ErrorClass::PROVIDER_TIMEOUT, anyhow::Error::new(e), None)
     } else {
-        ProviderError::Fatal(anyhow::Error::new(e))
+        // A transport error that is neither a timeout nor a connection failure
+        // is a malformed exchange, not an unavailable server.
+        ProviderError::fatal(ErrorClass::PROVIDER_PROTOCOL, anyhow::Error::new(e))
     }
 }
 
@@ -38,13 +38,26 @@ pub fn status_error(
     body: String,
 ) -> ProviderError {
     let msg = format!("HTTP {}: {}", status.as_u16(), truncate(&body, 500));
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-        ProviderError::Retriable {
-            source: anyhow::anyhow!(msg),
+    // Classified here because this is the last place the status code exists as
+    // a number; below, it survives only inside `msg`.
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        ProviderError::retriable(
+            ErrorClass::PROVIDER_RATE_LIMIT,
+            anyhow::anyhow!(msg),
             retry_after,
-        }
+        )
+    } else if status.is_server_error() {
+        ProviderError::retriable(
+            ErrorClass::PROVIDER_UNAVAILABLE,
+            anyhow::anyhow!(msg),
+            retry_after,
+        )
+    } else if status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
+        ProviderError::fatal(ErrorClass::PROVIDER_AUTH, anyhow::anyhow!(msg))
     } else {
-        ProviderError::Fatal(anyhow::anyhow!(msg))
+        ProviderError::fatal(ErrorClass::PROVIDER_REQUEST, anyhow::anyhow!(msg))
     }
 }
 
@@ -85,9 +98,10 @@ fn truncate(s: &str, max: usize) -> String {
 /// the missing variable.
 pub fn api_key(env_name: &str) -> Result<String, ProviderError> {
     std::env::var(env_name).map_err(|_| {
-        ProviderError::Fatal(anyhow::anyhow!(
-            "API key environment variable '{env_name}' is not set"
-        ))
+        ProviderError::fatal(
+            ErrorClass::PROVIDER_AUTH,
+            anyhow::anyhow!("API key environment variable '{env_name}' is not set"),
+        )
     })
 }
 

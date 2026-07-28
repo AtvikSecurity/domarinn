@@ -205,6 +205,7 @@ pub struct CaseSpec {
     pub prompt_digest: Option<&'static str>,
     pub provider_digest: Option<&'static str>,
     pub assert_digest: Option<&'static str>,
+    pub error_class: Option<&'static str>,
 }
 
 impl CaseSpec {
@@ -222,6 +223,7 @@ impl CaseSpec {
             latency_ms: 42,
             rendered_prompt: None,
             error: None,
+            error_class: None,
             prompt_digest: None,
             provider_digest: None,
             assert_digest: None,
@@ -239,6 +241,12 @@ impl CaseSpec {
     /// Set the case's provider error string (default: none).
     pub fn error(mut self, error: &'static str) -> Self {
         self.error = Some(error);
+        self
+    }
+
+    /// Set the structured class alongside the prose message.
+    pub fn error_class(mut self, class: &'static str) -> Self {
+        self.error_class = Some(class);
         self
     }
 
@@ -365,6 +373,9 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         provider_digest: spec.provider_digest.map(str::to_string),
         assert_digest: spec.assert_digest.map(str::to_string),
         error: spec.error.map(str::to_string),
+        error_class: spec
+            .error_class
+            .map(domarinn_core::error_class::ErrorClass::new),
     }
 }
 
@@ -453,6 +464,7 @@ pub fn default_case_filter(run_id: RunId) -> CaseListFilter {
         prompt: None,
         test: None,
         stop_reason: None,
+        error_class: None,
         cached: None,
         limit: 200,
         cursor: None,

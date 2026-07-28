@@ -221,6 +221,15 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
+    /// What kind of failure `error` describes — see [`crate::error_class`].
+    ///
+    /// Strictly additive: `error` stays the verbatim prose it always was, and
+    /// neither field is ever derived from the other at read time.
+    /// `error_class.is_some()` implies `error.is_some()`; the converse does not
+    /// hold, because blobs written before this field have prose and no class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error_class: Option<crate::error_class::ErrorClass>,
     /// The model's reasoning/thinking text, when it exposed any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

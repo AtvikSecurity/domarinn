@@ -14,6 +14,8 @@ use serde_json::Value as Json;
 use crate::assertion::AssertOutcome;
 use crate::asserts::{evaluate_local, is_local, MetricCtx};
 use crate::config::{Assert, AssertKind};
+use crate::error_class::ErrorClass;
+use crate::errors::Classify;
 use crate::result::{AssertResult, AssertStatus};
 use crate::scoring::{remaining_can_change_outcome, Scored};
 use crate::template::TemplateEngine;
@@ -33,10 +35,13 @@ pub(super) async fn evaluate_asserts(
     base_dir: &Path,
     metrics: &MetricCtx,
     threshold: Option<f64>,
-) -> (Vec<AssertResult>, Vec<Scored>) {
+) -> (Vec<AssertResult>, Vec<Scored>, Vec<ErrorClass>) {
     // Slot results by original index so output order matches config order.
     let mut results: Vec<Option<AssertResult>> = vec![None; asserts.len()];
     let mut scored: Vec<Scored> = Vec::new();
+    // Collected here rather than sniffed back out of the reason strings later:
+    // this is the only place that knows structurally *why* an assert errored.
+    let mut classes: Vec<ErrorClass> = Vec::new();
 
     // Local (deterministic) asserts first.
     let mut deferred_indices: Vec<usize> = Vec::new();
@@ -76,12 +81,17 @@ pub(super) async fn evaluate_asserts(
                     ));
                 }
                 // Fail closed: a grader problem is an error, not a plain fail.
-                Err(reason) => {
-                    results[i] = Some(error_assert(assert, reason));
+                // The class comes off the error itself, so "no grader is
+                // configured" and "the grader broke" stay distinguishable all
+                // the way to the stored case.
+                Err(e) => {
+                    classes.push(e.class());
+                    results[i] = Some(error_assert(assert, e.to_string()));
                 }
             },
             None => {
                 // Fail closed: a deferred assert with no grader is an error.
+                classes.push(ErrorClass::new(ErrorClass::GRADER_MISSING));
                 results[i] = Some(error_assert(
                     assert,
                     format!(
@@ -93,7 +103,11 @@ pub(super) async fn evaluate_asserts(
         }
     }
 
-    (results.into_iter().map(|r| r.unwrap()).collect(), scored)
+    (
+        results.into_iter().map(|r| r.unwrap()).collect(),
+        scored,
+        classes,
+    )
 }
 
 fn scored_of(assert: &Assert, outcome: &AssertOutcome) -> Scored {

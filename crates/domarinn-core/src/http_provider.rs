@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
 use crate::config::HttpMethod;
+use crate::error_class::ErrorClass;
 use crate::net::{http_client, parse_retry_after, status_error, transport_error};
 use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
 use crate::template::TemplateEngine;
@@ -75,9 +76,12 @@ impl Provider for HttpProvider {
         let engine = TemplateEngine::new();
         let render_ctx = render_context(req);
 
-        let url = engine
-            .render_str(&self.url, &render_ctx)
-            .map_err(|e| ProviderError::Fatal(anyhow::anyhow!("rendering url: {e}")))?;
+        let url = engine.render_str(&self.url, &render_ctx).map_err(|e| {
+            ProviderError::fatal(
+                ErrorClass::RENDER_FAILED,
+                anyhow::anyhow!("rendering url: {e}"),
+            )
+        })?;
         // Infallible: `HttpMethod` is a closed set validated at config parse
         // time, so there is no invalid-method error path left to handle here.
         let method = match self.method {
@@ -92,14 +96,22 @@ impl Provider for HttpProvider {
         let mut request = self.client.request(method, &url);
         for (name, template) in &self.headers {
             let value = engine.render_str(template, &render_ctx).map_err(|e| {
-                ProviderError::Fatal(anyhow::anyhow!("rendering header {name}: {e}"))
+                ProviderError::fatal(
+                    ErrorClass::RENDER_FAILED,
+                    anyhow::anyhow!("rendering header {name}: {e}"),
+                )
             })?;
             request = request.header(name, value);
         }
         if let Some(body) = &self.body {
             let rendered = engine
                 .render_val(&Val::Tpl(body.clone()), &render_ctx)
-                .map_err(|e| ProviderError::Fatal(anyhow::anyhow!("rendering body: {e}")))?;
+                .map_err(|e| {
+                    ProviderError::fatal(
+                        ErrorClass::RENDER_FAILED,
+                        anyhow::anyhow!("rendering body: {e}"),
+                    )
+                })?;
             request = request.json(&rendered);
         }
 
@@ -125,7 +137,10 @@ impl Provider for HttpProvider {
                     }
                 });
                 let value = engine.eval_value(expr, &ctx).map_err(|e| {
-                    ProviderError::Fatal(anyhow::anyhow!("output_expr `{expr}`: {e}"))
+                    ProviderError::fatal(
+                        ErrorClass::PROVIDER_PROTOCOL,
+                        anyhow::anyhow!("output_expr `{expr}`: {e}"),
+                    )
                 })?;
                 match value {
                     Json::String(s) => Output::Text(s),

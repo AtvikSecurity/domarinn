@@ -4,6 +4,7 @@ import type { CaseKey } from "./CaseKey";
 import type { CaseStatus } from "./CaseStatus";
 import type { CellKey } from "./CellKey";
 import type { EmptyReason } from "./EmptyReason";
+import type { ErrorClass } from "./ErrorClass";
 import type { Output } from "./Output";
 import type { RenderedPrompt } from "./RenderedPrompt";
 import type { TokenUsage } from "./TokenUsage";
@@ -79,6 +80,15 @@ provider_digest?: string,
  * weights, never the outcome. See [`crate::digests::assert_digest`].
  */
 assert_digest?: string, error?: string, 
+/**
+ * What kind of failure `error` describes — see [`crate::error_class`].
+ *
+ * Strictly additive: `error` stays the verbatim prose it always was, and
+ * neither field is ever derived from the other at read time.
+ * `error_class.is_some()` implies `error.is_some()`; the converse does not
+ * hold, because blobs written before this field have prose and no class.
+ */
+error_class?: ErrorClass, 
 /**
  * The model's reasoning/thinking text, when it exposed any.
  */

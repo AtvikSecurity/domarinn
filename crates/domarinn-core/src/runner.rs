@@ -18,6 +18,7 @@ use crate::asserts::MetricCtx;
 use crate::cache::{CacheBackend, CacheEntry, CacheMode};
 use crate::cache_key::provider_cache_key;
 use crate::config::{Assert, Suite, TestCase};
+use crate::error_class::ErrorClass;
 use crate::filter::{Filter, FilterOpts};
 use crate::generate::resolve_generators;
 use crate::ids::{CaseKey, RunId};
@@ -95,11 +96,16 @@ impl Default for RunOptions {
 
 /// A grader for the non-local assert kinds (`exec`, `llm-rubric`, `similar`).
 ///
-/// `Ok(outcome)` is a real verdict (pass or fail). `Err(reason)` is a grader
-/// problem — a missing/unconfigured grader, a transport error, or a truncated
-/// verdict — which the runner records as an `Error` (fail closed), distinct from
-/// a graded-and-failed assertion. When no grader is provided at all, deferred
-/// asserts likewise fail closed as errors.
+/// `Ok(outcome)` is a real verdict (pass or fail). `Err` is a
+/// [`crate::errors::GraderError`] — which the runner records as an `Error`
+/// (fail closed), distinct from a graded-and-failed assertion.
+///
+/// The error is typed rather than a `String` because the variants have
+/// different owners: a suite with no `grader:` block is the author's problem,
+/// while a truncated verdict is a settings problem and a transport failure is
+/// the provider's. Collapsing them into prose made every one of them report as
+/// `grader_failed`, which sent first-time users hunting for a transient fault
+/// that did not exist. See [`crate::errors::Classify`].
 ///
 /// **Verdicts are not cached.** Note the absence of a [`CacheBackend`] here:
 /// grading runs live on every call, so an LLM-graded suite re-pays its grader on
@@ -119,7 +125,7 @@ pub trait AssertGrader: Send + Sync {
         vars: &Json,
         engine: &TemplateEngine,
         working_dir: Option<&Path>,
-    ) -> Result<AssertOutcome, String>;
+    ) -> Result<AssertOutcome, crate::errors::GraderError>;
 }
 
 /// Run a suite and produce a [`RunResult`].
@@ -422,7 +428,10 @@ async fn run_cell(
                 case_key,
                 name,
                 test,
-                CallFailure::before_any_attempt(format!("rendering vars: {e}")),
+                CallFailure::before_any_attempt(
+                    ErrorClass::RENDER_FAILED,
+                    format!("rendering vars: {e}"),
+                ),
                 0,
                 CaseInputs::default(),
             )
@@ -441,7 +450,10 @@ async fn run_cell(
                     case_key,
                     name,
                     test,
-                    CallFailure::before_any_attempt(format!("rendering prompt: {e}")),
+                    CallFailure::before_any_attempt(
+                        ErrorClass::RENDER_FAILED,
+                        format!("rendering prompt: {e}"),
+                    ),
                     0,
                     CaseInputs {
                         vars: case_vars,
@@ -542,7 +554,7 @@ async fn run_cell(
         total_tokens: response.usage.as_ref().map(|u| u.total()),
     };
 
-    let (assert_results, scored) = evaluate_asserts(
+    let (assert_results, scored, assert_error_classes) = evaluate_asserts(
         &test.assert,
         &response.output,
         &var_ctx,
@@ -559,6 +571,7 @@ async fn run_cell(
     let assert_error = assert_error_message(&assert_results);
     // Computed before the results are moved into the case below.
     let assert_digest = crate::digests::assert_digest(&assert_results);
+    let assert_error_class = crate::error_class::most_specific(&assert_error_classes);
     let verdict = case_verdict(&scored, test.threshold);
     let status = if assert_error.is_some() {
         CaseStatus::Error
@@ -592,6 +605,7 @@ async fn run_cell(
         provider_digest,
         assert_digest,
         error: assert_error,
+        error_class: assert_error_class,
         reasoning,
         empty_reason,
     }
@@ -616,15 +630,19 @@ struct CallOutcome {
 struct CallFailure {
     message: String,
     attempts: u32,
+    /// What kind of failure this was, carried alongside the prose rather than
+    /// re-derived from it. See [`crate::error_class`].
+    class: ErrorClass,
 }
 
 impl CallFailure {
     /// A failure that never reached the provider (cache read error, cache-only
     /// miss) — no attempt was made against the system under test.
-    fn before_any_attempt(message: String) -> Self {
+    fn before_any_attempt(class: &str, message: String) -> Self {
         CallFailure {
             message,
             attempts: 0,
+            class: ErrorClass::new(class),
         }
     }
 }
@@ -660,15 +678,17 @@ async fn call_with_cache(
             Ok(None) => {
                 tracing::debug!(%key, "cache miss");
                 if mode == CacheMode::ReadOnlyStrict {
-                    return Err(CallFailure::before_any_attempt(format!(
-                        "cache-only: miss for key {key}"
-                    )));
+                    return Err(CallFailure::before_any_attempt(
+                        ErrorClass::CACHE_MISS,
+                        format!("cache-only: miss for key {key}"),
+                    ));
                 }
             }
             Err(e) => {
-                return Err(CallFailure::before_any_attempt(format!(
-                    "cache read error: {e}"
-                )))
+                return Err(CallFailure::before_any_attempt(
+                    ErrorClass::CACHE_UNAVAILABLE,
+                    format!("cache read error: {e}"),
+                ))
             }
         }
     }
@@ -693,16 +713,22 @@ async fn call_with_cache(
                 provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
             })
         }
-        Err(ProviderError::Retriable { source, .. }) => Err(CallFailure {
+        Err(ProviderError::Retriable {
+            source, ref class, ..
+        }) => Err(CallFailure {
             message: format!(
                 "provider error after {} attempt(s): {source}",
                 stats.attempts
             ),
             attempts: stats.attempts,
+            class: class.clone(),
         }),
-        Err(ProviderError::Fatal(e)) => Err(CallFailure {
-            message: format!("provider error: {e}"),
+        Err(ProviderError::Fatal {
+            source, ref class, ..
+        }) => Err(CallFailure {
+            message: format!("provider error: {source}"),
             attempts: stats.attempts,
+            class: class.clone(),
         }),
     }
 }
@@ -756,6 +782,7 @@ fn error_case(
         wall_ms: Some(wall_ms),
         cached: false,
         attempts: failure.attempts,
+        error_class: Some(failure.class),
         prompt_digest: inputs.prompt_digest,
         provider_digest: inputs.provider_digest,
         // An errored case never graded anything, so there is no assert

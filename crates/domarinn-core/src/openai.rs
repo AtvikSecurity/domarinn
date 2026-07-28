@@ -10,6 +10,7 @@ use serde_json::{json, Value as Json};
 
 use crate::config::ParamMap;
 use crate::empty::EmptyReason;
+use crate::error_class::ErrorClass;
 use crate::net::{api_key, http_client, parse_retry_after, status_error, transport_error};
 use crate::provider::{
     http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
@@ -84,7 +85,10 @@ impl Provider for OpenAiProvider {
         _ctx: &CallCtx,
     ) -> Result<ProviderResponse, ProviderError> {
         let prompt = req.prompt.as_ref().ok_or_else(|| {
-            ProviderError::Fatal(anyhow::anyhow!("openai provider requires a prompt"))
+            ProviderError::fatal(
+                ErrorClass::PROVIDER_REQUEST,
+                anyhow::anyhow!("openai provider requires a prompt"),
+            )
         })?;
         let key = api_key(&self.api_key_env)?;
         let body = self.build_body(prompt);

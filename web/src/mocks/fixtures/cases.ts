@@ -29,6 +29,8 @@ export interface MockCaseRow {
   output_preview: string | null;
   /** The failure reason, for `status === "error"` only (migration-7 column). */
   error: string | null;
+  /** What kind of failure it was (migration-10 column). */
+  error_class: string | null;
   asserts: CaseAssertLean[];
   prompt_tokens: number;
   completion_tokens: number;
@@ -170,7 +172,8 @@ function generateFlatCases(meta: RunMeta): MockCaseRow[] {
       tags,
       status,
       output_preview: outputPreview(meta, i, status),
-      error: caseError(status),
+      error: caseError(status, i),
+      error_class: caseErrorClass(status, i),
       asserts,
       prompt_tokens: pt,
       completion_tokens: ct,
@@ -234,7 +237,8 @@ function generateMatrixCases(meta: RunMeta, spec: MatrixSpec): MockCaseRow[] {
             tags,
             status,
             output_preview: matrixPreview(status, provider, name, rev),
-            error: caseError(status),
+            error: caseError(status, idx),
+            error_class: caseErrorClass(status, idx),
             asserts,
             prompt_tokens: pt,
             completion_tokens: ct,
@@ -257,8 +261,30 @@ function generateMatrixCases(meta: RunMeta, spec: MatrixSpec): MockCaseRow[] {
 }
 
 /** The failure reason an errored case carries instead of an output. */
-function caseError(status: CaseStatus): string | null {
-  return status === "error" ? "provider returned 502 after 3 retries" : null;
+/**
+ * The mock's error spread. Deliberately more than one class: the point of the
+ * breakdown is that "14 errors" is usually several different problems, and a
+ * fixture with one class would render a bar with one segment and prove nothing.
+ */
+const ERROR_KINDS = [
+  { class: "provider_unavailable", message: "provider returned 502 after 3 retries" },
+  { class: "provider_rate_limit", message: "provider error: HTTP 429" },
+  { class: "grader_failed", message: "llm-rubric assertion errored: verdict truncated" },
+] as const;
+
+function errorKind(seed: string | number): (typeof ERROR_KINDS)[number] {
+  const n = typeof seed === "number" ? seed : seed.length;
+  // Fallback rather than a non-null assertion: the modulo is always in range,
+  // but tsc cannot know that and an assertion would hide a real bug later.
+  return ERROR_KINDS[Math.abs(n) % ERROR_KINDS.length] ?? ERROR_KINDS[0];
+}
+
+function caseError(status: CaseStatus, seed: string | number = 0): string | null {
+  return status === "error" ? errorKind(seed).message : null;
+}
+
+function caseErrorClass(status: CaseStatus, seed: string | number = 0): string | null {
+  return status === "error" ? errorKind(seed).class : null;
 }
 
 function outputPreview(
@@ -451,5 +477,6 @@ export function toCaseListItem(c: MockCaseRow): CaseListItem {
     stop_reason: null,
     cached: c.cached,
     error: c.error,
+    error_class: c.error_class,
   };
 }

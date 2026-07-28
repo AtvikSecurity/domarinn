@@ -14,6 +14,8 @@ pub mod diff;
 pub mod digests;
 pub mod embeddings;
 pub mod empty;
+pub mod error_class;
+pub mod errors;
 pub mod exec;
 pub mod exec_protocol;
 pub mod exec_provider;

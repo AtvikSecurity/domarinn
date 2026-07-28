@@ -294,6 +294,21 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE cases ADD COLUMN assert_digest   TEXT;
         "#,
         ),
+        // Migration 10: promote the structured failure class, so a run's errors
+        // can be aggregated instead of read one case at a time. `provider_*` is
+        // "not your model's fault", `grader_*` is "the eval did not run" — a UI
+        // that renders both as "14 errors" makes you open fourteen cases to
+        // learn that none of them were about the model.
+        //
+        // NULL is unambiguous here (no run written before this carries a class)
+        // and therefore needs no sentinel — unlike migration 7's `error`, where
+        // NULL was also the honest value for every passing case.
+        M::up(
+            r#"
+        ALTER TABLE cases ADD COLUMN error_class TEXT;
+        CREATE INDEX idx_cases_run_error_class ON cases(run_id, error_class);
+        "#,
+        ),
     ])
 }
 

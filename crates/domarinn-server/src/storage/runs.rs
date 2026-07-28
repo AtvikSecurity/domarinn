@@ -127,6 +127,8 @@ struct PreparedCase {
     prompt_digest: Option<String>,
     provider_digest: Option<String>,
     assert_digest: Option<String>,
+    /// Migration-10 column: the structured failure class beside the prose.
+    error_class: Option<String>,
 }
 
 struct PreparedRun {
@@ -240,6 +242,7 @@ impl PreparedRun {
                 prompt_digest: case.prompt_digest.clone(),
                 provider_digest: case.provider_digest.clone(),
                 assert_digest: case.assert_digest.clone(),
+                error_class: case.error_class.as_ref().map(|c| c.as_str().to_string()),
             });
         }
 
@@ -383,10 +386,10 @@ impl PreparedRun {
                     output_hash, asserts, prompt_tokens, completion_tokens, cost_microusd,
                     latency_ms, detail,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached,
-                    error, prompt_digest, provider_digest, assert_digest
+                    error, prompt_digest, provider_digest, assert_digest, error_class
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
                 )",
                 params![
                     self.id,
@@ -420,6 +423,7 @@ impl PreparedRun {
                     case.prompt_digest,
                     case.provider_digest,
                     case.assert_digest,
+                    case.error_class,
                 ],
             )?;
             for tag in &case.tags {

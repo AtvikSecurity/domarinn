@@ -32,4 +32,11 @@ cached: boolean | null,
  * why. `None` for a case that did not error, and for legacy pre-backfill
  * rows.
  */
-error: string | null, };
+error: string | null, 
+/**
+ * What kind of failure `error` describes (migration-10 `cases` column).
+ * Lets a run's errors be grouped — `provider_*` is not the model's fault,
+ * `grader_*` means the eval did not run — instead of read one at a time.
+ * `None` for a case that did not error and for rows written before this.
+ */
+error_class: string | null, };

@@ -46,6 +46,8 @@ export type { CaseListItem } from "./generated/CaseListItem";
 export type { CaseListResponse } from "./generated/CaseListResponse";
 export type { CaseResult } from "./generated/CaseResult";
 export type { CaseStatus } from "./generated/CaseStatus";
+// What kind of failure a case hit — see the Rust `error_class` module.
+export type { ErrorClass } from "./generated/ErrorClass";
 export type { CellKey } from "./generated/CellKey";
 export type { Output } from "./generated/Output";
 export type { TokenUsage } from "./generated/TokenUsage";

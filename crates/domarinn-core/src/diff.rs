@@ -313,6 +313,7 @@ mod tests {
             provider_digest: None,
             assert_digest: None,
             error: None,
+            error_class: None,
         }
     }
 

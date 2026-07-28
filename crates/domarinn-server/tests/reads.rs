@@ -373,3 +373,87 @@ async fn missing_run_is_404() {
         StatusCode::NOT_FOUND
     );
 }
+
+/// Errors are aggregatable and filterable, so a run reporting "14 errors" can
+/// say that twelve were rate limits and none were about the model.
+#[tokio::test]
+async fn cases_carry_and_filter_by_error_class() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let run = make_run(
+        "r-errs",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Error)
+                .output(None)
+                .error("provider error: HTTP 429")
+                .error_class("provider_rate_limit"),
+            CaseSpec::new("openai", "t2", CaseStatus::Error)
+                .output(None)
+                .error("provider error: HTTP 429")
+                .error_class("provider_rate_limit"),
+            CaseSpec::new("openai", "t3", CaseStatus::Error)
+                .output(None)
+                .error("grader returned a truncated verdict")
+                .error_class("grader_failed"),
+            CaseSpec::new("openai", "t4", CaseStatus::Pass),
+        ],
+    );
+    post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+
+    let all = get(&app, "/api/v1/runs/r-errs/cases").await.json();
+    let classes: Vec<Option<&str>> = all["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["error_class"].as_str())
+        .collect();
+    assert_eq!(
+        classes,
+        vec![
+            Some("provider_rate_limit"),
+            Some("provider_rate_limit"),
+            Some("grader_failed"),
+            // A passing case has no class, and must not be given one.
+            None,
+        ]
+    );
+
+    let limited = get(
+        &app,
+        "/api/v1/runs/r-errs/cases?error_class=provider_rate_limit",
+    )
+    .await;
+    assert_eq!(limited.json()["cases"].as_array().unwrap().len(), 2);
+
+    let grader = get(&app, "/api/v1/runs/r-errs/cases?error_class=grader_failed").await;
+    assert_eq!(grader.json()["cases"].as_array().unwrap().len(), 1);
+}
+
+/// An unrecognized class — from a newer client, or from an `exec` child
+/// domarinn did not compile — must round-trip rather than failing ingest. This
+/// is why the type is an open string newtype and not an enum.
+#[tokio::test]
+async fn an_unknown_error_class_is_stored_not_rejected() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let run = make_run(
+        "r-future",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Error)
+            .output(None)
+            .error("something new")
+            .error_class("invented_by_a_newer_child")],
+    );
+    let reply = post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+
+    let body = get(&app, "/api/v1/runs/r-future/cases").await.json();
+    assert_eq!(body["cases"][0]["error_class"], "invented_by_a_newer_child");
+}
