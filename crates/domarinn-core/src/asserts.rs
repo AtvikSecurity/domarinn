@@ -17,7 +17,11 @@ use crate::types::Output;
 pub struct MetricCtx {
     pub latency_ms: u64,
     pub cost_usd: Option<f64>,
+    /// Input plus output — what `tokens` grades by default.
     pub total_tokens: Option<u64>,
+    /// Everything the provider bills for, cache traffic included. Selected by
+    /// `tokens: {count: billable}`.
+    pub billable_tokens: Option<u64>,
 }
 
 /// Everything a local assertion needs beyond the assertion and the output.
@@ -187,14 +191,30 @@ fn evaluate_kind(
             format!("latency {}ms <= {max}ms", metrics.latency_ms),
             format!("latency {}ms > {max}ms", metrics.latency_ms),
         ),
-        AssertKind::Tokens { max } => match metrics.total_tokens {
-            Some(tokens) => cond(
-                tokens <= *max,
-                format!("tokens {tokens} <= {max}"),
-                format!("tokens {tokens} > {max}"),
-            ),
-            None => AssertOutcome::pass("tokens not reported; budget not enforced"),
-        },
+        AssertKind::Tokens { max, count } => {
+            // `total` is the default so an existing `tokens: {max: N}` keeps
+            // meaning exactly what it always meant. Opting in to `billable`
+            // is how a suite budgets cache traffic too.
+            let billable = matches!(count, Some(crate::config::TokenCount::Billable));
+            let measured = if billable {
+                metrics.billable_tokens
+            } else {
+                metrics.total_tokens
+            };
+            let label = if billable {
+                "billable tokens"
+            } else {
+                "tokens"
+            };
+            match measured {
+                Some(tokens) => cond(
+                    tokens <= *max,
+                    format!("{label} {tokens} <= {max}"),
+                    format!("{label} {tokens} > {max}"),
+                ),
+                None => AssertOutcome::pass("tokens not reported; budget not enforced"),
+            }
+        }
         // Non-local asserts never reach here (guarded by is_local).
         AssertKind::Exec { .. } | AssertKind::LlmRubric { .. } | AssertKind::Similar { .. } => {
             AssertOutcome::fail("internal: non-local assert routed to local path")
@@ -380,6 +400,7 @@ mod tests {
             latency_ms: 500,
             cost_usd: Some(0.01),
             total_tokens: Some(1200),
+            billable_tokens: Some(1500),
         };
         let out = Output::Text("x".into());
         let eng = TemplateEngine::new();
@@ -391,7 +412,15 @@ mod tests {
         };
         let lat = evaluate_local(&a(AssertKind::Latency { max: 1000 }), &out, &ctx).unwrap();
         assert!(lat.passed);
-        let toks = evaluate_local(&a(AssertKind::Tokens { max: 1000 }), &out, &ctx).unwrap();
+        let toks = evaluate_local(
+            &a(AssertKind::Tokens {
+                max: 1000,
+                count: None,
+            }),
+            &out,
+            &ctx,
+        )
+        .unwrap();
         assert!(!toks.passed, "1200 tokens exceeds max 1000");
     }
 
@@ -466,7 +495,10 @@ mod tests {
             },
             AssertKind::Cost { max: 0.0 },
             AssertKind::Latency { max: 0 },
-            AssertKind::Tokens { max: 0 },
+            AssertKind::Tokens {
+                max: 0,
+                count: None,
+            },
             AssertKind::Similar {
                 value: Val::Raw(Json::Null),
                 threshold: None,

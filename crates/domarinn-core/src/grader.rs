@@ -76,7 +76,7 @@ impl AssertGrader for DefaultGrader {
                 threshold,
                 ..
             } => {
-                self.grade_llm_rubric(value, grader.as_ref(), *threshold, output, vars, engine)
+                self.grade_llm_rubric(value, grader.as_deref(), *threshold, output, vars, engine)
                     .await
             }
             AssertKind::Similar { value, threshold } => {
@@ -195,6 +195,9 @@ impl DefaultGrader {
                 base_url,
                 api_key_env,
                 params,
+                // A grader's cost is not a case's cost, and no assertion grades
+                // it, so a rate here would price nothing.
+                pricing: _,
             } => {
                 self.anthropic_verdict(
                     model,
@@ -210,6 +213,7 @@ impl DefaultGrader {
                 base_url,
                 api_key_env,
                 params,
+                pricing: _,
             } => {
                 self.openai_verdict(
                     model,
@@ -483,6 +487,7 @@ mod tests {
                 base_url: Some(uri.to_string()),
                 api_key_env: Some("GRADER_TEST_KEY".into()),
                 params: None,
+                pricing: None,
             },
             template: None,
             verdict_mode: None,
@@ -595,6 +600,7 @@ mod tests {
                 base_url: Some(server.uri()),
                 api_key_env: Some("GRADER_TEST_KEY".into()),
                 params: Some(params),
+                pricing: None,
             },
             template: None,
             verdict_mode: None,

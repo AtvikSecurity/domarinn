@@ -27,6 +27,9 @@ pub struct OpenAiProvider {
     api_key_env: String,
     params: ParamMap,
     client: reqwest::Client,
+    /// The effective rate for `model`, resolved once at construction. `None`
+    /// means this provider's calls cannot be priced, so `cost_usd` stays absent.
+    rate: Option<crate::pricing::ModelRate>,
 }
 
 impl OpenAiProvider {
@@ -36,14 +39,23 @@ impl OpenAiProvider {
         base_url: Option<String>,
         api_key_env: Option<String>,
         params: Option<ParamMap>,
+        pricing: Option<crate::config::PricingCfg>,
     ) -> Self {
+        let model = model.into();
+        let id = id.into();
+        // Resolved here, not per call: `build_provider` runs once per provider
+        // per run, so the unknown-model warning fires exactly once per run per
+        // id with no global state — and `validate`/`list`, which never build a
+        // provider, stay silent.
+        let rate = crate::pricing::resolve_rate(&id, &model, pricing.as_ref());
         OpenAiProvider {
-            id: id.into(),
-            model: model.into(),
+            id,
+            model,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
             params: params.unwrap_or_default(),
             client: http_client(DEFAULT_TIMEOUT),
+            rate,
         }
     }
 
@@ -111,7 +123,7 @@ impl Provider for OpenAiProvider {
         }
 
         let payload: Json = response.json().await.map_err(transport_error)?;
-        parse_completion_response(&payload)
+        parse_completion_response(&payload, self.rate.as_ref())
     }
 
     fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
@@ -139,7 +151,10 @@ fn to_messages(prompt: &RenderedPrompt) -> Vec<Json> {
 /// the DeepSeek / vLLM spelling.
 const REASONING_FIELDS: [&str; 2] = ["reasoning", "reasoning_content"];
 
-fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, ProviderError> {
+fn parse_completion_response(
+    payload: &Json,
+    rate: Option<&crate::pricing::ModelRate>,
+) -> Result<ProviderResponse, ProviderError> {
     let choice = payload
         .get("choices")
         .and_then(|c| c.as_array())
@@ -243,10 +258,19 @@ fn parse_completion_response(payload: &Json) -> Result<ProviderResponse, Provide
         None
     };
 
+    // Costed here, in the parse path, rather than in the runner. A cache hit
+    // replays `cost_usd` from its entry, so costing downstream would re-price a
+    // replayed hit against today's rate table — and a run's cost would then
+    // depend on when you read it. Computed once, with the rates in effect at
+    // the moment of the call, and replayed verbatim forever.
+    let cost_usd = rate
+        .and_then(|r| usage.as_ref().and_then(|u| crate::pricing::cost_of(u, r)))
+        .map(|c| c.to_usd());
+
     Ok(ProviderResponse {
         output: Output::Text(text),
         usage,
-        cost_usd: None,
+        cost_usd,
         stop_reason,
         raw: Some(raw),
         reasoning: reasoning.map(str::to_string),
@@ -272,9 +296,37 @@ mod tests {
     /// See the matching test in `anthropic.rs` for why this is load-bearing:
     /// the fingerprint feeds every cache key, so an unconditional change here
     /// invalidates every cached entry in every store.
+    /// The vendor trap: OpenAI's `prompt_tokens` *includes* `cached_tokens`,
+    /// where Anthropic's `input_tokens` excludes its cache counters. Without
+    /// the subtraction the cached span is billed at the full input rate on top
+    /// of the discounted one.
+    #[test]
+    fn cached_prompt_tokens_are_not_double_counted() {
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 10,
+                    "prompt_tokens_details": {"cached_tokens": 800}
+                }
+            }),
+            None,
+        )
+        .unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(
+            usage.input_tokens, 200,
+            "full-rate input excludes the cached span"
+        );
+        assert_eq!(usage.cache_read_tokens, Some(800));
+        // Everything the provider billed for still adds back up to what it sent.
+        assert_eq!(usage.billable_total(), 1010);
+    }
+
     #[test]
     fn fingerprint_is_stable_for_default_config() {
-        let p = OpenAiProvider::new("p", "gpt-x", None, None, None);
+        let p = OpenAiProvider::new("p", "gpt-x", None, None, None, None);
         assert_eq!(
             crate::cache::canonical_json(&p.fingerprint()),
             r#"{"base_url":"https://api.openai.com/v1","model":"gpt-x","params":{},"type":"openai"}"#
@@ -283,9 +335,12 @@ mod tests {
 
     #[test]
     fn prefers_content_when_present() {
-        let resp = parse_completion_response(&json!({
-            "choices": [{"message": {"content": "the answer", "reasoning": "thinking…"}}]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {"content": "the answer", "reasoning": "thinking…"}}]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(resp.output, Output::Text("the answer".into()));
         assert!(resp.raw.unwrap().get("domarinn_output_source").is_none());
@@ -295,12 +350,15 @@ mod tests {
     fn falls_back_to_reasoning_when_content_is_empty() {
         // ollama's reasoning models put the whole answer here and leave
         // `content` empty, especially when cut off by max_tokens.
-        let resp = parse_completion_response(&json!({
-            "choices": [{
-                "message": {"content": "", "reasoning": "Thinking: the capital is Paris."},
-                "finish_reason": "length"
-            }]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{
+                    "message": {"content": "", "reasoning": "Thinking: the capital is Paris."},
+                    "finish_reason": "length"
+                }]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(
             resp.output,
@@ -314,27 +372,36 @@ mod tests {
 
     #[test]
     fn falls_back_to_reasoning_content_spelling() {
-        let resp = parse_completion_response(&json!({
-            "choices": [{"message": {"reasoning_content": "deepseek style"}}]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {"reasoning_content": "deepseek style"}}]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(resp.output, Output::Text("deepseek style".into()));
     }
 
     #[test]
     fn treats_whitespace_only_content_as_absent() {
-        let resp = parse_completion_response(&json!({
-            "choices": [{"message": {"content": "   \n", "reasoning": "real text"}}]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {"content": "   \n", "reasoning": "real text"}}]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(resp.output, Output::Text("real text".into()));
     }
 
     #[test]
     fn yields_empty_text_when_the_message_carries_nothing() {
-        let resp = parse_completion_response(&json!({
-            "choices": [{"message": {}}]
-        }))
+        let resp = parse_completion_response(
+            &json!({
+                "choices": [{"message": {}}]
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(resp.output, Output::Text(String::new()));
         assert!(resp.raw.unwrap().get("domarinn_output_source").is_none());
@@ -363,6 +430,7 @@ mod tests {
             Some("https://gw.example/v1/".into()),
             None,
             Some(params),
+            None,
         );
 
         let preview = p.request_preview(&text_request()).unwrap();
@@ -388,7 +456,7 @@ mod tests {
 
     #[test]
     fn request_preview_matches_the_body_actually_built() {
-        let p = OpenAiProvider::new("g", "m", None, None, None);
+        let p = OpenAiProvider::new("g", "m", None, None, None, None);
         let req = text_request();
         let preview = p.request_preview(&req).unwrap();
         assert_eq!(preview["body"], p.build_body(req.prompt.as_ref().unwrap()));
@@ -396,7 +464,7 @@ mod tests {
 
     #[test]
     fn request_preview_is_absent_without_a_prompt() {
-        let p = OpenAiProvider::new("g", "m", None, None, None);
+        let p = OpenAiProvider::new("g", "m", None, None, None, None);
         let req = ProviderRequest::default();
         assert!(p.request_preview(&req).is_none());
     }
@@ -419,6 +487,7 @@ mod tests {
             Some(server.uri()),
             Some("OPENAI_TEST_KEY".into()),
             None,
+            None,
         );
         let resp = p.call(&text_request(), &CallCtx::default()).await.unwrap();
         assert_eq!(resp.output, Output::Text("hello".into()));
@@ -440,6 +509,7 @@ mod tests {
             Some(server.uri()),
             Some("OPENAI_TEST_KEY2".into()),
             None,
+            None,
         );
         match p.call(&text_request(), &CallCtx::default()).await {
             Err(ProviderError::Retriable { retry_after, .. }) => {
@@ -455,7 +525,7 @@ mod empty_classification_tests {
     use super::*;
 
     fn reason_of(payload: Json) -> Option<String> {
-        parse_completion_response(&payload)
+        parse_completion_response(&payload, None)
             .unwrap()
             .empty_reason
             .map(|r| r.as_str().to_string())
@@ -495,7 +565,7 @@ mod empty_classification_tests {
         let payload = json!({
             "choices": [{"message": {"content": "", "reasoning": "thinking aloud"}}]
         });
-        let resp = parse_completion_response(&payload).unwrap();
+        let resp = parse_completion_response(&payload, None).unwrap();
         assert_eq!(resp.reasoning.as_deref(), Some("thinking aloud"));
         // Existing substitution behavior is preserved, so nothing regresses.
         assert_eq!(resp.output, Output::Text("thinking aloud".into()));
@@ -506,7 +576,7 @@ mod empty_classification_tests {
         let payload = json!({
             "choices": [{"message": {"content": "42"}, "finish_reason": "stop"}]
         });
-        assert!(parse_completion_response(&payload)
+        assert!(parse_completion_response(&payload, None)
             .unwrap()
             .empty_reason
             .is_none());

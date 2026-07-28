@@ -200,6 +200,17 @@
               ],
               "additionalProperties": true
             },
+            "pricing": {
+              "description": "Rate override for this provider's model. See [`PricingCfg`].\n\nBoxed because `ProviderKind` is reachable from `AssertKind` (an\n`llm-rubric` can carry its own grader, which carries a provider), so\nfive inline `Option<f64>` here would inflate every assertion in\nevery suite by 80 bytes. Transparent to serde and schemars — the\nYAML is unchanged.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "type": "string",
               "const": "anthropic"
@@ -235,6 +246,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override for this provider's model. See [`PricingCfg`].\n\nBoxed because `ProviderKind` is reachable from `AssertKind` (an\n`llm-rubric` can carry its own grader, which carries a provider), so\nfive inline `Option<f64>` here would inflate every assertion in\nevery suite by 80 bytes. Transparent to serde and schemars — the\nYAML is unchanged.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -324,6 +346,48 @@
           ]
         }
       ]
+    },
+    "PricingCfg": {
+      "description": "A per-provider rate override, in USD per million tokens.\n\nMerged field-wise over the built-in rate for the provider's model, so a\nsuite can correct one stale number without restating a whole price sheet.\nExists for the cases a shipped table cannot cover: a proxy or gateway with\nnegotiated rates, a fine-tune, or a model the table has never heard of.\n\n`f64` is right *here* and nowhere else — a human writes `3.00` in YAML, and\nit converts to integer micro-dollars once when the provider is built.\n\nNever reaches a provider's `fingerprint()`, so setting it does not\ninvalidate a single cache entry: cost is not request identity.",
+      "type": "object",
+      "properties": {
+        "input_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "output_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "cache_read_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "cache_write_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "cache_write_1h_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
     },
     "HttpMethod": {
       "description": "The HTTP method for a `type: http` provider. Authors may write either case\n(`get` or `GET`) in YAML; the wire method (and the request/cache\nfingerprint) is always the uppercase form.",
@@ -745,6 +809,7 @@
               "type": "string"
             },
             "grader": {
+              "description": "Boxed because it is by far the largest thing an assertion can carry\n(a whole `Grader`, including a `ProviderKind`), and every other\n`AssertKind` variant pays for it inline otherwise. Transparent to\nserde and schemars — the YAML is unchanged.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Grader"
@@ -816,13 +881,23 @@
           ]
         },
         {
-          "description": "Total tokens must be <= max.",
+          "description": "Token count must be <= max. See [`TokenCount`] for which tokens.",
           "type": "object",
           "properties": {
             "max": {
               "type": "integer",
               "format": "uint64",
               "minimum": 0
+            },
+            "count": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TokenCount"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -962,6 +1037,17 @@
               ],
               "additionalProperties": true
             },
+            "pricing": {
+              "description": "Rate override for this provider's model. See [`PricingCfg`].\n\nBoxed because `ProviderKind` is reachable from `AssertKind` (an\n`llm-rubric` can carry its own grader, which carries a provider), so\nfive inline `Option<f64>` here would inflate every assertion in\nevery suite by 80 bytes. Transparent to serde and schemars — the\nYAML is unchanged.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "type": "string",
               "const": "anthropic"
@@ -997,6 +1083,17 @@
                 "null"
               ],
               "additionalProperties": true
+            },
+            "pricing": {
+              "description": "Rate override for this provider's model. See [`PricingCfg`].\n\nBoxed because `ProviderKind` is reachable from `AssertKind` (an\n`llm-rubric` can carry its own grader, which carries a provider), so\nfive inline `Option<f64>` here would inflate every assertion in\nevery suite by 80 bytes. Transparent to serde and schemars — the\nYAML is unchanged.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PricingCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -1093,6 +1190,21 @@
       "enum": [
         "forced",
         "auto"
+      ]
+    },
+    "TokenCount": {
+      "description": "Which tokens a `tokens` assertion counts.",
+      "oneOf": [
+        {
+          "description": "Input plus output. The default, and what every existing suite means.",
+          "type": "string",
+          "const": "total"
+        },
+        {
+          "description": "Everything the provider bills for, cache reads and writes included. On a\ncache-heavy workload this can be several times `total`.",
+          "type": "string",
+          "const": "billable"
+        }
       ]
     },
     "Defaults": {

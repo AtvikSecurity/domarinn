@@ -37,24 +37,28 @@ pub fn build_provider(cfg: &ProviderCfg) -> Result<Box<dyn Provider>, FactoryErr
             base_url,
             api_key_env,
             params,
+            pricing,
         } => Ok(Box::new(AnthropicProvider::new(
             cfg.id.clone(),
             model.clone(),
             base_url.clone(),
             api_key_env.clone(),
             params.clone(),
+            pricing.as_deref().cloned(),
         ))),
         ProviderKind::Openai {
             model,
             base_url,
             api_key_env,
             params,
+            pricing,
         } => Ok(Box::new(OpenAiProvider::new(
             cfg.id.clone(),
             model.clone(),
             base_url.clone(),
             api_key_env.clone(),
             params.clone(),
+            pricing.as_deref().cloned(),
         ))),
         ProviderKind::Http {
             url,

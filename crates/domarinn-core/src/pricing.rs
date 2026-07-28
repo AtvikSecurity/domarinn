@@ -210,6 +210,74 @@ fn component(tokens: u64, usd_per_mtok: Option<f64>) -> Option<MicroUsd> {
     Some(MicroUsd(micros.min(u64::MAX as u128) as u64))
 }
 
+/// The effective rate for a provider: the built-in row for `model_id`, with any
+/// configured override merged field-wise over it.
+///
+/// Called once when a provider is constructed, not once per call. That is what
+/// makes the unknown-model warning fire exactly once per run per provider with
+/// no global mutable state to leak across a shared test binary — and it keeps
+/// `domarinn validate` and `list` silent, since neither builds a provider.
+///
+/// `None` means the cost of this provider's calls is unknown, and callers must
+/// leave `cost_usd` absent rather than substitute anything.
+pub fn resolve_rate(
+    provider_id: &str,
+    model_id: &str,
+    override_cfg: Option<&crate::config::PricingCfg>,
+) -> Option<ModelRate> {
+    let built_in = built_in_rate(model_id);
+
+    let merged = match (built_in, override_cfg) {
+        (None, None) => {
+            tracing::warn!(
+                provider = provider_id,
+                model = model_id,
+                "no built-in rate for this model, so cost will not be reported; \
+                 set `pricing:` on the provider to price it"
+            );
+            return None;
+        }
+        (Some(base), None) => base.clone(),
+        (base, Some(cfg)) => {
+            let base = base.cloned();
+            let pick = |over: Option<f64>, from_base: Option<f64>| over.or(from_base);
+            let input = pick(cfg.input_per_mtok, base.as_ref().map(|b| b.input));
+            let output = pick(cfg.output_per_mtok, base.as_ref().map(|b| b.output));
+            let (Some(input), Some(output)) = (input, output) else {
+                tracing::warn!(
+                    provider = provider_id,
+                    model = model_id,
+                    "`pricing:` is set but leaves input or output unpriced and there is \
+                     no built-in rate to fall back on, so cost will not be reported"
+                );
+                return None;
+            };
+            ModelRate {
+                input,
+                output,
+                cache_read: pick(
+                    cfg.cache_read_per_mtok,
+                    base.as_ref().and_then(|b| b.cache_read),
+                ),
+                cache_write_5m: pick(
+                    cfg.cache_write_per_mtok,
+                    base.as_ref().and_then(|b| b.cache_write_5m),
+                ),
+                cache_write_1h: pick(
+                    cfg.cache_write_1h_per_mtok,
+                    base.as_ref().and_then(|b| b.cache_write_1h),
+                ),
+                // A configured rate is verified by whoever configured it.
+                as_of: base
+                    .as_ref()
+                    .map(|b| b.as_of.clone())
+                    .unwrap_or_else(|| "configured".to_string()),
+            }
+        }
+    };
+    Some(merged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

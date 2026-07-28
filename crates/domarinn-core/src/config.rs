@@ -112,6 +112,44 @@ pub enum HttpMethod {
     Head,
 }
 
+/// Which tokens a `tokens` assertion counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenCount {
+    /// Input plus output. The default, and what every existing suite means.
+    Total,
+    /// Everything the provider bills for, cache reads and writes included. On a
+    /// cache-heavy workload this can be several times `total`.
+    Billable,
+}
+
+/// A per-provider rate override, in USD per million tokens.
+///
+/// Merged field-wise over the built-in rate for the provider's model, so a
+/// suite can correct one stale number without restating a whole price sheet.
+/// Exists for the cases a shipped table cannot cover: a proxy or gateway with
+/// negotiated rates, a fine-tune, or a model the table has never heard of.
+///
+/// `f64` is right *here* and nowhere else — a human writes `3.00` in YAML, and
+/// it converts to integer micro-dollars once when the provider is built.
+///
+/// Never reaches a provider's `fingerprint()`, so setting it does not
+/// invalidate a single cache entry: cost is not request identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PricingCfg {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_per_mtok: Option<f64>,
+}
+
 /// The behavior of a provider, selected by `type`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -137,6 +175,15 @@ pub enum ProviderKind {
         api_key_env: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
+        /// Rate override for this provider's model. See [`PricingCfg`].
+        ///
+        /// Boxed because `ProviderKind` is reachable from `AssertKind` (an
+        /// `llm-rubric` can carry its own grader, which carries a provider), so
+        /// five inline `Option<f64>` here would inflate every assertion in
+        /// every suite by 80 bytes. Transparent to serde and schemars — the
+        /// YAML is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pricing: Option<Box<PricingCfg>>,
     },
     /// OpenAI-compatible chat-completions client.
     Openai {
@@ -147,6 +194,15 @@ pub enum ProviderKind {
         api_key_env: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
+        /// Rate override for this provider's model. See [`PricingCfg`].
+        ///
+        /// Boxed because `ProviderKind` is reachable from `AssertKind` (an
+        /// `llm-rubric` can carry its own grader, which carries a provider), so
+        /// five inline `Option<f64>` here would inflate every assertion in
+        /// every suite by 80 bytes. Transparent to serde and schemars — the
+        /// YAML is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pricing: Option<Box<PricingCfg>>,
     },
     /// Arbitrary HTTP endpoint.
     Http {
@@ -358,8 +414,12 @@ pub enum AssertKind {
     },
     LlmRubric {
         value: String,
+        /// Boxed because it is by far the largest thing an assertion can carry
+        /// (a whole `Grader`, including a `ProviderKind`), and every other
+        /// `AssertKind` variant pays for it inline otherwise. Transparent to
+        /// serde and schemars — the YAML is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        grader: Option<Grader>,
+        grader: Option<Box<Grader>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         threshold: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -373,9 +433,11 @@ pub enum AssertKind {
     Latency {
         max: u64,
     },
-    /// Total tokens must be <= max.
+    /// Token count must be <= max. See [`TokenCount`] for which tokens.
     Tokens {
         max: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<TokenCount>,
     },
     /// Embedding cosine similarity to a reference must be >= threshold.
     Similar {

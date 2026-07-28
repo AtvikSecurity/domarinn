@@ -552,6 +552,7 @@ async fn run_cell(
         latency_ms,
         cost_usd: response.cost_usd,
         total_tokens: response.usage.as_ref().map(|u| u.total()),
+        billable_tokens: response.usage.as_ref().map(|u| u.billable_total()),
     };
 
     let (assert_results, scored, assert_error_classes) = evaluate_asserts(

@@ -30,6 +30,9 @@ pub struct AnthropicProvider {
     api_key_env: String,
     params: ParamMap,
     client: reqwest::Client,
+    /// The effective rate for `model`, resolved once at construction. `None`
+    /// means this provider's calls cannot be priced, so `cost_usd` stays absent.
+    rate: Option<crate::pricing::ModelRate>,
 }
 
 impl AnthropicProvider {
@@ -39,14 +42,23 @@ impl AnthropicProvider {
         base_url: Option<String>,
         api_key_env: Option<String>,
         params: Option<ParamMap>,
+        pricing: Option<crate::config::PricingCfg>,
     ) -> Self {
+        let model = model.into();
+        let id = id.into();
+        // Resolved here, not per call: `build_provider` runs once per provider
+        // per run, so the unknown-model warning fires exactly once per run per
+        // id with no global state — and `validate`/`list`, which never build a
+        // provider, stay silent.
+        let rate = crate::pricing::resolve_rate(&id, &model, pricing.as_ref());
         AnthropicProvider {
-            id: id.into(),
-            model: model.into(),
+            id,
+            model,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             api_key_env: api_key_env.unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
             params: params.unwrap_or_default(),
             client: http_client(DEFAULT_TIMEOUT),
+            rate,
         }
     }
 
@@ -122,7 +134,7 @@ impl Provider for AnthropicProvider {
         }
 
         let payload: Json = response.json().await.map_err(transport_error)?;
-        parse_messages_response(&payload)
+        parse_messages_response(&payload, self.rate.as_ref())
     }
 
     fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
@@ -171,7 +183,10 @@ fn has_block(blocks: &[Json], kind: &str) -> bool {
         .any(|b| b.get("type").and_then(|t| t.as_str()) == Some(kind))
 }
 
-fn parse_messages_response(payload: &Json) -> Result<ProviderResponse, ProviderError> {
+fn parse_messages_response(
+    payload: &Json,
+    rate: Option<&crate::pricing::ModelRate>,
+) -> Result<ProviderResponse, ProviderError> {
     let blocks = payload.get("content").and_then(|c| c.as_array());
 
     let text = blocks.map(|b| join_blocks(b, "text")).unwrap_or_default();
@@ -238,10 +253,19 @@ fn parse_messages_response(payload: &Json) -> Result<ProviderResponse, ProviderE
             .and_then(|c| c.get("ephemeral_1h_input_tokens"))
             .and_then(|v| v.as_u64()),
     });
+    // Costed here, in the parse path, rather than in the runner. A cache hit
+    // replays `cost_usd` from its entry, so costing downstream would re-price a
+    // replayed hit against today's rate table — and a run's cost would then
+    // depend on when you read it. Computed once, with the rates in effect at
+    // the moment of the call, and replayed verbatim forever.
+    let cost_usd = rate
+        .and_then(|r| usage.as_ref().and_then(|u| crate::pricing::cost_of(u, r)))
+        .map(|c| c.to_usd());
+
     Ok(ProviderResponse {
         output: Output::Text(text),
         usage,
-        cost_usd: None,
+        cost_usd,
         stop_reason,
         raw: Some(payload.clone()),
         reasoning,
@@ -273,9 +297,91 @@ mod tests {
     /// If this fails, you have a cache migration to plan. New members belong
     /// here **conditionally**, only when configured, mirroring the `case_salt`
     /// discipline at `cache_key.rs:48-55`.
+    /// The regression this whole subsystem exists for: `cost_usd` was
+    /// hardcoded `None`, so `AssertKind::Cost` took its "not reported" branch
+    /// and every budget assertion passed no matter what the call cost.
+    #[test]
+    fn a_priced_model_reports_a_cost() {
+        let p = AnthropicProvider::new("p", "claude-haiku-4-5", None, None, None, None);
+        let resp = parse_messages_response(
+            &json!({
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+            }),
+            p.rate.as_ref(),
+        )
+        .unwrap();
+        // 1M in at $1 + 1M out at $5.
+        assert_eq!(resp.cost_usd, Some(6.0));
+    }
+
+    /// An unknown model must report nothing rather than a guess, so the
+    /// assertion keeps honestly saying "not reported".
+    #[test]
+    fn an_unpriced_model_reports_no_cost() {
+        let p = AnthropicProvider::new("p", "claude-from-2030", None, None, None, None);
+        assert!(p.rate.is_none());
+        let resp = parse_messages_response(
+            &json!({
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 10, "output_tokens": 10}
+            }),
+            p.rate.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(resp.cost_usd, None);
+    }
+
+    /// A `pricing:` block prices a model the table has never heard of.
+    #[test]
+    fn a_pricing_override_prices_an_unknown_model() {
+        let cfg = crate::config::PricingCfg {
+            input_per_mtok: Some(2.0),
+            output_per_mtok: Some(4.0),
+            cache_read_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+        };
+        let p = AnthropicProvider::new("p", "private-model", None, None, None, Some(cfg));
+        let resp = parse_messages_response(
+            &json!({
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+            }),
+            p.rate.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(resp.cost_usd, Some(6.0));
+    }
+
+    /// The load-bearing guarantee for the override: cost is not request
+    /// identity, so configuring a rate must not invalidate a single cache entry.
+    #[test]
+    fn pricing_does_not_reach_the_fingerprint() {
+        let plain = AnthropicProvider::new("p", "claude-x", None, None, None, None);
+        let priced = AnthropicProvider::new(
+            "p",
+            "claude-x",
+            None,
+            None,
+            None,
+            Some(crate::config::PricingCfg {
+                input_per_mtok: Some(99.0),
+                output_per_mtok: Some(99.0),
+                cache_read_per_mtok: None,
+                cache_write_per_mtok: None,
+                cache_write_1h_per_mtok: None,
+            }),
+        );
+        assert_eq!(
+            crate::cache::canonical_json(&plain.fingerprint()),
+            crate::cache::canonical_json(&priced.fingerprint())
+        );
+    }
+
     #[test]
     fn fingerprint_is_stable_for_default_config() {
-        let p = AnthropicProvider::new("p", "claude-x", None, None, None);
+        let p = AnthropicProvider::new("p", "claude-x", None, None, None, None);
         assert_eq!(
             crate::cache::canonical_json(&p.fingerprint()),
             r#"{"base_url":"https://api.anthropic.com","model":"claude-x","params":{},"type":"anthropic"}"#
@@ -296,7 +402,7 @@ mod tests {
     fn body_defaults_max_tokens_but_keeps_params() {
         let mut params = serde_json::Map::new();
         params.insert("temperature".into(), json!(0.5));
-        let p = AnthropicProvider::new("c", "claude-x", None, None, Some(params));
+        let p = AnthropicProvider::new("c", "claude-x", None, None, Some(params), None);
         let body = p.build_body(&RenderedPrompt::Text("hi".into()));
         assert_eq!(body["max_tokens"], json!(DEFAULT_MAX_TOKENS));
         assert_eq!(body["temperature"], json!(0.5));
@@ -326,7 +432,7 @@ mod tests {
         // `system` out of the message list into a top-level field, so a preview
         // reconstructed from the stored `RenderedPrompt` in the browser would
         // show a system *message* that was never sent as one.
-        let p = AnthropicProvider::new("c", "claude-x", None, None, None);
+        let p = AnthropicProvider::new("c", "claude-x", None, None, None, None);
         let req = ProviderRequest {
             prompt: Some(RenderedPrompt::Messages(vec![
                 crate::types::ChatMessage {
@@ -358,7 +464,7 @@ mod tests {
 
     #[test]
     fn request_preview_matches_the_body_actually_built() {
-        let p = AnthropicProvider::new("c", "claude-x", None, None, None);
+        let p = AnthropicProvider::new("c", "claude-x", None, None, None, None);
         let req = text_request();
         let preview = p.request_preview(&req).unwrap();
         assert_eq!(preview["body"], p.build_body(req.prompt.as_ref().unwrap()));
@@ -384,6 +490,7 @@ mod tests {
             Some(server.uri()),
             Some("ANTHROPIC_TEST_KEY".into()),
             None,
+            None,
         );
         let resp = p.call(&text_request(), &CallCtx::default()).await.unwrap();
         assert_eq!(resp.output, Output::Text("hello".into()));
@@ -404,6 +511,7 @@ mod tests {
             Some(server.uri()),
             Some("ANTHROPIC_TEST_KEY2".into()),
             None,
+            None,
         );
         let err = p
             .call(&text_request(), &CallCtx::default())
@@ -415,7 +523,14 @@ mod tests {
     #[tokio::test]
     async fn missing_prompt_is_fatal() {
         std::env::set_var("ANTHROPIC_TEST_KEY3", "sk-test");
-        let p = AnthropicProvider::new("c", "m", None, Some("ANTHROPIC_TEST_KEY3".into()), None);
+        let p = AnthropicProvider::new(
+            "c",
+            "m",
+            None,
+            Some("ANTHROPIC_TEST_KEY3".into()),
+            None,
+            None,
+        );
         let req = ProviderRequest {
             prompt: None,
             vars: BTreeMap::new(),
@@ -435,7 +550,7 @@ mod empty_classification_tests {
     use super::*;
 
     fn reason_of(payload: Json) -> Option<String> {
-        parse_messages_response(&payload)
+        parse_messages_response(&payload, None)
             .unwrap()
             .empty_reason
             .map(|r| r.as_str().to_string())
@@ -450,7 +565,7 @@ mod empty_classification_tests {
             "content": [{"type": "thinking", "thinking": "let me work through this"}],
             "stop_reason": "end_turn"
         });
-        let resp = parse_messages_response(&payload).unwrap();
+        let resp = parse_messages_response(&payload, None).unwrap();
 
         assert_eq!(resp.output, Output::Text(String::new()));
         assert_eq!(resp.reasoning.as_deref(), Some("let me work through this"));
@@ -496,7 +611,7 @@ mod empty_classification_tests {
             "content": [{"type": "redacted_thinking", "data": "opaque"}],
             "stop_reason": "end_turn"
         });
-        let resp = parse_messages_response(&payload).unwrap();
+        let resp = parse_messages_response(&payload, None).unwrap();
         assert!(resp.reasoning.is_none(), "there is no readable text");
         assert_eq!(
             resp.empty_reason.unwrap().as_str(),
@@ -518,7 +633,7 @@ mod empty_classification_tests {
             "content": [{"type": "text", "text": "the answer is 42"}],
             "stop_reason": "end_turn"
         });
-        let resp = parse_messages_response(&payload).unwrap();
+        let resp = parse_messages_response(&payload, None).unwrap();
         assert_eq!(resp.output, Output::Text("the answer is 42".into()));
         assert!(resp.empty_reason.is_none());
     }
@@ -534,7 +649,7 @@ mod empty_classification_tests {
             ],
             "stop_reason": "end_turn"
         });
-        let resp = parse_messages_response(&payload).unwrap();
+        let resp = parse_messages_response(&payload, None).unwrap();
         assert_eq!(resp.output, Output::Text("42".into()));
         assert_eq!(resp.reasoning.as_deref(), Some("6 times 7"));
         assert!(resp.empty_reason.is_none());
