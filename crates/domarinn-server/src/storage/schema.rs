@@ -309,6 +309,25 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         CREATE INDEX idx_cases_run_error_class ON cases(run_id, error_class);
         "#,
         ),
+        // Migration 11: index the hidden-cached-runs predicate.
+        //
+        // The runs list defaults to `cached=exclude`, and on every first page
+        // that computes `COUNT(*)` over the whole `runs` table with a predicate
+        // no index could serve. It is the hottest read in the product and it was
+        // O(rows) unbounded, against a reader pool of four.
+        //
+        // A partial index matching the predicate exactly. SQLite will only use
+        // one when the query's WHERE provably implies the index's, which is why
+        // `FULLY_CACHED` had to drop its `COALESCE` wrapper first — the two
+        // forms are semantically identical, but a function call around a column
+        // blocks the match.
+        M::up(
+            r#"
+        CREATE INDEX idx_runs_cached_passing ON runs(created_at DESC)
+        WHERE cache_misses = 0 AND cache_hits > 0
+          AND fail_count = 0 AND error_count = 0;
+        "#,
+        ),
     ])
 }
 

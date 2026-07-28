@@ -500,10 +500,18 @@ pub struct RunListPage {
     pub cached_hidden: Option<i64>,
 }
 
-/// A run whose every provider call was a cache hit. NULL-safe: legacy rows
-/// (NULL, pre-backfill) and the -1 undecodable-blob sentinel both fail the
-/// `= 0` / `> 0` checks, so "unknown" never counts as cached.
-const FULLY_CACHED: &str = "COALESCE(cache_misses, -1) = 0 AND COALESCE(cache_hits, 0) > 0";
+/// A run whose every provider call was a cache hit. NULL-safe by construction:
+/// `NULL = 0` and `NULL > 0` are both NULL (never true), so legacy rows and the
+/// -1 undecodable-blob sentinel fail these checks and "unknown" never counts as
+/// cached.
+///
+/// Written without `COALESCE` deliberately. It is exactly equivalent —
+/// `COALESCE(x, -1) = 0` is true iff `x = 0` and `x` is not null, which is what
+/// `x = 0` already means — but a function call around the column defeats index
+/// matching, and this predicate runs an unbounded `COUNT(*)` over the whole
+/// `runs` table on every first page of the default view (see `cached_hidden`
+/// below). The bare form lets migration 11's partial index serve it.
+const FULLY_CACHED: &str = "cache_misses = 0 AND cache_hits > 0";
 
 impl RunListFilter {
     fn query(self, conn: &Connection) -> anyhow::Result<RunListPage> {
@@ -587,7 +595,14 @@ impl RunListFilter {
             None
         };
         match self.cached {
-            Some(CachedFilter::Exclude) => clauses.push(format!("NOT {hidden_predicate}")),
+            // `IS NOT 1` rather than `NOT (...)`, and it is not a style choice:
+            // a legacy row has NULL cache counters, so the predicate evaluates
+            // to NULL and `NOT NULL` is NULL — which SQLite filters out, hiding
+            // exactly the rows the "never hide what we cannot classify" rule
+            // exists to protect. `IS NOT 1` is NULL-safe: NULL IS NOT 1 is true.
+            // (Pinned by `legacy_null_cache_columns_are_never_hidden`, which
+            // caught this the moment the COALESCE wrapper came off.)
+            Some(CachedFilter::Exclude) => clauses.push(format!("{hidden_predicate} IS NOT 1")),
             Some(CachedFilter::Only) => clauses.push(format!("({FULLY_CACHED})")),
             Some(CachedFilter::All) | None => {}
         }

@@ -312,6 +312,29 @@ export function useSetBaseline(project: string, suite: string) {
   });
 }
 
+/**
+ * Delete a run (admin scope).
+ *
+ * The endpoint has existed since the server did; nothing could reach it. It is
+ * the manual counterpart to `DOMARINN_RUN_MAX_AGE_DAYS`, which is off by
+ * default — so without this, a run pushed by mistake was permanent.
+ */
+export function useDeleteRun() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) =>
+      apiRequest(`/runs/${encodeURIComponent(runId)}`, { method: "DELETE" }),
+    onSuccess: () => {
+      // The run is gone from every list, every suite series, and any compare
+      // that referenced it.
+      void client.invalidateQueries({ queryKey: ["runs"] });
+      void client.invalidateQueries({ queryKey: ["suites"] });
+      void client.invalidateQueries({ queryKey: ["projects"] });
+      void client.invalidateQueries({ queryKey: ["compare"] });
+    },
+  });
+}
+
 export function useCacheStats() {
   return useQuery({
     queryKey: qk.cacheStats,

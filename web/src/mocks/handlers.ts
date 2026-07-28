@@ -318,6 +318,12 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
         return notFound();
       }
     }
+    // DELETE /runs/:id — 204, matching the server. The fixtures are generated
+    // and immutable, so this does not actually remove the run; the UI's job is
+    // to navigate away on success, and that is what the e2e asserts.
+    if (method === "DELETE" && seg.length === 2) {
+      return new Response(null, { status: 204 });
+    }
     if (seg[2] === "cases") {
       // GET /runs/:id/cases
       if (method === "GET" && seg.length === 3) {

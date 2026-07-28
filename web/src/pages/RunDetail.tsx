@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import type { OnChangeFn, SortingState } from "@tanstack/react-table";
 import {
   useMatrix,
@@ -7,6 +7,7 @@ import {
   useRunCases,
   useRuns,
   useSetBaseline,
+  useDeleteRun,
 } from "@/api/queries";
 import { mergeParams, parseCaseFilters } from "@/lib/filters";
 import { parseSort, serializeSort } from "@/lib/sort";
@@ -23,6 +24,8 @@ import { PassRateBadge } from "@/components/PassRateBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
+import { Modal, ModalActions } from "@/components/ui/Modal";
+import { useAuthView } from "@/auth/AuthProvider";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/cn";
@@ -67,6 +70,10 @@ export function RunDetail() {
   // a vertical scrollport), so the shell must not scroll behind it.
   useFillViewport();
   const baseline = useSetBaseline(run.data?.project ?? "", run.data?.suite ?? "");
+  const auth = useAuthView();
+  const deleteRun = useDeleteRun();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const navigate = useNavigate();
   // Scoped to the run that was actually pinned: `isSuccess` alone never resets,
   // so the button kept reading "Baseline set ✓" after navigating to a sibling
   // run whose baseline had not been set at all.
@@ -221,10 +228,34 @@ export function RunDetail() {
                   CI run ↗
                 </a>
               ) : null}
+              {/* Who produced it, on the same line as when and from where.
+                  `actor` is who ran it, `uploaded_by` who pushed it; a shared
+                  CI token names nobody, so both are shown when they differ. */}
+              {r.actor ? <span>{r.actor}</span> : null}
+              {r.host ? <span className="font-mono">@{r.host}</span> : null}
+              {r.uploaded_by && r.uploaded_by !== r.actor ? (
+                <span>uploaded by {r.uploaded_by}</span>
+              ) : null}
+              {r.domarinn_version ? (
+                <span className="font-mono">v{r.domarinn_version}</span>
+              ) : null}
+              {r.note ? <span className="italic">“{r.note}”</span> : null}
             </div>
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            {/* Admin-only, and behind a confirm: retention is off by default,
+                so without this a run pushed by mistake was permanent. */}
+            {auth.canAdmin ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmDelete(true)}
+                disabled={deleteRun.isPending}
+              >
+                Delete run
+              </Button>
+            ) : null}
             <Button
               variant="secondary"
               size="sm"
@@ -434,6 +465,39 @@ export function RunDetail() {
         caseKey={filters.case}
         onClose={closeCase}
       />
+
+      <Modal
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete this run?"
+        description={
+          <>
+            <span className="font-mono">{r.id}</span> and all of its cases will
+            be removed permanently. Eval results cannot be recreated — a rerun
+            produces different outputs.
+          </>
+        }
+      >
+        {deleteRun.isError ? (
+          <p className="text-sm text-fail">Could not delete the run. Try again.</p>
+        ) : null}
+        <ModalActions
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() =>
+            deleteRun.mutate(r.id, {
+              // Only navigate once it is actually gone; leaving the page on a
+              // failed delete would imply it worked.
+              onSuccess: () => {
+                setConfirmDelete(false);
+                void navigate("/");
+              },
+            })
+          }
+          confirmLabel="Delete run"
+          confirmVariant="danger"
+          pending={deleteRun.isPending}
+        />
+      </Modal>
     </div>
   );
 }

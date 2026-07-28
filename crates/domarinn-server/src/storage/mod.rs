@@ -48,6 +48,7 @@ mod compare;
 mod history;
 mod matrix;
 mod projects;
+pub mod retention;
 mod runs;
 mod schema;
 mod search;
