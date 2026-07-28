@@ -247,9 +247,21 @@ fn stats_line(s: &RunSummary) -> String {
             humanize_count(s.completion_tokens),
         ));
     }
+    if s.cache_read_tokens > 0 || s.cache_write_tokens > 0 {
+        segments.push(format!(
+            "{} cache-read / {} cache-write tokens",
+            humanize_count(s.cache_read_tokens),
+            humanize_count(s.cache_write_tokens),
+        ));
+    }
     if let Some(cost) = s.cost_usd {
         if cost > 0.0 {
-            segments.push(format!("${cost:.4}"));
+            // The saving rides on the cost segment rather than standing alone:
+            // it is only meaningful next to the number it is a fraction of.
+            match s.cache_savings_usd.filter(|c| *c > 0.0) {
+                Some(saved) => segments.push(format!("${cost:.4} (${saved:.4} saved by cache)")),
+                None => segments.push(format!("${cost:.4}")),
+            }
         }
     }
     if s.cache_hits > 0 {
@@ -322,8 +334,18 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
             humanize_count(s.completion_tokens),
         ));
     }
+    if s.cache_read_tokens > 0 || s.cache_write_tokens > 0 {
+        out.push_str(&format!(
+            "| Cache tokens | {} read / {} written |\n",
+            humanize_count(s.cache_read_tokens),
+            humanize_count(s.cache_write_tokens),
+        ));
+    }
     if let Some(cost) = s.cost_usd.filter(|c| *c > 0.0) {
         out.push_str(&format!("| Cost | ${cost:.4} |\n"));
+    }
+    if let Some(saved) = s.cache_savings_usd.filter(|c| *c > 0.0) {
+        out.push_str(&format!("| Saved by cache | ${saved:.4} |\n"));
     }
     if s.retried_cases > 0 {
         out.push_str(&format!("| Retries | {} cases |\n", s.retried_cases));

@@ -6,4 +6,30 @@ export type RunSummary = { total: number, passed: number, failed: number, errore
  * retried case usually *succeeded*, and without this the only trace of the
  * cost is a longer wall-clock.
  */
-retried_cases: number, };
+retried_cases: number, 
+/**
+ * Input tokens served from a provider-side prompt cache, summed.
+ *
+ * Note these three carry `skip_serializing_if`, unlike the bare
+ * `#[serde(default)]` counters above. That is deliberate and not a style
+ * inconsistency: those fields predate the server's content-hash ingest, so
+ * they already appear in every stored run. Adding a *new* always-emitted
+ * counter would make every historical run grow a `0` on re-serialization
+ * and shift the hash the server uses for idempotency, turning a re-upload
+ * into a 409. Guarded by
+ * `a_run_without_optional_provenance_does_not_grow_it_on_re_serialization`.
+ */
+cache_read_tokens: number, 
+/**
+ * Input tokens written into a provider-side prompt cache, summed.
+ */
+cache_write_tokens: number, 
+/**
+ * What the cached cases would have cost had they been called.
+ *
+ * Exact arithmetic on data already present — the sum of `cost_usd` over
+ * cases that were cache hits — not a counterfactual re-pricing. Note
+ * `cost_usd` above is the cost of the *work*, so money actually spent this
+ * run is `cost_usd - cache_savings_usd`.
+ */
+cache_savings_usd?: number, };

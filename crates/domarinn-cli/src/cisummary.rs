@@ -191,6 +191,21 @@ fn write_github_output(
         ("cache-hits", s.cache_hits.to_string()),
         ("cache-misses", s.cache_misses.to_string()),
         ("cache-hit-rate", pct(s.cache_hits, cache_total)),
+        ("cache-read-tokens", s.cache_read_tokens.to_string()),
+        ("cache-write-tokens", s.cache_write_tokens.to_string()),
+        // Same "emit even when unknown" rule as `run-url` below: a referenced
+        // output that no step wrote is an empty string either way, so writing
+        // the key makes the contract visible.
+        (
+            "cost-usd",
+            s.cost_usd.map(|c| format!("{c:.6}")).unwrap_or_default(),
+        ),
+        (
+            "cache-savings-usd",
+            s.cache_savings_usd
+                .map(|c| format!("{c:.6}"))
+                .unwrap_or_default(),
+        ),
         (
             "regressed",
             diff.map_or(0, |d| d.summary.newly_failing).to_string(),

@@ -119,7 +119,12 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
         total: cases.len() as u64,
         ..Default::default()
     };
-    let mut cost = 0.0;
+    // Integer accumulation: a float sum over thousands of tiny per-case costs
+    // makes the total depend on the order it was added in, so the same run
+    // re-summed can disagree with itself. Converted back to USD once, at the
+    // end, where the wire type is a float.
+    let mut cost = crate::pricing::MicroUsd::ZERO;
+    let mut saved = crate::pricing::MicroUsd::ZERO;
     let mut any_cost = false;
     for c in cases {
         match c.status {
@@ -131,9 +136,18 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
         if let Some(u) = &c.usage {
             s.prompt_tokens += u.input_tokens;
             s.completion_tokens += u.output_tokens;
+            s.cache_read_tokens += u.cache_read_tokens.unwrap_or(0);
+            s.cache_write_tokens += u.cache_write_tokens.unwrap_or(0);
         }
         if let Some(cst) = c.cost_usd {
-            cost += cst;
+            let micro = crate::pricing::MicroUsd::from_usd(cst);
+            cost = cost.saturating_add(micro);
+            // A cached case still reports what the work cost; it just did not
+            // cost that again today. Summing those is the saving, exactly,
+            // with no re-pricing and no dependence on the current rate table.
+            if c.cached {
+                saved = saved.saturating_add(micro);
+            }
             any_cost = true;
         }
         if c.cached {
@@ -147,6 +161,8 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
             s.retried_cases += 1;
         }
     }
-    s.cost_usd = any_cost.then_some(cost);
+    s.cost_usd = any_cost.then(|| cost.to_usd());
+    s.cache_savings_usd =
+        (any_cost && saved > crate::pricing::MicroUsd::ZERO).then(|| saved.to_usd());
     s
 }
