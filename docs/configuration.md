@@ -426,6 +426,20 @@ A test with no `id` is assigned one automatically:
   the `tests:` list (e.g. `inline/0`).
 - **File-loaded tests** become `<source-file-stem>/<index-within-file>` — a file
   `cases.yaml` yields `cases/0`, `cases/1`, and so on.
+- **Generator-produced tests** become `<command-stem>/<index>`, where the stem
+  comes from the **first argv element**, not from any file the generator reads.
+  `command: ["./gen-cases.py", "--all"]` yields `gen-cases/0`; `command: ["sh",
+  "-c", "..."]` yields `sh/0`, because `sh` is what was spawned.
+
+That last rule is worth knowing before you migrate a `file://` glob to a
+generator: the ids all change, and every case collapses into a single group, so
+`--filter` patterns and per-provider baselines written against the old ids stop
+matching. Have the generator emit its own `id` on each case if you want ids that
+survive the move.
+
+`domarinn list tests --generators` runs the generators and prints the ids they
+produce, which is how you preview `--filter` targets on a generator-driven
+suite. See [cli.md](./cli.md).
 
 ### File formats for `file://` globs
 

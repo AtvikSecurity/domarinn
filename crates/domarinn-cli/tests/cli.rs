@@ -523,3 +523,97 @@ fn list_tests_enumerates_expanded_matrix_ids() {
         .stdout(predicate::str::contains("greet[style=terse,temperature=0]"))
         .stdout(predicate::str::contains("greet[style=warm,temperature=1]"));
 }
+
+/// One inline case plus a generator that produces two more. `sh` is the
+/// command, so the generator's unnamed case takes the `sh/0` stem-and-index id.
+const GENERATOR_SUITE: &str = r#"
+version: 1
+suite: generated
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"ok\"}'"]
+tests:
+  - id: inline
+    assert:
+      - {type: contains, value: "ok"}
+  - generator:
+      command: ["sh", "-c", "cat >/dev/null; printf '{\"tests\":[{\"vars\":{\"x\":\"1\"}},{\"id\":\"named\",\"vars\":{\"x\":\"2\"}}]}'"]
+"#;
+
+/// Without the flag the listing is the inline cases alone — but it must say so,
+/// and say how to get the rest, or a generator-driven suite looks like a
+/// one-case suite.
+#[test]
+fn list_tests_points_at_the_flag_that_runs_generators() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), GENERATOR_SUITE);
+    bin()
+        .args(["list", "tests"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("inline"))
+        .stdout(predicate::str::contains("named").not())
+        .stderr(predicate::str::contains("--generators"));
+}
+
+#[test]
+fn list_tests_with_generators_enumerates_their_produced_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), GENERATOR_SUITE);
+    bin()
+        .args(["list", "tests", "--generators"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("inline"))
+        .stdout(predicate::str::contains("sh/0"))
+        .stdout(predicate::str::contains("named"));
+}
+
+/// The note is a human aid, so it stays off the machine-readable path — but the
+/// generated ids must reach `--json`, which is how a filter target gets scripted.
+#[test]
+fn list_tests_json_carries_generated_ids_without_the_note() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), GENERATOR_SUITE);
+    let out = bin()
+        .args(["list", "tests", "--generators", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let ids: Vec<String> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(ids, vec!["inline", "sh/0", "named"]);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).is_empty(),
+        "no note on the JSON path"
+    );
+}
+
+/// A generator whose output is malformed is the suite's problem, not the
+/// harness's — exit 2, matching what a run does with the same generator.
+#[test]
+fn list_tests_with_generators_reports_malformed_output_as_a_config_error() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(
+        dir.path(),
+        r#"
+version: 1
+suite: generated
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"ok\"}'"]
+tests:
+  - generator:
+      command: ["sh", "-c", "cat >/dev/null; printf '{\"nope\":[]}'"]
+"#,
+    );
+    bin()
+        .args(["list", "tests", "--generators"])
+        .current_dir(dir.path())
+        .assert()
+        .code(2);
+}

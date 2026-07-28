@@ -119,6 +119,11 @@ enum Command {
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
+        /// Run the suite's test generators so their cases are listed too.
+        /// Off by default: generators are subprocesses, and `list` is
+        /// otherwise a read-only command.
+        #[arg(long)]
+        generators: bool,
     },
     /// Run the self-hostable results server + web UI.
     Server {
@@ -203,7 +208,12 @@ fn main() -> ExitCode {
         Command::GenTypes { dir } => cmd_gen_types(&dir),
         Command::Validate { path } => cmd_validate(&path),
         Command::Schema { which } => cmd_schema(which),
-        Command::List { what, path, json } => cmd_list(what, &path, json),
+        Command::List {
+            what,
+            path,
+            json,
+            generators,
+        } => cmd_list(what, &path, json, generators),
         Command::Server { port, data_dir } => cmd_server(port, data_dir),
         Command::Healthcheck { port } => cmd_healthcheck(port),
     };
@@ -255,7 +265,7 @@ fn cmd_schema(which: SchemaKind) -> u8 {
     }
 }
 
-fn cmd_list(what: ListKind, path: &Path, json: bool) -> u8 {
+fn cmd_list(what: ListKind, path: &Path, json: bool, generators: bool) -> u8 {
     let suite = match domarinn_core::load_file(path) {
         Ok(s) => s,
         Err(e) => {
@@ -273,31 +283,72 @@ fn cmd_list(what: ListKind, path: &Path, json: bool) -> u8 {
             print_list(&ids, json);
         }
         ListKind::Tests => {
-            // Resolve inline + file globs; generators are listed as a count since
-            // they only produce cases at run time.
             let file = domarinn_core::loader::resolve_suite_path(path);
             let base_dir = domarinn_core::loader::suite_base_dir(&file);
-            match domarinn_core::expand_tests(&suite, &base_dir) {
-                Ok(expanded) => {
-                    let ids: Vec<String> =
-                        expanded.tests.iter().filter_map(|t| t.id.clone()).collect();
-                    let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
-                    print_list(&refs, json);
-                    if !expanded.deferred_generators.is_empty() && !json {
-                        eprintln!(
-                            "note: {} generator(s) produce additional tests at run time",
-                            expanded.deferred_generators.len()
-                        );
-                    }
-                }
+            let expanded = match domarinn_core::expand_tests(&suite, &base_dir) {
+                Ok(expanded) => expanded,
                 Err(e) => {
                     eprintln!("error: {e}");
                     return exit::USAGE;
                 }
+            };
+            let mut ids: Vec<String> = expanded.tests.iter().filter_map(|t| t.id.clone()).collect();
+
+            // Generators only produce cases by being run, so without `--generators`
+            // this listing is the inline and `file://` cases alone. On a
+            // generator-driven suite that is most of the suite missing, and
+            // `--filter` targets cannot be previewed at all — hence the flag, and
+            // hence a note that names it rather than just counting what is absent.
+            if !expanded.deferred_generators.is_empty() {
+                if generators {
+                    match run_generators(&expanded.deferred_generators, &base_dir) {
+                        Ok(cases) => ids.extend(cases.into_iter().filter_map(|t| t.id)),
+                        Err((code, message)) => {
+                            eprintln!("error: {message}");
+                            return code;
+                        }
+                    }
+                } else if !json {
+                    eprintln!(
+                        "note: {} generator(s) produce additional tests at run time; \
+                         pass --generators to run them and list their ids",
+                        expanded.deferred_generators.len()
+                    );
+                }
             }
+
+            let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+            print_list(&refs, json);
         }
     }
     exit::OK
+}
+
+/// Run a suite's test generators and return the cases they produce, or the exit
+/// code and message their failure earns.
+///
+/// The suite `defaults` merge the runner performs on generated cases is skipped
+/// deliberately: it fills vars, asserts, tags, thresholds and salts, none of
+/// which can change an id, and an id is the whole output here.
+fn run_generators(
+    specs: &[domarinn_core::config::GeneratorSpec],
+    base_dir: &Path,
+) -> Result<Vec<domarinn_core::config::TestCase>, (u8, String)> {
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| (exit::INFRA, format!("starting the async runtime: {e}")))?;
+    runtime
+        .block_on(domarinn_core::generate::resolve_generators(specs, base_dir))
+        .map_err(|e| {
+            // The same split the runner makes: a generator that produced
+            // malformed tests is a config problem, one that failed to spawn or
+            // timed out is infrastructure.
+            let code = if matches!(e, domarinn_core::generate::GenerateError::BadTests { .. }) {
+                exit::USAGE
+            } else {
+                exit::INFRA
+            };
+            (code, e.to_string())
+        })
 }
 
 fn print_list(items: &[&str], json: bool) {

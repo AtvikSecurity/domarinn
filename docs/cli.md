@@ -285,14 +285,22 @@ drift.
 domarinn schema config > domarinn.schema.json
 ```
 
-## `domarinn list <tests|providers|prompts> [PATH] [--json]`
+## `domarinn list <tests|providers|prompts> [PATH] [--json] [--generators]`
 
-List what a suite resolves to (tests are fully resolved — globs and generators
-included). `--json` emits a JSON array.
+List what a suite resolves to. `--json` emits a JSON array.
+
+`list tests` resolves inline cases, `file://` globs, and matrix expansion. It
+does **not** run the suite's `generator:` commands unless you pass
+`--generators`: a generator only produces cases by being executed, and `list` is
+otherwise a read-only command. Without the flag, a suite with generators gets a
+note on stderr saying how many were skipped; with it, the produced ids appear in
+the listing exactly as they will at run time, which is what makes them usable as
+`--filter` targets.
 
 ```sh
 domarinn list providers examples/render-health
 domarinn list tests . --json
+domarinn list tests . --generators
 ```
 
 ## `domarinn server [--port N] [--data-dir DIR]`
