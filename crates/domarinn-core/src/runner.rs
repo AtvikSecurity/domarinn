@@ -53,6 +53,29 @@ pub enum RunError {
     Resolve(#[from] crate::resolve::ResolveError),
     #[error("running generator: {0}")]
     Generate(#[from] crate::generate::GenerateError),
+    /// The run resolved to zero cases. Never a pass: a suite that graded
+    /// nothing is indistinguishable from one that graded everything and found
+    /// no problems, and an exit code cannot tell them apart.
+    #[error("{0}")]
+    NothingToRun(crate::empty_run::EmptyRun),
+}
+
+impl RunError {
+    /// Whether this is the caller's configuration or usage problem (CLI exit 2)
+    /// rather than an infrastructure failure (exit 3). See `docs/cli.md`.
+    ///
+    /// This also corrects a pre-existing mismatch: the CLI mapped *every*
+    /// `RunError` to the infrastructure code, so a YAML syntax error inside a
+    /// `file://` test file exited 3 while the documented contract promised 2.
+    pub fn is_config_error(&self) -> bool {
+        match self {
+            RunError::Factory(_) | RunError::Resolve(_) | RunError::NothingToRun(_) => true,
+            // A generator that produced malformed tests is a config problem; one
+            // that failed to spawn or timed out is infrastructure.
+            RunError::Generate(crate::generate::GenerateError::BadTests { .. }) => true,
+            RunError::Generate(_) => false,
+        }
+    }
 }
 
 /// Options controlling a run.
@@ -78,6 +101,12 @@ pub struct RunOptions {
     /// What to record about who and where this run came from. A run option
     /// rather than a suite field for the same reason as `retries` above.
     pub provenance: crate::provenance::ProvenanceOptions,
+    /// Accept a run that resolved to zero cases instead of failing it.
+    ///
+    /// Two real cases justify it, both CI-shaped: a sharded matrix where a
+    /// shard legitimately has no work, and a registry-driven generator that
+    /// yields nothing for some inputs. The diagnosis is still logged at `warn`.
+    pub allow_empty: bool,
 }
 
 impl Default for RunOptions {
@@ -90,6 +119,7 @@ impl Default for RunOptions {
             retries: None,
             include_raw: true,
             provenance: crate::provenance::ProvenanceOptions::default(),
+            allow_empty: false,
         }
     }
 }
@@ -181,7 +211,13 @@ pub async fn run_with_progress(
 
     // Tests (files + inline + generators).
     let expanded = expand_tests(suite, base_dir)?;
+    let expanded_globs = expanded.globs;
     let mut tests = expanded.tests;
+    let generator_commands: Vec<Vec<String>> = expanded
+        .deferred_generators
+        .iter()
+        .map(|g| g.command.clone())
+        .collect();
     let mut generated = resolve_generators(&expanded.deferred_generators, base_dir).await?;
     // Generators resolve after `expand_tests`, so their cases miss the defaults
     // merge it performs. Apply it here or `defaults:` silently skips them.
@@ -230,6 +266,26 @@ pub async fn run_with_progress(
         .unwrap_or(1)
         .max(1);
 
+    // Two guards, at two points, because the diagnosis differs. Here: nothing
+    // was produced at all, so the fault is a source. Below: things were
+    // produced and then all excluded, so the fault is a filter.
+    if tests.is_empty() && !opts.allow_empty {
+        let empty_globs: Vec<String> = expanded_globs
+            .iter()
+            .filter(|g| g.cases == 0)
+            .map(|g| g.spec.clone())
+            .collect();
+        let empty_generators: Vec<Vec<String>> = generator_commands;
+        return Err(RunError::NothingToRun(if suite.tests.is_empty() {
+            crate::empty_run::EmptyRun::NoTestSources
+        } else {
+            crate::empty_run::EmptyRun::SourcesProducedNothing {
+                empty_globs,
+                empty_generators,
+            }
+        }));
+    }
+
     // Expand the matrix into indexed cells so completion order does not affect
     // output order.
     struct Cell<'a> {
@@ -260,6 +316,43 @@ pub async fn run_with_progress(
                 }
             }
         }
+    }
+
+    if cells.is_empty() && !opts.allow_empty {
+        // Ordered most-specific first: an unknown `--provider` is a typo with a
+        // one-line fix, and reporting it as "the filters excluded everything"
+        // would bury that.
+        let available_providers: Vec<String> =
+            providers.iter().map(|p| p.id().to_string()).collect();
+        let reason = if providers.is_empty() {
+            crate::empty_run::EmptyRun::NoProvidersSelected {
+                requested: opts.filter.providers.clone(),
+                available: suite.providers.iter().map(|p| p.id.clone()).collect(),
+            }
+        } else if prompt_slots.iter().flatten().count() == 0 && !suite.prompts.is_empty() {
+            crate::empty_run::EmptyRun::NoPromptsSelected {
+                requested: opts.filter.prompts.clone(),
+                available: suite.prompts.iter().map(|p| p.id.clone()).collect(),
+            }
+        } else {
+            let _ = &available_providers;
+            crate::empty_run::EmptyRun::FilteredOut {
+                tests: tests.len(),
+                filters: FilterSpec {
+                    tags: opts.filter.tags.clone(),
+                    filters: opts.filter.filters.clone(),
+                    providers: opts.filter.providers.clone(),
+                    prompts: opts.filter.prompts.clone(),
+                },
+                examples: crate::empty_run::EmptyRun::examples(
+                    tests.iter().filter_map(|t| t.id.clone()),
+                ),
+            }
+        };
+        return Err(RunError::NothingToRun(reason));
+    }
+    if cells.is_empty() {
+        tracing::warn!("this run graded nothing; --allow-empty was passed");
     }
 
     let total = cells.len();

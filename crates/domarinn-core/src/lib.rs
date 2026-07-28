@@ -13,6 +13,7 @@ pub mod config;
 pub mod diff;
 pub mod digests;
 pub mod embeddings;
+pub mod empty_run;
 pub mod errors;
 
 // The wire contract lives in `domarinn-types`. Re-exported module-for-module so

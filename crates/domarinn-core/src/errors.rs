@@ -131,6 +131,9 @@ impl Classify for crate::runner::RunError {
             crate::runner::RunError::Factory(_) => ErrorClass::new(ErrorClass::PROVIDER_REQUEST),
             crate::runner::RunError::Resolve(e) => e.class(),
             crate::runner::RunError::Generate(_) => ErrorClass::new(ErrorClass::EXEC_FAILED),
+            // The suite resolved to nothing. Nothing rendered, nothing was
+            // requested, nothing executed — the config is what is wrong.
+            crate::runner::RunError::NothingToRun(_) => ErrorClass::new(ErrorClass::RENDER_FAILED),
         }
     }
 }

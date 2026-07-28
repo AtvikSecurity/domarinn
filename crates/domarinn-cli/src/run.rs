@@ -98,6 +98,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_progress: bool,
 
+    /// Succeed even if the run resolves to zero test cases.
+    ///
+    /// Without this a run that graded nothing exits 2, because a green result
+    /// over no cells is indistinguishable from a green result over every cell.
+    /// Pass it for a sharded matrix where a shard legitimately has no work.
+    #[arg(long)]
+    pub allow_empty: bool,
+
     /// A short human label for this run ("trying temperature 0.3"), stored on
     /// the run and searchable on the server. Defaults to the suite's
     /// `description`.
@@ -150,6 +158,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
             prompts: args.prompts.clone(),
         },
         repeat: args.repeat.max(1),
+        allow_empty: args.allow_empty,
         cache_mode,
         concurrency: args.concurrency,
         retries: if args.no_retries {
@@ -214,7 +223,15 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         Ok(r) => r,
         Err(e) => {
             eprintln!("run error: {e}");
-            return exit::INFRA;
+            // Exit 2 for the caller's problem, 3 for the harness's. This also
+            // corrects a pre-existing mismatch: every RunError used to map to
+            // 3, so a YAML syntax error in a `file://` test file exited as an
+            // infrastructure failure while `docs/cli.md` promised a config one.
+            return if e.is_config_error() {
+                exit::USAGE
+            } else {
+                exit::INFRA
+            };
         }
     };
 
