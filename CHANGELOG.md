@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/AtvikSecurity/domarinn/compare/0.3.0...0.3.1) (2026-07-28)
+
+
+### Features
+
+* **caching:** clean up logic and suggestions from claude ([85ff277](https://github.com/AtvikSecurity/domarinn/commit/85ff277bbe21407809dc49a7284b66d0842b1634))
+
 ## [0.3.0](https://github.com/AtvikSecurity/domarinn/compare/0.2.0...0.3.0) (2026-07-28)
 
 
