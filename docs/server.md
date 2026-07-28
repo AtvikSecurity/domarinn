@@ -534,7 +534,8 @@ service its own hostname, not a path prefix).
 
 | Path                          | Page | What it does |
 |-------------------------------|------|--------------|
-| `/`                           | Runs list | Browse and filter runs (project, suite, tag, branch, status, origin, actor). |
+| `/`                           | Overview  | Per-suite status: the latest CI run, its trend, and staleness. Sorted by severity, never by recency. |
+| `/runs`                       | Runs list | Browse and filter runs (project, suite, tag, branch, status, origin, actor). |
 | `/runs/:id`                   | Run detail | The **cases × asserts grid**; click a cell to open the **detail drawer** with the case's output and assertion evidence. |
 | `/runs/:id/compare[/:other]`  | Compare | Base/head run pickers with **regression highlighting** (newly failing cases stand out). |
 | `/cache`                      | Cache stats | Entry count, total size, hit/miss counters. |

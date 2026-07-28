@@ -26,14 +26,27 @@ export function canonicalRun(
   runs: RunListItem[],
   defaultBranch = "main",
 ): RunListItem | undefined {
-  const ci = runs.filter(isCanonical);
+  // Sorted rather than trusting the caller's order. The server happens to
+  // return newest-first today, so `find`/`[0]` would be correct by accident —
+  // and any reordering (merged pages, a client-side sort) would silently
+  // promote an ancient run to "current status" with nothing to catch it.
+  const ci = runs
+    .filter(isCanonical)
+    .slice()
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   return ci.find((r) => r.git_branch === defaultBranch) ?? ci[0];
 }
 
-/** Pass rate as a fraction, excluding skipped cases (matching `lib/format`). */
-function rate(run: RunListItem): number {
+/**
+ * Pass rate as a fraction, excluding skipped cases (matching `lib/format`).
+ *
+ * `null` when the run graded nothing — every case filtered out or skipped.
+ * Returning 0 there would be indistinguishable from "everything failed", so a
+ * run that judged nothing would read as a total regression.
+ */
+function rate(run: RunListItem): number | null {
   const denom = run.pass_count + run.fail_count + run.error_count;
-  return denom === 0 ? 0 : run.pass_count / denom;
+  return denom === 0 ? null : run.pass_count / denom;
 }
 
 /**
@@ -44,12 +57,24 @@ function rate(run: RunListItem): number {
  * meaningless: a half-broken scratch run drags the "trend" down and the line
  * says nothing about whether the product regressed.
  */
-export function canonicalSeries(runs: RunListItem[]): number[] {
-  return runs
-    .filter(isCanonical)
+export function canonicalSeries(
+  runs: RunListItem[],
+  defaultBranch = "main",
+): number[] {
+  // Scoped to the same branch `canonicalRun` picks, or the card's headline and
+  // its trend/delta are computed from different runs: a green main run beside a
+  // just-finished PR-branch run would show 100% with a ▼40pt delta and an amber
+  // "drifting" border, none of which describe the run it names.
+  const ci = runs.filter(isCanonical);
+  const branch = ci.some((r) => r.git_branch === defaultBranch)
+    ? defaultBranch
+    : ci[0]?.git_branch;
+  return ci
+    .filter((r) => r.git_branch === branch)
     .slice()
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
-    .map(rate);
+    .map(rate)
+    .filter((r): r is number => r !== null);
 }
 
 /** Median of a numeric list; 0 for an empty one. */

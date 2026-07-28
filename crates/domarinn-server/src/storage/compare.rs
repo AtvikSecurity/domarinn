@@ -261,6 +261,11 @@ fn compare_runs(
         removed: 0,
     };
     let mut cases = Vec::new();
+    // Run-level, hoisted out of the loop: the grader is configured once per
+    // suite, but every case's classification needs it (see `ChangeInputs`).
+    // `COMPONENTS[4]` is `grader` — see the array's ordering contract.
+    let base_grader = empty_to_none(base_agg.components[4].clone());
+    let head_grader = empty_to_none(head_agg.components[4].clone());
 
     for key in keys {
         let b = base_cases.get(&key);
@@ -306,6 +311,11 @@ fn compare_runs(
                 head_provider: h.provider_digest.as_deref(),
                 base_asserts: b.assert_digest.as_deref(),
                 head_asserts: h.assert_digest.as_deref(),
+                // Run-level, so the same value for every case in the pair —
+                // but the classifier needs it, or a deliberate grader swap
+                // reads as an unstable grader.
+                base_grader: base_grader.as_deref(),
+                head_grader: head_grader.as_deref(),
                 output_changed: out_changed,
                 verdict_changed: b.status != h.status,
             }),

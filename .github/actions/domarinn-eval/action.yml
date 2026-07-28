@@ -237,6 +237,12 @@ runs:
       shell: bash
       env:
         DOMARINN_BIN: ${{ steps.bin.outputs.path }}
+        # The same server credentials the eval step gets. Without them
+        # `--against server:baseline` cannot resolve anything here, so the PR
+        # comment silently loses its comparison table and the `regressed`
+        # output is hard-zero for every caller using the documented CI default.
+        DOMARINN_SERVER_URL: ${{ inputs.server-url }}
+        DOMARINN_TOKEN: ${{ inputs.token }}
         INPUT_AGAINST: ${{ inputs.against }}
       run: |
         set -uo pipefail

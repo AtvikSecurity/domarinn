@@ -570,7 +570,7 @@ async fn run_cell(
     // diagnosis and the "did anything error" verdict input.
     let assert_error = assert_error_message(&assert_results);
     // Computed before the results are moved into the case below.
-    let assert_digest = crate::digests::assert_digest(&assert_results);
+    let assert_digest = crate::digests::assert_digest(&assert_results, test.threshold);
     let assert_error_class = crate::error_class::most_specific(&assert_error_classes);
     let verdict = case_verdict(&scored, test.threshold);
     let status = if assert_error.is_some() {

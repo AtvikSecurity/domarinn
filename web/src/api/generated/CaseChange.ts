@@ -13,4 +13,4 @@
  * or by an out-of-tree `exec` child, whereas these are derived by domarinn from
  * digest equality and no third party can add one.
  */
-export type CaseChange = "unknown" | "prompt_changed" | "provider_changed" | "asserts_changed" | "model_drift" | "output_drift" | "unstable_grader" | "stable";
+export type CaseChange = "unknown" | "prompt_changed" | "provider_changed" | "asserts_changed" | "grader_changed" | "model_drift" | "output_drift" | "unstable_grader" | "stable";

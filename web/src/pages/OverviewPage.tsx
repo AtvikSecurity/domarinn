@@ -1,4 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+/** Pages of 50 runs to pull before giving up (see the effect below). */
+const MAX_PAGES = 10;
 import type { RunListItem } from "@/api";
 import { useRuns } from "@/api/queries";
 import { severityRank, suiteSeverity } from "@/lib/signals";
@@ -22,6 +25,18 @@ export function OverviewPage() {
   // stream noise, but a suite whose latest CI run was fully cached still has a
   // status, and hiding it here would make the suite look stale.
   const runs = useRuns({ cached: "all" });
+
+  // Auto-page. A single 50-run page describes only the busiest suites: with
+  // more than 50 runs newer than a quiet suite's last run, that suite gets no
+  // card at all — so a suite whose CI died would *disappear* instead of showing
+  // the stale chip this page exists to show. Bounded so a large server cannot
+  // turn the landing page into an unbounded fetch; past the bound the oldest
+  // suites are simply absent, which is the same failure, only rarer.
+  useEffect(() => {
+    if (runs.hasNextPage && !runs.isFetchingNextPage) {
+      if ((runs.data?.pages.length ?? 0) < MAX_PAGES) void runs.fetchNextPage();
+    }
+  }, [runs]);
   // Sampled once at mount, not per render: staleness and severity are derived
   // from it, and a clock that advances mid-render would let a card change
   // category between two renders of the same data.

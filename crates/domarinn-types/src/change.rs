@@ -32,6 +32,16 @@ pub enum CaseChange {
     ProviderChanged,
     /// The grading definition changed. The goalposts moved, not the system.
     AssertsChanged,
+    /// The suite's grader itself changed — a different model or settings doing
+    /// the judging.
+    ///
+    /// Its own variant rather than folded into `AssertsChanged`, because the
+    /// fix is different: one means you rewrote a rubric, the other means you
+    /// swapped the judge. And it must exist at all, because without it a
+    /// deliberate grader bump landed in `UnstableGrader` — the classifier
+    /// accusing the grader of flakiness for a change the author made on
+    /// purpose.
+    GraderChanged,
     /// Same request and grading, different output, and the verdict flipped.
     ModelDrift,
     /// Same request and grading, different output, verdict held —
@@ -59,6 +69,12 @@ pub struct ChangeInputs<'a> {
     pub head_provider: Option<&'a str>,
     pub base_asserts: Option<&'a str>,
     pub head_asserts: Option<&'a str>,
+    /// The suite's grader digest. Run-level rather than per-case — the grader
+    /// is configured once for the suite — but it belongs on this axis because
+    /// it decides verdicts, and `UnstableGrader`'s claim that "nothing but the
+    /// grader is left" is only true if the grader itself is known to have held.
+    pub base_grader: Option<&'a str>,
+    pub head_grader: Option<&'a str>,
     pub output_changed: bool,
     pub verdict_changed: bool,
 }
@@ -81,6 +97,7 @@ pub fn classify_change(i: &ChangeInputs) -> CaseChange {
     let prompt = moved(i.base_prompt, i.head_prompt);
     let provider = moved(i.base_provider, i.head_provider);
     let asserts = moved(i.base_asserts, i.head_asserts);
+    let grader = moved(i.base_grader, i.head_grader);
 
     if prompt == Some(true) {
         return CaseChange::PromptChanged;
@@ -91,9 +108,13 @@ pub fn classify_change(i: &ChangeInputs) -> CaseChange {
     if asserts == Some(true) {
         return CaseChange::AssertsChanged;
     }
+    if grader == Some(true) {
+        return CaseChange::GraderChanged;
+    }
     // Nothing is known to have changed. Only claim the input held if it is
-    // actually known to have held on every axis.
-    if prompt.is_none() || provider.is_none() || asserts.is_none() {
+    // actually known to have held on every axis — including the grader, or
+    // `UnstableGrader` below would indict a grader that was simply replaced.
+    if prompt.is_none() || provider.is_none() || asserts.is_none() || grader.is_none() {
         return CaseChange::Unknown;
     }
     match (i.output_changed, i.verdict_changed) {

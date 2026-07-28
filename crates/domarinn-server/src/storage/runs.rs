@@ -158,6 +158,11 @@ struct PreparedRun {
     /// from clients that predate provenance collection. Feeds both the
     /// `description` column and its `runs_fts` slot, which existed and were
     /// never populated until now.
+    ///
+    /// Forward-only: existing rows keep their NULL and stay unsearchable by
+    /// note, even though `config_snapshot.description` is sitting in their
+    /// blobs. Backfilling would mean decompressing every historical run at
+    /// startup for a search convenience — the same trade migration 9 declines.
     description: Option<String>,
     // Migration-8 columns, promoted from `RunOrigin` so the run list can render
     // and filter on who produced a run without decompressing every blob.

@@ -12,6 +12,8 @@ fn same<'a>() -> ChangeInputs<'a> {
         head_provider: Some("blake3:m"),
         base_asserts: Some("blake3:a"),
         head_asserts: Some("blake3:a"),
+        base_grader: Some("blake3:g"),
+        head_grader: Some("blake3:g"),
         output_changed: false,
         verdict_changed: false,
     }
@@ -93,6 +95,46 @@ fn identical_everything_with_a_flipped_verdict_indicts_the_grader() {
         ..same()
     };
     assert_eq!(classify_change(&i), CaseChange::UnstableGrader);
+}
+
+/// Swapping the grader model is a deliberate act, not flakiness.
+///
+/// Before the grader axis existed this landed in `UnstableGrader` — the
+/// classifier accusing the grader of being unstable for a change the author
+/// made on purpose, which is the one diagnosis the whole feature exists to
+/// make trustworthy.
+#[test]
+fn replacing_the_grader_is_not_an_unstable_grader() {
+    let i = ChangeInputs {
+        head_grader: Some("blake3:g2"),
+        verdict_changed: true,
+        ..same()
+    };
+    assert_eq!(classify_change(&i), CaseChange::GraderChanged);
+}
+
+/// A grader digest missing on one side means the claim "nothing but the grader
+/// is left" cannot be made at all.
+#[test]
+fn an_unknown_grader_blocks_the_unstable_grader_verdict() {
+    let i = ChangeInputs {
+        base_grader: None,
+        verdict_changed: true,
+        ..same()
+    };
+    assert_eq!(classify_change(&i), CaseChange::Unknown);
+}
+
+/// The authored grading definition outranks the grader that applied it: if the
+/// rubric changed, that explains the flip without reaching for the judge.
+#[test]
+fn an_assert_change_outranks_a_grader_change() {
+    let i = ChangeInputs {
+        head_asserts: Some("blake3:a2"),
+        head_grader: Some("blake3:g2"),
+        ..same()
+    };
+    assert_eq!(classify_change(&i), CaseChange::AssertsChanged);
 }
 
 /// `provider_digest` can never be backfilled, so half of every comparison

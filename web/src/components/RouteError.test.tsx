@@ -26,7 +26,9 @@ describe("RouteError", () => {
     expect(
       screen.getByText(/tags is undefined somewhere deep/),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Back to runs" })).toHaveAttribute(
+    // `/` is the overview since the route split; the escape hatch has to say
+    // where it actually goes.
+    expect(screen.getByRole("link", { name: "Back to overview" })).toHaveAttribute(
       "href",
       "/",
     );

@@ -269,14 +269,24 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         // *what* changed without decompressing two blobs, and the runs list can
         // say it from the row.
         //
-        // No backfill, for the same reason as migration 8 plus one of its own:
-        // `provider_digest` is derived from the provider fingerprint, which
-        // appears nowhere in a stored run document (`request` is a preview
-        // envelope and is absent under `--no-raw`), so it is not recoverable at
-        // any price. `assert_digest` alone *is* recomputable from the stored
-        // `criteria`, but it would buy nothing — `classify_change` reports
-        // Unknown unless every axis is known — so paying a
-        // decompress-every-blob startup pass for it would be pure cost.
+        // No backfill, and the reason differs per column — worth stating
+        // precisely, because two of these ARE recoverable and we are choosing
+        // not to:
+        //
+        // - `cases.provider_digest` is genuinely unrecoverable: the provider
+        //   fingerprint appears nowhere in a stored run document (`request` is
+        //   a preview envelope, absent under `--no-raw`).
+        // - `cases.assert_digest` is recomputable from stored `criteria`, but
+        //   buys nothing alone: `classify_change` reports Unknown unless every
+        //   axis is known, and `provider_digest` never will be.
+        // - The five run-level digests over `prompts`/`providers`/`grader` ARE
+        //   recoverable from `config_snapshot` in each blob, and `ComponentDrift`
+        //   treats each component independently, so backfilling them WOULD light
+        //   up the change chips for historical comparisons. We skip it anyway:
+        //   the pass is O(runs) with a zstd decompress each, inside
+        //   `open_blocking` before the server accepts traffic. The cost is that
+        //   comparisons against pre-deploy runs report `changed: null` — which
+        //   every reader already renders as unknown rather than unchanged.
         //
         // The consequence is a contract, not an accident: change classification
         // only works between two runs that both post-date this migration, and

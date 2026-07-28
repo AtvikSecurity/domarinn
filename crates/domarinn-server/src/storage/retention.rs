@@ -62,7 +62,12 @@ const PROTECTED: &str = "
     )";
 
 fn sweep(conn: &mut Connection, max_age_days: u64) -> anyhow::Result<Swept> {
-    let cutoff = super::now_ms() - (max_age_days as i64) * 86_400_000;
+    // Saturating, not `as i64 * 86_400_000`: `DOMARINN_RUN_MAX_AGE_DAYS` is
+    // parsed as an unbounded u64, and a value past ~1.07e11 wraps the cast
+    // negative, putting the cutoff in the *future* so the first sweep deletes
+    // every run that is not explicitly protected. Release builds wrap silently.
+    let window_ms = (max_age_days as i128) * 86_400_000i128;
+    let cutoff = (super::now_ms() as i128 - window_ms).max(i64::MIN as i128) as i64;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
     let expired: i64 = tx.query_row(

@@ -48,6 +48,12 @@ pub struct CaseListFilter {
     pub cursor: Option<i64>,
 }
 
+/// The wire value for "errored, but from a run written before error classes
+/// existed". Shared with the web UI's `aggregateErrorClasses`, which buckets
+/// unclassified errors under the same string so the breakdown's counts still
+/// add up to the run's error count.
+pub const UNCLASSIFIED_ERROR: &str = "unknown";
+
 impl CaseListFilter {
     fn query(self, conn: &Connection) -> anyhow::Result<CaseListResponse> {
         let mut sql = String::from(
@@ -94,8 +100,17 @@ impl CaseListFilter {
             sql.push_str(&format!(" AND stop_reason = ?{}", args.len()));
         }
         if let Some(error_class) = &self.error_class {
-            args.push(error_class.clone().into());
-            sql.push_str(&format!(" AND error_class = ?{}", args.len()));
+            // `unknown` is the UI's bucket for cases that errored before this
+            // column existed — every run predating migration 10, which is not
+            // backfilled. Those rows hold NULL, and `NULL = 'unknown'` is NULL,
+            // so without this branch the breakdown offers a filter that always
+            // returns nothing.
+            if error_class == UNCLASSIFIED_ERROR {
+                sql.push_str(" AND status = 'error' AND error_class IS NULL");
+            } else {
+                args.push(error_class.clone().into());
+                sql.push_str(&format!(" AND error_class = ?{}", args.len()));
+            }
         }
         match self.cached {
             // Cache hits are exactly the rows stamped 1; NULL (legacy) and the

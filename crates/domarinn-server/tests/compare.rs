@@ -390,6 +390,19 @@ async fn compare_classifies_what_moved_not_just_whether_it_did() {
                 .digests("blake3:p1", "blake3:m1", "blake3:a1"),
         ],
     );
+    // Both runs need a grader digest, and an unchanged one. `unstable_grader`
+    // claims "nothing but the grader is left", so the classifier refuses it
+    // unless the grader itself is *known* to have held — without this the
+    // whole comparison correctly degrades to `unknown`.
+    let same_grader = domarinn_core::result::ConfigDigests {
+        grader: Some("blake3:g1".into()),
+        ..Default::default()
+    };
+    let mut base = base;
+    let mut head = head;
+    base.digests = Some(same_grader.clone());
+    head.digests = Some(same_grader);
+
     for run in [&base, &head] {
         let reply = post_json(&app, "/api/v1/runs", None, &run_value(run)).await;
         assert_eq!(reply.status, StatusCode::CREATED, "seed {}", run.run_id);
@@ -507,4 +520,54 @@ async fn compare_reports_which_suite_component_changed() {
     assert_eq!(drift["tests"], json!(false));
     assert_eq!(drift["asserts"], json!(false));
     assert_eq!(drift["grader"], json!(false));
+}
+
+/// Swapping the grader model must not be reported as an unstable grader.
+///
+/// The digest was stored and surfaced from the start but never consulted by the
+/// classifier, so a deliberate grader bump landed in `unstable_grader` — the one
+/// diagnosis the whole feature exists to make trustworthy.
+#[tokio::test]
+async fn compare_names_a_grader_swap_instead_of_blaming_the_grader() {
+    let (app, _dir) = test_app(Settings::default()).await;
+
+    let digests = |grader: &str| domarinn_core::result::ConfigDigests {
+        grader: Some(grader.to_string()),
+        ..Default::default()
+    };
+
+    let mut base = make_run(
+        "g-base",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[CaseSpec::new("p", "t1", CaseStatus::Pass)
+            .output(Some("same"))
+            .digests("blake3:p1", "blake3:m1", "blake3:a1")],
+    );
+    base.digests = Some(digests("blake3:haiku"));
+
+    let mut head = make_run(
+        "g-head",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        10,
+        // Identical request, identical output, identical asserts — only the
+        // suite's grader moved.
+        &[CaseSpec::new("p", "t1", CaseStatus::Fail)
+            .output(Some("same"))
+            .digests("blake3:p1", "blake3:m1", "blake3:a1")],
+    );
+    head.digests = Some(digests("blake3:sonnet"));
+
+    for run in [&base, &head] {
+        post_json(&app, "/api/v1/runs", None, &run_value(run)).await;
+    }
+
+    let body = get(&app, "/api/v1/runs/g-base/compare/g-head").await.json();
+    assert_eq!(body["cases"][0]["change"], "grader_changed");
 }

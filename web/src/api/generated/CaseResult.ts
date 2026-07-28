@@ -76,8 +76,8 @@ prompt_digest?: string,
  */
 provider_digest?: string, 
 /**
- * Identity of this case's grading definition — the authored criteria and
- * weights, never the outcome. See [`crate::digests::assert_digest`].
+ * Identity of this case's grading definition — the authored criteria,
+ * weights and threshold, never the outcome.
  */
 assert_digest?: string, error?: string, 
 /**

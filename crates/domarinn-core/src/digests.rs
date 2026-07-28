@@ -140,8 +140,15 @@ pub fn provider_digest(fingerprint: &Json) -> String {
     digest(fingerprint)
 }
 
-/// Identity of a case's grading definition: the authored criteria and weights,
-/// never the outcome. Changes exactly when the goalposts move.
+/// Identity of a case's grading definition: the authored criteria, weights and
+/// pass threshold, never the outcome. Changes exactly when the goalposts move.
+///
+/// `threshold` is a member even though it lives on `TestCase` rather than on any
+/// assert, because it decides the verdict: `case_verdict` passes a case iff the
+/// weighted mean reaches it. Leaving it out made a threshold edit invisible to
+/// every axis, so a case flipping Fail→Pass on an unchanged output was reported
+/// as [`crate::diff::CaseChange::UnstableGrader`] — a false accusation against
+/// the grader for a change the author made deliberately.
 ///
 /// `None` when any assert lacks `criteria` — pre-v2.1 stored blobs — because a
 /// digest over a partial definition is a lie, and comparing it to a complete one
@@ -150,7 +157,7 @@ pub fn provider_digest(fingerprint: &Json) -> String {
 /// Member digests are sorted, so a pure reorder is not a change: local asserts
 /// always evaluate before deferred ones regardless of authored order, and the
 /// verdict is a weighted mean, so order carries no meaning to preserve.
-pub fn assert_digest(asserts: &[AssertResult]) -> Option<String> {
+pub fn assert_digest(asserts: &[AssertResult], threshold: Option<f64>) -> Option<String> {
     let mut members: Vec<String> = Vec::with_capacity(asserts.len());
     for a in asserts {
         // `criteria` omits `weight` (it is a sibling field), but weight moves
@@ -163,7 +170,10 @@ pub fn assert_digest(asserts: &[AssertResult]) -> Option<String> {
         })));
     }
     members.sort();
-    Some(digest(&to_value(&members)))
+    Some(digest(&serde_json::json!({
+        "asserts": members,
+        "threshold": threshold,
+    })))
 }
 
 #[cfg(test)]
@@ -265,12 +275,15 @@ prompts:
         let a = assert_result(AssertName::Contains, 1.0, serde_json::json!({"value": "x"}));
         let b = assert_result(AssertName::Regex, 1.0, serde_json::json!({"value": "y"}));
         assert_eq!(
-            assert_digest(&[a.clone(), b.clone()]),
-            assert_digest(&[b.clone(), a.clone()])
+            assert_digest(&[a.clone(), b.clone()], None),
+            assert_digest(&[b.clone(), a.clone()], None)
         );
 
         let c = assert_result(AssertName::Regex, 1.0, serde_json::json!({"value": "z"}));
-        assert_ne!(assert_digest(&[a.clone(), b]), assert_digest(&[a, c]));
+        assert_ne!(
+            assert_digest(&[a.clone(), b], None),
+            assert_digest(&[a, c], None)
+        );
     }
 
     /// `criteria` omits weight, so hashing it alone would miss a change that
@@ -279,7 +292,7 @@ prompts:
     fn assert_digest_covers_weight() {
         let light = assert_result(AssertName::Contains, 1.0, serde_json::json!({"value": "x"}));
         let heavy = assert_result(AssertName::Contains, 3.0, serde_json::json!({"value": "x"}));
-        assert_ne!(assert_digest(&[light]), assert_digest(&[heavy]));
+        assert_ne!(assert_digest(&[light], None), assert_digest(&[heavy], None));
     }
 
     /// A partial definition must not produce a digest that looks authoritative.
@@ -287,12 +300,24 @@ prompts:
     fn assert_digest_is_none_when_criteria_are_missing() {
         let mut bare = assert_result(AssertName::Contains, 1.0, Json::Null);
         bare.criteria = None;
-        assert_eq!(assert_digest(&[bare]), None);
+        assert_eq!(assert_digest(&[bare], None), None);
+    }
+
+    /// The threshold decides the verdict, so editing it is a change to the
+    /// grading definition. Without this the edit was invisible to every axis
+    /// and a case flipping on an unchanged output was blamed on the grader.
+    #[test]
+    fn assert_digest_covers_the_pass_threshold() {
+        let a = assert_result(AssertName::Contains, 1.0, serde_json::json!({"value": "x"}));
+        assert_ne!(
+            assert_digest(std::slice::from_ref(&a), Some(0.8)),
+            assert_digest(&[a], Some(0.5))
+        );
     }
 
     #[test]
     fn assert_digest_of_no_asserts_is_stable() {
-        assert_eq!(assert_digest(&[]), assert_digest(&[]));
-        assert!(assert_digest(&[]).is_some());
+        assert_eq!(assert_digest(&[], None), assert_digest(&[], None));
+        assert!(assert_digest(&[], None).is_some());
     }
 }

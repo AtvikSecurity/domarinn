@@ -11,7 +11,10 @@ import { MONEY_RUN } from "./helpers";
 
 async function openDrawer(page: import("@playwright/test").Page) {
   await page.goto(`/runs/${MONEY_RUN}`);
-  await page.getByRole("row").nth(1).click();
+  // Scoped and filtered to data rows, matching run-detail.spec.ts: an
+  // unscoped index breaks the moment another table or a header row appears,
+  // and this page now also renders the error breakdown.
+  await page.getByRole("row").filter({ has: page.getByRole("gridcell") }).first().click();
   await expect(page.getByRole("dialog")).toBeVisible();
 }
 
@@ -58,7 +61,11 @@ test.describe("Case drawer resizing", () => {
     // not having the control at all.
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    await page.getByRole("row").nth(2).click();
+    await page
+      .getByRole("row")
+      .filter({ has: page.getByRole("gridcell") })
+      .nth(1)
+      .click();
     await expect(page.getByRole("dialog")).toBeVisible();
 
     expect(await drawerWidth(page)).toBeCloseTo(expanded, 0);

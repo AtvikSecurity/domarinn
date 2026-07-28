@@ -14,7 +14,7 @@ export function RouteError() {
       <div className="text-lg font-semibold">Something went wrong</div>
       <p className="mt-2 break-words font-mono text-sm text-muted">{message}</p>
       <Link to="/" className="mt-4 inline-block text-accent hover:underline">
-        Back to runs
+        Back to overview
       </Link>
     </div>
   );

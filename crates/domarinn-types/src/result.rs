@@ -227,8 +227,8 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub provider_digest: Option<String>,
-    /// Identity of this case's grading definition — the authored criteria and
-    /// weights, never the outcome. See [`crate::digests::assert_digest`].
+    /// Identity of this case's grading definition — the authored criteria,
+    /// weights and threshold, never the outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub assert_digest: Option<String>,
@@ -488,6 +488,15 @@ mod tests {
         assert!(!reserialized.contains("\"raw\""));
         assert!(!reserialized.contains("vars"));
         assert!(!reserialized.contains("criteria"));
+        // The later-added digest and classification fields. `prompt_digest`
+        // would be caught by the `prompt` assertion above only by accident;
+        // the other three had no guard at all, so dropping a
+        // `skip_serializing_if` from any of them used to pass silently — and
+        // every historical run's content hash would shift on re-ingest.
+        assert!(!reserialized.contains("prompt_digest"));
+        assert!(!reserialized.contains("provider_digest"));
+        assert!(!reserialized.contains("assert_digest"));
+        assert!(!reserialized.contains("error_class"));
     }
 
     /// The run-level counterpart of the guard above.
@@ -511,6 +520,7 @@ mod tests {
         }"#;
         let run: RunResult = serde_json::from_str(stored).unwrap();
         assert!(run.origin.is_none());
+        assert!(run.digests.is_none());
         assert!(run.git.is_none());
         assert!(run.ci.is_none());
         assert!(run.share_url.is_none());
@@ -520,6 +530,7 @@ mod tests {
         assert!(!reserialized.contains("\"git\""));
         assert!(!reserialized.contains("\"ci\""));
         assert!(!reserialized.contains("share_url"));
+        assert!(!reserialized.contains("digests"));
     }
 
     #[test]

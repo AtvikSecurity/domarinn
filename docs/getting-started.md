@@ -236,7 +236,8 @@ domarinn server --data-dir ./data &        # UI + API on :8321
 DOMARINN_SERVER_URL=http://localhost:8321 domarinn run --share
 ```
 
-Open `http://localhost:8321` for the runs list, the run-detail grid, and
+Open `http://localhost:8321` for the per-suite overview, `/runs` for the
+run list, plus the run-detail grid and
 side-by-side comparison. To add logins, admin users, and API keys, see
 [server.md](./server.md).
 
