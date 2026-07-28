@@ -32,6 +32,9 @@ use super::AssertGrader;
 /// struct absorbs those without the signature moving again, and makes it
 /// obvious at a glance which inputs vary per cell and which do not.
 pub(super) struct AssertCtx<'a> {
+    pub provider_id: &'a str,
+    pub test_id: &'a str,
+    pub test_tags: &'a [String],
     pub engine: &'a TemplateEngine,
     pub grader: Option<&'a dyn AssertGrader>,
     pub base_dir: &'a Path,
@@ -90,7 +93,18 @@ pub(super) async fn evaluate_asserts(
         }
         match ctx.grader {
             Some(g) => match g
-                .grade(assert, output, vars, ctx.engine, Some(ctx.base_dir))
+                .grade(
+                    assert,
+                    output,
+                    &super::GradeCtx {
+                        vars,
+                        engine: ctx.engine,
+                        working_dir: Some(ctx.base_dir),
+                        provider_id: ctx.provider_id,
+                        test_id: ctx.test_id,
+                        test_tags: ctx.test_tags,
+                    },
+                )
                 .await
             {
                 Ok(outcome) => {

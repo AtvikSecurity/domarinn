@@ -179,6 +179,13 @@ pub struct AssertReq {
     pub provider: ProviderRef,
     #[serde(default)]
     pub config: Json,
+    /// The case's rendered variables.
+    ///
+    /// An assertion frequently needs the inputs to judge the output — an
+    /// expected value, a scope, the id of whatever was being asked about — and
+    /// without them a child can only grade the text in isolation.
+    #[serde(default)]
+    pub vars: Json,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

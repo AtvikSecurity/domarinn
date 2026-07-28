@@ -152,15 +152,31 @@ impl Default for RunOptions {
 /// caching means threading a backend into `grade` and deriving a key from the
 /// grader fingerprint, the rendered rubric, and the output; pinned by
 /// `grader_verdicts_are_not_cached_today` in `tests/cache_integration.rs`.
+/// Everything a grading call needs beyond the assertion and the output.
+///
+/// A struct rather than five more parameters: `grade` was already at the
+/// argument limit, and the identity fields below were the reason to add any.
+/// The exec protocol's `AssertReq` declares `test`, `provider` and (now) `vars`,
+/// and the engine used to fill the first two with empty strings and discard the
+/// third — because `grade` was never told which cell it was grading. A child
+/// written against `docs/protocol.md` therefore received stubs.
+#[derive(Clone, Copy)]
+pub struct GradeCtx<'a> {
+    pub vars: &'a Json,
+    pub engine: &'a TemplateEngine,
+    pub working_dir: Option<&'a Path>,
+    pub provider_id: &'a str,
+    pub test_id: &'a str,
+    pub test_tags: &'a [String],
+}
+
 #[async_trait]
 pub trait AssertGrader: Send + Sync {
     async fn grade(
         &self,
         assert: &Assert,
         output: &Output,
-        vars: &Json,
-        engine: &TemplateEngine,
-        working_dir: Option<&Path>,
+        ctx: &GradeCtx<'_>,
     ) -> Result<AssertOutcome, crate::errors::GraderError>;
 }
 
@@ -671,6 +687,9 @@ async fn run_cell(
 
     let (assert_results, scored, assert_error_classes) = evaluate_asserts(
         &AssertCtx {
+            provider_id: provider.id(),
+            test_id: &test_id,
+            test_tags: &test.tags,
             engine,
             grader,
             base_dir,

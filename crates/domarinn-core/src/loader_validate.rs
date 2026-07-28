@@ -48,6 +48,7 @@ pub fn validate(suite: &Suite, raw: &Yaml) -> Vec<Issue> {
     let mut issues = Vec::new();
 
     check_unknown_flatten_keys(raw, &mut issues);
+    check_verdict_mode(suite, &mut issues);
 
     if suite.version != 1 {
         issues.push(Issue::new(
@@ -164,6 +165,43 @@ impl VariantKeys {
 /// Key sets come entirely from the schema — no hand-maintained allowlist.
 /// Free-form bags (`params`, an exec assert's `config`, an http provider's
 /// `body`) are values, not mappings we walk, so their inner keys are never checked.
+/// Reject `verdict_mode: auto`, which is in the schema and documented but which
+/// the grader never reads.
+///
+/// The grading path is unconditionally the forced structured-verdict
+/// mechanism. Accepting `auto` and silently doing something else is the same
+/// class of bug as `contains-json`'s ignored `schema`: a field a user can set,
+/// that changes nothing, with no way to find that out. Rejecting it is honest
+/// until someone implements it — and if they do, the error moves rather than
+/// a silent behavior appearing under a config nobody knew was inert.
+fn check_verdict_mode(suite: &Suite, issues: &mut Vec<Issue>) {
+    let mut check = |grader: &crate::config::Grader, path: &str| {
+        if matches!(grader.verdict_mode, Some(crate::config::VerdictMode::Auto)) {
+            issues.push(Issue::new(
+                format!("{path}.verdict_mode"),
+                "`auto` is not implemented; grading always uses the forced                  structured-verdict mechanism. Remove the field or set `forced`."
+                    .to_string(),
+            ));
+        }
+    };
+    if let Some(g) = &suite.grader {
+        check(g, "grader");
+    }
+    for (t, test) in suite.tests.iter().enumerate() {
+        let crate::config::TestSource::Inline(tc) = test else {
+            continue;
+        };
+        for (a, assert) in tc.assert.iter().enumerate() {
+            if let crate::config::AssertKind::LlmRubric {
+                grader: Some(g), ..
+            } = &assert.kind
+            {
+                check(g, &format!("tests[{t}].assert[{a}].grader"));
+            }
+        }
+    }
+}
+
 fn check_unknown_flatten_keys(raw: &Yaml, issues: &mut Vec<Issue>) {
     let schema = crate::config_schema();
     let provider_keys = VariantKeys::from_schema(&schema, "Provider");

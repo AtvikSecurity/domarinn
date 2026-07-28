@@ -17,7 +17,7 @@ use crate::errors::GraderError;
 use crate::exec::run_exec_json;
 use crate::exec_protocol::{AssertReq, AssertResp, Envelope, Kind, ProviderRef, TestRef};
 use crate::net::{api_key, http_client};
-use crate::runner::AssertGrader;
+use crate::runner::{AssertGrader, GradeCtx};
 use crate::template::TemplateEngine;
 use crate::types::Output;
 
@@ -70,23 +70,34 @@ impl AssertGrader for DefaultGrader {
         &self,
         assert: &Assert,
         output: &Output,
-        vars: &Json,
-        engine: &TemplateEngine,
-        working_dir: Option<&std::path::Path>,
+        ctx: &GradeCtx<'_>,
     ) -> Result<AssertOutcome, GraderError> {
+        let GradeCtx {
+            vars,
+            engine,
+            working_dir,
+            ..
+        } = ctx;
         let outcome = match &assert.kind {
             AssertKind::Exec { command, config } => {
-                self.grade_exec(command, config.as_ref(), output, vars, working_dir)
+                self.grade_exec(command, config.as_ref(), output, vars, *working_dir, ctx)
                     .await
             }
             AssertKind::LlmRubric {
                 value,
                 grader,
                 threshold,
-                ..
+                params,
             } => {
-                self.grade_llm_rubric(value, grader.as_deref(), *threshold, output, vars, engine)
-                    .await
+                self.grade_llm_rubric(
+                    value,
+                    grader.as_deref(),
+                    *threshold,
+                    output,
+                    params.as_ref(),
+                    ctx,
+                )
+                .await
             }
             AssertKind::Similar { value, threshold } => {
                 self.grade_similar(value, *threshold, output, vars, engine)
@@ -98,6 +109,49 @@ impl AssertGrader for DefaultGrader {
     }
 }
 
+/// The grader provider's params with the assertion's own merged over them.
+///
+/// `AssertKind::LlmRubric.params` was parsed, schema'd, documented and never
+/// read — so a per-assertion `temperature` or `max_tokens` silently did
+/// nothing. Assertion wins on a key collision: it is the more specific of the
+/// two, and a suite sets it precisely to deviate from the shared default.
+fn merge_params(
+    provider: Option<&crate::config::ParamMap>,
+    assert: Option<&crate::config::ParamMap>,
+) -> Option<crate::config::ParamMap> {
+    match (provider, assert) {
+        (None, None) => None,
+        (Some(p), None) => Some(p.clone()),
+        (None, Some(a)) => Some(a.clone()),
+        (Some(p), Some(a)) => {
+            let mut merged = p.clone();
+            merged.extend(a.iter().map(|(k, v)| (k.clone(), v.clone())));
+            Some(merged)
+        }
+    }
+}
+
+/// Render a `grader.template` override into the grading prompt.
+///
+/// Another field that was parsed and never read. The contract is two
+/// placeholders — `{{rubric}}` and `{{output}}` — substituted literally rather
+/// than through the template engine, because the *output* is untrusted model
+/// text and running it through minijinja would make a grading prompt an SSTI
+/// surface.
+fn render_grader_template(spec: &str, rubric: &str, output: &str) -> Result<String, GraderError> {
+    let path = spec.strip_prefix("file://").ok_or_else(|| {
+        GraderError::Misconfigured(format!(
+            "grader.template must be a `file://` reference, got `{spec}`"
+        ))
+    })?;
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        GraderError::Misconfigured(format!("reading grader.template `{path}`: {e}"))
+    })?;
+    Ok(text
+        .replace("{{rubric}}", rubric)
+        .replace("{{output}}", output))
+}
+
 impl DefaultGrader {
     async fn grade_exec(
         &self,
@@ -106,19 +160,26 @@ impl DefaultGrader {
         output: &Output,
         vars: &Json,
         working_dir: Option<&std::path::Path>,
+        ctx: &GradeCtx<'_>,
     ) -> Result<AssertOutcome, GraderError> {
+        // `test` and `provider` used to be sent as empty strings, and `vars`
+        // was discarded outright — three fields the wire format declares as
+        // populated, so a child written against `docs/protocol.md` received
+        // stubs. `meta` carries the real values; `vars` is a protocol addition.
         let request = AssertReq {
             envelope: Envelope::new(Kind::Assert),
             output: output_to_json(output),
             test: TestRef {
-                id: String::new(),
-                tags: vec![],
+                id: ctx.test_id.to_string(),
+                tags: ctx.test_tags.to_vec(),
             },
             prompt: None,
-            provider: ProviderRef { id: String::new() },
+            provider: ProviderRef {
+                id: ctx.provider_id.to_string(),
+            },
             config: config.cloned().unwrap_or(Json::Null),
+            vars: vars.clone(),
         };
-        let _ = vars;
         let request = serde_json::to_value(&request)
             .map_err(|e| GraderError::InvalidVerdict(format!("serializing assert request: {e}")))?;
         let value = run_exec_json(
@@ -184,9 +245,10 @@ impl DefaultGrader {
         assert_grader: Option<&Grader>,
         threshold: Option<f64>,
         output: &Output,
-        vars: &Json,
-        engine: &TemplateEngine,
+        assert_params: Option<&crate::config::ParamMap>,
+        ctx: &GradeCtx<'_>,
     ) -> Result<AssertOutcome, GraderError> {
+        let (vars, engine) = (ctx.vars, ctx.engine);
         // The variant that motivated the whole type: nothing ran, and the fix is
         // to add a `grader:` block — not to retry.
         let grader = assert_grader
@@ -196,7 +258,12 @@ impl DefaultGrader {
             .render_str(rubric_template, vars)
             .map_err(|e| GraderError::Misconfigured(format!("rendering rubric: {e}")))?;
         let output_text = output.as_text();
-        let user = format!("RUBRIC:\n{rubric}\n\nASSISTANT OUTPUT:\n{output_text}");
+        // The grading prompt. `grader.template` replaces the built-in framing
+        // when set; the two placeholders are the whole contract.
+        let user = match &grader.template {
+            Some(spec) => render_grader_template(spec, &rubric, &output_text)?,
+            None => format!("RUBRIC:\n{rubric}\n\nASSISTANT OUTPUT:\n{output_text}"),
+        };
 
         let verdict = match &grader.provider {
             ProviderKind::Anthropic {
@@ -212,7 +279,7 @@ impl DefaultGrader {
                     model,
                     base_url.as_deref(),
                     api_key_env.as_deref(),
-                    params.as_ref(),
+                    merge_params(params.as_ref(), assert_params).as_ref(),
                     &user,
                 )
                 .await
@@ -228,7 +295,7 @@ impl DefaultGrader {
                     model,
                     base_url.as_deref(),
                     api_key_env.as_deref(),
-                    params.as_ref(),
+                    merge_params(params.as_ref(), assert_params).as_ref(),
                     &user,
                 )
                 .await
@@ -482,6 +549,19 @@ impl Verdict {
 
 #[cfg(test)]
 mod tests {
+    /// Identity for a cell under test. The values are arbitrary; what matters
+    /// is that they are no longer empty strings on the wire.
+    fn grade_ctx<'a>(vars: &'a Json, engine: &'a TemplateEngine) -> GradeCtx<'a> {
+        GradeCtx {
+            vars,
+            engine,
+            working_dir: None,
+            provider_id: "p",
+            test_id: "t",
+            test_tags: &[],
+        }
+    }
+
     use super::*;
     use crate::config::Grader;
     use crate::error_class::ErrorClass;
@@ -537,9 +617,7 @@ mod tests {
             .grade(
                 &rubric_assert(),
                 &Output::Text("I cannot help with that".into()),
-                &json!({}),
-                &TemplateEngine::new(),
-                None,
+                &grade_ctx(&json!({}), &TemplateEngine::new()),
             )
             .await
             .unwrap();
@@ -563,9 +641,7 @@ mod tests {
             .grade(
                 &rubric_assert(),
                 &Output::Text("x".into()),
-                &json!({}),
-                &TemplateEngine::new(),
-                None,
+                &grade_ctx(&json!({}), &TemplateEngine::new()),
             )
             .await;
         let err = outcome.unwrap_err();
@@ -585,9 +661,7 @@ mod tests {
             .grade(
                 &rubric_assert(),
                 &Output::Text("x".into()),
-                &json!({}),
-                &TemplateEngine::new(),
-                None,
+                &grade_ctx(&json!({}), &TemplateEngine::new()),
             )
             .await;
         let err = outcome.unwrap_err();
@@ -620,9 +694,7 @@ mod tests {
             .grade(
                 &rubric_assert(),
                 &Output::Text("x".into()),
-                &json!({}),
-                &TemplateEngine::new(),
-                None,
+                &grade_ctx(&json!({}), &TemplateEngine::new()),
             )
             .await;
         let err = outcome.unwrap_err();
@@ -649,12 +721,91 @@ mod tests {
             .grade(
                 &assert,
                 &Output::Text("x".into()),
-                &json!({}),
-                &TemplateEngine::new(),
-                None,
+                &grade_ctx(&json!({}), &TemplateEngine::new()),
             )
             .await
             .unwrap();
         assert!(outcome.passed);
+    }
+}
+
+#[cfg(test)]
+mod inert_field_tests {
+    //! The three fields that were parsed, schema'd, documented, and never read.
+
+    use super::*;
+    use crate::config::ParamMap;
+
+    fn params(pairs: &[(&str, serde_json::Value)]) -> ParamMap {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    /// `LlmRubric.params` is the more specific of the two, so it wins — a suite
+    /// sets it precisely to deviate from the shared grader default.
+    #[test]
+    fn assert_params_override_the_grader_provider_params() {
+        let merged = merge_params(
+            Some(&params(&[
+                ("temperature", serde_json::json!(0)),
+                ("max_tokens", serde_json::json!(1024)),
+            ])),
+            Some(&params(&[("max_tokens", serde_json::json!(8192))])),
+        )
+        .expect("merged");
+        assert_eq!(merged.get("max_tokens"), Some(&serde_json::json!(8192)));
+        // Keys the assertion did not mention are inherited, not dropped.
+        assert_eq!(merged.get("temperature"), Some(&serde_json::json!(0)));
+    }
+
+    #[test]
+    fn merging_is_identity_when_only_one_side_is_set() {
+        let only_provider = params(&[("a", serde_json::json!(1))]);
+        assert_eq!(
+            merge_params(Some(&only_provider), None).as_ref(),
+            Some(&only_provider)
+        );
+        assert_eq!(
+            merge_params(None, Some(&only_provider)).as_ref(),
+            Some(&only_provider)
+        );
+        assert!(merge_params(None, None).is_none());
+    }
+
+    #[test]
+    fn a_grader_template_substitutes_both_placeholders() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.txt");
+        std::fs::write(&path, "Judge this.\n<r>{{rubric}}</r>\n<o>{{output}}</o>").unwrap();
+        let rendered = render_grader_template(
+            &format!("file://{}", path.display()),
+            "be concise",
+            "a model answer",
+        )
+        .unwrap();
+        assert!(rendered.contains("<r>be concise</r>"));
+        assert!(rendered.contains("<o>a model answer</o>"));
+    }
+
+    /// The output is untrusted model text. Substituting literally rather than
+    /// rendering keeps a grading prompt from becoming a template-injection
+    /// surface — a model that emits `{{ ... }}` must not have it evaluated.
+    #[test]
+    fn a_grader_template_does_not_evaluate_the_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.txt");
+        std::fs::write(&path, "{{output}}").unwrap();
+        let rendered =
+            render_grader_template(&format!("file://{}", path.display()), "r", "{{ 7 * 7 }}")
+                .unwrap();
+        assert_eq!(rendered, "{{ 7 * 7 }}", "must not evaluate to 49");
+    }
+
+    #[test]
+    fn a_non_file_template_is_a_config_error() {
+        let err = render_grader_template("./relative.txt", "r", "o").unwrap_err();
+        assert!(err.to_string().contains("file://"));
     }
 }
