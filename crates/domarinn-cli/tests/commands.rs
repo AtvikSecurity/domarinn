@@ -1,47 +1,12 @@
 //! E2E tests for the diff, view, cache, import, and gen-types commands.
 
-use std::path::Path;
-use std::process::Command;
+mod common;
 
 use assert_cmd::prelude::*;
+use common::{bin, latest_id, run_to, suite};
 use domarinn_core::diff::diff_runs;
 use domarinn_core::result::RunResult;
 use predicates::prelude::*;
-
-fn bin() -> Command {
-    Command::cargo_bin("domarinn").unwrap()
-}
-
-/// A suite whose single test echoes a fixed output and asserts it contains
-/// `needle`.
-fn suite(output: &str, needle: &str) -> String {
-    format!(
-        r#"
-version: 1
-suite: s
-providers:
-  - id: p
-    type: exec
-    command: ["sh", "-c", "cat >/dev/null; printf '{{\"output\":\"{output}\"}}'"]
-tests:
-  - id: t1
-    vars: {{}}
-    assert:
-      - {{type: contains, value: "{needle}"}}
-"#
-    )
-}
-
-fn run_to(dir: &Path, out_json: &str, suite_body: &str) {
-    std::fs::write(dir.join("domarinn.yaml"), suite_body).unwrap();
-    // The run itself may pass or fail (that is the point of the diff); we only
-    // need it to produce the result file, so ignore the exit status.
-    bin()
-        .args(["run", "--format", "json", "--out", out_json, "--no-cache"])
-        .current_dir(dir)
-        .output()
-        .expect("run command executes");
-}
 
 #[test]
 fn diff_detects_regression_and_exits_one() {
@@ -427,8 +392,11 @@ fn view_format_md_has_markdown_header() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("### domarinn run —"))
-        .stdout(predicate::str::contains("Pass rate:"));
+        .stdout(predicate::str::contains("### domarinn run — s"))
+        .stdout(predicate::str::contains("| metric | value |"))
+        .stdout(predicate::str::contains("| Result | ✅ 1 passed |"))
+        .stdout(predicate::str::contains("| Pass rate | 100.0%"))
+        .stdout(predicate::str::contains("cases from cache"));
 }
 
 /// The junit machine format is byte-identical whether or not `--color always` is
@@ -608,14 +576,6 @@ fn view_case_junit_format_is_rejected() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("does not support --format junit"));
-}
-
-/// The `latest` pointer's current run id (the run just persisted).
-fn latest_id(dir: &Path) -> String {
-    std::fs::read_to_string(dir.join(".domarinn/runs/latest"))
-        .unwrap()
-        .trim()
-        .to_string()
 }
 
 #[test]

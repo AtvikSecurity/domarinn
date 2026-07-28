@@ -432,6 +432,7 @@ mod tests {
             config_snapshot: serde_json::json!({}),
             git: None,
             ci: None,
+            share_url: None,
             filters: Default::default(),
             cases,
             summary: RunSummary::default(),

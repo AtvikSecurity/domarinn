@@ -289,6 +289,14 @@ pub struct RunResult {
     pub git: Option<GitMeta>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci: Option<CiMeta>,
+    /// Where this run was published, recorded by `--share` from the URL the
+    /// results server returned. Absent when the run was never shared.
+    ///
+    /// Stored rather than re-derived so a later reader — `ci-summary` building a
+    /// PR comment, most of all — can link to the run without re-uploading it or
+    /// parsing it back out of an earlier command's stdout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_url: Option<String>,
     #[serde(default)]
     pub filters: FilterSpec,
     pub cases: Vec<CaseResult>,

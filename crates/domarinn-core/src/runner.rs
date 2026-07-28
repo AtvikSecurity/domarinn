@@ -14,10 +14,10 @@ use futures::StreamExt;
 use serde_json::Value as Json;
 
 use crate::assertion::AssertOutcome;
-use crate::asserts::{evaluate_local, is_local, MetricCtx};
+use crate::asserts::MetricCtx;
 use crate::cache::{CacheBackend, CacheEntry, CacheMode};
 use crate::cache_key::provider_cache_key;
-use crate::config::{Assert, AssertKind, Suite, TestCase};
+use crate::config::{Assert, Suite, TestCase};
 use crate::filter::{Filter, FilterOpts};
 use crate::generate::resolve_generators;
 use crate::ids::{CaseKey, RunId};
@@ -29,13 +29,17 @@ use crate::provider_factory::build_provider;
 use crate::render::{self, render_prompt};
 use crate::resolve::expand_tests;
 use crate::result::{
-    AssertResult, AssertStatus, CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary,
+    AssertStatus, CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RunSummary,
     RESULT_SCHEMA_VERSION,
 };
 use crate::retry::{with_retry, RetryPolicy, RetryStats};
-use crate::scoring::{case_verdict, remaining_can_change_outcome, Scored};
+use crate::scoring::case_verdict;
 use crate::template::TemplateEngine;
 use crate::types::{Output, RenderedPrompt};
+
+#[path = "runner_asserts.rs"]
+mod runner_asserts;
+use runner_asserts::{evaluate_asserts, has_latency_assert};
 
 /// Upper bound on the raw provider metadata persisted per case. A payload over
 /// this size is dropped wholesale (truncated JSON is useless) rather than stored.
@@ -339,6 +343,7 @@ pub async fn run_with_progress(
         config_snapshot,
         git: None,
         ci: None,
+        share_url: None,
         filters: FilterSpec {
             tags: opts.filter.tags.clone(),
             filters: opts.filter.filters.clone(),
@@ -667,161 +672,6 @@ async fn call_with_cache(
             attempts: stats.attempts,
         }),
     }
-}
-
-/// Evaluate all asserts: local first, then (if they can still change the
-/// outcome) the graded ones; otherwise mark them skipped.
-#[allow(clippy::too_many_arguments)]
-async fn evaluate_asserts(
-    asserts: &[Assert],
-    output: &Output,
-    vars: &Json,
-    engine: &TemplateEngine,
-    grader: Option<&dyn AssertGrader>,
-    base_dir: &Path,
-    metrics: &MetricCtx,
-    threshold: Option<f64>,
-) -> (Vec<AssertResult>, Vec<Scored>) {
-    // Slot results by original index so output order matches config order.
-    let mut results: Vec<Option<AssertResult>> = vec![None; asserts.len()];
-    let mut scored: Vec<Scored> = Vec::new();
-
-    // Local (deterministic) asserts first.
-    let mut deferred_indices: Vec<usize> = Vec::new();
-    for (i, assert) in asserts.iter().enumerate() {
-        if is_local(&assert.kind) {
-            let outcome = evaluate_local(assert, output, engine, vars, metrics)
-                .expect("local assert yields an outcome");
-            scored.push(scored_of(assert, &outcome));
-            results[i] = Some(assert_result(
-                assert,
-                &outcome,
-                AssertStatus::from_pass(outcome.passed),
-            ));
-        } else {
-            deferred_indices.push(i);
-        }
-    }
-
-    // Decide whether the deferred asserts still matter.
-    let remaining_weight: f64 = deferred_indices.iter().map(|i| asserts[*i].weight).sum();
-    let matters = remaining_can_change_outcome(&scored, remaining_weight, threshold);
-
-    for i in deferred_indices {
-        let assert = &asserts[i];
-        if !matters {
-            results[i] = Some(skipped_result(assert));
-            continue;
-        }
-        match grader {
-            Some(g) => match g.grade(assert, output, vars, engine, Some(base_dir)).await {
-                Ok(outcome) => {
-                    scored.push(scored_of(assert, &outcome));
-                    results[i] = Some(assert_result(
-                        assert,
-                        &outcome,
-                        AssertStatus::from_pass(outcome.passed),
-                    ));
-                }
-                // Fail closed: a grader problem is an error, not a plain fail.
-                Err(reason) => {
-                    results[i] = Some(error_assert(assert, reason));
-                }
-            },
-            None => {
-                // Fail closed: a deferred assert with no grader is an error.
-                results[i] = Some(error_assert(
-                    assert,
-                    format!(
-                        "no grader available for '{}' assertions in this run",
-                        assert.kind.name().as_str()
-                    ),
-                ));
-            }
-        }
-    }
-
-    (results.into_iter().map(|r| r.unwrap()).collect(), scored)
-}
-
-fn scored_of(assert: &Assert, outcome: &AssertOutcome) -> Scored {
-    Scored {
-        weight: assert.weight,
-        score: outcome.score,
-        passed: outcome.passed,
-    }
-}
-
-/// The assertion's authored definition, for the UI's Input view: the flattened
-/// `AssertKind` (its `type` tag plus the type-specific criteria — the `contains`
-/// substring, the `llm-rubric` rubric text + threshold, …) as a JSON object,
-/// with a `negate: true` entry added when the assertion is negated. `weight` is
-/// intentionally omitted (already carried by `AssertResult.weight`). Returns
-/// `None` only if the kind fails to serialize, which does not happen in practice
-/// (every `AssertKind` variant is an internally-tagged object).
-fn assert_criteria(assert: &Assert) -> Option<serde_json::Value> {
-    let mut value = serde_json::to_value(&assert.kind).ok()?;
-    if assert.negate {
-        if let serde_json::Value::Object(map) = &mut value {
-            map.insert("negate".to_string(), serde_json::Value::Bool(true));
-        }
-    }
-    Some(value)
-}
-
-fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus) -> AssertResult {
-    AssertResult {
-        kind: assert.kind.name(),
-        status,
-        score: outcome.score,
-        weight: assert.weight,
-        reason: outcome.reason.clone(),
-        details: outcome.details.clone(),
-        criteria: assert_criteria(assert),
-        cached: false,
-    }
-}
-
-fn error_assert(assert: &Assert, reason: String) -> AssertResult {
-    AssertResult {
-        kind: assert.kind.name(),
-        status: AssertStatus::Error,
-        score: 0.0,
-        weight: assert.weight,
-        reason,
-        details: None,
-        criteria: assert_criteria(assert),
-        cached: false,
-    }
-}
-
-fn skipped_result(assert: &Assert) -> AssertResult {
-    AssertResult {
-        kind: assert.kind.name(),
-        status: AssertStatus::Skipped,
-        score: 0.0,
-        weight: assert.weight,
-        reason: "skipped: outcome already decided".into(),
-        details: None,
-        criteria: assert_criteria(assert),
-        cached: false,
-    }
-}
-
-impl AssertStatus {
-    fn from_pass(pass: bool) -> AssertStatus {
-        if pass {
-            AssertStatus::Pass
-        } else {
-            AssertStatus::Fail
-        }
-    }
-}
-
-fn has_latency_assert(asserts: &[Assert]) -> bool {
-    asserts
-        .iter()
-        .any(|a| matches!(a.kind, AssertKind::Latency { .. }))
 }
 
 /// Everything a case knows about its own inputs before a provider responds:

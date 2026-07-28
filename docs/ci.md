@@ -9,6 +9,7 @@ and uploading CI runs to a shared server.
 - [The exit-code contract](#the-exit-code-contract)
 - [Gating a PR by hand](#gating-a-pr-by-hand)
 - [The reusable action](#the-reusable-action)
+- [The `ci-summary` command](#the-ci-summary-command)
 - [Uploading CI runs to a shared server](#uploading-ci-runs-to-a-shared-server)
 - [This repo's CI (`ci.yml`)](#this-repos-ci-ciyml)
 - [Releases](#releases)
@@ -50,7 +51,9 @@ domarinn run \
 - `--format junit --out results.xml` writes a JUnit report your CI can render as
   test results.
 - `--summary-md summary.md` writes a Markdown summary suitable for a PR comment
-  or a job step summary.
+  or a job step summary — the same document
+  [`ci-summary`](#the-ci-summary-command) produces, which you can also run as a
+  separate step to get step outputs alongside it.
 
 Then gate on the code:
 
@@ -125,14 +128,27 @@ jobs:
 
 ### Outputs
 
-| Output         | Meaning |
-|----------------|---------|
-| `exit-code`    | The CLI's raw exit code (`0`/`1`/`2`/`3`). |
-| `passed`       | Number of cases that passed. |
-| `failed`       | Number of cases that failed or errored. |
-| `regressed`    | Number of tests newly regressed vs the baseline (`0` without `against`). |
-| `summary-path` | Path to the Markdown summary (`summary.md`). |
-| `results-path` | Path to the JUnit report (`results.xml`). |
+Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command),
+which writes them straight to `$GITHUB_OUTPUT` — the action does not parse a
+report to produce them.
+
+| Output           | Meaning |
+|------------------|---------|
+| `exit-code`      | The CLI's raw exit code (`0`/`1`/`2`/`3`). |
+| `passed`         | Number of cases that passed. |
+| `failed`         | Number of cases that failed **or** errored. |
+| `errored`        | Number of cases that errored (a subset of `failed`). |
+| `total`          | Total number of cases. |
+| `pass-rate`      | Percentage of cases that passed, one decimal (e.g. `91.7`). |
+| `cache-hit-rate` | Percentage of cases served from the cache, one decimal. |
+| `regressed`      | Number of tests newly regressed vs the baseline (`0` without `against`). |
+| `run-url`        | URL of the uploaded run on the results server (empty without `server-url`). |
+| `summary-path`   | Path to the Markdown summary (`summary.md`). |
+| `results-path`   | Path to the JUnit report (`results.xml`). |
+
+`failed` keeps its original meaning — failures *and* errors — so an existing
+workflow that gates on it is unaffected. `errored` is the new way to tell the
+two apart without re-reading the report.
 
 ### What it does, step by step
 
@@ -143,13 +159,13 @@ jobs:
    else `cargo install --git …`). The cargo fallback requires a Rust toolchain on
    the runner — add `dtolnay/rust-toolchain` before this action if you rely on it.
 2. **Run the suite:**
-   `domarinn run <config> --format junit --out results.xml --summary-md
-   summary.md`, appending `--against <against>` and `--share` when those inputs
-   are set. It captures the exit code without aborting so the later steps still
-   run.
-3. **Parse headline numbers** — `tests`/`failures`/`errors` from the JUnit
-   `<testsuite>` element, and `regressed` from the summary's `| Newly failing |
-   N |` row.
+   `domarinn run <config> --format junit --out results.xml`, appending
+   `--against <against>` and `--share` when those inputs are set. It captures the
+   exit code without aborting so the later steps still run.
+3. **Summarize** — `domarinn ci-summary latest --out summary.md` writes the
+   Markdown and appends the headline numbers to `$GITHUB_OUTPUT` itself. If the
+   suite never produced a run (a config error, say), the step warns and writes a
+   placeholder summary rather than leaving the PR comment blank.
 4. **Upload** `results.xml` + `summary.md` as an artifact (**always**, even on
    failure), and append the summary to the job's step summary.
 5. **Comment on the PR** — creates or updates one comment (matched by a hidden
@@ -169,6 +185,98 @@ jobs:
     server-url: https://domarinn.example.com   # enables --share
     token: ${{ secrets.DOMARINN_TOKEN }}        # write-scoped token
 ```
+
+---
+
+## The `ci-summary` command
+
+`domarinn ci-summary` turns a stored run into the two things a workflow wants: a
+Markdown report to post, and `key=value` step outputs to branch on. The
+[action](#the-reusable-action) calls it for you; reach for it directly when you
+hand-roll a pipeline, or on a forge that is not GitHub.
+
+```sh
+domarinn run eval/ --format junit --out results.xml   # exit code gates the PR
+domarinn ci-summary latest --against latest --out summary.md
+```
+
+It reads a **persisted** run rather than taking one over a pipe, so it can also
+re-summarize an older run by id — and so a summary step cannot change what the
+run already decided.
+
+### What it emits
+
+The Markdown is a headline metrics table, then either a baseline comparison
+(with `--against`) or this run's failing cases, then any links:
+
+```markdown
+### domarinn run — content-safety
+
+| metric | value |
+|---|---|
+| Result | ❌ 1 passed, 2 failed |
+| Pass rate | 33.3% (95% CI 6.1–79.2%, n=3) |
+| Cache | 2/3 cases from cache (66.7%) |
+| Duration | 4.1s |
+
+**Failing:**
+
+| test | provider | score | why |
+|---|---|---|---|
+| refuses-pii | gpt-4.1 | 0.00 | contains: output does not contain "I can't help" |
+
+[View run](https://domarinn.example.com/runs/01JD3V9GQ8) · [CI run](https://github.com/acme/widgets/actions/runs/42)
+```
+
+A few deliberate choices:
+
+- **Rows that carry no information are omitted.** No `Cost` row when nothing was
+  billed, no `Retries` row when nothing retried. What is printed is what
+  happened.
+- **`Cache` counts *cases*, not lookups.** `cache_misses` counts every case not
+  served from the cache, so under `--no-cache` it equals the case count — there
+  is no lookup total to express a "hit rate" against. Note that an `exec`
+  provider is only cached at all when it sets a `cache_salt`; see
+  [`caching.md`](./caching.md).
+- **The failing table is capped at 10 rows**, then `…and N more`. The run URL and
+  the JUnit artifact hold the full list; GitHub truncates a huge comment anyway.
+- **Table cells are escaped.** An assertion reason quoting model output that
+  contains a `|` would otherwise shred the table.
+- **Both links degrade.** `View run` needs a run uploaded with `--share`;
+  `CI run` comes from the run's recorded CI metadata, falling back to the ambient
+  workflow environment. Neither present means no links line at all.
+
+### Step outputs
+
+With `$GITHUB_OUTPUT` set (automatic on a runner) or `--github-output <file>`,
+it **appends** — a job's steps share one file, so truncating would discard
+earlier steps' outputs:
+
+```
+passed=1
+failed=2
+errored=0
+failed-or-errored=2
+total=3
+pass-rate=33.3
+cache-hits=2
+cache-misses=1
+cache-hit-rate=66.7
+regressed=0
+run-url=
+ci-run-url=https://github.com/acme/widgets/actions/runs/42
+```
+
+Keys are written even when empty, so a workflow referencing one always gets a
+defined value.
+
+### It never gates
+
+`ci-summary` exits `0` for a failing run. The verdict is `run`'s
+[exit code](#the-exit-code-contract) and only that — a summary step that could
+also fail a job would gate the same failure twice and obscure which one spoke.
+The single exception is an unresolvable run reference, which exits `2` as a
+usage error.
 
 ---
 

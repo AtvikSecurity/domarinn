@@ -178,7 +178,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         bar.finish();
     }
 
-    let result = match run_result {
+    let mut result = match run_result {
         Ok(r) => r,
         Err(e) => {
             eprintln!("run error: {e}");
@@ -220,16 +220,26 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         }
     }
 
+    // Share before writing the summary, so the summary can carry the run's URL —
+    // but after the human output above, so a slow upload never holds back the
+    // table. On success the URL is recorded on the run and re-persisted, which
+    // is how a later `ci-summary` links to it.
+    if args.share {
+        match crate::share::upload_run(&result, server_url.as_deref(), false) {
+            Ok(url) => {
+                result.share_url = Some(url);
+                if let Err(e) = output::persist(&result) {
+                    tracing::warn!(error = %e, "could not persist run URL");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "share failed"),
+        }
+    }
+
     if let Some(path) = &args.summary_md {
         let comparison = baseline.as_ref().map(|(base, diff)| (base, diff));
         if let Err(e) = diffcmd::write_summary_md(path, &result, comparison) {
             tracing::warn!(error = %e, "could not write summary");
-        }
-    }
-
-    if args.share {
-        if let Err(e) = crate::share::upload_run(&result, server_url.as_deref(), false) {
-            tracing::warn!(error = %e, "share failed");
         }
     }
 

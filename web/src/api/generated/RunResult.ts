@@ -10,4 +10,13 @@ import type { JsonValue } from "./serde_json/JsonValue";
 /**
  * The full result of a run.
  */
-export type RunResult = { schema_version: number, run_id: RunId, project?: string, suite?: string, started_at: string, finished_at: string, config_digest: string, config_snapshot: JsonValue, git?: GitMeta, ci?: CiMeta, filters: FilterSpec, cases: Array<CaseResult>, summary: RunSummary, };
+export type RunResult = { schema_version: number, run_id: RunId, project?: string, suite?: string, started_at: string, finished_at: string, config_digest: string, config_snapshot: JsonValue, git?: GitMeta, ci?: CiMeta, 
+/**
+ * Where this run was published, recorded by `--share` from the URL the
+ * results server returned. Absent when the run was never shared.
+ *
+ * Stored rather than re-derived so a later reader — `ci-summary` building a
+ * PR comment, most of all — can link to the run without re-uploading it or
+ * parsing it back out of an earlier command's stdout.
+ */
+share_url?: string, filters: FilterSpec, cases: Array<CaseResult>, summary: RunSummary, };

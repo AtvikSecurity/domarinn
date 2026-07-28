@@ -88,8 +88,8 @@ results, and persist the run under `.domarinn/runs/<id>/`.
 | `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |
 | `--no-progress` | Disable the live progress bar (see below). |
 | `--against <REF>` | Compare against a baseline run (a run id, a `result.json` path, or `latest`); a regression sets exit code `1`. |
-| `--summary-md <FILE>` | Write a Markdown summary (pass/fail counts, Wilson pass-rate CI, and any baseline comparison) — used by the CI action for PR comments. |
-| `--share` | Upload the completed run to the configured server. |
+| `--summary-md <FILE>` | Write a Markdown summary (headline metrics table, failing cases, and any baseline comparison). Identical to what [`ci-summary`](#domarinn-ci-summary-run-flags) writes, minus the step outputs. |
+| `--share` | Upload the completed run to the configured server, and record the returned URL on the stored run. |
 
 ```sh
 domarinn run examples/render-health                 # run, print a table
@@ -188,6 +188,28 @@ and exits `0`); `--strict` makes upload failure fail the command (exit `3`).
 ```sh
 DOMARINN_SERVER_URL=https://evals.example domarinn share --strict
 DOMARINN_SERVER_URL=https://evals.example domarinn share 01JD3V9GQ8 --strict
+```
+
+## `domarinn ci-summary [RUN] [flags]`
+
+Summarize a stored run for CI: a Markdown report for a PR comment or job
+summary, plus the headline numbers as GitHub Actions step outputs. See
+[`ci.md`](./ci.md#the-ci-summary-command).
+
+| Flag | Meaning |
+|---|---|
+| `RUN` | Run to summarize — a run id, `latest` (default), a `result.json`, or a run directory. |
+| `--against <REF>` | Append a baseline comparison. An unresolvable baseline warns and is skipped rather than failing. |
+| `--out <FILE>` | Write the Markdown to a file instead of stdout. |
+| `--github-output <FILE>` | Append `key=value` step outputs here. Defaults to `$GITHUB_OUTPUT`, so on a runner no flag is needed. |
+
+**It is a reporter, not a gate** — it exits `0` for a failing run, because the
+verdict belongs to `run`'s [exit code](#exit-codes). It exits `2` only when the
+run reference cannot be resolved.
+
+```sh
+domarinn ci-summary                              # latest run, Markdown on stdout
+domarinn ci-summary --against latest --out summary.md
 ```
 
 ## `domarinn cache <stats|path|gc|clear>`

@@ -29,6 +29,13 @@ function resolveChromeExecutable(): string | undefined {
   const explicit = process.env.PLAYWRIGHT_CHROME_PATH ?? process.env.CHROME_PATH;
   if (explicit && existsSync(explicit)) return explicit;
 
+  // On CI the bundled chromium is installed deliberately and is version-matched
+  // to the driver. The runner image also ships a system Google Chrome, which the
+  // detection below would otherwise prefer — silently swapping a matched browser
+  // for one that can drift from the driver's supported protocol. An explicit
+  // override above still wins.
+  if (process.env.CI) return undefined;
+
   const home = process.env.HOME ?? "";
   const user = process.env.USER ?? "";
   const candidates = [

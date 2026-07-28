@@ -403,6 +403,7 @@ pub fn make_run(
             provider: Some("ci".to_string()),
             run_url: Some("https://ci.example/run/1".to_string()),
         }),
+        share_url: None,
         filters: FilterSpec {
             tags: tags.iter().map(|t| t.to_string()).collect(),
             ..Default::default()

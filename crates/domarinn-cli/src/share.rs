@@ -32,7 +32,7 @@ pub fn execute(args: ShareArgs, server_url: Option<String>) -> u8 {
         }
     };
     match upload_run(&result, server_url.as_deref(), args.strict) {
-        Ok(()) => exit::OK,
+        Ok(_) => exit::OK,
         Err(e) => {
             if args.strict {
                 eprintln!("error: {e}");
@@ -47,13 +47,15 @@ pub fn execute(args: ShareArgs, server_url: Option<String>) -> u8 {
 
 /// Enrich and upload a run to the server, printing the resulting view URL.
 ///
-/// Returns an error if no server is configured or the upload fails; callers
-/// decide whether that is fatal (`--strict`) or best-effort.
+/// Returns the view URL on success, so `run --share` can record it on the run
+/// it is about to persist; returns an error if no server is configured or the
+/// upload fails, and callers decide whether that is fatal (`--strict`) or
+/// best-effort.
 pub fn upload_run(
     result: &RunResult,
     server_url: Option<&str>,
     _strict: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let server = server_url
         .map(String::from)
         .or_else(|| std::env::var("DOMARINN_SERVER_URL").ok())
@@ -62,11 +64,18 @@ pub fn upload_run(
 
     let mut enriched = result.clone();
     enrich(&mut enriched);
+    // `share_url` records where a run *landed*, not what it *is*, so it must never
+    // travel with the document. Ingest is idempotent on
+    // `sha256(canonical_json(run))` keyed by run id: re-uploading a run that had
+    // recorded the URL of its own previous upload would hash differently and turn
+    // a harmless re-share into a 409 Conflict. Stripping it keeps the uploaded
+    // bytes identical every time.
+    enriched.share_url = None;
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     let url = runtime.block_on(upload(&server, &enriched))?;
     println!("View run: {url}");
-    Ok(())
+    Ok(url)
 }
 
 /// Attach git and CI metadata to the run if not already present.
@@ -104,7 +113,10 @@ fn collect_git() -> Option<GitMeta> {
     })
 }
 
-fn collect_ci() -> Option<CiMeta> {
+/// Detect the CI system from the environment. Shared with `ci-summary`, which
+/// needs the workflow's run URL for runs that were never uploaded (and so never
+/// had this recorded on them).
+pub(crate) fn collect_ci() -> Option<CiMeta> {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     if env("GITHUB_ACTIONS").is_some() {
         let run_url = match (
