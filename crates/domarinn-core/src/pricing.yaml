@@ -1,0 +1,87 @@
+# Per-model rates, in USD per million tokens.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# The rule for this file: a rate that nobody has checked against the vendor's
+# published price sheet does not ship. "Present here" *means* "a human verified
+# this on `as_of`". That is one bit of state instead of two, and it makes review
+# trivial — a pull request that adds or edits a row without moving `as_of` is
+# wrong on its face.
+#
+# An id that is not here costs nothing rather than costing a guess: `cost_usd`
+# stays absent, the `cost` assertion keeps reporting "not reported", and the run
+# warns once naming the id. A default rate would turn "we don't know" into a
+# number that silently passes or fails a budget, which is strictly worse than a
+# loud no-op. Reach for a provider-level `pricing:` block instead.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Rates are authored per **million** tokens because that is how every vendor
+# quotes them, so a maintainer copies numbers verbatim with no arithmetic —
+# mental arithmetic being the largest source of bugs in a table like this.
+#
+# Fields, all optional except `input`/`output`/`as_of`:
+#   input           full-rate input tokens
+#   output          output tokens
+#   cache_read      input served from the provider's prompt cache
+#   cache_write_5m  input written to the cache at the short (default) TTL
+#   cache_write_1h  input written at the long TTL
+#
+# The two cache-write rates are separate rather than blended because the spread
+# between them is large and the APIs report the split. A blended rate would be a
+# number no invoice matches, in the one place the vendor hands us the truth.
+#
+# Deliberately excluded: Bedrock and Vertex partner pricing. Those are
+# separately negotiated and differ from first-party rates. The id normalizer
+# strips their prefixes so those ids *can* resolve to a first-party row, but
+# only do that if you have confirmed the rates actually match — otherwise set a
+# `pricing:` block on the provider.
+
+exact:
+  # ───────────────────────── Anthropic ─────────────────────────
+  # Cache read is 0.1x input; cache write is 1.25x input at the 5-minute TTL
+  # and 2x at the 1-hour TTL. Encoded as absolute numbers rather than
+  # multipliers so this file stays a flat price sheet a human can diff against
+  # the vendor's own page.
+  claude-opus-4-5:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-07-28"
+  claude-sonnet-4-5:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    as_of: "2026-07-28"
+  claude-haiku-4-5:
+    input: 1.00
+    output: 5.00
+    cache_read: 0.10
+    cache_write_5m: 1.25
+    cache_write_1h: 2.00
+    as_of: "2026-07-28"
+
+  # ─────────────────────────── OpenAI ───────────────────────────
+  # No cache-write rate: prompt caching is automatic and has no billed write
+  # step, which is why `cache_write_*` is absent rather than zero.
+  gpt-4o:
+    input: 2.50
+    output: 10.00
+    cache_read: 1.25
+    as_of: "2026-07-28"
+  gpt-4o-mini:
+    input: 0.15
+    output: 0.60
+    cache_read: 0.075
+    as_of: "2026-07-28"
+
+# Longest-prefix fallbacks, for dated snapshots and point releases that share a
+# family's rates. Longest match wins regardless of the order written here, so a
+# specific family always beats a broader one.
+#
+# Note the resolver already strips a trailing `-YYYYMMDD` and retries an exact
+# match, so a dated snapshot of a listed model needs no entry — these are for
+# families whose members are not enumerated above.
+families: {}
