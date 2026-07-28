@@ -158,6 +158,7 @@ pub(super) fn entry_to_response(entry: CacheEntry) -> ProviderResponse {
         reasoning: entry.reasoning,
         empty_reason: entry.empty_reason,
         model: entry.model,
+        tool_calls: entry.tool_calls,
     }
 }
 
@@ -178,6 +179,7 @@ pub(super) fn response_to_entry(
         reasoning: response.reasoning.clone(),
         empty_reason: response.empty_reason.clone(),
         model: response.model.clone(),
+        tool_calls: response.tool_calls.clone(),
         // Provider responses never carry a verdict; its absence is what marks
         // this entry as a provider response rather than a grading result.
         verdict: None,

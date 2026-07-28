@@ -454,6 +454,7 @@ mod diff_tests {
             repeat: 0,
         };
         CaseResult {
+            tool_calls: Vec::new(),
             case_key: cell.case_key(),
             cell,
             name: Some(test.into()),

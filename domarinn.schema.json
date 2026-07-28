@@ -59,6 +59,13 @@
         "$ref": "#/$defs/Prompt"
       }
     },
+    "tools": {
+      "description": "Tools every provider in this suite may offer the model.\n\nDeclaring a tool does not make domarinn run one — it never executes a\ntool and never feeds a result back. What it wants is the model's\n*decision*, reported as `tool_calls` and graded by `tool-call`\nassertions. Suite-level rather than per-test because the tool surface is\na property of the system being evaluated, and varying it per case would\nmake two cases incomparable while looking like the same suite.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ToolDef"
+      }
+    },
     "tests": {
       "description": "Test sources: inline cases, `file://` globs, or generator commands.",
       "type": "array",
@@ -493,6 +500,28 @@
         "assistant"
       ]
     },
+    "ToolDef": {
+      "description": "A tool the model may call.\n\nAnthropic's field names: `input_schema` says what the value is (a JSON\nSchema) where OpenAI's `parameters` does not, and one shape had to win. The\nmapping to the other vendor is mechanical and lives in `openai.rs`.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_schema": {
+          "description": "JSON Schema for the tool's arguments. Passed to the provider verbatim\nand never rendered — it is a contract, not a per-case value."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
     "TestSource": {
       "description": "An entry in the `tests:` list.\n\n`Deserialize` is hand-written (rather than derived as `#[serde(untagged)]`)\nso a typo inside an inline test case surfaces the precise unknown-field\nerror from [`TestCase`]'s `deny_unknown_fields` instead of the opaque\n\"data did not match any variant of untagged enum\" an untagged derive emits.\n`Serialize`/`JsonSchema` keep the untagged shape (a glob string, a\n`{generator: ...}` mapping, or an inline case mapping).",
       "anyOf": [
@@ -845,6 +874,46 @@
           "required": [
             "type",
             "command"
+          ]
+        },
+        {
+          "description": "Assert that the model decided to call a tool.\n\nA *decision*, never an execution: domarinn does not run tools. This\ngrades what the model chose to do, which for a whole class of cases is\nthe only correct answer there is — before this, such a case produced no\nprose, scored zero against every text assertion, and read as a model\nfailure rather than an evaluation that could not see the answer.\n\nCombine with `negate` (or the `not-tool-call` sugar) for the equally\nimportant negative: the model must *not* have called `delete_account`.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "The tool that must have been called.",
+              "type": "string"
+            },
+            "args": {
+              "description": "Argument values that must all be present and equal. A subset match,\nnot an equality check — an assertion should not have to restate\nevery argument to pin the one that matters.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Val"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "schema": {
+              "description": "A JSON Schema the call's arguments must satisfy. Not rendered, for\nthe same reason `contains-json`'s is not: a schema is a contract,\nnot a per-case value.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Val"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "tool-call"
+            }
+          },
+          "required": [
+            "type",
+            "name"
           ]
         },
         {

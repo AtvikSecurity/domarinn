@@ -151,6 +151,9 @@ impl Provider for HttpProvider {
         };
 
         Ok(ProviderResponse {
+            // A generic HTTP endpoint has no tool-call convention to read, so
+            // there is nothing to report rather than an empty claim.
+            tool_calls: Vec::new(),
             output,
             usage: None,
             cost_usd: None,
@@ -241,6 +244,7 @@ mod tests {
         let mut vars = BTreeMap::new();
         vars.insert(key.to_string(), Json::String(value.to_string()));
         ProviderRequest {
+            tools: Vec::new(),
             prompt: Some(RenderedPrompt::Text("summarize this".into())),
             vars,
             params: serde_json::Map::new(),

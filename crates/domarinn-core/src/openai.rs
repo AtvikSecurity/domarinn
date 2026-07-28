@@ -59,7 +59,7 @@ impl OpenAiProvider {
         }
     }
 
-    fn build_body(&self, prompt: &RenderedPrompt) -> Json {
+    fn build_body(&self, prompt: &RenderedPrompt, tools: &[crate::config::ToolDef]) -> Json {
         let messages = to_messages(prompt);
         let mut body = serde_json::Map::new();
         for (k, v) in &self.params {
@@ -67,6 +67,31 @@ impl OpenAiProvider {
         }
         body.insert("model".into(), json!(self.model));
         body.insert("messages".into(), json!(messages));
+        // The one place the two vendors' tool shapes diverge: OpenAI wraps each
+        // declaration in a `function` object and calls the schema `parameters`.
+        // Written only when the suite declared tools, so a tool-free body — and
+        // therefore every cache entry keyed on one — is unchanged.
+        if !tools.is_empty() {
+            body.insert(
+                "tools".into(),
+                Json::Array(
+                    tools
+                        .iter()
+                        .map(|t| {
+                            json!({
+                                "type": "function",
+                                "function": {
+                                    "name": t.name,
+                                    "description": t.description.clone().unwrap_or_default(),
+                                    "parameters": t.input_schema.clone()
+                                        .unwrap_or_else(|| json!({"type": "object"})),
+                                },
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
         Json::Object(body)
     }
 
@@ -103,7 +128,7 @@ impl Provider for OpenAiProvider {
             )
         })?;
         let key = api_key(&self.api_key_env)?;
-        let body = self.build_body(prompt);
+        let body = self.build_body(prompt, &req.tools);
         let url = self.endpoint();
 
         let response = self
@@ -131,7 +156,7 @@ impl Provider for OpenAiProvider {
         Some(http_request_preview(
             "POST",
             &self.endpoint(),
-            self.build_body(prompt),
+            self.build_body(prompt, &req.tools),
         ))
     }
 }
@@ -144,6 +169,38 @@ fn to_messages(prompt: &RenderedPrompt) -> Vec<Json> {
             .map(|m| json!({"role": m.role, "content": m.content}))
             .collect(),
     }
+}
+
+/// The `tool_calls` on a chat-completions message, in order.
+///
+/// The vendor split this exists to absorb: OpenAI sends `function.arguments` as
+/// a **JSON string**, where Anthropic sends a decoded object. Forwarding the
+/// string would hand every assertion a parsing problem instead of an argument,
+/// so it is parsed here. A string that is not valid JSON is kept verbatim
+/// rather than dropped — the call did happen, and a `tool-call` assertion
+/// matching on name alone must still see it.
+fn tool_calls_from_message(message: &Json) -> Vec<domarinn_types::result::ToolCall> {
+    let Some(calls) = message.get("tool_calls").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    calls
+        .iter()
+        .filter_map(|c| {
+            let f = c.get("function")?;
+            let raw = f.get("arguments");
+            let arguments = match raw.and_then(|a| a.as_str()) {
+                Some(text) => {
+                    serde_json::from_str(text).unwrap_or_else(|_| Json::String(text.to_string()))
+                }
+                None => raw.cloned().unwrap_or(Json::Null),
+            };
+            Some(domarinn_types::result::ToolCall {
+                id: c.get("id").and_then(|v| v.as_str()).map(str::to_string),
+                name: f.get("name").and_then(|v| v.as_str())?.to_string(),
+                arguments,
+            })
+        })
+        .collect()
 }
 
 /// Fields a reasoning model may use instead of `content` when it exposes its
@@ -274,6 +331,10 @@ fn parse_completion_response(
         .map(|c| c.to_usd());
 
     Ok(ProviderResponse {
+        tool_calls: choice
+            .and_then(|c| c.get("message"))
+            .map(tool_calls_from_message)
+            .unwrap_or_default(),
         output: Output::Text(text),
         usage,
         cost_usd,
@@ -415,6 +476,7 @@ mod tests {
 
     fn text_request() -> ProviderRequest {
         ProviderRequest {
+            tools: Vec::new(),
             prompt: Some(RenderedPrompt::Text("hi".into())),
             vars: BTreeMap::new(),
             params: serde_json::Map::new(),
@@ -465,7 +527,10 @@ mod tests {
         let p = OpenAiProvider::new("g", "m", None, None, None, None);
         let req = text_request();
         let preview = p.request_preview(&req).unwrap();
-        assert_eq!(preview["body"], p.build_body(req.prompt.as_ref().unwrap()));
+        assert_eq!(
+            preview["body"],
+            p.build_body(req.prompt.as_ref().unwrap(), &req.tools)
+        );
     }
 
     #[test]
@@ -586,5 +651,70 @@ mod empty_classification_tests {
             .unwrap()
             .empty_reason
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod tool_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The vendor split this absorbs: OpenAI sends `function.arguments` as a
+    /// JSON **string**, Anthropic sends a decoded object. Forwarding the string
+    /// would hand every assertion a parsing problem instead of an argument.
+    #[test]
+    fn arguments_are_decoded_from_the_json_string() {
+        let calls = tool_calls_from_message(&json!({
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": "{\"city\":\"Oslo\"}"}
+            }]
+        }));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_weather");
+        assert_eq!(calls[0].arguments["city"], "Oslo");
+        assert_eq!(calls[0].id.as_deref(), Some("call_1"));
+    }
+
+    /// A model that emits malformed argument JSON still *made the call*, and a
+    /// `tool-call` assertion matching on name alone must see it.
+    #[test]
+    fn unparseable_arguments_are_kept_verbatim_rather_than_dropped() {
+        let calls = tool_calls_from_message(&json!({
+            "tool_calls": [{
+                "function": {"name": "get_weather", "arguments": "{not json"}
+            }]
+        }));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].arguments, json!("{not json"));
+    }
+
+    #[test]
+    fn a_message_without_tool_calls_reports_none() {
+        assert!(tool_calls_from_message(&json!({"content": "hi"})).is_empty());
+    }
+
+    /// A suite with no tools must build the body it always built, or every
+    /// cached entry keyed on that body is invalidated for nothing.
+    #[test]
+    fn a_tool_free_body_is_unchanged_and_a_declared_tool_takes_the_function_shape() {
+        let p = OpenAiProvider::new("p", "gpt-4o-mini", None, None, None, None);
+        let prompt = RenderedPrompt::Text("hi".into());
+        assert!(p.build_body(&prompt, &[]).get("tools").is_none());
+
+        let body = p.build_body(
+            &prompt,
+            &[crate::config::ToolDef {
+                name: "get_weather".into(),
+                description: None,
+                input_schema: Some(json!({"type": "object"})),
+            }],
+        );
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "get_weather");
+        // OpenAI calls the schema `parameters`; Anthropic calls it
+        // `input_schema`. This rename is the whole mapping.
+        assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
     }
 }

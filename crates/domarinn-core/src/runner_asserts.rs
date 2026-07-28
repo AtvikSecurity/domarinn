@@ -41,6 +41,8 @@ pub(super) struct AssertCtx<'a> {
     pub grader: Option<&'a dyn AssertGrader>,
     pub base_dir: &'a Path,
     pub schemas: &'a crate::jsonschema_cache::SchemaCache,
+    /// This cell's reported tool calls, for `tool-call` assertions.
+    pub tool_calls: &'a [crate::result::ToolCall],
     pub cache: &'a dyn CacheBackend,
     pub cache_mode: CacheMode,
     /// Whether verdict caching is enabled (`cache.grader`, `--no-grader-cache`).
@@ -70,6 +72,7 @@ pub(super) async fn evaluate_asserts(
         vars,
         metrics,
         schemas: ctx.schemas,
+        tool_calls: ctx.tool_calls,
     };
     // Slot results by original index so output order matches config order.
     let mut results: Vec<Option<AssertResult>> = vec![None; asserts.len()];
@@ -301,6 +304,9 @@ fn verdict_entry(
         empty_reason: None,
         model: graded.model.clone(),
         raw: None,
+        // A verdict is not a provider response and has no tool calls of its
+        // own; its absence is part of what marks this entry as a grading result.
+        tool_calls: Vec::new(),
         verdict: Some(graded.verdict.clone()),
         domarinn_version: crate::VERSION.to_string(),
     }

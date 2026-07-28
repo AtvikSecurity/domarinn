@@ -77,6 +77,7 @@ prompt that sets both `template` and `messages`, and so on).
 | `imports` | list of strings (`file://`) | no | Reusable fragments merged in order. See [Composition](#composition-with-extends-and-imports). |
 | `providers` | list | **yes (≥1)** | The systems under test. |
 | `prompts` | list | no | Prompt templates. Omit when a provider constructs its own input. |
+| `tools` | list | no | Tools every provider may offer the model. See [`tools`](#tools). |
 | `tests` | list | no | Test sources: inline cases, `file://` globs, or generator commands. |
 | `defaults` | object | no | Values merged into every test. |
 | `grader` | object | no | Default LLM grader for `llm-rubric` assertions. |
@@ -534,6 +535,44 @@ tests:
       config: { seed: 42, count: 100 }
       timeout_ms: 120000
 ```
+
+---
+
+## `tools`
+
+Tools every provider in this suite may offer the model, graded by
+[`tool-call`](./assertions.md#tool-call) assertions.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | **yes** | The tool's name, as the model will see it. |
+| `description` | string | no | What it does. |
+| `input_schema` | JSON Schema | no | The arguments' shape. Passed to the provider verbatim and never templated. |
+
+```yaml
+tools:
+  - name: get_weather
+    description: Look up the current weather for a city
+    input_schema:
+      type: object
+      required: [city]
+      properties:
+        city: { type: string }
+```
+
+Declaring a tool does **not** make domarinn run one — it never executes a tool
+and never feeds a result back. What it wants is the model's *decision*, which is
+fully observable in a single turn. See
+[protocol.md](./protocol.md#tools).
+
+Suite-level rather than per-test on purpose: the tool surface is a property of
+the system being evaluated, and varying it per case would make two cases
+incomparable while still looking like one suite.
+
+Supported by `exec`, `anthropic` and `openai` providers. The declarations reach
+each vendor in its own shape (OpenAI wraps them as `function` objects), and are
+part of the request, so they are part of the cache key — a call offering a tool
+and one that does not are different questions.
 
 ---
 

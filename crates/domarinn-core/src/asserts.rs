@@ -38,6 +38,12 @@ pub struct EvalCtx<'a> {
     /// Compiled JSON Schemas for `contains-json`, memoized for the run. See
     /// [`crate::jsonschema_cache`] for why it is threaded rather than global.
     pub schemas: &'a crate::jsonschema_cache::SchemaCache,
+    /// The tool calls this cell's provider reported, in order.
+    ///
+    /// Beside `output` rather than inside it: `Output` is what gets *scored* as
+    /// text, and folding calls into it would change what every existing
+    /// assertion sees — and what a cache key hashes.
+    pub tool_calls: &'a [crate::result::ToolCall],
 }
 
 // `AssertName` lives in `domarinn-types`: it is a wire value (it appears on
@@ -65,6 +71,7 @@ impl AssertKind {
             AssertKind::Latency { .. } => AssertName::Latency,
             AssertKind::Tokens { .. } => AssertName::Tokens,
             AssertKind::Similar { .. } => AssertName::Similar,
+            AssertKind::ToolCall { .. } => AssertName::ToolCall,
         }
     }
 }
@@ -76,6 +83,52 @@ pub fn is_local(kind: &AssertKind) -> bool {
         kind,
         AssertKind::Exec { .. } | AssertKind::LlmRubric { .. } | AssertKind::Similar { .. }
     )
+}
+
+/// Whether one reported call satisfies an assertion's `args`/`schema`
+/// constraints, or why it does not.
+///
+/// `args` is a **subset** match: every key given must be present and deep-equal.
+/// An assertion should not have to restate an entire argument object to pin the
+/// one value that matters, and requiring equality would make a tool gaining an
+/// optional argument break every assertion about it.
+fn tool_call_matches(
+    call: &crate::result::ToolCall,
+    args: Option<&crate::val::Val>,
+    schema: Option<&crate::val::Val>,
+    ctx: &EvalCtx<'_>,
+) -> Result<(), String> {
+    if let Some(args) = args {
+        // Rendered, unlike `schema`: an expected argument is a per-case value
+        // (`{"city": "{{ city }}"}`), which is exactly what a template is for.
+        let expected = ctx
+            .engine
+            .render_val(args, ctx.vars)
+            .map_err(|e| format!("rendering expected args: {e}"))?;
+        let Some(expected) = expected.as_object() else {
+            return Err("`args` must be an object".to_string());
+        };
+        for (k, want) in expected {
+            match call.arguments.get(k) {
+                None => return Err(format!("argument `{k}` was not passed")),
+                Some(got) if got != want => {
+                    return Err(format!("argument `{k}` was {got}, expected {want}"))
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if let Some(schema) = schema {
+        let outcome = crate::jsonschema_cache::validate_against(
+            &call.arguments,
+            schema.as_json(),
+            ctx.schemas,
+        );
+        if !outcome.passed {
+            return Err(outcome.reason);
+        }
+    }
+    Ok(())
 }
 
 /// Evaluate a local assertion. Returns `None` for asserts that need the async
@@ -98,6 +151,7 @@ fn evaluate_kind(kind: &AssertKind, output: &Output, ctx: &EvalCtx<'_>) -> Asser
         vars,
         metrics,
         schemas,
+        ..
     } = ctx;
     let text = output.as_text();
     match kind {
@@ -165,6 +219,42 @@ fn evaluate_kind(kind: &AssertKind, output: &Output, ctx: &EvalCtx<'_>) -> Asser
                     crate::jsonschema_cache::validate_against(&found, schema.as_json(), schemas)
                 }
             }
+        }
+        AssertKind::ToolCall { name, args, schema } => {
+            let matching: Vec<&crate::result::ToolCall> =
+                ctx.tool_calls.iter().filter(|c| &c.name == name).collect();
+            if matching.is_empty() {
+                let called = if ctx.tool_calls.is_empty() {
+                    "no tools were called".to_string()
+                } else {
+                    format!(
+                        "called: {}",
+                        ctx.tool_calls
+                            .iter()
+                            .map(|c| c.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                return AssertOutcome::fail(format!("tool `{name}` was not called ({called})"));
+            }
+            // Any matching call satisfying every constraint passes. A model may
+            // legitimately call the same tool more than once, and requiring the
+            // *first* to match would make an assertion depend on an ordering
+            // the prompt never asked for.
+            let mut last_reason = String::new();
+            for call in &matching {
+                match tool_call_matches(call, args.as_ref(), schema.as_ref(), ctx) {
+                    Ok(()) => {
+                        return AssertOutcome::pass(format!("tool `{name}` was called as expected"))
+                    }
+                    Err(why) => last_reason = why,
+                }
+            }
+            AssertOutcome::fail(format!(
+                "tool `{name}` was called {} time(s), none matching: {last_reason}",
+                matching.len()
+            ))
         }
         AssertKind::Length { min, max } => {
             let len = text.chars().count() as u64;
@@ -301,6 +391,7 @@ mod tests {
                 vars: &vars,
                 metrics: &metrics,
                 schemas: &schemas,
+                tool_calls: &[],
             },
         )
         .unwrap()
@@ -421,6 +512,7 @@ mod tests {
             vars: &vars,
             metrics: &metrics,
             schemas: &schemas,
+            tool_calls: &[],
         };
         let lat = evaluate_local(&a(AssertKind::Latency { max: 1000 }), &out, &ctx).unwrap();
         assert!(lat.passed);
@@ -456,6 +548,7 @@ mod tests {
                 vars: &vars,
                 metrics: &metrics,
                 schemas: &schemas,
+                tool_calls: &[],
             }
         )
         .is_none());
@@ -518,8 +611,13 @@ mod tests {
                 value: Val::Raw(Json::Null),
                 threshold: None,
             },
+            AssertKind::ToolCall {
+                name: String::new(),
+                args: None,
+                schema: None,
+            },
         ];
-        assert_eq!(variants.len(), 16, "update this test when adding a variant");
+        assert_eq!(variants.len(), 17, "update this test when adding a variant");
 
         for kind in variants {
             // The actual tag the `Assert` config schema produces for this
@@ -566,6 +664,7 @@ mod contains_json_schema_tests {
                 vars: &vars,
                 metrics: &metrics,
                 schemas: &schemas,
+                tool_calls: &[],
             },
         )
         .unwrap()
@@ -631,9 +730,179 @@ mod contains_json_schema_tests {
                 vars: &vars,
                 metrics: &metrics,
                 schemas: &schemas,
+                tool_calls: &[],
             },
         )
         .unwrap();
         assert!(!outcome.passed, "a match under negate must fail");
+    }
+}
+
+#[cfg(test)]
+mod tool_call_tests {
+    use super::*;
+    use crate::config::Assert;
+    use crate::result::ToolCall;
+    use crate::val::Val;
+
+    fn call(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: None,
+            name: name.to_string(),
+            arguments: args,
+        }
+    }
+
+    fn eval(kind: AssertKind, negate: bool, calls: &[ToolCall]) -> AssertOutcome {
+        let engine = TemplateEngine::new();
+        let vars = serde_json::json!({"city": "Reykjavik"});
+        let metrics = MetricCtx::default();
+        let schemas = crate::jsonschema_cache::SchemaCache::default();
+        let assert = Assert {
+            weight: 1.0,
+            negate,
+            kind,
+        };
+        evaluate_local(
+            &assert,
+            &Output::Text(String::new()),
+            &EvalCtx {
+                engine: &engine,
+                vars: &vars,
+                metrics: &metrics,
+                schemas: &schemas,
+                tool_calls: calls,
+            },
+        )
+        .expect("tool-call is a local assertion")
+    }
+
+    fn named(name: &str) -> AssertKind {
+        AssertKind::ToolCall {
+            name: name.to_string(),
+            args: None,
+            schema: None,
+        }
+    }
+
+    /// The gap this closes: a case whose right answer is a tool call had no
+    /// prose to grade, so every text assertion scored zero and it read as a
+    /// model failure rather than an evaluation that could not see the answer.
+    #[test]
+    fn a_reported_call_satisfies_an_assertion_about_it() {
+        let calls = vec![call(
+            "get_weather",
+            serde_json::json!({"city": "Reykjavik"}),
+        )];
+        assert!(eval(named("get_weather"), false, &calls).passed);
+        assert!(!eval(named("get_forecast"), false, &calls).passed);
+    }
+
+    /// The failure message names what *was* called. "tool `x` was not called"
+    /// alone leaves you opening the case to find out what happened instead.
+    #[test]
+    fn the_failure_names_the_tools_that_were_called() {
+        let calls = vec![call("delete_user", serde_json::json!({}))];
+        let outcome = eval(named("archive_user"), false, &calls);
+        assert!(outcome.reason.contains("delete_user"), "{}", outcome.reason);
+
+        let outcome = eval(named("archive_user"), false, &[]);
+        assert!(
+            outcome.reason.contains("no tools were called"),
+            "{}",
+            outcome.reason
+        );
+    }
+
+    /// The negative is the point of the feature as much as the positive: a
+    /// safety eval asserts the model did *not* reach for the destructive tool.
+    #[test]
+    fn negation_asserts_a_tool_was_not_called() {
+        let calls = vec![call("read_user", serde_json::json!({}))];
+        assert!(eval(named("delete_user"), true, &calls).passed);
+        assert!(!eval(named("read_user"), true, &calls).passed);
+    }
+
+    /// A subset match, not equality: an assertion should not have to restate
+    /// every argument to pin the one that matters, and a tool gaining an
+    /// optional argument must not break every assertion about it.
+    #[test]
+    fn args_match_a_subset_and_are_rendered() {
+        let calls = vec![call(
+            "get_weather",
+            serde_json::json!({"city": "Reykjavik", "units": "metric"}),
+        )];
+        let kind = |args: serde_json::Value| AssertKind::ToolCall {
+            name: "get_weather".into(),
+            args: Some(Val::Tpl(args)),
+            schema: None,
+        };
+        // Templated, because an expected argument is a per-case value.
+        assert!(
+            eval(
+                kind(serde_json::json!({"city": "{{ city }}"})),
+                false,
+                &calls
+            )
+            .passed
+        );
+        assert!(eval(kind(serde_json::json!({"units": "metric"})), false, &calls).passed);
+        assert!(
+            !eval(
+                kind(serde_json::json!({"units": "imperial"})),
+                false,
+                &calls
+            )
+            .passed
+        );
+
+        let outcome = eval(kind(serde_json::json!({"nope": 1})), false, &calls);
+        assert!(outcome.reason.contains("`nope`"), "{}", outcome.reason);
+    }
+
+    /// A model may call the same tool twice; requiring the *first* to match
+    /// would make an assertion depend on an ordering the prompt never asked for.
+    #[test]
+    fn any_matching_call_satisfies_the_assertion() {
+        let calls = vec![
+            call("search", serde_json::json!({"q": "wrong"})),
+            call("search", serde_json::json!({"q": "right"})),
+        ];
+        let kind = AssertKind::ToolCall {
+            name: "search".into(),
+            args: Some(Val::Raw(serde_json::json!({"q": "right"}))),
+            schema: None,
+        };
+        assert!(eval(kind, false, &calls).passed);
+    }
+
+    #[test]
+    fn a_schema_constrains_the_arguments() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["city"],
+            "properties": {"city": {"type": "string"}},
+        });
+        let kind = AssertKind::ToolCall {
+            name: "get_weather".into(),
+            args: None,
+            schema: Some(Val::Raw(schema)),
+        };
+        assert!(
+            eval(
+                kind.clone(),
+                false,
+                &[call("get_weather", serde_json::json!({"city": "Oslo"}))]
+            )
+            .passed
+        );
+        assert!(
+            !eval(
+                kind,
+                false,
+                &[call("get_weather", serde_json::json!({"city": 7}))]
+            )
+            .passed
+        );
     }
 }

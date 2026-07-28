@@ -62,7 +62,7 @@ impl AnthropicProvider {
         }
     }
 
-    fn build_body(&self, prompt: &RenderedPrompt) -> Json {
+    fn build_body(&self, prompt: &RenderedPrompt, tools: &[crate::config::ToolDef]) -> Json {
         let (system, messages) = to_messages(prompt);
         let mut body = serde_json::Map::new();
         // Caller params first, so model/messages below are authoritative but
@@ -77,6 +77,29 @@ impl AnthropicProvider {
         }
         body.entry("max_tokens")
             .or_insert_with(|| json!(DEFAULT_MAX_TOKENS));
+        // The suite's declarations, in this vendor's own shape — `ToolDef`
+        // borrows its field names, so the mapping is a rename of nothing. Only
+        // written when the suite declared tools, so a body with none is
+        // byte-identical to what it was before tools existed, and so is every
+        // cache entry keyed on it.
+        if !tools.is_empty() {
+            body.insert(
+                "tools".into(),
+                Json::Array(
+                    tools
+                        .iter()
+                        .map(|t| {
+                            json!({
+                                "name": t.name,
+                                "description": t.description.clone().unwrap_or_default(),
+                                "input_schema": t.input_schema.clone()
+                                    .unwrap_or_else(|| json!({"type": "object"})),
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
         Json::Object(body)
     }
 
@@ -113,7 +136,7 @@ impl Provider for AnthropicProvider {
             )
         })?;
         let key = api_key(&self.api_key_env)?;
-        let body = self.build_body(prompt);
+        let body = self.build_body(prompt, &req.tools);
         let url = self.endpoint();
 
         let response = self
@@ -142,7 +165,7 @@ impl Provider for AnthropicProvider {
         Some(http_request_preview(
             "POST",
             &self.endpoint(),
-            self.build_body(prompt),
+            self.build_body(prompt, &req.tools),
         ))
     }
 }
@@ -175,6 +198,28 @@ fn join_blocks(blocks: &[Json], kind: &str) -> String {
         .filter_map(|b| b.get(kind).and_then(|t| t.as_str()))
         .collect::<Vec<_>>()
         .join("")
+}
+
+/// The `tool_use` blocks in a Messages response, in the order the model emitted
+/// them.
+///
+/// `input` is already a decoded object here — Anthropic sends it as JSON, not as
+/// a string, which is the half of the vendor split `openai.rs` has to undo.
+fn tool_calls_from_blocks(blocks: &[Json]) -> Vec<domarinn_types::result::ToolCall> {
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+        .filter_map(|b| {
+            Some(domarinn_types::result::ToolCall {
+                id: b.get("id").and_then(|v| v.as_str()).map(str::to_string),
+                // A block with no name is not a call we can attribute, and
+                // inventing a name would make a `tool-call` assertion match
+                // something that never happened.
+                name: b.get("name").and_then(|v| v.as_str())?.to_string(),
+                arguments: b.get("input").cloned().unwrap_or(Json::Null),
+            })
+        })
+        .collect()
 }
 
 fn has_block(blocks: &[Json], kind: &str) -> bool {
@@ -276,6 +321,9 @@ fn parse_messages_response(
         .map(|c| c.to_usd());
 
     Ok(ProviderResponse {
+        tool_calls: blocks
+            .map(|b| tool_calls_from_blocks(b))
+            .unwrap_or_default(),
         output: Output::Text(text),
         usage,
         cost_usd,
@@ -403,6 +451,7 @@ mod tests {
 
     fn text_request() -> ProviderRequest {
         ProviderRequest {
+            tools: Vec::new(),
             prompt: Some(RenderedPrompt::Text("hi".into())),
             vars: BTreeMap::new(),
             params: serde_json::Map::new(),
@@ -416,7 +465,7 @@ mod tests {
         let mut params = serde_json::Map::new();
         params.insert("temperature".into(), json!(0.5));
         let p = AnthropicProvider::new("c", "claude-x", None, None, Some(params), None);
-        let body = p.build_body(&RenderedPrompt::Text("hi".into()));
+        let body = p.build_body(&RenderedPrompt::Text("hi".into()), &[]);
         assert_eq!(body["max_tokens"], json!(DEFAULT_MAX_TOKENS));
         assert_eq!(body["temperature"], json!(0.5));
         assert_eq!(body["model"], json!("claude-x"));
@@ -447,6 +496,7 @@ mod tests {
         // show a system *message* that was never sent as one.
         let p = AnthropicProvider::new("c", "claude-x", None, None, None, None);
         let req = ProviderRequest {
+            tools: Vec::new(),
             prompt: Some(RenderedPrompt::Messages(vec![
                 crate::types::ChatMessage {
                     role: ChatRole::System,
@@ -480,7 +530,10 @@ mod tests {
         let p = AnthropicProvider::new("c", "claude-x", None, None, None, None);
         let req = text_request();
         let preview = p.request_preview(&req).unwrap();
-        assert_eq!(preview["body"], p.build_body(req.prompt.as_ref().unwrap()));
+        assert_eq!(
+            preview["body"],
+            p.build_body(req.prompt.as_ref().unwrap(), &req.tools)
+        );
     }
 
     #[tokio::test]
@@ -545,6 +598,7 @@ mod tests {
             None,
         );
         let req = ProviderRequest {
+            tools: Vec::new(),
             prompt: None,
             vars: BTreeMap::new(),
             params: serde_json::Map::new(),
@@ -666,5 +720,51 @@ mod empty_classification_tests {
         assert_eq!(resp.output, Output::Text("42".into()));
         assert_eq!(resp.reasoning.as_deref(), Some("6 times 7"));
         assert!(resp.empty_reason.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tool_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_use_blocks_become_tool_calls_in_order() {
+        let calls = tool_calls_from_blocks(&[
+            json!({"type": "text", "text": "let me check"}),
+            json!({"type": "tool_use", "id": "a", "name": "first", "input": {"x": 1}}),
+            json!({"type": "tool_use", "id": "b", "name": "second", "input": {}}),
+        ]);
+        assert_eq!(
+            calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        // Already an object on this vendor — no decode step, unlike `openai.rs`.
+        assert_eq!(calls[0].arguments["x"], 1);
+    }
+
+    /// A block with no name is not a call we can attribute, and inventing one
+    /// would make a `tool-call` assertion match something that never happened.
+    #[test]
+    fn a_nameless_block_is_dropped_rather_than_given_a_name() {
+        assert!(tool_calls_from_blocks(&[json!({"type": "tool_use", "input": {}})]).is_empty());
+    }
+
+    #[test]
+    fn a_tool_free_body_is_unchanged_and_a_declared_tool_keeps_its_field_names() {
+        let p = AnthropicProvider::new("p", "claude-haiku-4-5", None, None, None, None);
+        let prompt = RenderedPrompt::Text("hi".into());
+        assert!(p.build_body(&prompt, &[]).get("tools").is_none());
+
+        let body = p.build_body(
+            &prompt,
+            &[crate::config::ToolDef {
+                name: "get_weather".into(),
+                description: None,
+                input_schema: Some(json!({"type": "object"})),
+            }],
+        );
+        assert_eq!(body["tools"][0]["name"], "get_weather");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
     }
 }

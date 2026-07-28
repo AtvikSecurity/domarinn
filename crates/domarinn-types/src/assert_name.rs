@@ -31,6 +31,7 @@ pub enum AssertName {
     Latency,
     Tokens,
     Similar,
+    ToolCall,
 }
 
 impl AssertName {
@@ -53,6 +54,7 @@ impl AssertName {
             AssertName::Latency => "latency",
             AssertName::Tokens => "tokens",
             AssertName::Similar => "similar",
+            AssertName::ToolCall => "tool-call",
         }
     }
 }

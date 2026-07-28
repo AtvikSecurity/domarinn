@@ -408,6 +408,7 @@ mod tests {
     /// A bare case with the given cell; callers mutate the fields they test.
     fn case(cell: CellKey, status: CaseStatus) -> CaseResult {
         CaseResult {
+            tool_calls: Vec::new(),
             case_key: cell.case_key(),
             cell,
             name: None,

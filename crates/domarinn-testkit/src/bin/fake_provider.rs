@@ -11,9 +11,14 @@
 //!   - `garbage`     — write non-JSON to stdout (protocol violation).
 //!   - `empty:<r>`   — empty output reported with `empty_reason: <r>`.
 //!   - `usage:cache` — echo, with cache-read and cache-write token counts.
+//!   - `tool:<name>` — empty output plus one tool call named `<name>`, the
+//!     shape a case answered by a tool call actually takes. Arguments come from
+//!     `FAKE_TOOL_ARGS`, defaulting to the request's own `vars` so a suite can
+//!     assert on a templated argument without configuring anything.
 //! * `FAKE_OUTPUT`   — the output string for `fixed` mode.
 //! * `FAKE_STOP_REASON` — sets `stop_reason` on the response.
 //! * `FAKE_MODEL`    — sets `model` (the model the child actually used).
+//! * `FAKE_TOOL_ARGS` — raw JSON for the `tool:` mode's arguments.
 //! * `FAKE_ERROR_CLASS`   — sets `error.class` in the `error:` modes.
 //! * `FAKE_ERROR_DETAILS` — raw JSON for `error.details` in the `error:` modes.
 //! * `FAKE_RETRY_AFTER_MS` — sets `error.retry_after_ms`.
@@ -81,6 +86,27 @@ fn main() {
             output: serde_json::Value::String(String::new()),
             empty_reason: Some(reason.to_string()),
             stop_reason: env("FAKE_STOP_REASON"),
+            model: env("FAKE_MODEL"),
+            ..Default::default()
+        });
+        return;
+    }
+
+    if let Some(name) = mode.strip_prefix("tool:") {
+        let arguments = std::env::var("FAKE_TOOL_ARGS")
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| req.get("vars").cloned().unwrap_or(serde_json::Value::Null));
+        emit(ProviderResp {
+            output: serde_json::Value::String(String::new()),
+            // The pairing that makes such a case gradeable: the calls *are* the
+            // answer, and this says the blank output is not a model failure.
+            empty_reason: Some("tool_use_only".to_string()),
+            tool_calls: vec![domarinn_protocol::ToolCall {
+                id: Some("call_1".to_string()),
+                name: name.to_string(),
+                arguments,
+            }],
             model: env("FAKE_MODEL"),
             ..Default::default()
         });

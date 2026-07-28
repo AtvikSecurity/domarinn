@@ -171,6 +171,7 @@ mod tests {
 
     fn sample_entry() -> CacheEntry {
         CacheEntry {
+            tool_calls: Vec::new(),
             created_at: chrono::Utc::now(),
             provider_fingerprint: json!({"type": "exec"}),
             output: Output::Text("hi".into()),

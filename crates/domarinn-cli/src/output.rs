@@ -853,6 +853,7 @@ mod tests {
             _ => vec![],
         };
         let case = |test: &str, status: CaseStatus, score: f64| CaseResult {
+            tool_calls: Vec::new(),
             case_key: cell(test).case_key(),
             cell: cell(test),
             name: Some(test.into()),

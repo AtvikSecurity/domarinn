@@ -135,6 +135,15 @@ fn protocol_request(req: &ProviderRequest) -> ProviderReq {
             id: req.test.id.clone(),
             tags: req.test.tags.clone(),
         },
+        tools: req
+            .tools
+            .iter()
+            .map(|t| domarinn_protocol::ToolDef {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                input_schema: t.input_schema.clone().unwrap_or(Json::Null),
+            })
+            .collect(),
     }
 }
 
@@ -217,6 +226,15 @@ fn parse_response(value: Json) -> Result<ProviderResponse, ProviderError> {
         empty_reason,
         model: resp.model,
         raw: resp.metadata,
+        tool_calls: resp
+            .tool_calls
+            .into_iter()
+            .map(|c| domarinn_types::result::ToolCall {
+                id: c.id,
+                name: c.name,
+                arguments: c.arguments,
+            })
+            .collect(),
     })
 }
 
@@ -306,6 +324,7 @@ mod tests {
         let mut vars = BTreeMap::new();
         vars.insert("user_input".to_string(), Json::String(user_input.into()));
         ProviderRequest {
+            tools: Vec::new(),
             prompt: None,
             vars,
             params: serde_json::Map::new(),
@@ -570,5 +589,72 @@ mod tests {
             }
             other => panic!("expected a retriable error, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tool_tests {
+    use super::*;
+    use crate::provider::TestMeta;
+    use serde_json::json;
+
+    fn tool_req(tools: Vec<crate::config::ToolDef>) -> ProviderRequest {
+        ProviderRequest {
+            tools,
+            prompt: None,
+            vars: Default::default(),
+            params: Default::default(),
+            test: TestMeta {
+                id: "t".into(),
+                tags: vec![],
+            },
+            case_salt: None,
+        }
+    }
+
+    /// A suite that declares no tools must produce the request it always did —
+    /// otherwise every child parsing the wire format sees a new key, and every
+    /// cached entry keyed on the request is invalidated for nothing.
+    #[test]
+    fn a_suite_without_tools_sends_no_tools_key() {
+        let wire = serde_json::to_value(protocol_request(&tool_req(vec![]))).unwrap();
+        assert!(wire.get("tools").is_none(), "{wire}");
+    }
+
+    #[test]
+    fn declared_tools_reach_the_child() {
+        let wire =
+            serde_json::to_value(protocol_request(&tool_req(vec![crate::config::ToolDef {
+                name: "get_weather".into(),
+                description: Some("look up the weather".into()),
+                input_schema: Some(json!({"type": "object"})),
+            }])))
+            .unwrap();
+        assert_eq!(wire["tools"][0]["name"], "get_weather");
+        assert_eq!(wire["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    /// The end the assertions grade. A child that reports a call alongside
+    /// `tool_use_only` is stating that the answer *is* the call — a case that
+    /// previously had no gradeable output at all.
+    #[test]
+    fn a_child_can_report_structured_tool_calls() {
+        let parsed = parse_response(json!({
+            "output": "",
+            "empty_reason": "tool_use_only",
+            "tool_calls": [
+                {"id": "c1", "name": "get_weather", "arguments": {"city": "Oslo"}}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "get_weather");
+        assert_eq!(parsed.tool_calls[0].arguments["city"], "Oslo");
+        // The child's own claim about why the output is empty still wins, even
+        // though the output is blank and could have been derived.
+        assert_eq!(
+            parsed.empty_reason.as_ref().map(|r| r.as_str()),
+            Some("tool_use_only")
+        );
     }
 }

@@ -61,6 +61,44 @@ pub struct ProviderReq {
     #[serde(default)]
     pub params: Json,
     pub test: TestRef,
+    /// Tools the suite declared for this call, or empty when it declared none.
+    ///
+    /// Offering them is the child's job; domarinn does not run an agent loop
+    /// and never executes a tool. What it wants back is `tool_calls` — the
+    /// *decision* the model made, which is the thing an evaluation grades.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDef>,
+}
+
+/// A tool the model may call, as declared by the suite.
+///
+/// Anthropic's field names, because `input_schema` says what the value is (a
+/// JSON Schema) where OpenAI's `parameters` does not, and one of the two shapes
+/// had to win. Mapping to the other vendor is mechanical.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON Schema for the tool's arguments.
+    #[serde(default)]
+    pub input_schema: Json,
+}
+
+/// One tool call the model decided to make.
+///
+/// `arguments` is the decoded object, not the raw JSON string some vendors put
+/// on the wire — a child that forwards the string verbatim is handing every
+/// assertion a parsing problem instead of an argument.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// The vendor's call id, when there is one. Carried so a multi-call
+    /// response stays attributable; never interpreted here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Json,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +152,16 @@ pub struct ProviderResp {
     /// because a key cannot depend on something learned after the call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+
+    /// The tool calls the model made, in the order it made them.
+    ///
+    /// Report these whenever the model called a tool, *including* when it also
+    /// produced text. A case whose right answer is a tool call has no gradeable
+    /// prose, and returning `""` scores it zero for a reason unrelated to the
+    /// prompt — set `empty_reason: "tool_use_only"` alongside these when that
+    /// is what happened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -234,6 +282,7 @@ mod tests {
                 id: "t".into(),
                 tags: vec!["a".into()],
             },
+            tools: vec![],
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("\"domarinn\""));

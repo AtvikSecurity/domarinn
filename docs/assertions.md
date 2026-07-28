@@ -36,6 +36,7 @@ The `type` field selects the assertion. Names are kebab-case.
 | `contains-json`  | deterministic | `schema?` (JSON Schema, `$file` ok)    | a JSON object/array appears anywhere in the output, and matches `schema` when given |
 | `length`         | deterministic | `min?: int`, `max?: int`               | character count is within `[min, max]` |
 | `jinja`          | deterministic | `value: string`                        | a minijinja boolean expression is true |
+| `tool-call`      | deterministic | `name: string`, `args?`, `schema?`     | the model called that tool (see [`tool-call`](#tool-call)) |
 | `cost`           | deterministic | `max: number`                          | reported cost in USD `<= max` (passes with a note if unreported) |
 | `latency`        | deterministic | `max: int` (ms)                        | measured latency `<= max` (this assert bypasses the cache) |
 | `tokens`         | deterministic | `max: int`, `count?: total\|billable`   | token count `<= max` (passes with a note if unreported) |
@@ -489,6 +490,59 @@ suite (see [providers.md](./providers.md#embeddings)).
   against the threshold.
 - If no embeddings provider is configured, the assertion errors with
   `similar assertion needs an embeddings provider in the suite`.
+
+---
+
+## `tool-call`
+
+Passes when the model **decided to call** a tool. domarinn never runs one — see
+[the protocol's Tools section](./protocol.md#tools) for why a single turn is
+enough to grade the decision.
+
+Declare the tools at suite level, then assert on what the model did with them:
+
+```yaml
+tools:
+  - name: get_weather
+    description: Look up the current weather
+    input_schema:
+      type: object
+      required: [city]
+      properties: { city: { type: string } }
+
+tests:
+  - vars: { city: "Oslo" }
+    assert:
+      - type: tool-call
+        name: get_weather
+        args: { city: "{{ city }}" }        # a subset match, and templated
+      - type: not-tool-call                 # the negative matters just as much
+        name: delete_account
+```
+
+| Field    | Type       | Meaning |
+|----------|------------|---------|
+| `name`   | string     | **Required.** The tool that must have been called. |
+| `args`   | object     | Optional. Argument values that must all be present and equal. |
+| `schema` | JSON Schema | Optional. The call's arguments must validate against it. |
+
+- **`args` is a subset match, not equality.** An assertion should not have to
+  restate a whole argument object to pin the one value that matters — and
+  requiring equality would break every assertion about a tool the moment it
+  gains an optional argument.
+- **`args` is templated; `schema` is not.** An expected argument is a per-case
+  value, which is what a template is for. A schema is a contract, the same
+  reason [`contains-json`](#contains-json)'s is not rendered.
+- **Any matching call satisfies the assertion.** A model may legitimately call
+  the same tool twice, and requiring the *first* to match would make the
+  assertion depend on an ordering the prompt never asked for.
+- **The failure names what *was* called**, so a mismatch does not send you into
+  the case drawer to find out what happened instead.
+- Combine with `negate` (or the `not-tool-call` sugar) for the safety-shaped
+  assertion: the model must **not** have reached for the destructive tool.
+
+Supported by `exec`, `anthropic`, and `openai` providers. An `http` provider has
+no tool-call convention to read, so `tool-call` always fails against one.
 
 ---
 

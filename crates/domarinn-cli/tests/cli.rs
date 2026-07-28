@@ -617,3 +617,39 @@ tests:
         .assert()
         .code(2);
 }
+
+/// A suite whose right answer is a tool call, not prose. The exec child returns
+/// an empty output plus a structured call — the exact shape that used to score
+/// zero against every assertion and read as a model failure.
+const TOOL_SUITE: &str = r#"
+version: 1
+suite: tools
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"\",\"empty_reason\":\"tool_use_only\",\"tool_calls\":[{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Oslo\"}}]}'"]
+tools:
+  - name: get_weather
+    description: look up the weather
+    input_schema: {type: object, properties: {city: {type: string}}}
+tests:
+  - id: asks-for-weather
+    assert:
+      - type: tool-call
+        name: get_weather
+        args: {city: "Oslo"}
+      - type: not-tool-call
+        name: delete_everything
+"#;
+
+#[test]
+fn a_case_answered_by_a_tool_call_is_gradeable() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), TOOL_SUITE);
+    bin()
+        .args(["run", "--no-cache"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PASS"));
+}

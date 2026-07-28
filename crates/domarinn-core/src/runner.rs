@@ -501,6 +501,7 @@ pub async fn run_with_progress(
                     grader_cache,
                     aborted,
                     skip_on_empty_reason,
+                    &suite.tools,
                 )
                 .await;
                 if let Some(sink) = progress {
@@ -609,6 +610,7 @@ async fn run_cell(
     grader_cache: bool,
     aborted: &AbortFlag,
     skip_on_empty_reason: &[String],
+    tools: &[crate::config::ToolDef],
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
     let cell = CellKey {
@@ -694,6 +696,7 @@ async fn run_cell(
         },
         // Keys this case's cache entry only; never reaches the provider.
         case_salt: test.cache_salt.clone(),
+        tools: tools.to_vec(),
     };
 
     // Computed here, not inside `call_with_cache`'s `use_cache` gate: the cache
@@ -788,6 +791,7 @@ async fn run_cell(
             grader_cache,
             repeat,
             aborted,
+            tool_calls: &response.tool_calls,
         },
         &test.assert,
         &response.output,
@@ -829,6 +833,7 @@ async fn run_cell(
         request,
         stop_reason: response.stop_reason,
         model: response.model,
+        tool_calls: response.tool_calls.clone(),
         raw: json_to_persist(include_raw, response.raw, "raw"),
         asserts: assert_results,
         usage: response.usage,

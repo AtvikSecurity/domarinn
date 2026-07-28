@@ -45,6 +45,16 @@ pub struct Suite {
     /// Optional prompts. Omit when a provider constructs its own input.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompts: Vec<Prompt>,
+    /// Tools every provider in this suite may offer the model.
+    ///
+    /// Declaring a tool does not make domarinn run one — it never executes a
+    /// tool and never feeds a result back. What it wants is the model's
+    /// *decision*, reported as `tool_calls` and graded by `tool-call`
+    /// assertions. Suite-level rather than per-test because the tool surface is
+    /// a property of the system being evaluated, and varying it per case would
+    /// make two cases incomparable while looking like the same suite.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDef>,
     /// Test sources: inline cases, `file://` globs, or generator commands.
     #[serde(default)]
     pub tests: Vec<TestSource>,
@@ -58,6 +68,23 @@ pub struct Suite {
     pub runner: Option<Runner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheCfg>,
+}
+
+/// A tool the model may call.
+///
+/// Anthropic's field names: `input_schema` says what the value is (a JSON
+/// Schema) where OpenAI's `parameters` does not, and one shape had to win. The
+/// mapping to the other vendor is mechanical and lives in `openai.rs`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolDef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON Schema for the tool's arguments. Passed to the provider verbatim
+    /// and never rendered — it is a contract, not a per-case value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Json>,
 }
 
 /// Values merged into every test before it runs.
@@ -490,6 +517,30 @@ pub enum AssertKind {
         /// see.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_salt: Option<String>,
+    },
+    /// Assert that the model decided to call a tool.
+    ///
+    /// A *decision*, never an execution: domarinn does not run tools. This
+    /// grades what the model chose to do, which for a whole class of cases is
+    /// the only correct answer there is — before this, such a case produced no
+    /// prose, scored zero against every text assertion, and read as a model
+    /// failure rather than an evaluation that could not see the answer.
+    ///
+    /// Combine with `negate` (or the `not-tool-call` sugar) for the equally
+    /// important negative: the model must *not* have called `delete_account`.
+    ToolCall {
+        /// The tool that must have been called.
+        name: String,
+        /// Argument values that must all be present and equal. A subset match,
+        /// not an equality check — an assertion should not have to restate
+        /// every argument to pin the one that matters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args: Option<Val>,
+        /// A JSON Schema the call's arguments must satisfy. Not rendered, for
+        /// the same reason `contains-json`'s is not: a schema is a contract,
+        /// not a per-case value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<Val>,
     },
     LlmRubric {
         value: String,

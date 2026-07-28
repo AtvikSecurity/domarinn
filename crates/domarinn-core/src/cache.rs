@@ -267,6 +267,13 @@ pub struct CacheEntry {
     pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub empty_reason: Option<crate::empty::EmptyReason>,
+    /// The tool calls the original response reported.
+    ///
+    /// Replayed for the same reason as `model` and `reasoning`: a hit is the
+    /// common path, so without this a `tool-call` assertion would pass on the
+    /// first run of a suite and fail on every run after.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<domarinn_types::result::ToolCall>,
     pub domarinn_version: String,
 }
 

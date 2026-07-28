@@ -5,4 +5,4 @@
  * the stable "kind" name (matches the config `type` tag). Kept in sync with
  * `AssertKind` by [`AssertKind::name`] and the pin test below.
  */
-export type AssertName = "contains" | "icontains" | "icontains-any" | "regex" | "equals" | "starts-with" | "is-json" | "contains-json" | "length" | "jinja" | "exec" | "llm-rubric" | "cost" | "latency" | "tokens" | "similar";
+export type AssertName = "contains" | "icontains" | "icontains-any" | "regex" | "equals" | "starts-with" | "is-json" | "contains-json" | "length" | "jinja" | "exec" | "llm-rubric" | "cost" | "latency" | "tokens" | "similar" | "tool-call";

@@ -83,6 +83,7 @@ fn cache_entries_preserve_raw_provider_metadata() {
     };
     let raw = serde_json::json!({ "id": "resp_1", "model": "m", "finish_reason": "stop" });
     let response = ProviderResponse {
+        tool_calls: Vec::new(),
         output: crate::types::Output::Text("hi".to_string()),
         usage: None,
         cost_usd: None,
@@ -114,6 +115,11 @@ fn cache_round_trip_preserves_every_response_field() {
         calls: AtomicU32::new(0),
     };
     let original = ProviderResponse {
+        tool_calls: vec![crate::result::ToolCall {
+            id: Some("call_1".to_string()),
+            name: "lookup_order".to_string(),
+            arguments: serde_json::json!({ "id": 42 }),
+        }],
         output: crate::types::Output::Text("answer".to_string()),
         usage: Some(crate::types::TokenUsage {
             input_tokens: 11,
@@ -135,6 +141,7 @@ fn cache_round_trip_preserves_every_response_field() {
     let replayed = entry_to_response(response_to_entry(&provider, &original, test_stats()));
 
     let ProviderResponse {
+        tool_calls,
         output,
         usage,
         cost_usd,
@@ -152,6 +159,9 @@ fn cache_round_trip_preserves_every_response_field() {
     assert_eq!(reasoning, original.reasoning);
     assert_eq!(empty_reason, original.empty_reason);
     assert_eq!(model, original.model);
+    // Without this a `tool-call` assertion passes on the first run of a suite
+    // and fails on every run after, which is the common path.
+    assert_eq!(tool_calls, original.tool_calls);
 }
 
 /// Entries written before the `raw` field existed keep deserializing (and
@@ -212,6 +222,7 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
                 calls: AtomicU32::new(0),
             };
             let req = ProviderRequest {
+                tools: Vec::new(),
                 prompt: None,
                 vars: std::collections::BTreeMap::new(),
                 params: serde_json::Map::new(),

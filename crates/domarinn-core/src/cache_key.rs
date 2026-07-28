@@ -75,6 +75,15 @@ pub fn provider_cache_key(fingerprint: &Json, req: &ProviderRequest, repeat: u32
         "params": Json::Object(req.params.clone()),
         "repeat": repeat,
     });
+    // Same "only when present" discipline as `case_salt` below, and for the
+    // same reason: every entry written before tools existed must keep its key.
+    // An empty list is not a declaration, it is the absence of one.
+    if !req.tools.is_empty() {
+        parts.as_object_mut().expect("json! object literal").insert(
+            "tools".to_string(),
+            serde_json::to_value(&req.tools).unwrap_or(Json::Null),
+        );
+    }
     // Only when set — see the module docs. An empty salt is a real value and is
     // deliberately not normalized to "unset".
     if let Some(salt) = &req.case_salt {
@@ -100,6 +109,7 @@ mod tests {
         let mut vars = BTreeMap::new();
         vars.insert("x".to_string(), Json::String(var.into()));
         ProviderRequest {
+            tools: Vec::new(),
             prompt: None,
             vars,
             params: serde_json::Map::new(),
@@ -211,6 +221,39 @@ mod tests {
         assert_ne!(
             provider_cache_key(&fp(), &a, 0),
             provider_cache_key(&fp(), &b, 0)
+        );
+    }
+
+    /// Tools are part of the *request*: a call offering a tool and one that does
+    /// not are different questions, and replaying one for the other would report
+    /// "no tools were called" for a call that was never given any.
+    #[test]
+    fn declared_tools_change_the_key_but_declaring_none_does_not() {
+        let with_tools = |names: &[&str]| {
+            let mut r = req("a");
+            r.tools = names
+                .iter()
+                .map(|n| crate::config::ToolDef {
+                    name: (*n).to_string(),
+                    description: None,
+                    input_schema: None,
+                })
+                .collect();
+            r
+        };
+        assert_ne!(
+            provider_cache_key(&fp(), &req("a"), 0),
+            provider_cache_key(&fp(), &with_tools(&["get_weather"]), 0)
+        );
+        assert_ne!(
+            provider_cache_key(&fp(), &with_tools(&["get_weather"]), 0),
+            provider_cache_key(&fp(), &with_tools(&["get_weather", "get_time"]), 0)
+        );
+        // The load-bearing negative: an empty declaration is the absence of one,
+        // so every entry written before tools existed keeps its key.
+        assert_eq!(
+            provider_cache_key(&fp(), &req("a"), 0),
+            provider_cache_key(&fp(), &with_tools(&[]), 0)
         );
     }
 }

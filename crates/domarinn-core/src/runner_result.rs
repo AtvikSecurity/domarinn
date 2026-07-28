@@ -48,6 +48,9 @@ pub(super) fn error_case(
     inputs: CaseInputs,
 ) -> CaseResult {
     CaseResult {
+        // An errored cell never reached a response, so there is nothing to
+        // report — not even an empty claim about what the model decided.
+        tool_calls: Vec::new(),
         cell,
         case_key,
         name,

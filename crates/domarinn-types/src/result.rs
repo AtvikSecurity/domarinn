@@ -143,6 +143,23 @@ pub struct AssertResult {
     pub cost_usd: Option<f64>,
 }
 
+/// One tool call a model decided to make.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
+pub struct ToolCall {
+    /// The vendor's call id, when there was one. Carried so a multi-call
+    /// response stays attributable; never interpreted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    /// The decoded arguments object — never the raw JSON string some vendors
+    /// put on the wire, which would hand every assertion a parsing problem
+    /// instead of an argument.
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub arguments: serde_json::Value,
+}
+
 /// The result of one matrix cell.
 ///
 /// The web UI receives this document verbatim from `GET /runs/{id}/cases/{key}`
@@ -206,6 +223,14 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
+    /// The tool calls the model decided to make, in order.
+    ///
+    /// A *decision*, not an execution: domarinn never runs a tool. Recording
+    /// them is what makes a case whose right answer is a tool call gradeable at
+    /// all — previously such a case had no prose, scored zero, and looked like
+    /// a model failure rather than an evaluation that could not see the answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "unknown")]
     pub raw: Option<serde_json::Value>,
@@ -585,6 +610,10 @@ mod tests {
         // move the content hash of every stored run that has any assertions.
         assert!(case.asserts[0].cost_usd.is_none());
         assert!(!reserialized.contains("cost_usd"));
+        // Tool calls, same hazard: a `Vec` without `skip_serializing_if` would
+        // add `"tool_calls":[]` to every stored case ever written.
+        assert!(case.tool_calls.is_empty());
+        assert!(!reserialized.contains("tool_calls"));
     }
 
     /// The run-level counterpart of the guard above.

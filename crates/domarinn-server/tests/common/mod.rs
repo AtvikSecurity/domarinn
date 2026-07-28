@@ -339,6 +339,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         })
         .collect();
     CaseResult {
+        tool_calls: Vec::new(),
         cell,
         case_key,
         name: Some(format!("{}::{}", spec.provider, spec.test)),

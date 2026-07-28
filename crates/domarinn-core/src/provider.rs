@@ -32,6 +32,10 @@ pub struct ProviderRequest {
     /// it exists so a suite can bust one case's entry when content domarinn
     /// cannot see (the system under test's own prompt files) changes.
     pub case_salt: Option<String>,
+    /// Tools the suite declared, offered to the model by whichever provider
+    /// knows how. Part of the *request*, so it is in the cache key: a call with
+    /// tools and one without are different questions.
+    pub tools: Vec<crate::config::ToolDef>,
 }
 
 /// A provider's response.
@@ -43,6 +47,9 @@ pub struct ProviderResponse {
     pub stop_reason: Option<String>,
     /// Raw payload, retained for `--verbose` / the UI.
     pub raw: Option<Json>,
+    /// The tool calls the model decided to make, in order. Empty when it made
+    /// none, or when the provider cannot report them.
+    pub tool_calls: Vec<domarinn_types::result::ToolCall>,
     /// The model's reasoning/thinking text, when it exposed any.
     ///
     /// A separate field rather than an [`Output`] variant on purpose: `Output`
@@ -72,6 +79,7 @@ impl ProviderResponse {
             reasoning: None,
             model: None,
             empty_reason: None,
+            tool_calls: Vec::new(),
         }
     }
 }

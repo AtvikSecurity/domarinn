@@ -8,6 +8,7 @@ import type { ErrorClass } from "./ErrorClass";
 import type { Output } from "./Output";
 import type { RenderedPrompt } from "./RenderedPrompt";
 import type { TokenUsage } from "./TokenUsage";
+import type { ToolCall } from "./ToolCall";
 import type { JsonValue } from "./serde_json/JsonValue";
 
 /**
@@ -56,7 +57,16 @@ request?: unknown, stop_reason?: string,
  * nothing changed while the thing being measured did. `None` for providers
  * with no model concept, and for runs recorded before this existed.
  */
-model?: string, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, 
+model?: string, 
+/**
+ * The tool calls the model decided to make, in order.
+ *
+ * A *decision*, not an execution: domarinn never runs a tool. Recording
+ * them is what makes a case whose right answer is a tool call gradeable at
+ * all — previously such a case had no prose, scored zero, and looked like
+ * a model failure rather than an evaluation that could not see the answer.
+ */
+tool_calls?: Array<ToolCall>, raw?: unknown, asserts: Array<AssertResult>, usage?: TokenUsage, cost_usd?: number, 
 /**
  * Time the provider itself took, excluding retry backoff and (on a cache
  * hit) replayed from the entry rather than measured against the cache read.
