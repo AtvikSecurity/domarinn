@@ -662,3 +662,88 @@ tests: ["file://../evil.yaml"]
         assert!(matches!(err, ResolveError::Sandbox(_)), "{err:?}");
     }
 }
+
+#[cfg(test)]
+mod not_sugar_tests {
+    //! `type: not-<kind>` reaching every test source.
+    //!
+    //! One test per path that used to fail with `unknown variant
+    //! `not-contains`` while the docs promised the sugar worked for any
+    //! assertion type. They exercise the loaders rather than `Assert` directly,
+    //! because the bug was never in the type — it was in which inputs ever
+    //! reached the rewrite.
+
+    use super::*;
+
+    fn negated_contains(tests: &[TestCase]) -> &Assert {
+        let assert = &tests[0].assert[0];
+        assert!(assert.negate, "the `not-` prefix must set negate");
+        assert!(
+            matches!(assert.kind, crate::config::AssertKind::Contains { .. }),
+            "the prefix must be stripped from the kind, got {:?}",
+            assert.kind
+        );
+        assert
+    }
+
+    #[test]
+    fn not_asserts_desugar_in_a_yaml_test_file() {
+        let text = r#"
+- vars: {a: 1}
+  assert:
+    - {type: not-contains, value: "x"}
+"#;
+        let tests = parse_yaml_tests(text, std::path::Path::new("t.yaml")).unwrap();
+        negated_contains(&tests);
+    }
+
+    #[test]
+    fn not_asserts_desugar_in_a_json_test_file() {
+        let text = r#"[{"vars": {"a": 1}, "assert": [{"type": "not-contains", "value": "x"}]}]"#;
+        let tests = parse_json_tests(text, std::path::Path::new("t.json")).unwrap();
+        negated_contains(&tests);
+    }
+
+    #[test]
+    fn not_asserts_desugar_in_a_jsonl_test_file() {
+        let text = r#"{"vars": {"a": 1}, "assert": [{"type": "not-contains", "value": "x"}]}"#;
+        let tests = parse_jsonl_tests(text, std::path::Path::new("t.jsonl")).unwrap();
+        negated_contains(&tests);
+    }
+
+    #[test]
+    fn not_asserts_desugar_in_a_csv_assert_column() {
+        let text =
+            "a,__assert\n1,\"[{\"\"type\"\": \"\"not-contains\"\", \"\"value\"\": \"\"x\"\"}]\"\n";
+        let tests = parse_delimited_tests(text, std::path::Path::new("t.csv"), b',').unwrap();
+        negated_contains(&tests);
+    }
+
+    /// An explicit `negate` alongside `not-` loses: two spellings of one intent
+    /// disagreeing is a config bug, and `not-` is the more specific one.
+    #[test]
+    fn the_not_prefix_wins_over_an_explicit_negate_false() {
+        let text = r#"
+- assert:
+    - {type: not-contains, value: "x", negate: false}
+"#;
+        let tests = parse_yaml_tests(text, std::path::Path::new("t.yaml")).unwrap();
+        assert!(tests[0].assert[0].negate);
+    }
+
+    /// An unknown kind must still error, and name the kind rather than the
+    /// sugared spelling, so the message points at the real mistake.
+    #[test]
+    fn an_unknown_not_kind_still_errors() {
+        let text = r#"
+- assert:
+    - {type: not-frobnicate, value: "x"}
+"#;
+        let err = parse_yaml_tests(text, std::path::Path::new("t.yaml")).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("frobnicate"),
+            "error should name the unknown kind, got: {msg}"
+        );
+    }
+}

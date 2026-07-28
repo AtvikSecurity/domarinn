@@ -360,8 +360,9 @@ pub struct TestCase {
     pub skip_providers: Vec<String>,
 }
 
-/// A single assertion with its common controls.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// A single assertion with its common controls. `type: not-<kind>` is sugar for
+/// `negate: true` and works in every test source.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Assert {
     #[serde(default = "default_weight")]
     pub weight: f64,
@@ -369,6 +370,65 @@ pub struct Assert {
     pub negate: bool,
     #[serde(flatten)]
     pub kind: AssertKind,
+}
+
+/// The un-sugared shape [`Assert`]'s `Deserialize` delegates to, so the impl
+/// does not recurse into itself.
+#[derive(Deserialize)]
+struct AssertRepr {
+    #[serde(default = "default_weight")]
+    weight: f64,
+    #[serde(default)]
+    negate: bool,
+    #[serde(flatten)]
+    kind: AssertKind,
+}
+
+// `Deserialize` is hand-written so `type: not-<kind>` is desugared *here*,
+// during deserialization, rather than by a walk over the loaded YAML document.
+// That walk only ever ran on the composed suite file, so the sugar worked
+// inline and failed with `unknown variant \`not-contains\`` from a `file://`
+// glob, a JSON or JSONL test file, a CSV `__assert` column, or generator output
+// — five paths, against documentation promising it worked for any assertion
+// type. Doing it in the impl is reachable by construction: there is no way to
+// produce an `Assert` from serialized input that skips it.
+//
+// It also *narrows* the rewrite. The document walk recursed into every mapping
+// with a `type` key, so an `http` provider's `body: {type: "not-null"}`, an
+// `exec` assert's `config`, and a generator's `config` were all silently
+// rewritten. Now only assertions are.
+impl<'de> Deserialize<'de> for Assert {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        // Buffered through `serde_json::Value` the same way `TestSource`'s
+        // hand-written impl is, so one implementation covers every source
+        // format instead of one per serializer.
+        let mut value = Json::deserialize(deserializer).map_err(D::Error::custom)?;
+
+        let mut negated_by_sugar = false;
+        if let Json::Object(map) = &mut value {
+            if let Some(Json::String(ty)) = map.get("type") {
+                if let Some(stripped) = ty.strip_prefix("not-").map(str::to_string) {
+                    map.insert("type".into(), Json::String(stripped));
+                    negated_by_sugar = true;
+                }
+            }
+        }
+
+        let repr: AssertRepr = serde_json::from_value(value).map_err(D::Error::custom)?;
+        Ok(Assert {
+            weight: repr.weight,
+            // `not-` wins over an explicit `negate:`. Two spellings of the same
+            // intent disagreeing is a config bug, and `not-` is the more
+            // specific one.
+            negate: negated_by_sugar || repr.negate,
+            kind: repr.kind,
+        })
+    }
 }
 
 /// The assertion behavior, selected by `type`.

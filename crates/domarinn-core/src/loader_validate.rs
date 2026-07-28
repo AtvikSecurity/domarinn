@@ -267,6 +267,11 @@ fn check_flatten_entry(
     let Some(ty) = entry.get("type").and_then(|v| v.as_str()) else {
         return;
     };
+    // The raw document still carries the `not-<kind>` sugar — it is desugared
+    // inside `Assert`'s `Deserialize`, not in the document — so strip it before
+    // selecting the variant. Without this, every negated assertion silently
+    // skips its unknown-key check and a typo inside one goes unreported.
+    let ty = ty.strip_prefix("not-").unwrap_or(ty);
     let Some(variant) = keys.by_type.get(ty) else {
         return;
     };
