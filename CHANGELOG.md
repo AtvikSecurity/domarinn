@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/AtvikSecurity/domarinn/compare/0.2.0...0.3.0) (2026-07-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core:** `asserts::evaluate_local` takes an `EvalCtx` instead of separate engine/vars/metrics arguments. Affects Rust embedders calling it directly; suite authors and exec providers are unaffected.
+
+### Features
+
+* **core:** real cost accounting, tool-call grading, first-class exec diagnostics, and no silently-ignored config ([#21](https://github.com/AtvikSecurity/domarinn/issues/21)) ([ee89896](https://github.com/AtvikSecurity/domarinn/commit/ee8989641b7b9d86dacf142f071d663df152d713))
+* run provenance, change attribution, and a status surface ([#19](https://github.com/AtvikSecurity/domarinn/issues/19)) ([9c8c6af](https://github.com/AtvikSecurity/domarinn/commit/9c8c6af37955cd6ff6cd8227f44fac0981d3b150))
+
 ## [0.2.0](https://github.com/AtvikSecurity/domarinn/compare/0.1.3...0.2.0) (2026-07-27)
 
 
