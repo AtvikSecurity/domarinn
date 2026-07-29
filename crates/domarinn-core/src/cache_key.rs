@@ -1,8 +1,13 @@
 //! Computing the cache key for a provider call.
 //!
-//! The key hashes the provider fingerprint, the rendered request, and the repeat
-//! index, canonically (see [`crate::cache::canonical_json`]). `repeat` is always
-//! present (default 0) so N=1 and repeat-0 of N=3 agree.
+//! Two key spaces live here, and every key in both is a canonical hash (see
+//! [`crate::cache::canonical_json`]) of an object whose members are named below.
+//! [`provider_cache_key`] and [`grader_cache_key`] hash a provider fingerprint
+//! alongside the pieces of the request — the legacy shape, still the live one.
+//! [`request_cache_key`] hashes the canonical outgoing request itself, under one
+//! rule for every kind of cached call. Their member names are disjoint, so no
+//! input can produce a key in both. `repeat` is always present in both (default
+//! 0) so N=1 and repeat-0 of N=3 agree.
 //!
 //! A case's `cache_salt` joins the hash as `case_salt`, but **only when set**:
 //! canonical JSON emits every member that is present, so a null member hashes

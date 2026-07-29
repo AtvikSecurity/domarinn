@@ -146,13 +146,20 @@ struct BuiltHttpRequest {
 /// header keeps the fingerprint — and therefore every cache entry — it had
 /// before this member existed.
 ///
-/// The *unrendered* templates are hashed, which is what makes this both safe and
-/// useful. `X-Model: gpt-5` and `X-Model: claude-opus-5` separate, because the
-/// templates differ. `Authorization: Bearer {{ env.TOKEN }}` does not, because
-/// the template is the same for two teammates holding different tokens — and
-/// keying a credential would partition a shared cache by who ran it. A digest
-/// rather than the values themselves because a fingerprint is persisted into
-/// every cache entry, and a header is where a literal secret would sit.
+/// What is hashed depends on which map the caller passes, and both callers get
+/// the same property by a different route. [`Provider::fingerprint`] passes the
+/// *unrendered* templates; [`Provider::canonical_request`] passes the map
+/// rendered against placeholder `env`. Either way `X-Model: gpt-5` and
+/// `X-Model: claude-opus-5` separate, because the values differ, while
+/// `Authorization: Bearer {{ env.TOKEN }}` does not — the template is literally
+/// the same in the fingerprint, and renders to the same `${env:TOKEN}` in the
+/// canonical request, for two teammates holding different tokens. Keying a
+/// credential would partition a shared cache by who ran it. The rendered map
+/// separates strictly more: a header reading a case var distinguishes two cases
+/// the unrendered template cannot tell apart.
+///
+/// A digest rather than the values themselves because both callers persist their
+/// output into every cache entry, and a header is where a literal secret sits.
 fn headers_digest(headers: &BTreeMap<String, String>) -> Option<String> {
     if headers.is_empty() {
         return None;
@@ -367,8 +374,16 @@ impl Provider for HttpProvider {
     /// test's credentials — `{"api_key": "{{ env.SUT_TOKEN }}"}` — and a preview
     /// is persisted into `CaseResult` and uploaded by `--share`. Rendering
     /// against [`crate::render::env_placeholder_object`] resolves the vars and
-    /// the prompt for real while every `env` value comes out as the literal
-    /// `${env:NAME}` that names it.
+    /// the prompt for real, while `env` read by *this provider's own templates*
+    /// comes out as the literal `${env:NAME}` that names it.
+    ///
+    /// The redaction is that one hop, deliberately. A case var that reads the
+    /// environment itself — `vars: {token: "{{ env.SUT_TOKEN }}"}`, then
+    /// `url: "…?key={{ token }}"` — is already resolved by the time this
+    /// provider sees it, and lands here in the clear. That is by design: vars are
+    /// case data, they have always been cache-key members, and `CaseResult.vars`
+    /// publishes them. So a credential belongs in this provider's templates as
+    /// `{{ env.X }}` and must never be routed through a case var.
     ///
     /// Headers are absent, as in every provider's preview envelope: that is
     /// where the credential sits even when it is a pasted literal rather than an

@@ -298,8 +298,8 @@ pub trait Provider: Send + Sync {
     /// still reports the request the cached entry stands for. Must exclude
     /// secrets: bodies only, never headers.
     ///
-    /// For what the *cache* keys on, which withholds more, see
-    /// [`Provider::canonical_request`].
+    /// For what the *cache* keys on, see [`Provider::canonical_request`]: the
+    /// same request, with whatever must not separate two callers withheld.
     ///
     /// `None` means "this provider does not describe its request", and the UI
     /// falls back to showing the rendered prompt alone.
@@ -313,10 +313,14 @@ pub trait Provider: Send + Sync {
     /// identity half of every cache key and is persisted verbatim into cache
     /// entries.
     ///
-    /// Distinct from [`Provider::request_preview`], which stays byte-faithful to
-    /// what goes on the wire because it exists to be read: two calls that differ
-    /// only in a credential must share an entry, so the keyed document withholds
-    /// what the previewed one shows.
+    /// Distinct from [`Provider::request_preview`], which exists to be read.
+    /// Where a request carries no call-time secret — `openai`, `anthropic`,
+    /// `exec` — the preview is byte-faithful to what goes on the wire and this
+    /// document is the one that withholds, because two calls differing only in a
+    /// credential must share an entry. The `http` provider is the exception: its
+    /// url/headers/body are templates rendered against `env` at call time, so its
+    /// preview shows the same placeholder-rendered form this method keys on —
+    /// there is no byte-faithful preview of it that could be persisted safely.
     ///
     /// `None` = this call is uncacheable.
     fn canonical_request(&self, _req: &ProviderRequest) -> Option<Json> {
