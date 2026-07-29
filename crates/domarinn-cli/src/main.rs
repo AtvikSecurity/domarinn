@@ -72,7 +72,9 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run a suite: call providers, evaluate assertions, report results.
-    Run(run::RunArgs),
+    // Boxed: `RunArgs` is by far the widest variant, so inlining it makes every
+    // `Command` — including `cache path` — as large as the run parser.
+    Run(Box<run::RunArgs>),
     /// Upload a completed run to a results server and print its URL.
     Share(share::ShareArgs),
     /// Summarize a run for CI: a markdown report plus GitHub Actions outputs.
@@ -195,7 +197,7 @@ fn main() -> ExitCode {
     let palette = style::Palette::detect(cli.color);
 
     let code = match cli.command {
-        Command::Run(args) => run::execute(args, cli.server_url, palette, cli.verbose),
+        Command::Run(args) => run::execute(*args, cli.server_url, palette, cli.verbose),
         Command::Share(args) => share::execute(args, cli.server_url),
         Command::CiSummary(args) => cisummary::execute(args, cli.server_url),
         Command::Runs(args) => runscmd::execute(args, cli.server_url, palette),

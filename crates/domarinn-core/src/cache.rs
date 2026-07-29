@@ -255,6 +255,20 @@ pub struct CacheEntry {
     /// not the rare one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// A digest of the local artifact that produced this response, when there
+    /// was one — an `exec` provider's program, and nothing else.
+    ///
+    /// Evidence, not identity. It is compared against the live provider's digest
+    /// on a hit so a rebuilt program is reported rather than silently replayed,
+    /// and it is deliberately absent from the cache key: keying it would make
+    /// every `exec` entry a property of one machine's filesystem. See
+    /// [`crate::exec::program_digest`], and [`crate::cache_key`] for the same
+    /// argument applied to the model a vendor reports.
+    ///
+    /// Absent on entries written before this field existed, and on every
+    /// network-backed provider, where no such artifact exists to digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_digest: Option<String>,
     /// Present only on grader-verdict entries.
     ///
     /// Its absence is exactly what "this is a provider response" means, so the

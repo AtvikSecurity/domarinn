@@ -10,15 +10,31 @@
 //! where `{key}` is the full content-addressed key (`sha256:<hex>`) and
 //! `{first2hex}` shards the keyspace by the first two hex digits.
 //!
-//! ## Additive-only, no conditional puts
+//! ## Additive-only, first write wins
 //!
-//! Entries are content-addressed: a given key's bytes are fully determined by
-//! its content, so any two writers producing the same key produce *byte-
-//! identical* payloads. A plain `PUT` is therefore correct and idempotent — we
-//! never delete or overwrite with different bytes, and we deliberately avoid
-//! conditional-put (`PutMode::Create` / `If-None-Match: *`) because it is not
-//! supported on MinIO and not universally enabled on generic S3 endpoints.
-//! Retention/eviction is left to bucket lifecycle policies.
+//! Two writers who agree on a key agree on the *answer*, because the key is a
+//! hash of the question. They do not agree on the bytes: a [`CacheEntry`]
+//! carries `created_at`, `attempts`, `provider_latency_ms` and
+//! `domarinn_version`, all of which describe the call rather than the response.
+//!
+//! This module used to claim otherwise, and used the claim to justify an
+//! unconditional `PUT`. The claim was false and so was the conclusion: a plain
+//! `PUT` made a shared bucket last-write-wins while [`crate::LocalDiskCache`]
+//! and the results server are both first-write-wins, so the `attempts` and
+//! latency a run replayed could change under it depending on who wrote last.
+//!
+//! So `put` checks for the object first and skips when it is already there.
+//! That restores first-write-wins across every backend and removes the write
+//! amplification of re-uploading entries a shared bucket already holds. It is
+//! deliberately a `HEAD` rather than a conditional put (`PutMode::Create` /
+//! `If-None-Match: *`), which MinIO does not support and generic S3 endpoints do
+//! not universally enable.
+//!
+//! The check is advisory, not a lock: two writers racing a cold key can both
+//! see "absent" and both upload. That is the pre-existing behaviour and it is
+//! harmless — they are writing interchangeable answers to the same question.
+//!
+//! Nothing is ever deleted; retention is left to bucket lifecycle policies.
 
 use std::sync::Arc;
 
@@ -134,12 +150,21 @@ impl CacheBackend for S3Cache {
     #[tracing::instrument(level = "debug", skip(self, entry), fields(key = %key))]
     async fn put(&self, key: &CacheKey, entry: &CacheEntry) -> Result<(), CacheError> {
         let loc = self.location(key);
+        // First write wins — see the module docs. A `HEAD` costs one round trip
+        // against a bucket that already has the entry, which is cheaper than the
+        // upload it replaces.
+        match self.store.head(&loc).await {
+            Ok(_) => return Ok(()),
+            Err(object_store::Error::NotFound { .. }) => {}
+            // Any other failure is inconclusive about whether the object is
+            // there. Fall through and write: a redundant upload is a far better
+            // outcome than dropping a response somebody paid for.
+            Err(e) => {
+                tracing::debug!(error = %e, %loc, "existence check failed; writing anyway");
+            }
+        }
         let bytes = serde_json::to_vec(entry)
             .map_err(|e| CacheError(anyhow::anyhow!("serializing entry: {e}")))?;
-        // Additive & idempotent: content-addressed keys guarantee byte-identical
-        // payloads across writers, so a plain PUT is safe. We never overwrite
-        // with different bytes and never delete. (No conditional-put: not
-        // supported on MinIO / generic endpoints.)
         self.store
             .put(&loc, bytes.into())
             .await
@@ -185,6 +210,7 @@ mod tests {
             empty_reason: None,
             attempts: None,
             provider_latency_ms: None,
+            program_digest: None,
             domarinn_version: "test".into(),
         }
     }
@@ -208,18 +234,28 @@ mod tests {
         assert_eq!(got.output, Output::Text("hi".into()));
     }
 
+    /// First write wins, matching the local disk backend and the results server.
+    ///
+    /// The second entry is deliberately *different* — which is the whole point.
+    /// Two writers of one key agree on the answer but not on the bytes, because
+    /// an entry records `attempts`, `created_at` and the writer's version. When
+    /// this was an unconditional `PUT` the last writer's metadata replaced the
+    /// first's, so a shared bucket quietly disagreed with every other backend.
     #[tokio::test]
-    async fn additive_idempotent_writes_are_safe() {
-        // Writing the same content-addressed key twice writes byte-identical
-        // bytes; both PUTs succeed and the entry remains readable and identical.
+    async fn a_second_write_does_not_replace_the_first() {
         let (_dir, store) = local_store();
         let cache = S3Cache::with_store(store, "cache");
         let key = CacheKey::compute(&json!({"a": 1}));
 
         cache.put(&key, &sample_entry()).await.unwrap();
-        cache.put(&key, &sample_entry()).await.unwrap(); // second (idempotent) write
+        let mut second = sample_entry();
+        second.output = Output::Text("from another writer".into());
+        second.attempts = Some(7);
+        cache.put(&key, &second).await.unwrap();
+
         let got = cache.get(&key).await.unwrap().unwrap();
-        assert_eq!(got.output, Output::Text("hi".into()));
+        assert_eq!(got.output, Output::Text("hi".into()), "first write wins");
+        assert_eq!(got.attempts, None);
     }
 
     #[tokio::test]

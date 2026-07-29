@@ -20,8 +20,9 @@ pub enum FactoryError {
 /// Build a provider trait object from its config.
 ///
 /// `base_dir` is the suite's directory — the cwd every `exec` child is spawned
-/// in, and therefore what a relative `command` must be resolved against when its
-/// program identity is computed for the cache key.
+/// in, and therefore what a relative `command` is resolved against when the
+/// program's digest is taken. That digest is reported on a cache hit, never
+/// keyed, so `base_dir` does not reach the cache key at all.
 pub fn build_provider(
     cfg: &ProviderCfg,
     base_dir: Option<&std::path::Path>,
@@ -32,15 +33,13 @@ pub fn build_provider(
             env,
             timeout_ms,
             cache_salt,
-            program_identity,
-        } => Ok(Box::new(ExecProvider::with_program_identity(
+        } => Ok(Box::new(ExecProvider::new(
             cfg.id.clone(),
             command.clone(),
             env.clone(),
             *timeout_ms,
             cache_salt.clone(),
             base_dir,
-            *program_identity,
         ))),
         ProviderKind::Anthropic {
             model,

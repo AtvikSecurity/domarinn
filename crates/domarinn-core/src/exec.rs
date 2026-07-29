@@ -9,56 +9,60 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// An identity for the *program* a command runs, not just its argv.
+/// A digest of the bytes behind a command — **reported, never keyed**.
 ///
-/// This is what makes caching an `exec` provider or assertion safe by default.
-/// `command` does not move when the binary behind it is rebuilt, so a key over
-/// argv alone would serve stale output from every entry after a rebuild —
-/// silently, and worst of all in CI. That hazard is the reason exec caching
-/// used to be opt-in behind a hand-managed `cache_salt`.
+/// # Why this is not in the cache key
 ///
-/// Every argument that names a readable file contributes its path and a digest
-/// of its **contents**. That covers the two shapes that matter — a compiled
-/// binary (`./sut`) and an interpreter plus a script (`python3 grade.py`).
+/// It used to be. `program_identity` folded the contents of every argument that
+/// named a readable file into the `exec` fingerprint, so that rebuilding the
+/// binary busted its entries automatically.
 ///
-/// Contents rather than `mtime`, which is what this used to key on. `mtime` is
-/// machine-local: `git` does not record it, so a fresh checkout stamps every
-/// file with its checkout time and no two runners ever agree. That made the
-/// fingerprint unshareable across machines, which silently disabled the S3 and
-/// results-server caches for every `exec` provider — the opposite of what those
-/// backends exist for. A content digest is identical wherever the same bytes
-/// land, so a warm shared cache survives a fresh clone.
+/// The rule that replaced it is *hash what is sent, name what receives it*.
+/// `command` and `env` **select** a provider, exactly as `model` and `base_url`
+/// select an `anthropic` one; the rendered prompt, vars and tools **are** the
+/// request. A cache key is built from those and from nothing else — in
+/// particular from no property of the local filesystem, so it is identical on
+/// every machine, in every checkout, from any working directory.
 ///
-/// The cost is one read per argument, paid once per provider construction
-/// rather than per cache lookup, so the ordinary case is a few milliseconds.
-/// Arguments larger than [`MAX_HASHED_BYTES`] fall back to length and mtime —
-/// a bounded escape for a pathological argument (a multi-gigabyte model file
-/// passed on the command line), not the common path.
+/// domarinn already applied that rule to the other half of the problem, and
+/// [`crate::cache_key`] states it plainly: the model a provider *reports* using
+/// is deliberately excluded from the key, because chasing it "would silently
+/// discard every cache entry the day a vendor rolls a snapshot". A vendor
+/// repointing `claude-opus-5` at new weights and an engineer rebuilding `./sut`
+/// are the same event seen from two sides. Keying the local one and not the
+/// remote one was an inconsistency, and an expensive one: no CI that builds its
+/// provider from source could ever hit a shared cache, which is the entire
+/// purpose of the S3 and results-server backends.
 ///
-/// # Resolved the way the child will resolve it
+/// # What it is for instead
 ///
-/// `base_dir` is the directory the child is spawned in, and a relative argument
-/// is resolved against *it*, not the process cwd. Getting this wrong is not a
-/// near-miss: `command: ["./sut"]` in a suite run from a repo root stats a path
-/// that does not exist, contributes nothing, and silently degrades the key back
-/// to argv alone — the exact failure this function exists to prevent.
+/// The property genuinely lost is that a rebuild is no longer *self-announcing*.
+/// So this digest survives as what `CaseResult.model` is for the remote case —
+/// evidence, carried on the entry, that makes drift visible and diffable. A hit
+/// whose stored digest disagrees with the live one warns that the entry was
+/// produced by a different build and points at `cache_salt`, the supported way
+/// to say "this is a different version of the thing under test".
 ///
-/// `command[0]` additionally resolves through `PATH` when it names no directory,
-/// because `my-agent` installed on `PATH` is the most common exec provider there
-/// is and it is precisely the one a rebuild moves. Later arguments never do: a
-/// bare `grade.py` is a file next to the suite, not a program.
+/// Because it never reaches a key, a differing digest costs nothing and busts
+/// nothing. That is the whole point: the expensive answer is a *choice*, and it
+/// belongs to the suite rather than to the filesystem.
 ///
-/// The recorded `path` is always the *argv* string, never the resolved one, so
-/// two machines sharing a cache do not miss on each other purely for having
-/// checked the repository out somewhere else.
+/// # Shape
 ///
-/// Arguments that name nothing readable (flags, plain values, an inline `sh -c`
-/// script) contribute nothing beyond already being in `command`. When *no*
-/// argument resolves, there is no program identity at all and the caller must
-/// treat the command as uncacheable without an explicit `cache_salt` — see
-/// [`crate::exec_provider::ExecProvider::cacheable`].
-pub fn program_identity(command: &[String], base_dir: Option<&Path>) -> serde_json::Value {
-    let mut parts = Vec::new();
+/// One blake3 over every argument that resolves to a readable file, folded in
+/// argv order with its index, so moving an argument registers as a change.
+/// `None` when nothing resolves — `docker run …`, a shell builtin, an inline
+/// `sh -c` script — which means "no evidence either way", not "unchanged".
+///
+/// Resolution matches how the child will resolve it: relative arguments against
+/// `base_dir` (the directory the child is spawned in, not the process cwd), and
+/// `command[0]` additionally through `PATH` when it names no directory.
+/// Arguments over [`MAX_HASHED_BYTES`] contribute their length instead of their
+/// contents, bounding the cost of a pathological argument such as a
+/// multi-gigabyte model file passed on the command line.
+pub fn program_digest(command: &[String], base_dir: Option<&Path>) -> Option<String> {
+    let mut hasher = blake3::Hasher::new();
+    let mut found = false;
     for (i, arg) in command.iter().enumerate() {
         let Some(resolved) = resolve_program_arg(arg, i == 0, base_dir) else {
             continue;
@@ -69,52 +73,47 @@ pub fn program_identity(command: &[String], base_dir: Option<&Path>) -> serde_js
         if !meta.is_file() {
             continue;
         }
-        parts.push(match content_digest(&resolved, meta.len()) {
-            Some(content) => serde_json::json!({ "path": arg, "content": content }),
-            // Too large to hash, or unreadable despite stat'ing. Fall back to
-            // the metadata this function used to key on exclusively. The shape
-            // differs from the hashed one, so the two can never collide.
-            None => {
-                // Nanoseconds as well as seconds: a rebuild that lands in the
-                // same second and happens to produce an equal-length artifact
-                // is ordinary, and second-granularity would not see it.
-                let mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-                serde_json::json!({
-                    "path": arg,
-                    "len": meta.len(),
-                    "mtime": mtime.map(|d| d.as_secs()),
-                    "mtime_ns": mtime.map(|d| d.subsec_nanos()),
-                })
-            }
-        });
+        found = true;
+        // The index, so two arguments swapping places is a different program
+        // even when the same bytes are present in both orders.
+        hasher.update(&(i as u64).to_le_bytes());
+        if meta.len() > MAX_HASHED_BYTES || hash_file_into(&mut hasher, &resolved).is_none() {
+            // Too large to read, or unreadable despite stat'ing. Length alone is
+            // a weak signal, but this is evidence rather than a key: a missed
+            // rebuild here costs a warning that does not fire, not a wrong
+            // cache hit. Note there is deliberately no `mtime` fallback — it
+            // would report a fresh checkout as a different build on every
+            // machine, which is noise dressed up as a diagnostic.
+            hasher.update(&meta.len().to_le_bytes());
+        }
     }
-    serde_json::Value::Array(parts)
+    found.then(|| format!("blake3:{}", hasher.finalize().to_hex()))
 }
 
-/// Files at or below this size are keyed on their contents; larger ones fall
-/// back to stat metadata. blake3 runs at roughly a gigabyte per second and this
-/// is paid once per provider construction, so the cap exists to bound the
-/// pathological argument rather than the ordinary binary.
+/// Files at or below this size contribute their contents to
+/// [`program_digest`]; larger ones contribute their length. blake3 runs at
+/// roughly a gigabyte per second and this is paid once per provider
+/// construction, so the cap bounds the pathological argument rather than the
+/// ordinary binary.
 pub const MAX_HASHED_BYTES: u64 = 256 * 1024 * 1024;
 
-/// blake3 of a file's contents, or `None` when it is too large to hash or could
-/// not be read — in which case the caller falls back to stat metadata.
-fn content_digest(path: &Path, len: u64) -> Option<String> {
-    if len > MAX_HASHED_BYTES {
-        return None;
-    }
+/// Stream a file into `hasher`, or `None` when it could not be read.
+fn hash_file_into(hasher: &mut blake3::Hasher, path: &Path) -> Option<()> {
     let mut file = std::fs::File::open(path).ok()?;
-    let mut hasher = blake3::Hasher::new();
-    std::io::copy(&mut file, &mut hasher).ok()?;
-    Some(format!("blake3:{}", hasher.finalize().to_hex()))
+    std::io::copy(&mut file, hasher).ok()?;
+    Some(())
 }
 
 /// Where on disk `arg` points, resolved the way the spawned child would resolve
 /// it. `None` when the argument cannot name a file at all.
-fn resolve_program_arg(arg: &str, is_program: bool, base_dir: Option<&Path>) -> Option<PathBuf> {
+///
+/// Visible to [`crate::cache_migrate`], which must resolve arguments exactly as
+/// the historical key shapes did in order to find their entries.
+pub(crate) fn resolve_program_arg(
+    arg: &str,
+    is_program: bool,
+    base_dir: Option<&Path>,
+) -> Option<PathBuf> {
     if arg.is_empty() {
         return None;
     }
@@ -139,11 +138,6 @@ fn path_lookup(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
-}
-
-/// Whether [`program_identity`] found anything at all to key on.
-pub fn has_program_identity(identity: &serde_json::Value) -> bool {
-    identity.as_array().is_some_and(|parts| !parts.is_empty())
 }
 
 use serde_json::Value as Json;

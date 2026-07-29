@@ -355,6 +355,10 @@ fn verdict_entry(
         empty_reason: None,
         model: graded.model.clone(),
         raw: None,
+        // The grading path has no single "program" to digest — an `llm-rubric`
+        // is answered over the network, and an `exec` assertion's child is
+        // already named by `command` in the verdict fingerprint.
+        program_digest: None,
         // A verdict is not a provider response and has no tool calls of its
         // own; its absence is part of what marks this entry as a grading result.
         tool_calls: Vec::new(),
