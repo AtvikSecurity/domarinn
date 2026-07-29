@@ -1,5 +1,6 @@
-//! Content-addressed cache table operations: get/has (with hit/miss accounting),
-//! immutable put, stats, and age/size pruning (also used by the retention task).
+//! Content-addressed cache table operations: get (with hit/miss accounting),
+//! has, immutable put, stats, and age/size pruning (also used by the retention
+//! task).
 
 use rusqlite::{params, Connection, TransactionBehavior};
 
@@ -39,6 +40,10 @@ impl Storage {
             .await
     }
 
+    /// Existence probe behind `HEAD`. Deliberately does *not* touch the
+    /// hits/misses counters: the domarinn client only ever `GET`s, so counting
+    /// probes would inflate the hit rate the server reports. A found entry
+    /// still refreshes `last_access_at` so a probed entry is not evicted next.
     pub async fn cache_has(&self, key: String) -> anyhow::Result<bool> {
         self.cache
             .write(move |conn| {
@@ -54,12 +59,6 @@ impl Storage {
                     tx.execute(
                         "UPDATE cache_entries SET last_access_at = ?2 WHERE key = ?1",
                         params![key, now_ms()],
-                    )?;
-                    tx.execute("UPDATE cache_counters SET hits = hits + 1 WHERE id = 1", [])?;
-                } else {
-                    tx.execute(
-                        "UPDATE cache_counters SET misses = misses + 1 WHERE id = 1",
-                        [],
                     )?;
                 }
                 tx.commit()?;
