@@ -55,8 +55,16 @@ export default tseslint.config(
     // Playwright e2e specs + their config live outside the app's tsconfig
     // project graph (Playwright compiles them itself), so type-checked linting
     // has no program to attach to. Keep them on the untyped recommended set.
+    // The docs-screenshot pipeline (screenshots/**, its config, and the shared
+    // chrome-resolution helper both configs import) is Playwright too.
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
-    files: ["e2e/**/*.ts", "playwright.config.ts"],
+    files: [
+      "e2e/**/*.ts",
+      "playwright.config.ts",
+      "playwright.shared.ts",
+      "playwright.screenshots.config.ts",
+      "screenshots/**/*.ts",
+    ],
     languageOptions: {
       ecmaVersion: 2022,
       globals: { ...globals.browser, ...globals.node },
