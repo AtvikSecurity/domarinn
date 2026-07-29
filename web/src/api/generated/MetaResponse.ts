@@ -8,4 +8,13 @@ import type { SsoProviderMeta } from "./SsoProviderMeta";
  * first-run account setup is still required, the configured SSO providers,
  * and the schema-version / cache-limit contract clients should honor.
  */
-export type MetaResponse = { name: string, version: string, auth_mode: AuthMode, setup_required: boolean, sso_providers: Array<SsoProviderMeta>, supported_schema_versions: Array<number>, result_schema_version: number, cache: MetaCacheLimits, };
+export type MetaResponse = { name: string, version: string, auth_mode: AuthMode, setup_required: boolean, sso_providers: Array<SsoProviderMeta>, supported_schema_versions: Array<number>, result_schema_version: number, cache: MetaCacheLimits, 
+/**
+ * Whether the MCP endpoint is mounted (`DOMARINN_MCP_ENABLED`).
+ *
+ * Advertised because the endpoint is opt-in and unauthenticated probing
+ * cannot distinguish "disabled" from "wrong URL": both are a JSON 404.
+ * The settings page uses this to show operators how to connect a client,
+ * or how to turn it on.
+ */
+mcp_enabled: boolean, };

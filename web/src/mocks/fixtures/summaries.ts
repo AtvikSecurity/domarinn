@@ -87,6 +87,9 @@ export const META: MetaResponse = {
     max_bytes: 5_368_709_120,
     max_age_days: 30,
   },
+  // On, so the mock exercises the connected branch of the settings card; the
+  // disabled branch is the trivial one.
+  mcp_enabled: true,
 };
 
 export function cacheStats(): CacheStatsResponse {

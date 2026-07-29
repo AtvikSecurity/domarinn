@@ -77,7 +77,7 @@ struct LocalEntry {
 
 fn execute_local(args: &RunsArgs, palette: &Palette) -> u8 {
     let dir = crate::loadrun::runs_dir();
-    let latest_id = std::fs::read_to_string(dir.join("latest"))
+    let latest_id = std::fs::read_to_string(crate::loadrun::latest_pointer())
         .ok()
         .map(|s| s.trim().to_string());
 

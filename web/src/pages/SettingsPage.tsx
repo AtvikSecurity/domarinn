@@ -7,6 +7,7 @@ import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
 import { ThemeSegmented } from "@/components/ThemeToggle";
 import { ProviderBadge } from "@/components/ProviderBadge";
+import { McpSection } from "@/components/McpSection";
 
 export function SettingsPage() {
   const meta = useMeta();
@@ -130,6 +131,10 @@ export function SettingsPage() {
             Clear
           </Button>
         </div>
+      </Card>
+
+      <Card title="MCP endpoint">
+        <McpSection enabled={meta.data?.mcp_enabled ?? false} />
       </Card>
 
       <Card title="Server">

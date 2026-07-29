@@ -20,6 +20,8 @@ The essentials for hosting are below; [`./server.md`](./server.md#environment-va
 | `DOMARINN_AUTH_MODE`  | `closed` | The auth mode: `open` \| `protect-writes` \| `closed`. Unset means `closed` — every call and page requires auth. |
 | `DOMARINN_ADMIN_USER` / `DOMARINN_ADMIN_PASSWORD` | (unset) | Bootstrap a local admin account at startup (see [First run](#first-run-creating-the-admin)). |
 | `DOMARINN_PUBLIC_URL` | (unset) | Public base URL used in share links and absolute URLs behind a proxy. No trailing slash, no path prefix. |
+| `DOMARINN_MCP_ENABLED` | `false` | Mount the read-only [MCP endpoint](./server.md#mcp-endpoint) at `POST /api/v1/mcp` for AI agents. Opt-in; a typo is a startup error, not a silent `false`. |
+| `DOMARINN_MCP_ALLOWED_ORIGINS` | (unset) | Extra origins allowed to reach the MCP endpoint, comma-separated. Only needed for browser-hosted MCP clients on a different origin than `DOMARINN_PUBLIC_URL`. |
 
 The server listens on **`0.0.0.0:8321`** (`--port` to change). Health is exposed at `/health` and `/api/v1/health`; the container `HEALTHCHECK` runs `domarinn healthcheck`, which probes the server from inside the container (the distroless image has no shell or curl).
 

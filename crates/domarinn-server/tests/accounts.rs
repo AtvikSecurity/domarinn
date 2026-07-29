@@ -717,3 +717,74 @@ async fn bootstrap_admin_is_idempotent_and_rotates_password() {
     let users = get_auth(&app2, "/api/v1/users", Some(&token)).await;
     assert_eq!(users.json()["users"].as_array().unwrap().len(), 1);
 }
+
+/// `last_used_at` is refreshed on first use but throttled afterwards: bumping it
+/// takes the exclusive SQLite writer, so doing it on every authenticated
+/// request would serialize all traffic against the writer mutex. One minute of
+/// precision is all the UI needs (it renders the value as relative time).
+#[tokio::test]
+async fn api_key_last_used_at_is_throttled() {
+    let (app, _dir) = test_app(protected()).await;
+    let admin = setup_admin(&app).await;
+    let created = post_json(&app, "/api/v1/apikeys", Some(&admin), &json!({})).await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let key = created.json()["key"].as_str().unwrap().to_string();
+
+    // Never used: the column is NULL.
+    assert_eq!(key_last_used(&app, &admin).await, Value::Null);
+
+    // First authenticated call stamps it.
+    let r = get_auth(&app, "/api/v1/auth/me", Some(&key)).await;
+    assert_eq!(r.json()["authenticated"], true);
+    let first = key_last_used(&app, &admin).await;
+    assert!(first.is_string(), "first use should stamp last_used_at");
+
+    // Subsequent calls inside the throttle window must not write again.
+    for _ in 0..3 {
+        let r = get_auth(&app, "/api/v1/auth/me", Some(&key)).await;
+        assert_eq!(
+            r.json()["authenticated"],
+            true,
+            "throttled auth must still succeed"
+        );
+    }
+    assert_eq!(
+        key_last_used(&app, &admin).await,
+        first,
+        "last_used_at must not be rewritten inside the throttle window"
+    );
+}
+
+/// The caller's first API key's `last_used_at`, as the wire reports it.
+async fn key_last_used(app: &Router, admin: &str) -> Value {
+    let listed = get_auth(app, "/api/v1/apikeys", Some(admin)).await;
+    listed.json()["keys"][0]["last_used_at"].clone()
+}
+
+/// A revoked key stays rejected even though the throttle skips the write path —
+/// the non-bumping lookup must apply the same `revoked = 0` predicate.
+#[tokio::test]
+async fn throttled_lookup_still_honors_revocation() {
+    let (app, _dir) = test_app(protected()).await;
+    let admin = setup_admin(&app).await;
+    let created = post_json(&app, "/api/v1/apikeys", Some(&admin), &json!({})).await;
+    let key = created.json()["key"].as_str().unwrap().to_string();
+    let key_id = created.json()["id"].as_str().unwrap().to_string();
+
+    // First call bumps; second is throttled onto the reader path.
+    for _ in 0..2 {
+        let r = get_auth(&app, "/api/v1/auth/me", Some(&key)).await;
+        assert_eq!(r.json()["authenticated"], true);
+    }
+
+    let revoked = delete(&app, &format!("/api/v1/apikeys/{key_id}"), Some(&admin)).await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+
+    // Still inside the throttle window, so this takes the reader path.
+    let after = get_auth(&app, "/api/v1/auth/me", Some(&key)).await;
+    assert_eq!(
+        after.json()["authenticated"],
+        false,
+        "revoked key must not authenticate via the throttled read path"
+    );
+}

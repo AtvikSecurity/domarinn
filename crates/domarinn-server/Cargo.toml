@@ -19,6 +19,9 @@ tower-http = { version = "0.7", features = [
     "decompression-gzip",
     "limit",
     "request-id",
+    # Only ever layered on the MCP route, never the shared router — the rest of
+    # the API is same-origin by design. See `mcp::origin`.
+    "cors",
 ] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -42,7 +45,10 @@ mime_guess = "2"
 openidconnect = { version = "4", default-features = false }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip"] }
 samael = { version = "0.0.22", features = ["xmlsec"], optional = true }
-base64 = { version = "0.23", optional = true }
+# Not optional: the MCP transport decodes the `=?base64?...?=` sentinel
+# encoding on `Mcp-Name` in every build, not just SAML ones. Costs nothing —
+# domarinn-core already depends on base64 unconditionally.
+base64 = "0.23"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
@@ -59,4 +65,4 @@ url = "2"
 # libraries (libxmlsec1/libxml2/openssl) at build time; the Docker/release
 # build and the dedicated CI job enable it. A binary built without it
 # hard-errors at startup if DOMARINN_SAML_PROVIDERS is set.
-saml = ["dep:samael", "dep:base64"]
+saml = ["dep:samael"]

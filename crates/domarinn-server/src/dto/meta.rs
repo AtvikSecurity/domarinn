@@ -41,6 +41,13 @@ pub struct MetaResponse {
     pub supported_schema_versions: Vec<u32>,
     pub result_schema_version: u32,
     pub cache: MetaCacheLimits,
+    /// Whether the MCP endpoint is mounted (`DOMARINN_MCP_ENABLED`).
+    ///
+    /// Advertised because the endpoint is opt-in and unauthenticated probing
+    /// cannot distinguish "disabled" from "wrong URL": both are a JSON 404.
+    /// The settings page uses this to show operators how to connect a client,
+    /// or how to turn it on.
+    pub mcp_enabled: bool,
 }
 
 #[cfg(test)]
@@ -68,6 +75,7 @@ mod tests {
                 max_bytes: 1024 * 1024 * 1024,
                 max_age_days: 30,
             },
+            mcp_enabled: true,
         };
         assert_eq!(
             serde_json::to_value(&dto).unwrap(),
@@ -89,6 +97,7 @@ mod tests {
                     "max_bytes": 1024 * 1024 * 1024,
                     "max_age_days": 30,
                 },
+                "mcp_enabled": true,
             })
         );
     }

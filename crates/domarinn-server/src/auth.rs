@@ -8,8 +8,11 @@
 //! enforcement lives entirely in the extractor so unauthenticated reads stay
 //! open in the opt-out modes.
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::str::FromStr;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
@@ -43,6 +46,45 @@ const RANDOM_BYTES: usize = 32;
 const PREFIX_LEN: usize = 12;
 /// Session lifetime: 30 days.
 const SESSION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+/// How often a credential's `last_used_at` column is actually refreshed.
+///
+/// Refreshing it needs the exclusive SQLite writer, so an unthrottled bump puts
+/// a write on the critical path of *every* authenticated request — which a
+/// chatty client (the MCP endpoint especially) turns into serialized
+/// contention against in-flight ingests. One minute of precision is far more
+/// than the UI needs: it renders the value as relative time.
+const LAST_USED_THROTTLE: Duration = Duration::from_secs(60);
+/// Cap on tracked credentials before stale entries are swept. Bounded by the
+/// number of *valid* credentials in practice, since misses are never recorded.
+const LAST_USED_MAX_TRACKED: usize = 4096;
+
+/// Tracks when each credential's `last_used_at` was last written, so the write
+/// can be skipped inside [`LAST_USED_THROTTLE`].
+///
+/// Keys are the sha256 hashes already used for lookup, never raw secrets.
+#[derive(Default)]
+struct LastUsedThrottle {
+    seen: Mutex<HashMap<String, Instant>>,
+}
+
+impl LastUsedThrottle {
+    /// Whether this credential is due for a `last_used_at` refresh.
+    fn due(&self, key: &str) -> bool {
+        let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        seen.get(key)
+            .is_none_or(|prev| prev.elapsed() >= LAST_USED_THROTTLE)
+    }
+
+    /// Record that a refresh happened. Called **only after a successful
+    /// lookup** so that spraying invalid tokens cannot grow the map.
+    fn record(&self, key: &str) {
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.len() >= LAST_USED_MAX_TRACKED {
+            seen.retain(|_, prev| prev.elapsed() < LAST_USED_THROTTLE);
+        }
+        seen.insert(key.to_string(), Instant::now());
+    }
+}
 
 /// Access scopes, ordered so that a higher scope subsumes lower ones
 /// (`Admin` ⊃ `Write` ⊃ `Read`).
@@ -216,7 +258,9 @@ pub struct Identity {
 }
 
 impl Identity {
-    fn anonymous(mode: AuthMode) -> Identity {
+    /// `pub(crate)` so sibling modules (notably [`crate::mcp`]) can build the
+    /// anonymous identity in tests without reaching through the middleware.
+    pub(crate) fn anonymous(mode: AuthMode) -> Identity {
         Identity {
             scope: None,
             mode,
@@ -237,14 +281,20 @@ impl Identity {
 }
 
 /// The outcome of checking an identity against a route's required scope.
-enum Access {
+///
+/// `pub(crate)` so the MCP endpoint can authorize per JSON-RPC method rather
+/// than per route: it cannot use the [`Scoped`] extractor, which would reject
+/// before the handler runs and so would 401 the unauthenticated discovery
+/// methods a client sends first. Reusing [`Identity::check`] keeps exactly one
+/// implementation of the [`AuthMode`] matrix in the crate.
+pub(crate) enum Access {
     Granted,
     Unauthenticated,
     Forbidden,
 }
 
 impl Identity {
-    fn check(&self, route: Scope) -> Access {
+    pub(crate) fn check(&self, route: Scope) -> Access {
         // Determine the scope actually required, given the mode.
         let required = match self.mode {
             AuthMode::Open => None,
@@ -271,40 +321,61 @@ impl Identity {
 /// Storage-backed authenticator for local-account API keys (`domarinn_...`).
 pub struct ApiKeyAuthenticator {
     storage: Storage,
+    last_used: LastUsedThrottle,
 }
 
 impl ApiKeyAuthenticator {
     pub fn new(storage: Storage) -> ApiKeyAuthenticator {
-        ApiKeyAuthenticator { storage }
+        ApiKeyAuthenticator {
+            storage,
+            last_used: LastUsedThrottle::default(),
+        }
     }
 
     async fn resolve(&self, token: &str) -> Option<ApiKeyAuth> {
         let prefix = key_prefix(token);
         let hash = token_hash(token);
-        self.storage
-            .lookup_api_key(prefix, hash)
+        let bump = self.last_used.due(&hash);
+        let found = self
+            .storage
+            .lookup_api_key(prefix, hash.clone(), bump)
             .await
             .ok()
-            .flatten()
+            .flatten();
+        if bump && found.is_some() {
+            self.last_used.record(&hash);
+        }
+        found
     }
 }
 
 /// Storage-backed authenticator for local-account sessions (`mses_...`).
 pub struct SessionAuthenticator {
     storage: Storage,
+    last_used: LastUsedThrottle,
 }
 
 impl SessionAuthenticator {
     pub fn new(storage: Storage) -> SessionAuthenticator {
-        SessionAuthenticator { storage }
+        SessionAuthenticator {
+            storage,
+            last_used: LastUsedThrottle::default(),
+        }
     }
 
     async fn resolve(&self, token: &str) -> Option<SessionUser> {
-        self.storage
-            .lookup_session(token_hash(token))
+        let hash = token_hash(token);
+        let bump = self.last_used.due(&hash);
+        let found = self
+            .storage
+            .lookup_session(hash.clone(), bump)
             .await
             .ok()
-            .flatten()
+            .flatten();
+        if bump && found.is_some() {
+            self.last_used.record(&hash);
+        }
+        found
     }
 }
 

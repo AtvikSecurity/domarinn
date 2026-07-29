@@ -96,6 +96,23 @@ Full docs live in **[`docs/`](docs/README.md)**:
 - [Getting started](docs/getting-started.md) · [Configuration](docs/configuration.md) · [Assertions](docs/assertions.md) · [Providers](docs/providers.md)
 - [Grading](docs/grading.md) · [Caching](docs/caching.md) · [Statistics](docs/statistics.md) · [CLI reference](docs/cli.md)
 - [Server & accounts](docs/server.md) · [Deploy](docs/deploy.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/protocol.md)
+- [MCP endpoint](docs/server.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
+
+## For agents
+
+The server can expose your eval history to MCP clients, read-only, so an agent can answer "which
+cases regressed between these two runs, and why" directly against the data:
+
+```bash
+DOMARINN_MCP_ENABLED=true domarinn server
+
+claude mcp add --transport http domarinn http://localhost:8321/api/v1/mcp \
+  --header "Authorization: Bearer $DOMARINN_TOKEN"
+```
+
+Eight read-only tools, three prompts, dual-era MCP (`2026-07-28` plus the handshake revisions), in
+the same binary — no sidecar process. See [MCP endpoint](docs/server.md#mcp-endpoint), or install
+the [Claude Code plugin](plugin/README.md) which bundles it with eval-authoring and triage skills.
 
 ## Workspace layout
 
