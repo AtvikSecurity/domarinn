@@ -23,6 +23,10 @@
 # EMBEDDING MODEL: changing the model re-embeds everything, as it must, since
 # cosines are not comparable across models.
 #
+# Against Ollama, use an embedding model, e.g.
+# OPENAI_EMBED_MODEL=nomic-embed-text (chat models do not serve
+# /v1/embeddings).
+#
 # Run:  domarinn run examples/30-similar-embeddings
 version: 1
 project: examples
@@ -38,7 +42,7 @@ providers:
   # a local endpoint works as well as the hosted one.
   - id: embedder
     type: embeddings
-    model: "text-embedding-3-small"
+    model: "${env:OPENAI_EMBED_MODEL:-text-embedding-3-small}"
     base_url: "${env:OPENAI_BASE_URL:-https://api.openai.com/v1}"
     api_key_env: OPENAI_API_KEY
 
