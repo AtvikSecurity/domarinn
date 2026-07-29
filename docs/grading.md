@@ -70,7 +70,7 @@ The `grader:` block wraps a provider plus grading options:
 | Field          | Type          | Default    | Meaning |
 |----------------|---------------|------------|---------|
 | `provider`     | provider spec | –          | The judge model. Only `anthropic` and `openai` are supported for grading. |
-| `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template, relative to the suite directory. Its contents are in the verdict cache key, so editing it re-grades. |
+| `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template, relative to the suite directory. Its contents are in the verdict cache key, so editing it re-grades — those bytes are pasted into the prompt the judge reads, which makes them part of the question. (An `exec` assertion's *program* is keyed by `command` and `cache_salt` only, for the opposite reason: it receives the question rather than being part of it. See [caching.md](./caching.md#the-rule).) |
 | `verdict_mode` | string        | `forced`   | How the structured verdict is obtained: `forced` (default) or `auto` (rejected at load — not implemented). |
 
 The `provider` is a standard [`ProviderKind`](./providers.md) — but only the `anthropic` and `openai` shapes are valid graders. Any other provider type errors with `grader provider type … is not supported for llm-rubric`.

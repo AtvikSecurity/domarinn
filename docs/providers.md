@@ -44,8 +44,7 @@ An `exec` provider shells out to a command that speaks the **exec JSON protocol*
 | `command`    | `[string]`          | –          | The command and its argv. |
 | `env`        | `{string: string}`  | `{}`       | Extra environment variables for the child. |
 | `timeout_ms` | integer             | `60000`    | Per-call timeout in milliseconds. |
-| `cache_salt` | string              | *(none)*   | Extra cache-busting token. Not normally needed — see below. |
-| `program_identity` | bool          | `true`     | Whether the program's content digest enters the cache key. Set `false` (with a `cache_salt`) for artifacts rebuilt per-run. |
+| `cache_salt` | string              | *(none)*   | Version pin for the program — set it when a rebuild should discard cached answers. See below. |
 
 ### Wire behavior
 
@@ -59,16 +58,16 @@ The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus you
 
 ### Caching, and when you need `cache_salt`
 
-`exec` providers are **cached by default**, and `cache_salt` is the escape hatch rather than the entry ticket. What makes that safe is that the cache key covers the *program*, not just the argv naming it: every argument that resolves to a readable file contributes its path and a **digest of its contents**, with `command[0]` resolved through `PATH` and relative paths resolved against the suite directory. A rebuild therefore busts the entry on its own, and — because a digest does not depend on filesystem timestamps, which `git` never records — identical bytes key identically on every machine, so a shared cache survives a fresh clone.
+`exec` providers are **cached by default**. The key names what will answer — `command`, `env`, and any `cache_salt` — and hashes what is asked. It says nothing about the program's *bytes*, so an entry written on one machine is reusable on every other: a fresh clone, a different checkout path, a rebuilt binary and a different working directory all key identically.
 
-Set `cache_salt` in the two cases identity cannot reach:
+The price of that is that domarinn cannot tell one build of your program from the next, so **set `cache_salt` when a rebuild should discard the old answers**:
 
-- **No argument names a file** — `docker run …`, a wrapper behind a shell builtin. There is nothing to key on beyond argv, so domarinn declines to cache at all until you supply a salt that says "I know what moves this."
-- **Behavior depends on something off-disk** — a model pulled at startup, a remote config.
+- **A program you rebuild** — a compiled binary, or a script you are actively editing between runs. Use a commit SHA, a release tag, or `"$digest: src/**/*.rs"`. In CI this matters most, and a SHA is more honest than hashing the artifact, since two runners compiling identical source produce different bytes.
+- **Behavior that depends on something off-disk** — a model pulled at startup, a remote config, a container image behind a wrapper script.
 
-Set **`program_identity: false`** (alongside a `cache_salt`) for the third case: a binary **compiled per-run in CI**. Rust builds are not byte-reproducible, so two runners building identical source hash differently and never share entries. Pin the salt to a digest of the *source* and turn identity off — see [caching.md](./caching.md#opting-out-program_identity-false).
+You are told when you forget. domarinn stores a digest of the program *on the cache entry* — never in the key — and a hit whose digest disagrees with what is on disk warns that it is replaying answers from a different build. Nothing is invalidated: whether a rebuild matters is the suite's call.
 
-Anything else that steers the program should be an argument or an `env` entry rather than a salt: both are in the fingerprint, and [`${env:VAR}`](#environment-driven-config) lets you drive them from the ambient environment while keeping them keyed. A variable the child reads *without* the suite declaring it is invisible to the cache — see [caching.md](./caching.md#exec-providers-and-the-provider-salt).
+Anything else that steers the program should be an argument or an `env` entry rather than a salt: both are in the fingerprint, and [`${env:VAR}`](#environment-driven-config) lets you drive them from the ambient environment while keeping them keyed. A variable the child reads *without* the suite declaring it is invisible to the cache — see [caching.md](./caching.md#the-childs-environment-is-only-keyed-when-you-declare-it).
 
 ### Error and retry classification
 
@@ -208,7 +207,7 @@ A generic provider for black-box HTTP systems. The URL, headers, and body are **
 |---------------|---------------------|---------|---------|
 | `url`         | string (templated)  | –       | Endpoint URL. |
 | `method`      | string              | `POST`  | HTTP method. |
-| `headers`     | `{string: string}` (values templated) | `{}` | Request headers. |
+| `headers`     | `{string: string}` (values templated) | `{}` | Request headers. **In the cache key** (as a digest of the unrendered templates), so two providers differing only in `X-Model` do not share entries. |
 | `body`        | JSON (templated)    | *(none)*| Request body, sent as JSON. |
 | `output_expr` | string              | *(none)*| minijinja expression selecting the output from the response. |
 
@@ -224,6 +223,13 @@ response.headers  # response headers as an object
 ```
 
 `output_expr` result handling: a string becomes a text output; any other value becomes a structured JSON output. **Without** `output_expr`, the raw response text is the output. This provider reports no token usage, cost, or stop reason.
+
+**Caching.** `url`, `method`, `body`, `output_expr` and a digest of `headers` are all in the fingerprint, as written — unrendered. Test vars are already in the key separately, so the one input that can change the request without changing the key is the environment, and which syntax you use decides that:
+
+- `${env:VAR}` resolves at **load time**, so the substituted value is in the fingerprint. Use it for anything that changes the answer — a model, an endpoint, a mode.
+- `{{ env.VAR }}` renders **per request**, so only the template text is keyed. Use it for credentials, where keying the value would give every API key its own private cache.
+
+A provider whose url, headers or body reference `{{ env.X }}` warns at startup naming the variable, because domarinn cannot tell a model selector from a token. See [caching.md](./caching.md#which-env-syntax).
 
 ```yaml
 providers:

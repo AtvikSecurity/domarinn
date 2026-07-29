@@ -68,6 +68,8 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--prompt <ID>` | Only run this prompt (repeatable). |
 | `--no-cache` | Never read or write the cache. |
 | `--cache-only` | Read cache only; a miss is an infrastructure error (offline CI). |
+| `--cache-dir DIR` | Where the local cache lives. Defaults to `.domarinn/cache` beside the suite, so the same suite hits the same cache from any directory. `DOMARINN_CACHE_DIR` sets the same thing; the flag wins. |
+| `--no-cache-migration` | Skip looking for entries written under an older cache-key shape. domarinn probes for those on a miss so an upgrade does not discard a warm cache, and stops once it is clear there is nothing to find. |
 | `--repeat <N>` | Run each cell N times (variance / pass@k). |
 | `-j`, `--concurrency <N>` | Max concurrent provider calls (overrides `runner.concurrency`). |
 | `--format <F>` | Output format, repeatable: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`, on stdout. |

@@ -197,7 +197,7 @@ The Markdown is a headline metrics table, then either a baseline comparison (wit
 A few deliberate choices:
 
 - **Rows that carry no information are omitted.** No `Cost` row when nothing was billed, no `Retries` row when nothing retried. What is printed is what happened.
-- **`Cache` counts *cases*, not lookups.** `cache_misses` counts every case not served from the cache, so under `--no-cache` it equals the case count — there is no lookup total to express a "hit rate" against. Note that an `exec` provider is only cached at all when it sets a `cache_salt`; see [`caching.md`](./caching.md).
+- **`Cache` counts *cases*, not lookups.** `cache_misses` counts every case not served from the cache, so under `--no-cache` it equals the case count — there is no lookup total to express a "hit rate" against.
 - **The failing table is capped at 10 rows**, then `…and N more`. The run URL and the JUnit artifact hold the full list; GitHub truncates a huge comment anyway.
 - **Table cells are escaped.** An assertion reason quoting model output that contains a `|` would otherwise shred the table.
 - **Both links degrade.** `View run` needs a run uploaded with `--share`; `CI run` comes from the run's recorded CI metadata, falling back to the ambient workflow environment. Neither present means no links line at all.
@@ -245,6 +245,20 @@ Point CI at a shared [server](./server.md) so every eval is browsable and each P
 On GitHub Actions the CLI automatically enriches the uploaded run with git (branch, commit, dirty flag) and CI (provider + run URL) metadata, so shared runs are traceable back to the workflow.
 
 **Shared cache for CI.** Multiple CI jobs can share provider outputs through the server's content-addressed cache (`/api/v1/cache/*`), which cuts cost and time on reruns. The client side — the `http` cache backend, `DOMARINN_SERVER_URL`, and `cache_salt` — is documented in [`./caching.md`](./caching.md).
+
+A cache key holds nothing machine-specific, so a fresh checkout on a fresh runner reuses whatever another job wrote. Two things are worth setting up deliberately:
+
+- **If the job builds its `exec` provider from source**, pin `cache_salt` to the commit SHA. The key names `command`, not the compiled bytes — which is exactly why two runners can share entries at all, since Rust builds are not byte-reproducible — so nothing else tells domarinn that a rebuild happened. A run warns when it replays answers from a different build.
+
+  ```yaml
+  providers:
+    - id: agent
+      type: exec
+      command: ["./target/release/agent"]
+      cache_salt: "${env:GITHUB_SHA}"
+  ```
+
+- **If the job restores a cache directory**, point `--cache-dir` at it (or set `DOMARINN_CACHE_DIR`). Otherwise the default lands beside the suite, which a cache action may not be saving.
 
 ---
 

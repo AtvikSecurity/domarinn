@@ -124,8 +124,7 @@ Spawns an external command that speaks the exec JSON protocol on stdio — the e
 | `command` | list of strings | **yes** | argv; the program plus its arguments. |
 | `env` | map string→string | no | Extra environment variables for the child process. |
 | `timeout_ms` | int | no | Per-call timeout in milliseconds. |
-| `cache_salt` | string | no | **Provider-level** cache-busting token — a version pin for the program behind the command. Not normally needed: exec providers are cached by default, keyed on a content digest of every `command` argument that names a readable file, so a rebuild busts the entry itself. Set it when nothing in the command resolves to a file (`docker run …`), or when behavior depends on something off-disk. Distinct from a test case's own [`cache_salt`](#inline-and-loaded-test-fields), which keys a single case; see [caching.md](./caching.md). |
-| `program_identity` | bool | no | Default `true`. Set `false` to drop the program's content digest from the cache key and let `cache_salt` be the sole identity — for a binary compiled per-run in CI, where builds are not byte-reproducible and every runner would otherwise key differently. Requires `cache_salt`. See [caching.md](./caching.md#opting-out-program_identity-false). |
+| `cache_salt` | string | no | **Provider-level** version pin for the program behind the command. Exec providers are cached by default on `command` + `env`, which says nothing about the program's bytes — that is what makes an entry reusable on another machine, and also why domarinn cannot spot a rebuild by itself. Set this (a commit SHA, a tag, `"$digest: src/**"`) when a rebuild should discard the old answers. Distinct from a test case's own [`cache_salt`](#inline-and-loaded-test-fields), which keys a single case; see [caching.md](./caching.md). |
 
 ```yaml
 providers:

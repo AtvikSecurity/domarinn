@@ -144,7 +144,7 @@ tests:
         value: "49"
 ```
 
-Everything else renders through real Jinja (minijinja) with strict undefined — a typo'd variable is an error, not an empty string. See [configuration.md](./configuration.md#templating).
+Everything else renders through real Jinja (minijinja) with strict undefined — a typo'd variable is an error, not an empty string. See [configuration.md](./configuration.md#templating-and-the-raw-escape-hatch).
 
 ## Add a real model and an LLM grader
 

@@ -297,7 +297,7 @@ JSON document (see [`./protocol.md`](./protocol.md) and `domarinn schema result`
 | `200 OK`      | Identical run id + content already existed. Body: `{ "id", "url" }`. |
 | `409 Conflict`| Same run id, **different** content. |
 
-The `url` in the response is a browser link to the run. It is built from `DOMARINN_PUBLIC_URL` when set; otherwise from the request's `Host` header and `X-Forwarded-Proto` (see [`./deploy.md`](./deploy.md#reverse-proxies)).
+The `url` in the response is a browser link to the run. It is built from `DOMARINN_PUBLIC_URL` when set; otherwise from the request's `Host` header and `X-Forwarded-Proto` (see [`./deploy.md`](./deploy.md#reverse-proxies-and-share-links)).
 
 **List filters** (`GET /api/v1/runs`, all optional query params): `project`, `suite`, `tag`, `branch`, `status`, `since`, `until` (each epoch-ms *or* RFC3339), `limit` (default `50`, max `200`), `cursor`. The response is `{ "runs": [...], "next_cursor": "<cursor|null>" }`; pass `next_cursor` back as `cursor` to page.
 
