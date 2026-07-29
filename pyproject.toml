@@ -1,0 +1,27 @@
+# Docs-site Python toolchain for domarinn.
+#
+# domarinn is a Rust workspace; this pyproject exists ONLY to pin the MkDocs +
+# Material toolchain that builds the user docs under docs/. Cargo ignores it.
+# It is NOT an installable package (tool.uv.package = false) — `uv run mkdocs …`
+# just resolves the pinned tools below from the committed uv.lock.
+#
+# `mise run docs` / `mise run docs-serve` drive this via uv so the versions are
+# reproducible in CI (mise installs uv; uv installs from uv.lock). Bump a tool
+# here, then `uv lock` and commit the refreshed uv.lock.
+[project]
+name = "domarinn-docs"
+version = "0.0.0"
+description = "MkDocs Material toolchain for the domarinn documentation site."
+requires-python = ">=3.11"
+dependencies = [
+    # Material brings mkdocs itself, plus a bundled mermaid.js — no separate
+    # diagram asset to vendor or regenerate.
+    "mkdocs-material>=9.5,<10",
+    # snippets (the `--8<--` transclusions that keep docs and examples one
+    # artifact), superfences, the blocks admonition/tab syntax.
+    "pymdown-extensions>=10.7",
+]
+
+[tool.uv]
+# This project is tooling, not a library — don't try to build or install it.
+package = false

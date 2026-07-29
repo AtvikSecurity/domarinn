@@ -15,6 +15,14 @@ web/dist/
 # Runtime data dir created by `domarinn server` / docker-compose
 data/
 
+# Built documentation site (`mise run docs`). Published from CI as a Pages
+# artifact, never committed.
+site/
+
+# The venv `uv run` materializes the uv.lock-pinned MkDocs toolchain into.
+# Reproducible from pyproject.toml + uv.lock, so it is a build artifact.
+.venv/
+
 # mise local overrides (per-developer env, e.g. smoke-test endpoints)
 .mise/config.local.toml
 mise.local.toml
