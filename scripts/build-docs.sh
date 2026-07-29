@@ -98,6 +98,93 @@ echo "==> mkdocs build (--strict: a broken link or missing nav file fails here)"
 # uv run resolves MkDocs + plugins from the committed uv.lock into a managed venv.
 uv run mkdocs build --strict --site-dir "$OUT"
 
+echo "==> checking redirect stubs against mkdocs.yml's redirect_maps"
+# mkdocs-redirects (wired in mkdocs.yml's plugins:) already warns — and
+# --strict above already fails the build on — a redirect_maps entry whose
+# target page doesn't exist. It says nothing about whether the stub it wrote
+# is the one we actually expect, so check that too: parse redirect_maps
+# straight out of mkdocs.yml (a small heredoc, not hand-rolled YAML in bash)
+# and, for each entry, assert the old page's stub exists under site_dir and
+# points at the new page.
+OUT="$OUT" uv run python - <<'PYEOF'
+import os, pathlib, sys, yaml
+
+
+class MkDocsConfigLoader(yaml.SafeLoader):
+    """SafeLoader that tolerates mkdocs.yml's !!python/... tags.
+
+    toc.slugify and superfences' custom_fences each wire a Python callable
+    that way; we only read `plugins` here, so swallow those tags rather than
+    choke on them.
+    """
+
+
+MkDocsConfigLoader.add_multi_constructor(
+    "tag:yaml.org,2002:python/", lambda loader, suffix, node: None
+)
+
+config = yaml.load(pathlib.Path("mkdocs.yml").read_text(), Loader=MkDocsConfigLoader)
+
+redirect_maps = {}
+for entry in config.get("plugins", []):
+    if isinstance(entry, dict) and "redirects" in entry:
+        redirect_maps = (entry["redirects"] or {}).get("redirect_maps") or {}
+        break
+
+site_dir = pathlib.Path(os.environ["OUT"])
+
+errors = []
+verified = 0
+for old, new in redirect_maps.items():
+    # use_directory_urls is on, so 'getting-started.md' -> a stub at
+    # 'site/getting-started/index.html' that points at the new page's own
+    # directory-style URL. An index.md-style path (either side) instead maps
+    # to its *section root* — a different shape this checker doesn't attempt
+    # to follow. The map won't contain one for now; error loudly rather than
+    # silently checking the wrong file if that ever changes.
+    if pathlib.Path(old).name == "index.md" or pathlib.Path(new).name == "index.md":
+        errors.append(f"{old} -> {new}: index.md-style paths are unsupported here")
+        continue
+    if not old.endswith(".md") or not new.endswith(".md"):
+        errors.append(f"{old} -> {new}: both sides must be docs/-relative .md paths")
+        continue
+
+    stub = site_dir / old[: -len(".md")] / "index.html"
+    new_url = new[: -len(".md")] + "/"
+    if not stub.is_file():
+        errors.append(f"{old}: expected redirect stub {stub} was not written")
+    elif new_url not in stub.read_text():
+        errors.append(f"{old}: {stub} does not point at {new_url}")
+    else:
+        verified += 1
+
+if errors:
+    print("redirect check FAILED:", *errors, sep="\n  ", file=sys.stderr)
+    sys.exit(1)
+print(f"    {verified} redirects verified")
+PYEOF
+
+echo "==> style gates (docs/ link + fence conventions; report-only for now)"
+# TODO(docs-overhaul): flip both of these to blocking once the docs
+# restructure normalizes the patterns they report across docs/.
+RELATIVE_LINKS="$(grep -rn '](\./' docs || true)"
+if [ -z "$RELATIVE_LINKS" ]; then
+  echo "    0 './'-relative links in docs/"
+else
+  echo "    $(printf '%s\n' "$RELATIVE_LINKS" | wc -l) './'-relative link(s) in docs/ (sample, up to 5):"
+  printf '%s\n' "$RELATIVE_LINKS" | head -5 | sed 's/^/      /'
+fi
+
+# TODO(docs-overhaul): flip to blocking once docs/ fences are normalized to
+# sh/console/bare (the repo convention).
+BASH_FENCES="$(grep -rn '^```bash' docs || true)"
+if [ -z "$BASH_FENCES" ]; then
+  echo "    0 '\`\`\`bash' fenced blocks in docs/"
+else
+  echo "    $(printf '%s\n' "$BASH_FENCES" | wc -l) '\`\`\`bash' fenced block(s) in docs/ (sample, up to 5):"
+  printf '%s\n' "$BASH_FENCES" | head -5 | sed 's/^/      /'
+fi
+
 echo "==> nesting rustdoc under ${OUT}/rustdoc"
 rm -rf "${OUT}/rustdoc"
 cp -r target/doc "${OUT}/rustdoc"

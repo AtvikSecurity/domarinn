@@ -20,6 +20,13 @@ dependencies = [
     # snippets (the `--8<--` transclusions that keep docs and examples one
     # artifact), superfences, the blocks admonition/tab syntax.
     "pymdown-extensions>=10.7",
+    # Old -> new page redirects (see the `redirects:` entry in mkdocs.yml) so a
+    # published URL never 404s after a docs-restructure page move. Capped
+    # below 1.2.3 deliberately: that release grew a dependency on
+    # `properdocs`, a rival project's nagware banner bundled as an import
+    # side effect — see 1.2.2's plugin.py vs 1.2.3's for the diff. Not
+    # something this repo's lockfile should carry.
+    "mkdocs-redirects>=1.2,<1.2.3",
 ]
 
 [tool.uv]

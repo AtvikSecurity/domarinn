@@ -150,6 +150,14 @@ markdown_extensions:
 
 plugins:
   - search
+  # Old -> new page moves get an entry here so a published URL never 404s once
+  # the page is gone. mkdocs-redirects writes a static HTML stub at the old
+  # path whose JS carries over any URL fragment (#anchor) to the new page, so
+  # deep links keep working too. Empty for now — this lands ahead of the docs
+  # restructure that will populate it; scripts/build-docs.sh verifies every
+  # entry against the built site.
+  - redirects:
+      redirect_maps: {}
 
 nav:
   - Introduction: index.md
