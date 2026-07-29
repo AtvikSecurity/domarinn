@@ -195,8 +195,10 @@ pub fn stub_server_owned(
 ///
 /// Gives up after `deadline` rather than blocking forever, so a client that
 /// makes *fewer* calls than expected fails the assertion instead of hanging the
-/// suite. Returns the request lines it served, so a test can assert which
-/// endpoints were actually called.
+/// suite. Returns the full requests it served — request line, headers, body —
+/// so a test can assert which endpoints were called and what reached the wire
+/// (the examples harness asserts an env-overridden `model` actually lands in
+/// the request body).
 pub fn stub_routes(
     routes: Vec<(&'static str, String)>,
     count: usize,
@@ -276,7 +278,7 @@ pub fn stub_script(
             };
             sock.write_all(response.as_bytes()).ok();
             sock.flush().ok();
-            served.push(line);
+            served.push(String::from_utf8_lossy(&buf).into_owned());
         }
         served
     });

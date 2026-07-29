@@ -15,6 +15,8 @@ mod common;
 // `tests/table.rs`, which Cargo auto-discovers as a *separate* test target. A
 // `tests/examples/` directory with no `main.rs` is not auto-discovered, so the
 // whole harness links as one binary.
+#[path = "examples/docs_guards.rs"]
+mod docs_guards;
 #[path = "examples/stubs.rs"]
 mod stubs;
 #[path = "examples/table.rs"]
@@ -133,11 +135,24 @@ fn the_stub_waits_for_a_request_body_before_replying() {
     assert_eq!(body_of(&response), r#"{"ok":true}"#);
 
     // Guard against a vacuous pass: prove the stub routed *this* request rather
-    // than the assertions above passing on some unrelated reply.
+    // than the assertions above passing on some unrelated reply — and that it
+    // recorded the whole request, body included, which is what lets the
+    // examples harness assert on what actually reached the wire.
+    let served = server.join().unwrap();
     assert_eq!(
-        server.join().unwrap(),
-        vec!["POST /v1/messages HTTP/1.1".to_string()],
+        served.len(),
+        1,
         "the stub did not record the POST it answered"
+    );
+    assert!(
+        served[0].starts_with("POST /v1/messages HTTP/1.1"),
+        "recorded request lost its request line: {:?}",
+        served[0]
+    );
+    assert!(
+        served[0].ends_with(body),
+        "recorded request lost its body: {:?}",
+        served[0]
     );
 }
 
@@ -270,183 +285,6 @@ fn scrubbed_bin() -> Command {
     cmd
 }
 
-/// `NN-kebab-name`: two digits, a dash, then lowercase words.
-///
-/// Policed rather than merely conventional because the docs address examples by
-/// this shape, and a misnamed directory is one the ladder cannot transclude.
-fn is_ladder_name(name: &str) -> bool {
-    let Some((num, rest)) = name.split_once('-') else {
-        return false;
-    };
-    num.len() == 2
-        && num.chars().all(|c| c.is_ascii_digit())
-        && !rest.is_empty()
-        && rest
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-/// Every example directory that ships, by name.
-fn shipped_example_dirs() -> BTreeSet<String> {
-    let root = examples_root();
-    let mut out = BTreeSet::new();
-    for entry in std::fs::read_dir(&root).expect("examples/ exists") {
-        let entry = entry.expect("readable directory entry");
-        if !entry.file_type().expect("file type").is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        assert!(
-            is_ladder_name(&name),
-            "examples/{name}/ does not match the NN-kebab-name scheme the docs \
-             address examples by. Rename it, or move it out of examples/ if it \
-             is not an example."
-        );
-        assert!(
-            entry.path().join("domarinn.yaml").is_file(),
-            "examples/{name}/ has no domarinn.yaml, so there is no suite to run"
-        );
-        out.insert(name);
-    }
-    out
-}
-
-/// A directory under `examples/` that no row covers is an example nobody runs,
-/// and an example nobody runs is a page that lies. This is the guard that makes
-/// "every example is verified end to end" a property of the repository rather
-/// than of whoever reviewed the last pull request.
-#[test]
-fn every_shipped_example_is_in_the_table() {
-    let shipped = shipped_example_dirs();
-    // Guard against a vacuous pass: a broken glob — a moved crate, a renamed
-    // directory — yields an empty set that satisfies every assertion below,
-    // and this test would stay green forever while covering nothing.
-    assert!(
-        shipped.len() >= 4,
-        "found {} example directories under {}; the glob is broken, not the repo",
-        shipped.len(),
-        examples_root().display()
-    );
-
-    let covered: BTreeSet<&str> = EXAMPLES.iter().map(|e| e.dir).collect();
-    assert_eq!(
-        covered.len(),
-        EXAMPLES.len(),
-        "two rows name the same example directory"
-    );
-
-    let untested: Vec<&str> = shipped
-        .iter()
-        .filter(|d| !covered.contains(d.as_str()))
-        .map(String::as_str)
-        .collect();
-    assert!(
-        untested.is_empty(),
-        "these examples ship but nothing runs them: {untested:?}\n\
-         Add a row to crates/domarinn-cli/tests/examples/table.rs — a directory \
-         under examples/ and a row in that table are the same thing."
-    );
-
-    let stale: Vec<&str> = EXAMPLES
-        .iter()
-        .map(|e| e.dir)
-        .filter(|d| !shipped.contains(*d))
-        .collect();
-    assert!(
-        stale.is_empty(),
-        "these rows name directories that no longer exist: {stale:?}"
-    );
-}
-
-/// An example the documentation never shows is dead weight that still has to be
-/// kept green; a `--8<--` pointing at a file that is not there renders as a
-/// broken page.
-///
-/// MkDocs' `check_paths` catches only the second, and only when the site is
-/// built. The reverse — an example no page transcludes — is invisible to it,
-/// which is exactly the direction that rots: an example gets renamed, the page
-/// keeps showing the old one, and nobody notices because both still exist.
-#[test]
-fn every_example_is_transcluded_and_every_transclusion_resolves() {
-    let root = repo_root();
-    let includes = snippet_includes(&root.join("docs"));
-    assert!(
-        !includes.is_empty(),
-        "no `--8<--` includes found under docs/; the scanner is broken, or the \
-         examples are not being transcluded anywhere"
-    );
-
-    // Forward: a snippet path must exist. Resolved against the repo root, which
-    // is what pymdownx.snippets' `base_path` is set to in mkdocs.yml.
-    let dangling: Vec<&(String, String)> = includes
-        .iter()
-        .filter(|(_, path)| !root.join(path).is_file())
-        .collect();
-    assert!(
-        dangling.is_empty(),
-        "doc snippets point at files that do not exist: {dangling:#?}"
-    );
-
-    // Reverse: every example is shown somewhere.
-    let shown: BTreeSet<&str> = includes
-        .iter()
-        .filter_map(|(_, path)| path.strip_prefix("examples/"))
-        .filter_map(|rest| rest.split('/').next())
-        .collect();
-    let undocumented: Vec<&str> = EXAMPLES
-        .iter()
-        .map(|e| e.dir)
-        .filter(|d| !shown.contains(d))
-        .collect();
-    assert!(
-        undocumented.is_empty(),
-        "these examples are tested but no page shows them: {undocumented:?}\n\
-         Transclude each with `--8<-- \"examples/<dir>/domarinn.yaml\"`, or \
-         delete it: an example whose only reader is CI is a maintenance cost \
-         with no payer."
-    );
-}
-
-/// Every `--8<-- "path"` in every markdown file under `dir`, as (page, path).
-fn snippet_includes(dir: &Path) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        for entry in std::fs::read_dir(&current).expect("readable docs directory") {
-            let path = entry.expect("readable entry").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "md") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
-            for line in text.lines() {
-                let Some(rest) = line.trim_start().strip_prefix("--8<--") else {
-                    continue;
-                };
-                let quoted = rest.trim();
-                let include = quoted
-                    .strip_prefix('"')
-                    .and_then(|r| r.strip_suffix('"'))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "{}: `--8<--` is not the inline quoted form this repo \
-                             uses, so nothing checks it: {line}",
-                            path.display()
-                        )
-                    });
-                // A `file:section` or `file:5:8` include names the file before
-                // the first colon.
-                let file = include.split(':').next().unwrap_or(include);
-                out.push((path.display().to_string(), file.to_string()));
-            }
-        }
-    }
-    out
-}
-
 /// A missing interpreter is not an example failure, and must not read like one.
 ///
 /// Without this, `python3` absent turns every python-backed row red at once
@@ -529,6 +367,100 @@ fn example_05_scores_are_what_its_comments_claim() {
         "weighted scored {}, the page says (1*3 + 0*1) / 4",
         score("gate/weighted")
     );
+}
+
+/// Run one shipped example against a scripted stub with extra environment,
+/// asserting success and the exact call count, and hand back the full requests
+/// the stub served.
+///
+/// This exists for the `${env:…}` override invocations the example pages
+/// document. The table rows exercise only the `:-default` branch — HOST_ENV
+/// scrubs the variables — so without these runs a typo'd variable name, or a
+/// quiet fall back to a literal, would keep CI green while every documented
+/// override invocation silently tested the default.
+fn run_with_env(
+    dir: &str,
+    routes: Vec<(&'static str, Vec<String>)>,
+    calls: usize,
+    env: &[(&str, &str)],
+) -> Vec<String> {
+    let (url, server) = stub_script(routes, calls, Duration::from_secs(30));
+    let tmp = tempfile::tempdir().expect("scratch directory");
+    let mut cmd = scrubbed_bin();
+    cmd.args(["run"])
+        .arg(examples_root().join(dir))
+        .args(["--format", "json", "--no-progress", "--out"])
+        .arg(tmp.path().join("result.json"))
+        .arg("--cache-dir")
+        .arg(tmp.path().join("cache"))
+        .env("OPENAI_BASE_URL", format!("{url}/v1"))
+        .env("OPENAI_API_KEY", "sk-stub-not-a-real-key")
+        .current_dir(tmp.path());
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let out = cmd.output().expect("the domarinn binary runs");
+    assert!(
+        out.status.success(),
+        "`domarinn run {dir}` with {env:?} failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let served = server.join().expect("the stub thread does not panic");
+    assert_eq!(
+        served.len(),
+        calls,
+        "example `{dir}` with {env:?} made {} stub request(s), expected {calls}",
+        served.len()
+    );
+    served
+}
+
+/// Example 26's page documents `OPENAI_MODEL=… domarinn run …` as the way to
+/// point the suite at another model. Prove the override survives load-time
+/// interpolation all the way into the request body — the row above can only
+/// ever see the default, so this is the one place the documented invocation is
+/// actually exercised.
+#[test]
+fn example_26_env_overridden_model_reaches_the_wire() {
+    let served = run_with_env(
+        "26-openai-provider",
+        vec![(
+            "/chat/completions",
+            vec![
+                stubs::OPENAI_TEXT.to_string(),
+                stubs::OPENAI_TEXT_ALT.to_string(),
+            ],
+        )],
+        2,
+        &[("OPENAI_MODEL", "stub-chat-override")],
+    );
+    for request in &served {
+        assert!(
+            request.contains(r#""model":"stub-chat-override""#),
+            "the overridden model never reached the request body: {request:?}"
+        );
+    }
+}
+
+/// The embeddings twin of the test above: example 30's `similar` assertion
+/// documents `OPENAI_EMBED_MODEL` as its override.
+#[test]
+fn example_30_env_overridden_embed_model_reaches_the_wire() {
+    let served = run_with_env(
+        "30-similar-embeddings",
+        vec![(
+            "/embeddings",
+            vec![stubs::EMBED_A.to_string(), stubs::EMBED_NEAR_A.to_string()],
+        )],
+        2,
+        &[("OPENAI_EMBED_MODEL", "stub-embed-override")],
+    );
+    for request in &served {
+        assert!(
+            request.contains(r#""model":"stub-embed-override""#),
+            "the overridden embeddings model never reached the request body: {request:?}"
+        );
+    }
 }
 
 /// Run one shipped example offline and hand back its result document.
@@ -627,6 +559,12 @@ fn verify(spec: &Example) {
         // reached the stub — almost always because `${env:…}` stopped
         // redirecting `base_url`, which in CI means the request went to the
         // real vendor.
+        // Request lines only: the recorded requests carry their whole bodies,
+        // which on a miscount would bury the useful part of this message.
+        let lines: Vec<&str> = served
+            .iter()
+            .map(|r| r.lines().next().unwrap_or_default())
+            .collect();
         assert_eq!(
             served.len(),
             spec.stub_calls,
@@ -638,7 +576,7 @@ fn verify(spec: &Example) {
             spec.dir,
             served.len(),
             spec.stub_calls,
-            served.join("\n  "),
+            lines.join("\n  "),
             spec.dir,
         );
     }
