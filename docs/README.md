@@ -1,14 +1,10 @@
 # domarinn documentation
 
-domarinn is a declarative LLM prompt/eval harness: one static Rust binary that
-is a CLI, an evaluation engine, and a self-hostable results server with an
-embedded web UI. It treats your own system — a command, an HTTP endpoint, or a
-model — as the thing under test.
+domarinn is a declarative LLM prompt/eval harness: one static Rust binary that is a CLI, an evaluation engine, and a self-hostable results server with an embedded web UI. It treats your own system — a command, an HTTP endpoint, or a model — as the thing under test.
 
 ## Start here
 
-- **[Getting started](./getting-started.md)** — install, write and run your first
-  suite offline, add a model and an LLM grader, view and share results.
+- **[Getting started](./getting-started.md)** — install, write and run your first suite offline, add a model and an LLM grader, view and share results.
 
 ## Guides
 
@@ -33,14 +29,10 @@ model — as the thing under test.
 
 ## Why domarinn
 
-- **Your system is the system under test.** An external command or HTTP endpoint
-  is a first-class provider; prompts are optional.
-- **Real Jinja** with a per-value `!raw` escape hatch, so literal template syntax
-  in test inputs is never interpolated.
+- **Your system is the system under test.** An external command or HTTP endpoint is a first-class provider; prompts are optional.
+- **Real Jinja** with a per-value `!raw` escape hatch, so literal template syntax in test inputs is never interpolated.
 - **Deterministic assertions run first** and short-circuit the expensive grader.
-- **The grader is structured and fails closed** — no verdicts parsed out of prose,
-  no silent passes.
-- **Statistics built in** — confidence intervals and paired significance, not bare
-  pass rates.
+- **The grader is structured and fails closed** — no verdicts parsed out of prose, no silent passes.
+- **Statistics built in** — confidence intervals and paired significance, not bare pass rates.
 - **Caching you can share** over a server URL or an S3 bucket.
 - **One binary** — CLI, engine, and server, with the web UI embedded.

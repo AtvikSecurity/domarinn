@@ -1,17 +1,8 @@
 # Suite configuration (`domarinn.yaml`)
 
-A domarinn suite is a single declarative YAML file (conventionally
-`domarinn.yaml`) that describes **what to test**, **which systems to test it
-against**, and **how to judge the answers**. You point the CLI at it —
-`domarinn run .` uses `domarinn.yaml` in the current directory, or pass an
-explicit file. This page documents every field of that file, verified against
-the schema in `domarinn-core`.
+A domarinn suite is a single declarative YAML file (conventionally `domarinn.yaml`) that describes **what to test**, **which systems to test it against**, and **how to judge the answers**. You point the CLI at it — `domarinn run .` uses `domarinn.yaml` in the current directory, or pass an explicit file. This page documents every field of that file, verified against the schema in `domarinn-core`.
 
-The config is deserialized straight from these structs, so the shapes here are
-the source of truth. A machine-readable JSON Schema is generated from the same
-types (see [Editor completion](#editor-completion-and-validation)), and
-`domarinn validate` checks a suite structurally without making any provider
-calls.
+The config is deserialized straight from these structs, so the shapes here are the source of truth. A machine-readable JSON Schema is generated from the same types (see [Editor completion](#editor-completion-and-validation)), and `domarinn validate` checks a suite structurally without making any provider calls.
 
 ## A minimal complete suite
 
@@ -39,16 +30,11 @@ tests:
       - { type: icontains, value: "Paris" }
 ```
 
-Only `version` and a non-empty `providers` list are strictly required.
-`prompts` is optional — omit it when a provider builds its own input (for
-example an `exec` provider that reads the test `vars` directly). Everything else
-layers on top.
+Only `version` and a non-empty `providers` list are strictly required. `prompts` is optional — omit it when a provider builds its own input (for example an `exec` provider that reads the test `vars` directly). Everything else layers on top.
 
 ## Editor completion and validation
 
-Generate the JSON Schema and drop the language-server hint at the top of your
-suite for autocomplete and inline validation in editors that speak the YAML
-Language Server:
+Generate the JSON Schema and drop the language-server hint at the top of your suite for autocomplete and inline validation in editors that speak the YAML Language Server:
 
 ```sh
 domarinn schema config > domarinn.schema.json
@@ -60,10 +46,7 @@ version: 1
 # ...
 ```
 
-The schema is regenerated from the config structs, so it never drifts from what
-the loader accepts. See [`cli.md`](./cli.md) for `domarinn validate`, which
-reports structural issues (unknown version, empty providers, duplicate ids, a
-prompt that sets both `template` and `messages`, and so on).
+The schema is regenerated from the config structs, so it never drifts from what the loader accepts. See [`cli.md`](./cli.md) for `domarinn validate`, which reports structural issues (unknown version, empty providers, duplicate ids, a prompt that sets both `template` and `messages`, and so on).
 
 ## Top-level fields
 
@@ -95,10 +78,7 @@ description: Checks that the assistant declines out-of-scope requests.
 
 ## `providers`
 
-Each provider is one system under test. Every provider has an `id` (unique
-within the suite), an optional human-friendly `label`, and a `type`
-discriminator that selects one of five kinds. Fields other than `id`, `label`,
-and `type` belong to the chosen kind.
+Each provider is one system under test. Every provider has an `id` (unique within the suite), an optional human-friendly `label`, and a `type` discriminator that selects one of five kinds. Fields other than `id`, `label`, and `type` belong to the chosen kind.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -106,14 +86,11 @@ and `type` belong to the chosen kind.
 | `label` | string | no | Display name in output. |
 | `type` | enum | **yes** | One of `exec`, `anthropic`, `openai`, `http`, `embeddings`. |
 
-See [`providers.md`](./providers.md) for behavior and protocol details; the
-tables below cover the config surface.
+See [`providers.md`](./providers.md) for behavior and protocol details; the tables below cover the config surface.
 
 ### Environment interpolation (`${env:VAR}`)
 
-Provider **configuration** may pull values from the environment with a
-`${env:VAR}` placeholder, resolved once at load time — so a suite can point at a
-per-developer endpoint or a per-environment gateway without committing it:
+Provider **configuration** may pull values from the environment with a `${env:VAR}` placeholder, resolved once at load time — so a suite can point at a per-developer endpoint or a per-environment gateway without committing it:
 
 ```yaml
 providers:
@@ -130,17 +107,9 @@ providers:
 | `${env:VAR:-default}` | The value of `VAR`, or `default` when `VAR` is unset. |
 | `$${env:VAR}` | An **escape** — rendered as the literal text `${env:VAR}`, no lookup. |
 
-Scope is deliberately narrow. Interpolation runs **only** over provider-bearing
-config: every entry in `providers`, the `provider:` block inside any `grader`
-(top-level or on an `llm-rubric` assert), and the `cache.s3` settings. It is
-resolved on the fully composed document — after [`extends`/`imports`](#composition-with-extends-and-imports)
-merge — so a placeholder introduced by a base layer still resolves.
+Scope is deliberately narrow. Interpolation runs **only** over provider-bearing config: every entry in `providers`, the `provider:` block inside any `grader` (top-level or on an `llm-rubric` assert), and the `cache.s3` settings. It is resolved on the fully composed document — after [`extends`/`imports`](#composition-with-extends-and-imports) merge — so a placeholder introduced by a base layer still resolves.
 
-`${env:…}` is **not** applied to test `vars`. Vars have their own, sandboxed
-templating (`{{ env.X }}`, below), kept separate so an untrusted fixture can
-never smuggle a different endpoint or key name into a provider. A `${…}` that is
-not `${env:…}` (for example a placeholder your own HTTP backend interprets) is
-left untouched.
+`${env:…}` is **not** applied to test `vars`. Vars have their own, sandboxed templating (`{{ env.X }}`, below), kept separate so an untrusted fixture can never smuggle a different endpoint or key name into a provider. A `${…}` that is not `${env:…}` (for example a placeholder your own HTTP backend interprets) is left untouched.
 
 > This resolves the *endpoint*, not the *secret*. API keys are still read at
 > call time from the variable named by `api_key_env` — never written into the
@@ -148,8 +117,7 @@ left untouched.
 
 ### `type: exec`
 
-Spawns an external command that speaks the exec JSON protocol on stdio — the
-escape hatch for testing anything you can run as a process.
+Spawns an external command that speaks the exec JSON protocol on stdio — the escape hatch for testing anything you can run as a process.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -193,8 +161,7 @@ providers:
 
 ### `type: openai`
 
-OpenAI-compatible chat-completions client — works against any endpoint that
-implements that API.
+OpenAI-compatible chat-completions client — works against any endpoint that implements that API.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -214,8 +181,7 @@ providers:
 
 ### `type: http`
 
-Call an arbitrary HTTP endpoint. Headers and the body are templated with the
-test context, and `output_expr` pulls the model's answer out of the response.
+Call an arbitrary HTTP endpoint. Headers and the body are templated with the test context, and `output_expr` pulls the model's answer out of the response.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -242,10 +208,7 @@ providers:
 
 ### `type: embeddings`
 
-An embeddings endpoint used by the [`similar`](./assertions.md) assertion to
-compute cosine similarity. It is **not** a system under test — it is skipped
-when running the test matrix and is only invoked when a `similar` assertion
-needs an embedding.
+An embeddings endpoint used by the [`similar`](./assertions.md) assertion to compute cosine similarity. It is **not** a system under test — it is skipped when running the test matrix and is only invoked when a `similar` assertion needs an embedding.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -270,9 +233,7 @@ providers:
 
 ## `prompts`
 
-A prompt turns a test's `vars` into the actual input sent to a provider. Each
-prompt has an `id` and **exactly one** of `template` or `messages` (setting both
-or neither is a validation error).
+A prompt turns a test's `vars` into the actual input sent to a provider. Each prompt has an `id` and **exactly one** of `template` or `messages` (setting both or neither is a validation error).
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -280,8 +241,7 @@ or neither is a validation error).
 | `template` | string | one-of | A single template string. May be `file://path.j2` to load from disk (relative to the suite directory). |
 | `messages` | list of `{role, content}` | one-of | A chat transcript. Each `content` may be `file://path` to load from disk. |
 
-Prompts are rendered with the test's **rendered vars plus `env`** (see
-[Templating](#templating-and-the-raw-escape-hatch)).
+Prompts are rendered with the test's **rendered vars plus `env`** (see [Templating](#templating-and-the-raw-escape-hatch)).
 
 ```yaml
 prompts:
@@ -300,9 +260,7 @@ prompts:
       - { role: user, content: "{{ request }}" }
 ```
 
-Omit `prompts` entirely when a provider builds its own input from the test
-`vars` — an `exec` provider, for instance, receives the vars directly over its
-protocol.
+Omit `prompts` entirely when a provider builds its own input from the test `vars` — an `exec` provider, for instance, receives the vars directly over its protocol.
 
 ---
 
@@ -310,10 +268,8 @@ protocol.
 
 The `tests:` list accepts **three item shapes**, freely mixed:
 
-1. **A `file://` glob string** — loads test cases from YAML / JSON / CSV / JSONL
-   files.
-2. **A generator object** — `{ generator: { command: [...], config?, timeout_ms? } }`
-   runs an external command (over the exec protocol) that emits test cases.
+1. **A `file://` glob string** — loads test cases from YAML / JSON / CSV / JSONL files.
+2. **A generator object** — `{ generator: { command: [...], config?, timeout_ms? } }` runs an external command (over the exec protocol) that emits test cases.
 3. **An inline test object** — the test written directly in the suite.
 
 ```yaml
@@ -365,19 +321,11 @@ tests:
     skip_providers: [embed]
 ```
 
-Assertions carry two common controls in addition to their `type`: `weight`
-(default `1.0`, used for the weighted mean when a `threshold` is set) and
-`negate` (default `false`, inverts the result). The `type: not-<kind>` spelling
-is sugar for `negate: true` — e.g. `type: not-contains` is exactly
-`type: contains` with `negate: true`. Full assertion reference:
-[`assertions.md`](./assertions.md).
+Assertions carry two common controls in addition to their `type`: `weight` (default `1.0`, used for the weighted mean when a `threshold` is set) and `negate` (default `false`, inverts the result). The `type: not-<kind>` spelling is sugar for `negate: true` — e.g. `type: not-contains` is exactly `type: contains` with `negate: true`. Full assertion reference: [`assertions.md`](./assertions.md).
 
 ### Matrix / parameter sweeps
 
-A case with a `matrix` **fans out over the cartesian product of its axes** — one
-concrete case per combination. Each axis maps a var name to the list of values
-it takes, and each combination's axis values are merged into `vars` (the axis
-**wins** over a base var of the same name, for that key only):
+A case with a `matrix` **fans out over the cartesian product of its axes** — one concrete case per combination. Each axis maps a var name to the list of values it takes, and each combination's axis values are merged into `vars` (the axis **wins** over a base var of the same name, for that key only):
 
 ```yaml
 tests:
@@ -390,10 +338,7 @@ tests:
       - { type: icontains, value: "Ada" }
 ```
 
-This expands to **four** cases. Axes iterate in **sorted key order**, and the
-default id encodes every `key=value` pair, so ids are deterministic and stable
-across runs (which keeps [`CaseKey`](#test-ids)s — and therefore diffing —
-stable):
+This expands to **four** cases. Axes iterate in **sorted key order**, and the default id encodes every `key=value` pair, so ids are deterministic and stable across runs (which keeps [`CaseKey`](#test-ids)s — and therefore diffing — stable):
 
 ```
 greet[style=terse,temperature=0]
@@ -402,8 +347,7 @@ greet[style=warm,temperature=0]
 greet[style=warm,temperature=1]
 ```
 
-For a friendlier id shape, set `matrix_id` to a minijinja template rendered
-against the axis values of each combination:
+For a friendlier id shape, set `matrix_id` to a minijinja template rendered against the axis values of each combination:
 
 ```yaml
   - id: locale
@@ -414,42 +358,26 @@ against the axis values of each combination:
 
 Notes:
 
-- The matrix expands **before** `defaults` are merged, and it applies to
-  file-loaded cases too — a `matrix` in a `.yaml`/`.json` test file sweeps just
-  like an inline one.
+- The matrix expands **before** `defaults` are merged, and it applies to file-loaded cases too — a `matrix` in a `.yaml`/`.json` test file sweeps just like an inline one.
 - An **empty axis** (`style: []`) is an error — there is nothing to sweep.
 - Expansion is pure: a `!raw` axis value stays raw in the produced case's vars.
-- `matrix_id` sees only the axis values (not base vars), so it stays
-  deterministic.
+- `matrix_id` sees only the axis values (not base vars), so it stays deterministic.
 
 ### Test ids
 
 A test with no `id` is assigned one automatically:
 
-- **Inline tests** become `inline/<index>`, where `<index>` is the position in
-  the `tests:` list (e.g. `inline/0`).
-- **File-loaded tests** become `<source-file-stem>/<index-within-file>` — a file
-  `cases.yaml` yields `cases/0`, `cases/1`, and so on.
-- **Generator-produced tests** become `<command-stem>/<index>`, where the stem
-  comes from the **first argv element**, not from any file the generator reads.
-  `command: ["./gen-cases.py", "--all"]` yields `gen-cases/0`; `command: ["sh",
-  "-c", "..."]` yields `sh/0`, because `sh` is what was spawned.
+- **Inline tests** become `inline/<index>`, where `<index>` is the position in the `tests:` list (e.g. `inline/0`).
+- **File-loaded tests** become `<source-file-stem>/<index-within-file>` — a file `cases.yaml` yields `cases/0`, `cases/1`, and so on.
+- **Generator-produced tests** become `<command-stem>/<index>`, where the stem comes from the **first argv element**, not from any file the generator reads. `command: ["./gen-cases.py", "--all"]` yields `gen-cases/0`; `command: ["sh", "-c", "..."]` yields `sh/0`, because `sh` is what was spawned.
 
-That last rule is worth knowing before you migrate a `file://` glob to a
-generator: the ids all change, and every case collapses into a single group, so
-`--filter` patterns and per-provider baselines written against the old ids stop
-matching. Have the generator emit its own `id` on each case if you want ids that
-survive the move.
+That last rule is worth knowing before you migrate a `file://` glob to a generator: the ids all change, and every case collapses into a single group, so `--filter` patterns and per-provider baselines written against the old ids stop matching. Have the generator emit its own `id` on each case if you want ids that survive the move.
 
-`domarinn list tests --generators` runs the generators and prints the ids they
-produce, which is how you preview `--filter` targets on a generator-driven
-suite. See [cli.md](./cli.md).
+`domarinn list tests --generators` runs the generators and prints the ids they produce, which is how you preview `--filter` targets on a generator-driven suite. See [cli.md](./cli.md).
 
 ### File formats for `file://` globs
 
-A glob string must start with `file://`; the remainder is a glob resolved
-relative to the suite directory. Matched files are sorted, then loaded by
-extension:
+A glob string must start with `file://`; the remainder is a glob resolved relative to the suite directory. Matched files are sorted, then loaded by extension:
 
 | Extension | Shape |
 |-----------|-------|
@@ -483,14 +411,11 @@ id,tags,question,__assert
 q1,"smoke,fast",what is 2+2,"[{""type"":""contains"",""value"":""4""}]"
 ```
 
-A `.tsv` file is the same as `.csv` but **tab-separated** — handy when field
-values contain commas.
+A `.tsv` file is the same as `.csv` but **tab-separated** — handy when field values contain commas.
 
 ### File-content vars (`!file` / `{$file}`)
 
-A single var can pull its value from a file next to the suite instead of being
-written inline — useful for large documents, shared golden fixtures, and
-adversarial inputs kept out of the YAML:
+A single var can pull its value from a file next to the suite instead of being written inline — useful for large documents, shared golden fixtures, and adversarial inputs kept out of the YAML:
 
 ```yaml
 tests:
@@ -500,9 +425,7 @@ tests:
       payload:  { $file: "fixtures/probe.txt", raw: true }  # never templated
 ```
 
-The `!file "path"` YAML tag and the format-agnostic `{$file: "path"}` object form
-are the same mechanism (the tag desugars to the object, exactly like `!raw`), so
-file vars work in JSON / JSONL / CSV fixtures too.
+The `!file "path"` YAML tag and the format-agnostic `{$file: "path"}` object form are the same mechanism (the tag desugars to the object, exactly like `!raw`), so file vars work in JSON / JSONL / CSV fixtures too.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
@@ -510,19 +433,13 @@ file vars work in JSON / JSONL / CSV fixtures too.
 | `parse` | `true` | When true, parse by extension: `.json` → JSON, `.yaml`/`.yml` → YAML, anything else → text. Set `false` to force text even for a structured extension. |
 | `raw` | `false` | When true, the loaded content is marked [raw](#keeping-a-literal-value-out-of-the-template-engine) and is **never** run through the template engine — the right choice for untrusted fixtures (an SSTI payload in the file stays literal). |
 
-**Sandboxed.** The path is resolved relative to the suite directory and must
-stay inside it: `!file "../../etc/passwd"` (or a symlink pointing outside the
-suite) is **refused**, not read. The same guard covers `file://` prompt/message
-content and `file://` test-file globs.
+**Sandboxed.** The path is resolved relative to the suite directory and must stay inside it: `!file "../../etc/passwd"` (or a symlink pointing outside the suite) is **refused**, not read. The same guard covers `file://` prompt/message content and `file://` test-file globs.
 
-**Cache note.** A file var's content becomes part of the rendered vars, which are
-the provider request identity (cache key) — so **editing a fixture busts the
-cache** for the cases that read it, exactly as editing an inline value would.
+**Cache note.** A file var's content becomes part of the rendered vars, which are the provider request identity (cache key) — so **editing a fixture busts the cache** for the cases that read it, exactly as editing an inline value would.
 
 ### Generators
 
-A generator defers to an external command at run time. It speaks the exec
-protocol and emits test cases as JSON.
+A generator defers to an external command at run time. It speaks the exec protocol and emits test cases as JSON.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -542,8 +459,7 @@ tests:
 
 ## `tools`
 
-Tools every provider in this suite may offer the model, graded by
-[`tool-call`](./assertions.md#tool-call) assertions.
+Tools every provider in this suite may offer the model, graded by [`tool-call`](./assertions.md#tool-call) assertions.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -562,19 +478,11 @@ tools:
         city: { type: string }
 ```
 
-Declaring a tool does **not** make domarinn run one — it never executes a tool
-and never feeds a result back. What it wants is the model's *decision*, which is
-fully observable in a single turn. See
-[protocol.md](./protocol.md#tools).
+Declaring a tool does **not** make domarinn run one — it never executes a tool and never feeds a result back. What it wants is the model's *decision*, which is fully observable in a single turn. See [protocol.md](./protocol.md#tools).
 
-Suite-level rather than per-test on purpose: the tool surface is a property of
-the system being evaluated, and varying it per case would make two cases
-incomparable while still looking like one suite.
+Suite-level rather than per-test on purpose: the tool surface is a property of the system being evaluated, and varying it per case would make two cases incomparable while still looking like one suite.
 
-Supported by `exec`, `anthropic` and `openai` providers. The declarations reach
-each vendor in its own shape (OpenAI wraps them as `function` objects), and are
-part of the request, so they are part of the cache key — a call offering a tool
-and one that does not are different questions.
+Supported by `exec`, `anthropic` and `openai` providers. The declarations reach each vendor in its own shape (OpenAI wraps them as `function` objects), and are part of the request, so they are part of the cache key — a call offering a tool and one that does not are different questions.
 
 ---
 
@@ -604,16 +512,13 @@ defaults:
 > sequence is **appended** (base then child). See
 > [Composition](#composition-with-extends-and-imports).
 
-Defaults are merged into generator-produced cases too. Those cases do **not**
-get matrix expansion or `file://` var resolution, which both run before a
-generator has produced anything.
+Defaults are merged into generator-produced cases too. Those cases do **not** get matrix expansion or `file://` var resolution, which both run before a generator has produced anything.
 
 ---
 
 ## `grader`
 
-The default LLM grader for [`llm-rubric`](./grading.md) assertions. A per-
-assertion `grader` overrides this one.
+The default LLM grader for [`llm-rubric`](./grading.md) assertions. A per- assertion `grader` overrides this one.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -631,8 +536,7 @@ grader:
   verdict_mode: forced
 ```
 
-See [`grading.md`](./grading.md) for how rubrics are scored and what `forced`
-vs `auto` do.
+See [`grading.md`](./grading.md) for how rubrics are scored and what `forced` vs `auto` do.
 
 ---
 
@@ -674,16 +578,14 @@ runner:
 
 ## `cache`
 
-Selects the response-cache **backend**. Provider responses are cached so re-runs
-are cheap; the backend decides where cached entries live.
+Selects the response-cache **backend**. Provider responses are cached so re-runs are cheap; the backend decides where cached entries live.
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `backend` | enum | `disk` | One of `disk`, `layered`, `http`, `s3`. |
 | `s3` | object | none | S3 settings when `backend: s3` (below). |
 
-**`s3`** sub-fields (non-secret only — credentials come from the environment /
-AWS credential chain):
+**`s3`** sub-fields (non-secret only — credentials come from the environment / AWS credential chain):
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -704,28 +606,19 @@ cache:
     force_path_style: true
 ```
 
-The suite only chooses the backend **type**. The server URL (for `http`) and any
-credentials are supplied by CLI flags and environment variables, not the config
-file. See [`caching.md`](./caching.md).
+The suite only chooses the backend **type**. The server URL (for `http`) and any credentials are supplied by CLI flags and environment variables, not the config file. See [`caching.md`](./caching.md).
 
 ---
 
 ## Templating and the `!raw` escape hatch
 
-Values are rendered through [minijinja](https://github.com/mitsuhiko/minijinja),
-a real Jinja engine, with **strict undefined** behavior: referencing a variable
-that doesn't exist is a **loud error**, not a silently-empty string. This
-catches typos like `{{ requset }}` immediately.
+Values are rendered through [minijinja](https://github.com/mitsuhiko/minijinja), a real Jinja engine, with **strict undefined** behavior: referencing a variable that doesn't exist is a **loud error**, not a silently-empty string. This catches typos like `{{ requset }}` immediately.
 
 **What gets rendered, and against what context:**
 
-- Each **var** value is rendered against a context that exposes only `env` (a
-  map of environment variables). Vars therefore **do not reference each other in
-  v1** — a var cannot template off another var's value.
-- The **prompt** is then rendered against the test's **rendered vars plus
-  `env`**.
-- On `http` providers, header **values** and the **body** are templated with the
-  test context as well.
+- Each **var** value is rendered against a context that exposes only `env` (a map of environment variables). Vars therefore **do not reference each other in v1** — a var cannot template off another var's value.
+- The **prompt** is then rendered against the test's **rendered vars plus `env`**.
+- On `http` providers, header **values** and the **body** are templated with the test context as well.
 
 ```yaml
 tests:
@@ -737,10 +630,7 @@ tests:
 
 ### Filters and functions
 
-On top of minijinja's own builtins — `trim`, `default`, `int`, `float`, `lower`,
-`upper`, `length`, `replace`, `join`, and the rest — domarinn registers the
-filters and functions below. They are available anywhere a template is rendered:
-vars, prompts, `http` headers/body, and `jinja` assertions.
+On top of minijinja's own builtins — `trim`, `default`, `int`, `float`, `lower`, `upper`, `length`, `replace`, `join`, and the rest — domarinn registers the filters and functions below. They are available anywhere a template is rendered: vars, prompts, `http` headers/body, and `jinja` assertions.
 
 **Deterministic** (same input → same output, always):
 
@@ -757,8 +647,7 @@ vars, prompts, `http` headers/body, and `jinja` assertions.
 | `s \| slugify` | filter | ASCII slug: lower-cased, non-alphanumerics collapse to single `-`, no leading/trailing dashes. |
 | `s \| truncate(n)` | filter | First `n` characters (by Unicode scalar). |
 
-**Pinned non-deterministic** — because a rendered prompt is persisted with the
-run and diffed across runs, these are constrained so a render stays reproducible:
+**Pinned non-deterministic** — because a rendered prompt is persisted with the run and diffed across runs, these are constrained so a render stays reproducible:
 
 | Call | Result |
 |------|--------|
@@ -767,10 +656,7 @@ run and diffed across runs, these are constrained so a render stays reproducible
 | `rand(seed)` | A deterministic float in `[0, 1)` derived from `seed`. |
 | `randint(lo, hi, seed)` | A deterministic integer in `[lo, hi]` (inclusive). |
 
-`uuid`, `rand`, and `randint` **require an explicit seed** — an unseeded
-`rand()` is a template error, not a fresh random value. Seed with something
-stable and per-case (e.g. `rand(vars.case_id)`) when you want variety that still
-reproduces.
+`uuid`, `rand`, and `randint` **require an explicit seed** — an unseeded `rand()` is a template error, not a fresh random value. Seed with something stable and per-case (e.g. `rand(vars.case_id)`) when you want variety that still reproduces.
 
 ```yaml
 tests:
@@ -780,17 +666,11 @@ tests:
       nonce: "{{ uuid(doc_id) }}"
 ```
 
-A [raw value](#keeping-a-literal-value-out-of-the-template-engine) bypasses the
-engine entirely, so `{{ x | sha256 }}` inside a `!raw` value is passed through
-verbatim — filters never touch it.
+A [raw value](#keeping-a-literal-value-out-of-the-template-engine) bypasses the engine entirely, so `{{ x | sha256 }}` inside a `!raw` value is passed through verbatim — filters never touch it.
 
 ### Keeping a literal value out of the template engine
 
-Sometimes a value *is* template-looking text that must never be interpolated —
-the classic case is an SSTI probe like `{{7*7}}` used as adversarial test input.
-If it rendered, `{{7*7}}` would become `49` and the test would be meaningless.
-There are three ways to mark a value **raw** (passed through verbatim, never seen
-by the template engine):
+Sometimes a value *is* template-looking text that must never be interpolated — the classic case is an SSTI probe like `{{7*7}}` used as adversarial test input. If it rendered, `{{7*7}}` would become `49` and the test would be meaningless. There are three ways to mark a value **raw** (passed through verbatim, never seen by the template engine):
 
 1. **The `!raw` YAML tag** (preferred, YAML only):
 
@@ -799,9 +679,7 @@ by the template engine):
      user_input: !raw "{{7*7}} {% for x in range(9) %}x{% endfor %}"
    ```
 
-2. **The `{$raw: "..."}` object form** — works in any format, including JSON,
-   CSV, and JSONL, which have no YAML tags. It must be a **single-key** object
-   whose key is `$raw`; a two-key object is treated as an ordinary value:
+2. **The `{$raw: "..."}` object form** — works in any format, including JSON, CSV, and JSONL, which have no YAML tags. It must be a **single-key** object whose key is `$raw`; a two-key object is treated as an ordinary value:
 
    ```yaml
    vars:
@@ -812,18 +690,14 @@ by the template engine):
    { "vars": { "user_input": { "$raw": "{{7*7}}" } } }
    ```
 
-3. **A `{% raw %}...{% endraw %}` block** inside an otherwise-templated string —
-   standard Jinja, useful when only part of a value is literal:
+3. **A `{% raw %}...{% endraw %}` block** inside an otherwise-templated string — standard Jinja, useful when only part of a value is literal:
 
    ```yaml
    vars:
      mixed: "hello {{ name }}, literal {% raw %}{{7*7}}{% endraw %}"
    ```
 
-The `!raw` tag and `{$raw: ...}` form are the same mechanism under the hood: the
-loader rewrites `!raw x` into `{$raw: x}` before deserialization, so both mark
-the value raw everywhere it's accepted (test vars, and templatable assertion
-values such as `equals`).
+The `!raw` tag and `{$raw: ...}` form are the same mechanism under the hood: the loader rewrites `!raw x` into `{$raw: x}` before deserialization, so both mark the value raw everywhere it's accepted (test vars, and templatable assertion values such as `equals`).
 
 ---
 
@@ -832,8 +706,7 @@ values such as `equals`).
 Large suites can be assembled from a shared base and reusable fragments.
 
 - **`extends`** names a single base suite (a `file://` path) to build on.
-- **`imports`** is an ordered list of `file://` fragment paths (shared providers,
-  named assert-sets, and so on).
+- **`imports`** is an ordered list of `file://` fragment paths (shared providers, named assert-sets, and so on).
 
 Both are resolved relative to the file that declares them.
 
@@ -845,15 +718,11 @@ Both are resolved relative to the file that declares them.
 
 Later layers win. The layers are combined by a **deep merge**:
 
-- **Objects** (mappings) merge key by key; on a conflict the higher-precedence
-  layer wins.
-- A shared **`assert`** sequence is the special case: it **appends** — base
-  entries first, then the higher-precedence layer's.
-- **Other sequences** (and scalars) are **replaced** wholesale by the
-  higher-precedence layer, not concatenated.
+- **Objects** (mappings) merge key by key; on a conflict the higher-precedence layer wins.
+- A shared **`assert`** sequence is the special case: it **appends** — base entries first, then the higher-precedence layer's.
+- **Other sequences** (and scalars) are **replaced** wholesale by the higher-precedence layer, not concatenated.
 
-**Cycles are detected and error** — if `a.yaml` extends `b.yaml` which extends
-`a.yaml`, the load fails rather than looping.
+**Cycles are detected and error** — if `a.yaml` extends `b.yaml` which extends `a.yaml`, the load fails rather than looping.
 
 ```yaml
 # base.yaml
@@ -877,9 +746,7 @@ tests:
   - { vars: { a: "1" } }
 ```
 
-The composed suite keeps `project: base` (inherited) and `suite: child`
-(overridden), and its `defaults.assert` is `[is-json, contains]` — base first,
-child appended.
+The composed suite keeps `project: base` (inherited) and `suite: child` (overridden), and its `defaults.assert` is `[is-json, contains]` — base first, child appended.
 
 > Two different append/prepend rules coexist, so keep them straight:
 > composition appends a shared `assert` sequence (**base then child**), while
@@ -890,30 +757,12 @@ child appended.
 
 ## Strict validation
 
-A suite is validated structurally before any provider is contacted — both by
-`domarinn validate` and at the start of `domarinn run`. Validation is strict
-on purpose: a typo is an error you can fix, not a field that is silently ignored
-while the setting it was meant to change quietly does nothing.
+A suite is validated structurally before any provider is contacted — both by `domarinn validate` and at the start of `domarinn run`. Validation is strict on purpose: a typo is an error you can fix, not a field that is silently ignored while the setting it was meant to change quietly does nothing.
 
-- **Unknown or misspelled keys are a hard error that names the file, the dotted
-  path, and the key.** A stray `maxx:` under `runner.retries`, for instance,
-  fails with a message like ``examples/x/domarinn.yaml: runner.retries: unknown
-  field `maxx` `` — so you can jump straight to the offending line.
-- **The check reaches inside provider, assertion, and grader mappings.** A typo'd
-  provider field (`basurl:` for `base_url:`) or assertion option is flagged,
-  **including the `provider:` block nested inside a grader** — both the top-level
-  `grader.provider` and the inner grader on any `llm-rubric` assertion (in
-  `defaults.assert` or an inline test's `assert`). Free-form bags — a provider's
-  `params`, an `http` provider's `body`, an `exec` assertion's `config` — are
-  opaque values, not schema, so their inner keys are intentionally left unchecked.
-- **A message `role` must be `system`, `user`, or `assistant`.** Any other value
-  is rejected at load time.
-- **An `http` provider's `method` is normalized to upper case.** You may write
-  `method: get` or `method: GET`; the method sent on the wire — and the value
-  recorded in the cache fingerprint — is always the upper-case form. If a suite
-  previously used a lower-case method, its cached responses were fingerprinted
-  under the lower-case spelling, so it will take a **one-time cache miss** the
-  first time it runs after upgrading, then reuse the cache normally.
+- **Unknown or misspelled keys are a hard error that names the file, the dotted path, and the key.** A stray `maxx:` under `runner.retries`, for instance, fails with a message like ``examples/x/domarinn.yaml: runner.retries: unknown field `maxx` `` — so you can jump straight to the offending line.
+- **The check reaches inside provider, assertion, and grader mappings.** A typo'd provider field (`basurl:` for `base_url:`) or assertion option is flagged, **including the `provider:` block nested inside a grader** — both the top-level `grader.provider` and the inner grader on any `llm-rubric` assertion (in `defaults.assert` or an inline test's `assert`). Free-form bags — a provider's `params`, an `http` provider's `body`, an `exec` assertion's `config` — are opaque values, not schema, so their inner keys are intentionally left unchecked.
+- **A message `role` must be `system`, `user`, or `assistant`.** Any other value is rejected at load time.
+- **An `http` provider's `method` is normalized to upper case.** You may write `method: get` or `method: GET`; the method sent on the wire — and the value recorded in the cache fingerprint — is always the upper-case form. If a suite previously used a lower-case method, its cached responses were fingerprinted under the lower-case spelling, so it will take a **one-time cache miss** the first time it runs after upgrading, then reuse the cache normally.
 
 ---
 

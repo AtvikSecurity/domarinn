@@ -1,28 +1,17 @@
 # Self-hosting domarinn
 
-domarinn is **one static binary**. The `server` subcommand runs the results
-API and the embedded web UI; the same binary is the CLI, the eval engine, and
-its own container healthcheck. There are **zero runtime dependencies** — no
-sidecar database, no external cache, no libc. State is SQLite under the data
-directory.
+domarinn is **one static binary**. The `server` subcommand runs the results API and the embedded web UI; the same binary is the CLI, the eval engine, and its own container healthcheck. There are **zero runtime dependencies** — no sidecar database, no external cache, no libc. State is SQLite under the data directory.
 
-For the API surface, the auth model, and the full environment-variable reference,
-see [`./server.md`](./server.md). This page is about *hosting* it.
+For the API surface, the auth model, and the full environment-variable reference, see [`./server.md`](./server.md). This page is about *hosting* it.
 
 ## What the server is (and is not)
 
-- **Single-writer.** Storage is SQLite. That is a deliberate, boring choice: it
-  makes backups a file copy and self-hosting a one-liner. It also means the
-  service is **one replica**. Do not run two.
-- **Stateless except for `/data`.** Everything durable lives in the data
-  directory (default `/data`, env `DOMARINN_DATA_DIR`): the `domarinn.db`
-  SQLite database (runs, users, sessions, API keys, baselines) and `cache.db`
-  (the disposable content-addressed cache).
+- **Single-writer.** Storage is SQLite. That is a deliberate, boring choice: it makes backups a file copy and self-hosting a one-liner. It also means the service is **one replica**. Do not run two.
+- **Stateless except for `/data`.** Everything durable lives in the data directory (default `/data`, env `DOMARINN_DATA_DIR`): the `domarinn.db` SQLite database (runs, users, sessions, API keys, baselines) and `cache.db` (the disposable content-addressed cache).
 
 ## Configuration
 
-The essentials for hosting are below; [`./server.md`](./server.md#environment-variables)
-has the complete table (auth modes, admin bootstrap, cache limits).
+The essentials for hosting are below; [`./server.md`](./server.md#environment-variables) has the complete table (auth modes, admin bootstrap, cache limits).
 
 | Env var                 | Default | Purpose |
 |-------------------------|---------|---------|
@@ -32,39 +21,24 @@ has the complete table (auth modes, admin bootstrap, cache limits).
 | `DOMARINN_ADMIN_USER` / `DOMARINN_ADMIN_PASSWORD` | (unset) | Bootstrap a local admin account at startup (see [First run](#first-run-creating-the-admin)). |
 | `DOMARINN_PUBLIC_URL` | (unset) | Public base URL used in share links and absolute URLs behind a proxy. No trailing slash, no path prefix. |
 
-The server listens on **`0.0.0.0:8321`** (`--port` to change). Health is exposed
-at `/health` and `/api/v1/health`; the container `HEALTHCHECK` runs
-`domarinn healthcheck`, which probes the server from inside the container (the
-distroless image has no shell or curl).
+The server listens on **`0.0.0.0:8321`** (`--port` to change). Health is exposed at `/health` and `/api/v1/health`; the container `HEALTHCHECK` runs `domarinn healthcheck`, which probes the server from inside the container (the distroless image has no shell or curl).
 
 ## First run: creating the admin
 
-A brand-new instance comes up **`closed`** — every page and API call requires
-auth — with only the bootstrap surface open (health, meta, setup, login) so it
-can be claimed. Create the admin one of two ways:
+A brand-new instance comes up **`closed`** — every page and API call requires auth — with only the bootstrap surface open (health, meta, setup, login) so it can be claimed. Create the admin one of two ways:
 
-- **Bootstrap from the environment (recommended for containers).** Set
-  `DOMARINN_ADMIN_USER` and `DOMARINN_ADMIN_PASSWORD`. On every startup the
-  server idempotently ensures that enabled admin account exists — ideal with a
-  secret store.
-- **Interactive setup.** Hit the `/setup` page (or `POST /api/v1/auth/setup`)
-  once to create the first admin; it is a 409 once any user exists.
+- **Bootstrap from the environment (recommended for containers).** Set `DOMARINN_ADMIN_USER` and `DOMARINN_ADMIN_PASSWORD`. On every startup the server idempotently ensures that enabled admin account exists — ideal with a secret store.
+- **Interactive setup.** Hit the `/setup` page (or `POST /api/v1/auth/setup`) once to create the first admin; it is a 409 once any user exists.
 
-Full details, including the auth modes and how tokens vs accounts differ,
-are in [`./server.md`](./server.md#accounts--auth-model).
+Full details, including the auth modes and how tokens vs accounts differ, are in [`./server.md`](./server.md#accounts--auth-model).
 
 ## The image
 
 The image is a multi-stage build (see the [`Dockerfile`](../Dockerfile)):
 
 1. **web** — `node:22-alpine` builds the React/Vite UI into `web/dist`.
-2. **builder** — `rust:1-alpine` compiles a **static musl** binary with
-   `web/dist` embedded via `rust-embed`, so the UI ships inside the binary.
-3. **runtime** — `gcr.io/distroless/static-debian12:nonroot`: just the binary on
-   a scratch-like base. No shell, no libc, no package manager — **nothing to
-   CVE-scan but the binary itself**. It runs as a non-root user, and the binary
-   is **its own `HEALTHCHECK`** (`domarinn healthcheck` probes
-   `/api/v1/health` from inside the container, since there is no curl/wget).
+2. **builder** — `rust:1-alpine` compiles a **static musl** binary with `web/dist` embedded via `rust-embed`, so the UI ships inside the binary.
+3. **runtime** — `gcr.io/distroless/static-debian12:nonroot`: just the binary on a scratch-like base. No shell, no libc, no package manager — **nothing to CVE-scan but the binary itself**. It runs as a non-root user, and the binary is **its own `HEALTHCHECK`** (`domarinn healthcheck` probes `/api/v1/health` from inside the container, since there is no curl/wget).
 
 ## Docker
 
@@ -79,9 +53,7 @@ docker run -d --name domarinn \
   ghcr.io/atviksecurity/domarinn:rolling
 ```
 
-State persists in the `domarinn-data` volume mounted at `/data`. Replace the
-placeholder secrets and inject them from a real secret store rather than a shell
-history.
+State persists in the `domarinn-data` volume mounted at `/data`. Replace the placeholder secrets and inject them from a real secret store rather than a shell history.
 
 ## Docker Compose
 
@@ -92,8 +64,7 @@ docker compose up -d
 # UI + API on http://localhost:8321
 ```
 
-A production-shaped compose service that bootstraps an admin and sets the public
-URL:
+A production-shaped compose service that bootstraps an admin and sets the public URL:
 
 ```yaml
 services:
@@ -127,28 +98,20 @@ volumes:
   domarinn-data:
 ```
 
-Replace the placeholder secrets before exposing the service. Prefer injecting
-`DOMARINN_ADMIN_PASSWORD` / `DOMARINN_TOKENS` from a real secret store rather
-than committing them.
+Replace the placeholder secrets before exposing the service. Prefer injecting `DOMARINN_ADMIN_PASSWORD` / `DOMARINN_TOKENS` from a real secret store rather than committing them.
 
 ## `/data` ownership (bind mounts, existing volumes)
 
-The container runs as the distroless `nonroot` user, **uid 65532** — never root.
-The server must be able to create and write its SQLite files in `/data`; if it
-cannot, it exits at startup with
-`server error: opening sqlite db at /data/domarinn.db: … permission denied`.
+The container runs as the distroless `nonroot` user, **uid 65532** — never root. The server must be able to create and write its SQLite files in `/data`; if it cannot, it exits at startup with `server error: opening sqlite db at /data/domarinn.db: … permission denied`.
 
-- **Named volumes** (everything above) just work: Docker seeds a fresh volume
-  with the image's `/data` ownership, which the image sets to uid 65532.
-- **Bind mounts** (`-v ./data:/data`) keep the host directory's ownership, which
-  is almost never 65532. Either chown the host directory:
+- **Named volumes** (everything above) just work: Docker seeds a fresh volume with the image's `/data` ownership, which the image sets to uid 65532.
+- **Bind mounts** (`-v ./data:/data`) keep the host directory's ownership, which is almost never 65532. Either chown the host directory:
 
   ```sh
   mkdir -p ./data && sudo chown 65532:65532 ./data
   ```
 
-  or run the container as the directory's owner — the binary is fully static
-  and uid-agnostic, so any uid works:
+  or run the container as the directory's owner — the binary is fully static and uid-agnostic, so any uid works:
 
   ```yaml
   services:
@@ -156,12 +119,7 @@ cannot, it exits at startup with
       user: "1000:1000"   # match the bind-mounted directory's owner
   ```
 
-- **Volumes created by images older than the ownership fix** are root-owned,
-  but Docker re-seeds ownership from the image whenever it mounts an **empty**
-  named volume — and a volume from a failed pre-fix deployment is empty, since
-  the server could never create its files. Upgrading the image therefore fixes
-  these volumes automatically. Only a root-owned volume that already **contains
-  files** needs a one-time repair:
+- **Volumes created by images older than the ownership fix** are root-owned, but Docker re-seeds ownership from the image whenever it mounts an **empty** named volume — and a volume from a failed pre-fix deployment is empty, since the server could never create its files. Upgrading the image therefore fixes these volumes automatically. Only a root-owned volume that already **contains files** needs a one-time repair:
 
   ```sh
   docker run --rm -v domarinn-data:/data busybox chown -R 65532:65532 /data
@@ -169,9 +127,7 @@ cannot, it exits at startup with
 
 ## Kubernetes
 
-Because SQLite is a single writer, deploy exactly **one replica** with a
-**`Recreate`** update strategy (never `RollingUpdate` — two pods must never hold
-the database open at once) and a **`ReadWriteOnce` PVC** mounted at `/data`.
+Because SQLite is a single writer, deploy exactly **one replica** with a **`Recreate`** update strategy (never `RollingUpdate` — two pods must never hold the database open at once) and a **`ReadWriteOnce` PVC** mounted at `/data`.
 
 ```yaml
 apiVersion: apps/v1
@@ -238,55 +194,33 @@ spec:
       storage: 10Gi
 ```
 
-Expose it with a plain `Service` + `Ingress`. Give it a **hostname of its own**
-(`domarinn.example.com`), **not a path prefix** — the app assumes it is served
-at the web root, and `DOMARINN_PUBLIC_URL` should be that hostname's URL.
+Expose it with a plain `Service` + `Ingress`. Give it a **hostname of its own** (`domarinn.example.com`), **not a path prefix** — the app assumes it is served at the web root, and `DOMARINN_PUBLIC_URL` should be that hostname's URL.
 
 <a id="reverse-proxies"></a>
 
 ## Reverse proxies and share links
 
-The cleanest setup is to **set `DOMARINN_PUBLIC_URL`** to the exact external
-base URL (scheme + host, no path prefix). When it is set, the server builds share
-links straight from it and does **not** consult any forwarded headers — proxy
-quirks can't produce a wrong link.
+The cleanest setup is to **set `DOMARINN_PUBLIC_URL`** to the exact external base URL (scheme + host, no path prefix). When it is set, the server builds share links straight from it and does **not** consult any forwarded headers — proxy quirks can't produce a wrong link.
 
-When `DOMARINN_PUBLIC_URL` is *unset*, the server derives the base URL for
-share links from the request's `Host` header and the `X-Forwarded-Proto` header
-(defaulting to `http`). Since a client can forge those headers on a
-directly-exposed instance, **set `DOMARINN_PUBLIC_URL` behind any proxy** and
-ensure your proxy sets `X-Forwarded-Proto` correctly if you rely on the fallback.
-The app is designed to be served at the web root, so route a whole hostname to it
-rather than a sub-path.
+When `DOMARINN_PUBLIC_URL` is *unset*, the server derives the base URL for share links from the request's `Host` header and the `X-Forwarded-Proto` header (defaulting to `http`). Since a client can forge those headers on a directly-exposed instance, **set `DOMARINN_PUBLIC_URL` behind any proxy** and ensure your proxy sets `X-Forwarded-Proto` correctly if you rely on the fallback. The app is designed to be served at the web root, so route a whole hostname to it rather than a sub-path.
 
 ## Backups
 
-The backup target is one file: `${DOMARINN_DATA_DIR}/domarinn.db`. (`cache.db`
-is a disposable, regenerable cache — no need to back it up.)
+The backup target is one file: `${DOMARINN_DATA_DIR}/domarinn.db`. (`cache.db` is a disposable, regenerable cache — no need to back it up.)
 
-- **Volume snapshots** are the simplest option (snapshot the PVC / Docker
-  volume).
-- For a **hot copy**, use SQLite's online backup rather than `cp` on a live
-  database:
+- **Volume snapshots** are the simplest option (snapshot the PVC / Docker volume).
+- For a **hot copy**, use SQLite's online backup rather than `cp` on a live database:
 
   ```sh
   sqlite3 /data/domarinn.db ".backup '/backups/domarinn-$(date +%F).db'"
   ```
 
-  (Run this from a maintenance container — the distroless runtime image has no
-  `sqlite3`.)
+  (Run this from a maintenance container — the distroless runtime image has no `sqlite3`.)
 
-Restoring is just putting the file back at `/data/domarinn.db` while the
-service is stopped.
+Restoring is just putting the file back at `/data/domarinn.db` while the service is stopped.
 
 ## Upgrades
 
-Pull the new image tag and restart the single pod/container (`Recreate` on
-Kubernetes handles the ordering). Because the schema migrations run at startup
-and there is only ever one writer, upgrades are a stop-start with a backup taken
-first.
+Pull the new image tag and restart the single pod/container (`Recreate` on Kubernetes handles the ordering). Because the schema migrations run at startup and there is only ever one writer, upgrades are a stop-start with a backup taken first.
 
-Published tags are `rolling` (tracks `main`), plus `{{version}}`,
-`{{major}}.{{minor}}` and `{{major}}` for each release. There is deliberately
-**no `latest`** — pin a version, or track `rolling` if you want the tip of main.
-See [`./ci.md`](./ci.md#container-image-dockeryml).
+Published tags are `rolling` (tracks `main`), plus `{{version}}`, `{{major}}.{{minor}}` and `{{major}}` for each release. There is deliberately **no `latest`** — pin a version, or track `rolling` if you want the tip of main. See [`./ci.md`](./ci.md#container-image-dockeryml).

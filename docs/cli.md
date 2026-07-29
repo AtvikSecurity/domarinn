@@ -1,7 +1,6 @@
 # domarinn CLI reference
 
-One binary, `domarinn`: the eval engine, the results server, and its own
-container healthcheck. Global flags apply to every subcommand.
+One binary, `domarinn`: the eval engine, the results server, and its own container healthcheck. Global flags apply to every subcommand.
 
 ```
 domarinn [-v|-vv] [--color WHEN] [--server-url URL] <command> [args]
@@ -18,14 +17,9 @@ domarinn [-v|-vv] [--color WHEN] [--server-url URL] <command> [args]
 
 ## Logging
 
-Logs are diagnostics, not results: **they go to stderr**, while command output
-(tables, JSON, JSONL, JUnit, schemas) goes to **stdout**. You can redirect or
-pipe stdout for a machine — `domarinn run --format json > out.json` — and still
-watch progress and warnings on the terminal.
+Logs are diagnostics, not results: **they go to stderr**, while command output (tables, JSON, JSONL, JUnit, schemas) goes to **stdout**. You can redirect or pipe stdout for a machine — `domarinn run --format json > out.json` — and still watch progress and warnings on the terminal.
 
-**Verbosity.** A plain invocation logs at `warn`. Each `-v` raises the level one
-step: `-v` → `info`, `-vv` → `debug`, `-vvv` → `trace`. Only domarinn's own
-crates are affected.
+**Verbosity.** A plain invocation logs at `warn`. Each `-v` raises the level one step: `-v` → `info`, `-vv` → `debug`, `-vvv` → `trace`. Only domarinn's own crates are affected.
 
 **Format** — `--log-format`, or the `DOMARINN_LOG_FORMAT` environment variable:
 
@@ -36,26 +30,20 @@ crates are affected.
 | `compact` | Human-readable, single line, with timestamps. |
 | `json` | One JSON object per line, for log aggregation. |
 
-Precedence is flag → env → autodetect: `--log-format` wins over
-`DOMARINN_LOG_FORMAT`, which wins over the terminal autodetection above. An
-unrecognized env value is ignored with a warning and autodetection is used.
+Precedence is flag → env → autodetect: `--log-format` wins over `DOMARINN_LOG_FORMAT`, which wins over the terminal autodetection above. An unrecognized env value is ignored with a warning and autodetection is used.
 
-**`RUST_LOG` overrides everything.** When set, it **replaces the default filter
-wholesale** (standard `tracing` env-filter syntax), which also makes `-v` a
-no-op — so set the level you want directly:
+**`RUST_LOG` overrides everything.** When set, it **replaces the default filter wholesale** (standard `tracing` env-filter syntax), which also makes `-v` a no-op — so set the level you want directly:
 
 ```sh
 RUST_LOG=domarinn=debug domarinn run .                # -v is ignored; RUST_LOG wins
 RUST_LOG=domarinn_core::runner=trace domarinn run .   # one module at trace
 ```
 
-**Color.** ANSI color is used only when stderr is a terminal, and is disabled
-entirely when [`NO_COLOR`](https://no-color.org/) is set (to any value).
+**Color.** ANSI color is used only when stderr is a terminal, and is disabled entirely when [`NO_COLOR`](https://no-color.org/) is set (to any value).
 
 ## Exit codes
 
-The exit code is a **contract for CI** — it distinguishes "the model got worse"
-from "the harness broke". `3` (infra) wins over `1` (assertion) when both occur.
+The exit code is a **contract for CI** — it distinguishes "the model got worse" from "the harness broke". `3` (infra) wins over `1` (assertion) when both occur.
 
 | Code | Name | Meaning |
 |------|------|---------|
@@ -68,8 +56,7 @@ from "the harness broke". `3` (infra) wins over `1` (assertion) when both occur.
 
 ## `domarinn run [PATH] [flags]`
 
-Execute a suite: render prompts, call providers, evaluate assertions, report
-results, and persist the run under `.domarinn/runs/<id>/`.
+Execute a suite: render prompts, call providers, evaluate assertions, report results, and persist the run under `.domarinn/runs/<id>/`.
 
 - `PATH` — a suite file or a directory containing `domarinn.yaml` (default `.`).
 
@@ -103,8 +90,7 @@ domarinn run --note "retry backoff, 3rd attempt"    # label this run
 
 ### Run provenance
 
-Every run records who and what produced it, in the engine — so a plain
-`domarinn run` carries it, not only a shared one:
+Every run records who and what produced it, in the engine — so a plain `domarinn run` carries it, not only a shared one:
 
 | Field | Source |
 |-------|--------|
@@ -115,10 +101,7 @@ Every run records who and what produced it, in the engine — so a plain
 | `git` | Branch, commit and dirty state of the repo containing the suite. |
 | `ci` | The detected CI system and its run URL. `ci` being present *is* the "was this CI?" flag — there is no separate boolean to disagree with it. |
 
-**Suppressing it.** `actor` and `host` are mild PII, and once written they are
-inside the document the server content-hashes for ingest idempotency, so they
-cannot be redacted afterwards without changing that hash. Suppression therefore
-has to happen on the client:
+**Suppressing it.** `actor` and `host` are mild PII, and once written they are inside the document the server content-hashes for ingest idempotency, so they cannot be redacted afterwards without changing that hash. Suppression therefore has to happen on the client:
 
 | Setting | Effect |
 |---------|--------|
@@ -127,25 +110,15 @@ has to happen on the client:
 | `DOMARINN_PROVENANCE=off` | Record nothing — no `origin`, `git` or `ci` key at all. |
 | `--no-provenance` | Same as `anonymous`. It can only *tighten* the environment's policy, never re-enable what the environment turned off. |
 
-Set the environment variable in the image or on the machine when this is an
-organisation-wide policy; the flag is for one-off runs.
+Set the environment variable in the image or on the machine when this is an organisation-wide policy; the flag is for one-off runs.
 
-**Live progress.** When stderr is a terminal, `run` draws a single progress bar
-on **stderr** — elapsed time, a bar, `done/total`, and a running pass/fail/error
-tally. It is purely cosmetic: it never touches **stdout**, so piping or
-redirecting results (`domarinn run --format json > out.json`) is byte-identical
-with or without it. The bar is suppressed automatically when stderr is not a
-terminal (e.g. captured CI logs), under `-vv`+ (so it never clobbers streamed
-diagnostics), and with `--no-progress`.
+**Live progress.** When stderr is a terminal, `run` draws a single progress bar on **stderr** — elapsed time, a bar, `done/total`, and a running pass/fail/error tally. It is purely cosmetic: it never touches **stdout**, so piping or redirecting results (`domarinn run --format json > out.json`) is byte-identical with or without it. The bar is suppressed automatically when stderr is not a terminal (e.g. captured CI logs), under `-vv`+ (so it never clobbers streamed diagnostics), and with `--no-progress`.
 
-See [configuration.md](./configuration.md) for the suite file and
-[statistics.md](./statistics.md) for `--repeat`/`--against`.
+See [configuration.md](./configuration.md) for the suite file and [statistics.md](./statistics.md) for `--repeat`/`--against`.
 
 ## `domarinn validate [PATH]`
 
-Parse and structurally validate a suite. **No provider calls.** Use it in
-pre-commit and CI to catch config errors fast. Exit `0` when valid (prints a
-one-line summary); exit `2` and lists issues otherwise.
+Parse and structurally validate a suite. **No provider calls.** Use it in pre-commit and CI to catch config errors fast. Exit `0` when valid (prints a one-line summary); exit `2` and lists issues otherwise.
 
 ```sh
 domarinn validate examples/render-health
@@ -153,10 +126,7 @@ domarinn validate examples/render-health
 
 ## `domarinn diff <BASE> <HEAD> [flags]`
 
-Diff two runs. Each run reference is a run id, a `result.json` path, or `latest`.
-Reports regressions, fixes, output changes, added/removed cases, and a McNemar
-significance verdict. Exit `1` when `HEAD` regressed against `BASE`; `0`
-otherwise.
+Diff two runs. Each run reference is a run id, a `result.json` path, or `latest`. Reports regressions, fixes, output changes, added/removed cases, and a McNemar significance verdict. Exit `1` when `HEAD` regressed against `BASE`; `0` otherwise.
 
 | Flag | Effect |
 |------|--------|
@@ -172,8 +142,7 @@ domarinn diff base latest --diffs all --full --config-diff
 
 ## `domarinn view [RUN] [flags]`
 
-Render a stored run in the terminal (default `latest`). `RUN` is a run id, a
-`result.json` path, or `latest`.
+Render a stored run in the terminal (default `latest`). `RUN` is a run id, a `result.json` path, or `latest`.
 
 | Flag | Effect |
 |------|--------|
@@ -190,8 +159,7 @@ domarinn view latest --case greet --raw
 
 ## `domarinn runs [flags]`
 
-List stored runs, newest first — a local table by default, or the results
-server's runs with `--remote`.
+List stored runs, newest first — a local table by default, or the results server's runs with `--remote`.
 
 | Flag | Effect |
 |------|--------|
@@ -208,15 +176,10 @@ domarinn runs --remote
 
 ## `domarinn share [RUN] [--strict]`
 
-Upload a completed run to a server and print its view URL. Enriches the run with
-git and CI metadata automatically. Best-effort by default (a failed upload warns
-and exits `0`); `--strict` makes upload failure fail the command (exit `3`).
+Upload a completed run to a server and print its view URL. Enriches the run with git and CI metadata automatically. Best-effort by default (a failed upload warns and exits `0`); `--strict` makes upload failure fail the command (exit `3`).
 
-- `RUN` — a run id from `domarinn runs`, `latest`, a `result.json`, a run
-  directory, or omitted for the latest run (same references as `view` and
-  `diff`).
-- Server from `--server-url` / `DOMARINN_SERVER_URL`; token from
-  `DOMARINN_TOKEN`.
+- `RUN` — a run id from `domarinn runs`, `latest`, a `result.json`, a run directory, or omitted for the latest run (same references as `view` and `diff`).
+- Server from `--server-url` / `DOMARINN_SERVER_URL`; token from `DOMARINN_TOKEN`.
 
 ```sh
 DOMARINN_SERVER_URL=https://evals.example domarinn share --strict
@@ -225,9 +188,7 @@ DOMARINN_SERVER_URL=https://evals.example domarinn share 01JD3V9GQ8 --strict
 
 ## `domarinn ci-summary [RUN] [flags]`
 
-Summarize a stored run for CI: a Markdown report for a PR comment or job
-summary, plus the headline numbers as GitHub Actions step outputs. See
-[`ci.md`](./ci.md#the-ci-summary-command).
+Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as GitHub Actions step outputs. See [`ci.md`](./ci.md#the-ci-summary-command).
 
 | Flag | Meaning |
 |---|---|
@@ -236,9 +197,7 @@ summary, plus the headline numbers as GitHub Actions step outputs. See
 | `--out <FILE>` | Write the Markdown to a file instead of stdout. |
 | `--github-output <FILE>` | Append `key=value` step outputs here. Defaults to `$GITHUB_OUTPUT`, so on a runner no flag is needed. |
 
-**It is a reporter, not a gate** — it exits `0` for a failing run, because the
-verdict belongs to `run`'s [exit code](#exit-codes). It exits `2` only when the
-run reference cannot be resolved.
+**It is a reporter, not a gate** — it exits `0` for a failing run, because the verdict belongs to `run`'s [exit code](#exit-codes). It exits `2` only when the run reference cannot be resolved.
 
 ```sh
 domarinn ci-summary                              # latest run, Markdown on stdout
@@ -258,10 +217,7 @@ See [caching.md](./caching.md) for backends and team sharing.
 
 ## `domarinn import promptfoo <PATH>`
 
-Translate a promptfoo config into a domarinn suite, printed to stdout.
-Mappable providers, prompts, tests, and assertions are converted; anything
-without a faithful equivalent is emitted as a commented `# NOTE:` line so nothing
-is silently dropped.
+Translate a promptfoo config into a domarinn suite, printed to stdout. Mappable providers, prompts, tests, and assertions are converted; anything without a faithful equivalent is emitted as a commented `# NOTE:` line so nothing is silently dropped.
 
 ```sh
 domarinn import promptfoo promptfooconfig.yaml > domarinn.yaml
@@ -270,16 +226,11 @@ domarinn validate domarinn.yaml
 
 ## `domarinn gen-types [DIR]`
 
-Generate TypeScript type definitions for the result and diff DTOs (default
-`web/src/api/generated`). These are the single source of truth for the web
-client's types; CI enforces they stay in sync.
+Generate TypeScript type definitions for the result and diff DTOs (default `web/src/api/generated`). These are the single source of truth for the web client's types; CI enforces they stay in sync.
 
 ## `domarinn schema <config|result>`
 
-Print a JSON Schema to stdout — for editor completion and as a CI contract.
-`config` is the suite schema; `result` is the `RunResult` schema. The checked-in
-`domarinn.schema.json` is regenerated from `schema config` and CI fails on
-drift.
+Print a JSON Schema to stdout — for editor completion and as a CI contract. `config` is the suite schema; `result` is the `RunResult` schema. The checked-in `domarinn.schema.json` is regenerated from `schema config` and CI fails on drift.
 
 ```sh
 domarinn schema config > domarinn.schema.json
@@ -289,13 +240,7 @@ domarinn schema config > domarinn.schema.json
 
 List what a suite resolves to. `--json` emits a JSON array.
 
-`list tests` resolves inline cases, `file://` globs, and matrix expansion. It
-does **not** run the suite's `generator:` commands unless you pass
-`--generators`: a generator only produces cases by being executed, and `list` is
-otherwise a read-only command. Without the flag, a suite with generators gets a
-note on stderr saying how many were skipped; with it, the produced ids appear in
-the listing exactly as they will at run time, which is what makes them usable as
-`--filter` targets.
+`list tests` resolves inline cases, `file://` globs, and matrix expansion. It does **not** run the suite's `generator:` commands unless you pass `--generators`: a generator only produces cases by being executed, and `list` is otherwise a read-only command. Without the flag, a suite with generators gets a note on stderr saying how many were skipped; with it, the produced ids appear in the listing exactly as they will at run time, which is what makes them usable as `--filter` targets.
 
 ```sh
 domarinn list providers examples/render-health
@@ -305,9 +250,7 @@ domarinn list tests . --generators
 
 ## `domarinn server [--port N] [--data-dir DIR]`
 
-Run the self-hostable results server + embedded web UI (default port `8321`,
-binds `0.0.0.0`; default data dir `/data`, env `DOMARINN_DATA_DIR`). See
-[server.md](./server.md) and [deploy.md](./deploy.md).
+Run the self-hostable results server + embedded web UI (default port `8321`, binds `0.0.0.0`; default data dir `/data`, env `DOMARINN_DATA_DIR`). See [server.md](./server.md) and [deploy.md](./deploy.md).
 
 ```sh
 domarinn server --port 8321 --data-dir ./data
@@ -315,19 +258,13 @@ domarinn server --port 8321 --data-dir ./data
 
 ## `domarinn healthcheck [--port N]`
 
-Probe **this binary's own** server health and exit `0`/non-zero accordingly.
-Designed for the container `HEALTHCHECK` in the distroless image, which has no
-shell or curl.
+Probe **this binary's own** server health and exit `0`/non-zero accordingly. Designed for the container `HEALTHCHECK` in the distroless image, which has no shell or curl.
 
 ---
 
 ## CI usage
 
 - **Validate on every push:** `domarinn validate` (fast, no provider calls).
-- **Gate PRs on eval quality:** `domarinn run --against server:baseline` (exit `1` on
-  regression), or use the reusable action at `.github/actions/domarinn-eval`.
-  See [ci.md](./ci.md).
-- **Contract-test the schema:** regenerate `domarinn schema config` and fail
-  on drift (wired in `ci.yml`).
-- **Read the exit code**, not just stdout: `1` = the model regressed (block the
-  PR), `3` = the harness broke (retry / page an operator, don't blame the PR).
+- **Gate PRs on eval quality:** `domarinn run --against server:baseline` (exit `1` on regression), or use the reusable action at `.github/actions/domarinn-eval`. See [ci.md](./ci.md).
+- **Contract-test the schema:** regenerate `domarinn schema config` and fail on drift (wired in `ci.yml`).
+- **Read the exit code**, not just stdout: `1` = the model regressed (block the PR), `3` = the harness broke (retry / page an operator, don't blame the PR).

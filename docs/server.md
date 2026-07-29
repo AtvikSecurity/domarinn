@@ -1,9 +1,6 @@
 # The domarinn server & accounts
 
-`domarinn server` runs the results server: a JSON API under `/api/v1` **and**
-the embedded React web UI, served from the **same binary**. There is no separate
-frontend to deploy, no sidecar database, and no runtime dependency — the binary
-is the eval engine, the CLI, the server, and its own container healthcheck.
+`domarinn server` runs the results server: a JSON API under `/api/v1` **and** the embedded React web UI, served from the **same binary**. There is no separate frontend to deploy, no sidecar database, and no runtime dependency — the binary is the eval engine, the CLI, the server, and its own container healthcheck.
 
 ```sh
 domarinn server [--port 8321] [--data-dir /data]
@@ -14,10 +11,7 @@ domarinn server [--port 8321] [--data-dir /data]
 | `--port`     | `8321`  | Listen port. The server always binds `0.0.0.0`. |
 | `--data-dir` | `/data` | State directory (also `DOMARINN_DATA_DIR`). Holds the SQLite databases. |
 
-The server runs until Ctrl-C (graceful shutdown). Health is exposed at both
-`/health` and `/api/v1/health`. See [`./cli.md`](./cli.md) for the rest of the
-binary's subcommands and [`./deploy.md`](./deploy.md) for Docker/Kubernetes
-hosting.
+The server runs until Ctrl-C (graceful shutdown). Health is exposed at both `/health` and `/api/v1/health`. See [`./cli.md`](./cli.md) for the rest of the binary's subcommands and [`./deploy.md`](./deploy.md) for Docker/Kubernetes hosting.
 
 - [Quick start](#quick-start)
 - [Accounts & auth model](#accounts--auth-model)
@@ -59,8 +53,7 @@ DOMARINN_AUTH_MODE=open domarinn server --data-dir ./data
 
 ## Accounts & auth model
 
-domarinn has **three auth modes** and is **`closed` by default** — anonymous
-access is always an explicit operator choice, never an inferred one.
+domarinn has **three auth modes** and is **`closed` by default** — anonymous access is always an explicit operator choice, never an inferred one.
 
 | Mode             | Reads / UI | Writes (ingest, baseline, cache PUT) | Admin (delete, prune, users) |
 |------------------|------------|--------------------------------------|------------------------------|
@@ -70,16 +63,10 @@ access is always an explicit operator choice, never an inferred one.
 
 **How the mode is chosen (at startup):**
 
-1. If `DOMARINN_AUTH_MODE` is set (`open` \| `protect-writes` \| `closed`), it
-   wins outright. (`protect_writes` with an underscore is also accepted.)
-2. Otherwise the mode is **`closed`**. Nothing is derived from whether
-   credentials exist.
+1. If `DOMARINN_AUTH_MODE` is set (`open` \| `protect-writes` \| `closed`), it wins outright. (`protect_writes` with an underscore is also accepted.)
+2. Otherwise the mode is **`closed`**. Nothing is derived from whether credentials exist.
 
-Even in `closed` mode the bootstrap surface stays reachable so a fresh install
-can be claimed: `/health`, `GET /api/v1/meta`, `POST /api/v1/auth/setup`
-(one-shot, while zero users exist), `login`, `me`, and the web UI shell (the
-app itself redirects to the login page). The active mode is reported by
-`GET /api/v1/meta` as `auth_mode`.
+Even in `closed` mode the bootstrap surface stays reachable so a fresh install can be claimed: `/health`, `GET /api/v1/meta`, `POST /api/v1/auth/setup` (one-shot, while zero users exist), `login`, `me`, and the web UI shell (the app itself redirects to the login page). The active mode is reported by `GET /api/v1/meta` as `auth_mode`.
 
 > **Upgrade note.** Older releases derived `protect-writes` from the presence of
 > tokens or accounts and defaulted to `open` otherwise. A deployment that never
@@ -101,32 +88,22 @@ app itself redirects to the login page). The active mode is reported by
 
 ### Two kinds of credentials
 
-Both are presented the same way — as a bearer token in the `Authorization`
-header (see [The auth header](#the-auth-header)).
+Both are presented the same way — as a bearer token in the `Authorization` header (see [The auth header](#the-auth-header)).
 
-**1. Static bearer tokens** — configured via the environment, no database rows,
-no user. Ideal for CI and bootstrapping.
+**1. Static bearer tokens** — configured via the environment, no database rows, no user. Ideal for CI and bootstrapping.
 
 ```
 DOMARINN_TOKENS="read:domarinn_view,write:domarinn_ci,admin:domarinn_ops"
 ```
 
-Each comma-separated entry is `scope:secret`, where scope is `read`, `write`, or
-`admin`. The secret string is whatever you choose (the `domarinn_` names above are
-illustrative). Static tokens are matched in constant time and are **not** tied to
-a user account — so they cannot create API keys or appear in the users list.
+Each comma-separated entry is `scope:secret`, where scope is `read`, `write`, or `admin`. The secret string is whatever you choose (the `domarinn_` names above are illustrative). Static tokens are matched in constant time and are **not** tied to a user account — so they cannot create API keys or appear in the users list.
 
 **2. Local user accounts** — real username/password logins stored in SQLite.
 
 - Passwords are **argon2**-hashed (minimum 8 characters).
-- Two roles: **`admin`** and **`member`**. Role maps to a scope ceiling:
-  `admin → admin`, `member → write`.
-- Logging in mints a **session** (token prefix `mses_`, 30-day lifetime). The
-  browser UI uses sessions; `POST /auth/logout` revokes the presenting one.
-- Each account can mint **API keys** (prefix `domarinn_`, 256 bits of entropy). The
-  secret is shown **exactly once** on creation, is revocable, and carries a
-  **scope ceiling** — a key may be created at or below the creator's own scope,
-  never above it.
+- Two roles: **`admin`** and **`member`**. Role maps to a scope ceiling: `admin → admin`, `member → write`.
+- Logging in mints a **session** (token prefix `mses_`, 30-day lifetime). The browser UI uses sessions; `POST /auth/logout` revokes the presenting one.
+- Each account can mint **API keys** (prefix `domarinn_`, 256 bits of entropy). The secret is shown **exactly once** on creation, is revocable, and carries a **scope ceiling** — a key may be created at or below the creator's own scope, never above it.
 
 | Credential   | Prefix   | Backed by | Can manage accounts/keys? | Typical use |
 |--------------|----------|-----------|---------------------------|-------------|
@@ -134,9 +111,7 @@ a user account — so they cannot create API keys or appear in the users list.
 | Session      | `mses_`  | account   | yes (as the user)         | Web UI login |
 | API key      | `domarinn_`  | account   | yes (as the user)         | Scripts, CI tied to a user |
 
-The authenticator chain resolves a presented token in order — **static token →
-API key → session** — dispatching account lookups by prefix so at most one DB
-hit occurs per request.
+The authenticator chain resolves a presented token in order — **static token → API key → session** — dispatching account lookups by prefix so at most one DB hit occurs per request.
 
 ### The auth header
 
@@ -144,21 +119,15 @@ hit occurs per request.
 Authorization: Bearer <static-token | domarinn_apikey | mses_session>
 ```
 
-The `Bearer ` prefix is recommended; a bare token value in the header is also
-accepted. The same header works for every credential kind — the server figures
-out which one you presented.
+The `Bearer ` prefix is recommended; a bare token value in the header is also accepted. The same header works for every credential kind — the server figures out which one you presented.
 
 ---
 
 ## First run: creating the admin
 
-Until an admin account exists, `GET /api/v1/meta` reports `"setup_required":
-true`. There are **two** ways to create that first admin:
+Until an admin account exists, `GET /api/v1/meta` reports `"setup_required": true`. There are **two** ways to create that first admin:
 
-**A. Interactive setup (via the UI or the API).** `POST /api/v1/auth/setup` with
-`{username, password}` creates the first admin and returns a session token. This
-endpoint is open **only while zero users exist**; afterwards it is a `409`. The
-web UI's `/setup` page drives exactly this call.
+**A. Interactive setup (via the UI or the API).** `POST /api/v1/auth/setup` with `{username, password}` creates the first admin and returns a session token. This endpoint is open **only while zero users exist**; afterwards it is a `409`. The web UI's `/setup` page drives exactly this call.
 
 ```sh
 curl -sX POST http://localhost:8321/api/v1/auth/setup \
@@ -167,11 +136,7 @@ curl -sX POST http://localhost:8321/api/v1/auth/setup \
 # 201 { "token": "mses_...", "user": { "id": "...", "username": "admin", "role": "admin", ... } }
 ```
 
-**B. Bootstrap from the environment.** Set `DOMARINN_ADMIN_USER` and
-`DOMARINN_ADMIN_PASSWORD`. On every startup the server **idempotently** ensures
-that account exists as an enabled admin, creating it if missing and updating the
-password if it changed. This is the right choice for containers and Kubernetes —
-declare the admin in your secret store and the instance self-seeds.
+**B. Bootstrap from the environment.** Set `DOMARINN_ADMIN_USER` and `DOMARINN_ADMIN_PASSWORD`. On every startup the server **idempotently** ensures that account exists as an enabled admin, creating it if missing and updating the password if it changed. This is the right choice for containers and Kubernetes — declare the admin in your secret store and the instance self-seeds.
 
 > An instance seeded this way needs no interactive setup: `setup_required` is
 > already `false` on first boot and the seeded admin can log straight in.
@@ -180,19 +145,9 @@ declare the admin in your secret store and the instance self-seeds.
 
 ## Single sign-on (OIDC & SAML)
 
-domarinn can delegate login to one or more external identity providers — any
-OIDC provider (Google, Authentik, Okta, Entra, Keycloak, …) and any SAML 2.0
-IdP. SSO is configured **entirely through the environment**; each configured
-provider becomes a "Continue with …" button on the login page.
+domarinn can delegate login to one or more external identity providers — any OIDC provider (Google, Authentik, Okta, Entra, Keycloak, …) and any SAML 2.0 IdP. SSO is configured **entirely through the environment**; each configured provider becomes a "Continue with …" button on the login page.
 
-**How it works.** A first SSO login **just-in-time provisions** a local
-account, matched strictly on the provider + IdP subject (never on email). The
-account's role is mapped from the IdP's group/claim data and **re-synced on
-every SSO login**, so the IdP stays the source of truth — with one exception:
-the last enabled admin is never auto-demoted. SSO-only accounts have no
-password and cannot use the password form. Browser sessions ride a secure,
-HttpOnly cookie; `Authorization: Bearer` (API keys, static tokens, the CLI)
-is unaffected.
+**How it works.** A first SSO login **just-in-time provisions** a local account, matched strictly on the provider + IdP subject (never on email). The account's role is mapped from the IdP's group/claim data and **re-synced on every SSO login**, so the IdP stays the source of truth — with one exception: the last enabled admin is never auto-demoted. SSO-only accounts have no password and cannot use the password form. Browser sessions ride a secure, HttpOnly cookie; `Authorization: Bearer` (API keys, static tokens, the CLI) is unaffected.
 
 > `DOMARINN_PUBLIC_URL` **must** be set whenever any provider is configured —
 > it builds the OIDC redirect URI (`{PUBLIC_URL}/api/v1/auth/oidc/<name>/callback`)
@@ -206,8 +161,7 @@ is unaffected.
 
 ### OIDC providers
 
-List the provider names, then set per-provider variables (`<NAME>` is the name
-uppercased with `-`→`_`):
+List the provider names, then set per-provider variables (`<NAME>` is the name uppercased with `-`→`_`):
 
 ```
 DOMARINN_OIDC_PROVIDERS=google,authentik
@@ -229,10 +183,7 @@ DOMARINN_OIDC_<NAME>_ALLOWED_EMAIL_DOMAINS=example.com         # restrict who ma
 
 ### SAML providers
 
-SAML requires the binary to be built **with the `saml` cargo feature** (the
-published Docker image is; a plain `cargo build` is not, and a SAML-configured
-binary without the feature hard-errors at startup). Configure exactly one IdP
-source per provider:
+SAML requires the binary to be built **with the `saml` cargo feature** (the published Docker image is; a plain `cargo build` is not, and a SAML-configured binary without the feature hard-errors at startup). Configure exactly one IdP source per provider:
 
 ```
 DOMARINN_SAML_PROVIDERS=okta
@@ -248,29 +199,17 @@ DOMARINN_SAML_<NAME>_ADMIN_GROUPS=…  / _ADMIN_EMAILS=…  / _ALLOWED_EMAIL_DOM
 DOMARINN_SAML_<NAME>_ALLOW_IDP_INITIATED=false                  # require InResponseTo unless true
 ```
 
-The SP metadata your IdP imports is served at
-`{PUBLIC_URL}/api/v1/auth/saml/<name>/metadata`. Response signatures are
-verified (RSA/ECDSA SHA-2 only); **encrypted assertions are not supported** —
-disable assertion encryption for the domarinn app at your IdP. IdP metadata
-without a signing certificate is refused at startup.
+The SP metadata your IdP imports is served at `{PUBLIC_URL}/api/v1/auth/saml/<name>/metadata`. Response signatures are verified (RSA/ECDSA SHA-2 only); **encrypted assertions are not supported** — disable assertion encryption for the domarinn app at your IdP. IdP metadata without a signing certificate is refused at startup.
 
-Startup **fails fast** on any misconfiguration (a missing required variable is
-named exactly, an unreachable/invalid SAML metadata source aborts the launch).
-OIDC discovery itself is lazy, so a temporarily-unreachable OIDC IdP does not
-prevent the server from starting.
+Startup **fails fast** on any misconfiguration (a missing required variable is named exactly, an unreachable/invalid SAML metadata source aborts the launch). OIDC discovery itself is lazy, so a temporarily-unreachable OIDC IdP does not prevent the server from starting.
 
 ---
 
 ## The API surface
 
-All endpoints live under `/api/v1` (health is also mirrored at the bare
-`/health`). Responses are JSON; errors render as `{ "error": "<message>" }` with
-an appropriate status. The **Scope** column is the route's *minimum* scope — what
-it demands in `closed` mode, and (for `write`/`admin`) in `protect-writes`. In
-`open` mode nothing is required.
+All endpoints live under `/api/v1` (health is also mirrored at the bare `/health`). Responses are JSON; errors render as `{ "error": "<message>" }` with an appropriate status. The **Scope** column is the route's *minimum* scope — what it demands in `closed` mode, and (for `write`/`admin`) in `protect-writes`. In `open` mode nothing is required.
 
-Request-body size is capped at **64 MiB**; request bodies may be gzip/deflate
-compressed (the server decompresses transparently).
+Request-body size is capped at **64 MiB**; request bodies may be gzip/deflate compressed (the server decompresses transparently).
 
 ### Health & meta
 
@@ -315,8 +254,7 @@ compressed (the server decompresses transparently).
 
 ### API keys
 
-These require an **account-backed** identity (session or API key). A static
-token has no owning user and gets a `403` here.
+These require an **account-backed** identity (session or API key). A static token has no owning user and gets a `403` here.
 
 | Method | Path                    | Scope   | Notes |
 |--------|-------------------------|---------|-------|
@@ -348,19 +286,10 @@ token has no owning user and gets a `403` here.
 | GET    | `/api/v1/runs/{id}/compare/{other}`     | `read`  | Diff two runs (regressions/improvements per case). |
 | DELETE | `/api/v1/runs/{id}`                      | `admin` | Delete a run. `204` on success. |
 
-`GET /runs/{id}` reports two cost figures, and they are never summed:
-`cost_usd` is what the systems under test cost, `grader_cost_usd` is what
-grading them cost. It also carries `cache_read_tokens`, `cache_write_tokens`
-and `cache_savings_usd`. All four are `null` for runs ingested before the
-columns existed — which is **not** the same as zero, and readers render it as
-unknown rather than as "no activity". There is no backfill; see the migration
-note in `storage/schema.rs` for why.
+`GET /runs/{id}` reports two cost figures, and they are never summed: `cost_usd` is what the systems under test cost, `grader_cost_usd` is what grading them cost. It also carries `cache_read_tokens`, `cache_write_tokens` and `cache_savings_usd`. All four are `null` for runs ingested before the columns existed — which is **not** the same as zero, and readers render it as unknown rather than as "no activity". There is no backfill; see the migration note in `storage/schema.rs` for why.
 
 <a id="run-ingest"></a>**Ingest** (`POST /api/v1/runs`) accepts a `RunResult`
-JSON document (see [`./protocol.md`](./protocol.md) and `domarinn schema
-result`). The body must carry a `schema_version` within the supported window
-(`result_schema_version - 1 ..= result_schema_version`), else `422`. Ingest is
-**idempotent by content**:
+JSON document (see [`./protocol.md`](./protocol.md) and `domarinn schema result`). The body must carry a `schema_version` within the supported window (`result_schema_version - 1 ..= result_schema_version`), else `422`. Ingest is **idempotent by content**:
 
 | Status | Meaning |
 |--------|---------|
@@ -368,28 +297,13 @@ result`). The body must carry a `schema_version` within the supported window
 | `200 OK`      | Identical run id + content already existed. Body: `{ "id", "url" }`. |
 | `409 Conflict`| Same run id, **different** content. |
 
-The `url` in the response is a browser link to the run. It is built from
-`DOMARINN_PUBLIC_URL` when set; otherwise from the request's `Host` header and
-`X-Forwarded-Proto` (see [`./deploy.md`](./deploy.md#reverse-proxies)).
+The `url` in the response is a browser link to the run. It is built from `DOMARINN_PUBLIC_URL` when set; otherwise from the request's `Host` header and `X-Forwarded-Proto` (see [`./deploy.md`](./deploy.md#reverse-proxies)).
 
-**List filters** (`GET /api/v1/runs`, all optional query params): `project`,
-`suite`, `tag`, `branch`, `status`, `since`, `until` (each epoch-ms *or*
-RFC3339), `limit` (default `50`, max `200`), `cursor`. The response is
-`{ "runs": [...], "next_cursor": "<cursor|null>" }`; pass `next_cursor` back as
-`cursor` to page.
+**List filters** (`GET /api/v1/runs`, all optional query params): `project`, `suite`, `tag`, `branch`, `status`, `since`, `until` (each epoch-ms *or* RFC3339), `limit` (default `50`, max `200`), `cursor`. The response is `{ "runs": [...], "next_cursor": "<cursor|null>" }`; pass `next_cursor` back as `cursor` to page.
 
-**Case filters** (`GET /api/v1/runs/{id}/cases`): `status`, `tag`, `q`
-(free-text), `provider`, `prompt`, `test`, `stop_reason` (each an exact match on
-the promoted cell columns), `limit`, `cursor`.
+**Case filters** (`GET /api/v1/runs/{id}/cases`): `status`, `tag`, `q` (free-text), `provider`, `prompt`, `test`, `stop_reason` (each an exact match on the promoted cell columns), `limit`, `cursor`.
 
-**Matrix** (`GET /api/v1/runs/{id}/matrix`) returns the run's prompt × provider
-aggregate. `columns` is the complete set of `(provider, prompt)` pairs (first-seen
-order); `rows` is one per test, each with a `cells` array aligned 1:1 with
-`columns` — a `null` cell means that test never ran on that column. Each cell
-collapses that test × column's repeats into status counts, `score_mean`,
-`pass_fraction`, `distinct_outputs` (a flakiness signal), `latency_ms_mean`,
-`cost_usd`, and the cell's `case_keys`. Only `rows` paginate: `limit` (default
-`100`, max `500`) and `cursor`; columns are always complete.
+**Matrix** (`GET /api/v1/runs/{id}/matrix`) returns the run's prompt × provider aggregate. `columns` is the complete set of `(provider, prompt)` pairs (first-seen order); `rows` is one per test, each with a `cells` array aligned 1:1 with `columns` — a `null` cell means that test never ran on that column. Each cell collapses that test × column's repeats into status counts, `score_mean`, `pass_fraction`, `distinct_outputs` (a flakiness signal), `latency_ms_mean`, `cost_usd`, and the cell's `case_keys`. Only `rows` paginate: `limit` (default `100`, max `500`) and `cursor`; columns are always complete.
 
 ### Projects, suites, baselines
 
@@ -403,9 +317,7 @@ collapses that test × column's repeats into status counts, `score_mean`,
 
 ### Cache (shared provider cache)
 
-The content-addressed cache lets many CI runs share provider outputs. Keys are
-`sha256:<64 hex>`; anything else is a `400`. See [`./caching.md`](./caching.md)
-for the client side.
+The content-addressed cache lets many CI runs share provider outputs. Keys are `sha256:<64 hex>`; anything else is a `400`. See [`./caching.md`](./caching.md) for the client side.
 
 | Method | Path                       | Scope   | Notes |
 |--------|----------------------------|---------|-------|
@@ -423,29 +335,11 @@ for the client side.
 
 ## Strict request validation
 
-The API rejects malformed requests loudly instead of quietly guessing. A typo in
-a query string or a stale field name fails fast with a clear status, rather than
-being silently ignored and masking the mistake.
+The API rejects malformed requests loudly instead of quietly guessing. A typo in a query string or a stale field name fails fast with a clear status, rather than being silently ignored and masking the mistake.
 
-- **Unknown query parameters, and unparseable filter values, are `400`.** An
-  unrecognized value for `?status=` on `GET /runs` or `GET /runs/{id}/cases` is a
-  `400`, and so is a query string carrying a parameter the endpoint does not
-  define. The two `status` filters are deliberately different: the case filter
-  accepts `pass | fail | error | skip`, but the **run-level** filter accepts only
-  `pass | fail | error`. A skipped case never moves a run's pass/fail/error
-  counters, so `GET /runs?status=skip` is a `400` — not an empty result set.
-  Likewise, `POST /cache/prune` takes `older_than_days` and `target_bytes` as
-  **query** parameters, so an unknown param there is a `400` as well.
-- **Unknown fields in a JSON request body are `422`.** A misspelled or stray key
-  (in a user, API-key, or baseline body) is rejected rather than
-  dropped — as is a value of the wrong type or an unrecognized enum value (any
-  body that parses as JSON but does not match the target shape). Syntactically
-  invalid JSON, or a missing/incorrect `Content-Type`, is a `400`.
-- **An unrecognized assertion `kind` in an ingested run document is `422`.**
-  `POST /api/v1/runs` deserializes the body into the strict `RunResult` schema, so
-  an unknown assert kind — or any other unknown field or out-of-range value —
-  fails validation instead of being stored as-is. (A body outside the supported
-  `schema_version` window is also `422`; see [ingest](#run-ingest).)
+- **Unknown query parameters, and unparseable filter values, are `400`.** An unrecognized value for `?status=` on `GET /runs` or `GET /runs/{id}/cases` is a `400`, and so is a query string carrying a parameter the endpoint does not define. The two `status` filters are deliberately different: the case filter accepts `pass | fail | error | skip`, but the **run-level** filter accepts only `pass | fail | error`. A skipped case never moves a run's pass/fail/error counters, so `GET /runs?status=skip` is a `400` — not an empty result set. Likewise, `POST /cache/prune` takes `older_than_days` and `target_bytes` as **query** parameters, so an unknown param there is a `400` as well.
+- **Unknown fields in a JSON request body are `422`.** A misspelled or stray key (in a user, API-key, or baseline body) is rejected rather than dropped — as is a value of the wrong type or an unrecognized enum value (any body that parses as JSON but does not match the target shape). Syntactically invalid JSON, or a missing/incorrect `Content-Type`, is a `400`.
+- **An unrecognized assertion `kind` in an ingested run document is `422`.** `POST /api/v1/runs` deserializes the body into the strict `RunResult` schema, so an unknown assert kind — or any other unknown field or out-of-range value — fails validation instead of being stored as-is. (A body outside the supported `schema_version` window is also `422`; see [ingest](#run-ingest).)
 
 ---
 
@@ -469,44 +363,32 @@ being silently ignored and masking the mistake.
 | `DOMARINN_LOG_FORMAT`         | (auto)         | Log rendering: `pretty` \| `compact` \| `json`. Auto-selected from the terminal when unset — see [Logging & observability](#logging--observability). |
 | `RUST_LOG`                      | (unset)        | Overrides the default log filter wholesale, e.g. `RUST_LOG=domarinn=debug,tower_http=off`. When unset the server logs at `info`. Logs go to stderr. |
 
-**Read by the CLI** (when uploading runs / using an HTTP cache — *not* the
-server):
+**Read by the CLI** (when uploading runs / using an HTTP cache — *not* the server):
 
 | Variable                | Purpose |
 |-------------------------|---------|
 | `DOMARINN_SERVER_URL` | Target server base URL for `domarinn run --share` / `share` (or the `--server-url` flag). |
 | `DOMARINN_TOKEN`      | A single bearer token the CLI sends when uploading a run or using the HTTP cache backend. |
 
-See [`./cli.md`](./cli.md) and [`./caching.md`](./caching.md) for the client
-side.
+See [`./cli.md`](./cli.md) and [`./caching.md`](./caching.md) for the client side.
 
 ---
 
 ## Logging & observability
 
-The server logs to **stderr** at `info` by default. API responses go over the
-wire, never into the log stream, so structured logs stay clean for aggregation.
+The server logs to **stderr** at `info` by default. API responses go over the wire, never into the log stream, so structured logs stay clean for aggregation.
 
-**Request logging.** Every HTTP request produces an `http` span carrying its
-`method`, `path`, and `request_id`, and a `response` event carrying the `status`
-and `latency_ms`. Schematically, one request reads:
+**Request logging.** Every HTTP request produces an `http` span carrying its `method`, `path`, and `request_id`, and a `response` event carrying the `status` and `latency_ms`. Schematically, one request reads:
 
 ```
 INFO http{method=GET path=/api/v1/runs request_id=01J...}: response status=200 latency_ms=7
 ```
 
-**Request ids.** If a request arrives with an `x-request-id` header, that id is
-honored and threaded through its log line; otherwise the server mints a ULID. In
-both cases the id is echoed back on the response's `x-request-id` header, so a
-client or a proxy can correlate a single call end to end.
+**Request ids.** If a request arrives with an `x-request-id` header, that id is honored and threaded through its log line; otherwise the server mints a ULID. In both cases the id is echoed back on the response's `x-request-id` header, so a client or a proxy can correlate a single call end to end.
 
-**Format.** As on the CLI, rendering is auto-selected: **pretty** when stderr is
-a terminal, and **JSON** (one object per line) when it is not — which is the usual
-case under Docker/Kubernetes, so container logs are structured out of the box.
-Force a format with `DOMARINN_LOG_FORMAT=pretty|compact|json`.
+**Format.** As on the CLI, rendering is auto-selected: **pretty** when stderr is a terminal, and **JSON** (one object per line) when it is not — which is the usual case under Docker/Kubernetes, so container logs are structured out of the box. Force a format with `DOMARINN_LOG_FORMAT=pretty|compact|json`.
 
-**Turning the volume down.** `RUST_LOG` replaces the default filter entirely. To
-keep warnings and errors but silence the per-request `info` lines:
+**Turning the volume down.** `RUST_LOG` replaces the default filter entirely. To keep warnings and errors but silence the per-request `info` lines:
 
 ```sh
 RUST_LOG=domarinn=warn,tower_http=off domarinn server
@@ -528,17 +410,13 @@ State lives in the data directory as **two SQLite files** (WAL mode):
 | `domarinn.db` | Durable run history. Each run is stored both as a compressed lossless blob (for export) and as normalized rows for indexed filtering. Also holds users, sessions, API keys, and baselines. | **Yes — this is the backup target.** |
 | `cache.db`      | The content-addressed provider cache. Regenerable. | No — disposable. |
 
-SQLite is a **single writer**: run exactly one instance against a given data
-directory. This is what makes backups a file copy and self-hosting a one-liner —
-and why the deployment guidance is single-replica. Migrations run automatically
-at startup. See [`./deploy.md`](./deploy.md) for backup and Kubernetes details.
+SQLite is a **single writer**: run exactly one instance against a given data directory. This is what makes backups a file copy and self-hosting a one-liner — and why the deployment guidance is single-replica. Migrations run automatically at startup. See [`./deploy.md`](./deploy.md) for backup and Kubernetes details.
 
 ---
 
 ## Web UI tour
 
-The UI is a single-page app served at the web root (client-side routing; give the
-service its own hostname, not a path prefix).
+The UI is a single-page app served at the web root (client-side routing; give the service its own hostname, not a path prefix).
 
 | Path                          | Page | What it does |
 |-------------------------------|------|--------------|
@@ -596,6 +474,4 @@ curl -s "$BASE/api/v1/runs?project=demo&limit=20"
 curl -s "$BASE/api/v1/runs/$HEAD/compare/$BASE_RUN"
 ```
 
-In `closed` mode (the default) every call needs at least a `read` token. In
-`protect-writes` reads work anonymously but writes need a `write` token; in
-`open` mode you can drop the `Authorization` header entirely.
+In `closed` mode (the default) every call needs at least a `read` token. In `protect-writes` reads work anonymously but writes need a `write` token; in `open` mode you can drop the `Authorization` header entirely.

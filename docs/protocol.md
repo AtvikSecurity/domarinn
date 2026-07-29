@@ -1,9 +1,6 @@
 # The domarinn exec protocol (v1)
 
-This is the external contract for writing **providers**, **asserts**, and
-**test generators** in any language. If your program can read JSON from stdin
-and write JSON to stdout, it can plug into domarinn — no Rust, no SDK, no
-linking required.
+This is the external contract for writing **providers**, **asserts**, and **test generators** in any language. If your program can read JSON from stdin and write JSON to stdout, it can plug into domarinn — no Rust, no SDK, no linking required.
 
 > The canonical shapes live in
 > [`crates/domarinn-protocol/src/lib.rs`](../crates/domarinn-protocol/src/lib.rs).
@@ -12,8 +9,7 @@ linking required.
 
 ## One protocol, three kinds
 
-A single wire protocol carries three kinds of request, distinguished by the
-envelope's `kind` field:
+A single wire protocol carries three kinds of request, distinguished by the envelope's `kind` field:
 
 | `kind`           | Program role      | Answers the question           |
 |------------------|-------------------|--------------------------------|
@@ -26,24 +22,15 @@ envelope's `kind` field:
 Version 1 is **one-shot**:
 
 1. domarinn spawns your program (an `exec` command from the suite config).
-2. It writes **exactly one** JSON request document to your **stdin**, then
-   **closes stdin** (EOF).
-3. Your program writes **exactly one** JSON response document to **stdout** and
-   exits.
+2. It writes **exactly one** JSON request document to your **stdin**, then **closes stdin** (EOF).
+3. Your program writes **exactly one** JSON response document to **stdout** and exits.
 
 Rules:
 
-- **stdout is for the JSON response only.** Write logs, diagnostics, and
-  progress to **stderr**. A non-JSON stdout is a protocol violation.
-- The environment variable `DOMARINN_PROTOCOL` is set to the integer protocol
-  version (`1`). Use it to detect the version if you support more than one.
-- **Exit code = infrastructure signal, not grading.** Exit `0` when you
-  produced a valid response — *even if a provider errored or an assert failed*;
-  that outcome belongs in the JSON body. A **non-zero exit** means your program
-  itself broke (crash, could not reach an upstream API, bad input) and
-  domarinn treats it as an infrastructure error for that call.
-- A per-provider `timeout_ms` (from the suite) bounds each call; exceeding it is
-  an infrastructure error.
+- **stdout is for the JSON response only.** Write logs, diagnostics, and progress to **stderr**. A non-JSON stdout is a protocol violation.
+- The environment variable `DOMARINN_PROTOCOL` is set to the integer protocol version (`1`). Use it to detect the version if you support more than one.
+- **Exit code = infrastructure signal, not grading.** Exit `0` when you produced a valid response — *even if a provider errored or an assert failed*; that outcome belongs in the JSON body. A **non-zero exit** means your program itself broke (crash, could not reach an upstream API, bad input) and domarinn treats it as an infrastructure error for that call.
+- A per-provider `timeout_ms` (from the suite) bounds each call; exceeding it is an infrastructure error.
 
 ## The envelope
 
@@ -56,19 +43,15 @@ Every request is a JSON object with a top-level `domarinn` key:
 ```
 
 - `protocol` (integer) — the protocol version; `1` today.
-- `kind` (string) — one of `provider`, `assert`, `generate_tests`
-  (snake_case).
+- `kind` (string) — one of `provider`, `assert`, `generate_tests` (snake_case).
 
-The envelope makes the protocol evolvable: future versions bump `protocol` and
-may add fields. Unknown fields should be ignored by well-behaved programs.
+The envelope makes the protocol evolvable: future versions bump `protocol` and may add fields. Unknown fields should be ignored by well-behaved programs.
 
 ---
 
 ## Kind: `provider`
 
-Runs the system under test. Prompts are **optional** — when a suite has no
-prompts, `prompt` is omitted and your provider works from `vars` alone (the
-"self-input" case).
+Runs the system under test. Prompts are **optional** — when a suite has no prompts, `prompt` is omitted and your provider works from `vars` alone (the "self-input" case).
 
 ### Request (domarinn -> your stdin)
 
@@ -133,10 +116,7 @@ Only `output` is required:
 | `cache_write_tokens` | Optional. Input written *into* that cache. |
 | `cache_write_1h_tokens` | Optional. The subset of `cache_write_tokens` at a longer TTL. Absent means "all at the default TTL". |
 
-`input_tokens` **excludes** the cache counters, so the fields sum. If your
-upstream reports an inclusive total (OpenAI's `prompt_tokens` includes
-`cached_tokens`), subtract the cached span out before reporting — otherwise it
-is billed at the discounted rate *and* the full one.
+`input_tokens` **excludes** the cache counters, so the fields sum. If your upstream reports an inclusive total (OpenAI's `prompt_tokens` includes `cached_tokens`), subtract the cached span out before reporting — otherwise it is billed at the discounted rate *and* the full one.
 
 #### Errors
 
@@ -148,15 +128,11 @@ is billed at the discounted rate *and* the full one.
 | `class` | Optional. What kind of failure this was, using domarinn's vocabulary — `provider_auth`, `provider_rate_limit`, `provider_timeout`, `provider_unavailable`, `provider_protocol`. Defaults to `exec_failed`. |
 | `retry_after_ms` | Optional. A `Retry-After` you received. Only meaningful with `retriable: true`. |
 
-Naming a `class` is worth doing: without it every failure from every exec
-provider is indistinguishable, so a rejected credential looks exactly like a
-crash. Unrecognized values are kept verbatim rather than rejected.
+Naming a `class` is worth doing: without it every failure from every exec provider is indistinguishable, so a rejected credential looks exactly like a crash. Unrecognized values are kept verbatim rather than rejected.
 
 #### Empty outputs
 
-A blank `output` is a *successful* call, so nothing upstream raises — and every
-assertion then scores zero for a reason that has nothing to do with the prompt.
-Set `empty_reason` when you know why:
+A blank `output` is a *successful* call, so nothing upstream raises — and every assertion then scores zero for a reason that has nothing to do with the prompt. Set `empty_reason` when you know why:
 
 | Value | Means |
 |---|---|
@@ -167,10 +143,7 @@ Set `empty_reason` when you know why:
 | `thinking_only` | It reasoned but never emitted a final message. |
 | `no_content_blocks`, `empty_body`, `blank` | Protocol-shaped faults, or a genuinely blank answer. |
 
-An unrecognized value is carried through verbatim and is **never** an error —
-the list grows at model-release cadence, with no domarinn release in the loop.
-If you report `stop_reason` but not `empty_reason`, domarinn derives one when
-(and only when) the output really is blank.
+An unrecognized value is carried through verbatim and is **never** an error — the list grows at model-release cadence, with no domarinn release in the loop. If you report `stop_reason` but not `empty_reason`, domarinn derives one when (and only when) the output really is blank.
 
 To signal a recoverable upstream failure (e.g. a rate limit) without crashing:
 
@@ -182,25 +155,15 @@ To signal a recoverable upstream failure (e.g. a rate limit) without crashing:
 
 ## Tools
 
-domarinn can hand your provider a set of tool declarations and grade what the
-model decided to do with them.
+domarinn can hand your provider a set of tool declarations and grade what the model decided to do with them.
 
-**It never runs a tool.** There is no agent loop, no result fed back, no second
-turn. What an eval wants from a tool-using model is the *decision* — did it
-reach for `get_weather` with the right city, and did it stay away from
-`delete_account` — and that decision is fully observable in one turn. Executing
-the tool would make domarinn part of the system under test.
+**It never runs a tool.** There is no agent loop, no result fed back, no second turn. What an eval wants from a tool-using model is the *decision* — did it reach for `get_weather` with the right city, and did it stay away from `delete_account` — and that decision is fully observable in one turn. Executing the tool would make domarinn part of the system under test.
 
 ### Offering them
 
-`tools` arrives on the request when the suite declared any, in Anthropic's
-shape (`input_schema` is a JSON Schema). Offer them to your model however your
-upstream expects; an OpenAI-compatible endpoint wants each one wrapped as
-`{"type": "function", "function": {name, description, parameters}}`.
+`tools` arrives on the request when the suite declared any, in Anthropic's shape (`input_schema` is a JSON Schema). Offer them to your model however your upstream expects; an OpenAI-compatible endpoint wants each one wrapped as `{"type": "function", "function": {name, description, parameters}}`.
 
-The key is absent, not empty, when the suite declared no tools — so a provider
-that ignores this field is unaffected, and so is every cache entry written
-before tools existed.
+The key is absent, not empty, when the suite declared no tools — so a provider that ignores this field is unaffected, and so is every cache entry written before tools existed.
 
 ### Reporting the decision
 
@@ -222,25 +185,14 @@ before tools existed.
 
 Two rules worth stating plainly:
 
-- **`arguments` is decoded, not a string.** OpenAI-compatible endpoints send
-  `function.arguments` as a JSON string; parse it before reporting. Forwarding
-  the string hands every assertion a parsing problem instead of an argument.
-- **Report calls even when there is also text.** A case whose right answer is a
-  tool call has no gradeable prose, and returning `""` alone scores it zero
-  against every assertion for a reason unrelated to the prompt. Set
-  `empty_reason: "tool_use_only"` alongside the calls when that is what
-  happened.
+- **`arguments` is decoded, not a string.** OpenAI-compatible endpoints send `function.arguments` as a JSON string; parse it before reporting. Forwarding the string hands every assertion a parsing problem instead of an argument.
+- **Report calls even when there is also text.** A case whose right answer is a tool call has no gradeable prose, and returning `""` alone scores it zero against every assertion for a reason unrelated to the prompt. Set `empty_reason: "tool_use_only"` alongside the calls when that is what happened.
 
-Suite-side, these are graded by [`tool-call`
-assertions](./assertions.md#tool-call).
+Suite-side, these are graded by [`tool-call` assertions](./assertions.md#tool-call).
 
 ## Writing a provider in Rust
 
-The wire types live in `domarinn-protocol` — a crate whose only dependencies
-are `serde` and `serde_json`, enforced by a test. It is deliberately separate
-from `domarinn-types` (the *run document* contract, which carries a schema
-generator and a TypeScript exporter): someone writing a provider should not
-inherit either.
+The wire types live in `domarinn-protocol` — a crate whose only dependencies are `serde` and `serde_json`, enforced by a test. It is deliberately separate from `domarinn-types` (the *run document* contract, which carries a schema generator and a TypeScript exporter): someone writing a provider should not inherit either.
 
 ```toml
 [dependencies]
@@ -258,21 +210,15 @@ let resp = ProviderResp {
 serde_json::to_writer(std::io::stdout(), &resp)?;
 ```
 
-`Default` is derived precisely so this stays correct as optional fields are
-added.
+`Default` is derived precisely so this stays correct as optional fields are added.
 
 ## Working directory
 
-Every child — provider, assertion, and generator — is spawned with its working
-directory set to the **suite's** directory, not wherever the CLI was invoked.
-A generator resolving `datasets/*.yaml` therefore resolves it relative to the
-suite file, which is almost always what you want and is not otherwise
-discoverable.
+Every child — provider, assertion, and generator — is spawned with its working directory set to the **suite's** directory, not wherever the CLI was invoked. A generator resolving `datasets/*.yaml` therefore resolves it relative to the suite file, which is almost always what you want and is not otherwise discoverable.
 
 ## Kind: `assert`
 
-A custom grader. Receives the provider's output plus context and returns a
-`GradingResult`-shaped verdict.
+A custom grader. Receives the provider's output plus context and returns a `GradingResult`-shaped verdict.
 
 ### Request
 
@@ -313,8 +259,7 @@ A custom grader. Receives the provider's output plus context and returns a
 | `reason`  | string  | Optional. Human-readable explanation (shown in results). |
 | `details` | any JSON| Optional. Structured evidence. |
 
-A failing assert is a **normal result** (`"pass": false`), not an error — exit
-`0`. Reserve non-zero exits for the grader itself breaking.
+A failing assert is a **normal result** (`"pass": false`), not an error — exit `0`. Reserve non-zero exits for the grader itself breaking.
 
 ---
 
@@ -350,11 +295,9 @@ Two accepted forms:
 }
 ```
 
-**JSONL form** — one test case JSON object per line (no wrapper). Convenient for
-streaming large generators.
+**JSONL form** — one test case JSON object per line (no wrapper). Convenient for streaming large generators.
 
-Each emitted test object follows the suite's test-case schema (see
-`domarinn schema config`).
+Each emitted test object follows the suite's test-case schema (see `domarinn schema config`).
 
 ---
 
@@ -395,15 +338,9 @@ providers:
     cache_salt: "v1"
 ```
 
-A test case may also set its own `cache_salt`. That one is purely a cache-keying
-concern and is deliberately **not** part of the wire payload — do not look for it
-in the request. Use it when your program resolves content domarinn cannot see
-(its own prompt files, say), so that editing that content busts only the affected
-cases. See [caching.md](./caching.md#per-case-salts).
+A test case may also set its own `cache_salt`. That one is purely a cache-keying concern and is deliberately **not** part of the wire payload — do not look for it in the request. Use it when your program resolves content domarinn cannot see (its own prompt files, say), so that editing that content busts only the affected cases. See [caching.md](./caching.md#per-case-salts).
 
 ## Versioning
 
 - `protocol: 1` is the current, stable wire version.
-- New versions bump the integer and are negotiated via the `DOMARINN_PROTOCOL`
-  env var and the envelope field. Programs should read the version rather than
-  assume it, and ignore unknown fields for forward compatibility.
+- New versions bump the integer and are negotiated via the `DOMARINN_PROTOCOL` env var and the envelope field. Programs should read the version rather than assume it, and ignore unknown fields for forward compatibility.
