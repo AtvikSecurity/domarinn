@@ -181,6 +181,36 @@ impl Provider for ExecProvider {
         let (command, args) = self.command.split_first()?;
         Some(exec_request_preview(command, args, stdin))
     }
+
+    /// The document written to stdin, minus the one member that identifies the
+    /// *case* rather than the question, plus the digest of the environment the
+    /// child runs in.
+    ///
+    /// `test` is stripped because a test id and its tags are correlation
+    /// metadata, like a request id: two cases with identical vars are asking the
+    /// same thing and must keep sharing an entry. The real call still sends it —
+    /// this is a keying view of the request, not a second version of it.
+    ///
+    /// `env_digest` is present only when the provider declares `env:`, and is a
+    /// digest rather than the map because this value is persisted into every
+    /// cache entry and `env` is where an exec provider's credentials live.
+    fn canonical_request(&self, req: &ProviderRequest) -> Option<Json> {
+        let mut stdin = serde_json::to_value(protocol_request(req)).ok()?;
+        stdin.as_object_mut()?.remove("test");
+        let (command, args) = self.command.split_first()?;
+        let mut canonical = exec_request_preview(command, args, stdin);
+        if let Some(digest) = &self.env_digest {
+            canonical
+                .as_object_mut()
+                .expect("json! object literal")
+                .insert("env_digest".to_string(), Json::String(digest.clone()));
+        }
+        Some(canonical)
+    }
+
+    fn cache_salt(&self) -> Option<&str> {
+        self.cache_salt.as_deref()
+    }
 }
 
 /// Build the exec-protocol request for one provider call.
@@ -433,18 +463,24 @@ mod tests {
     /// Bumping `cache_salt` is the supported way to throw the old answers away.
     #[test]
     fn a_salt_is_what_separates_two_builds() {
-        let of = |salt: &str| {
-            let p = ExecProvider::new(
+        let provider = |salt: &str| {
+            ExecProvider::new(
                 "p",
                 vec!["./sut".into()],
                 BTreeMap::new(),
                 None,
                 Some(salt.to_string()),
                 None,
-            );
-            crate::cache::canonical_json(&p.fingerprint())
+            )
         };
+        let of = |salt: &str| crate::cache::canonical_json(&provider(salt).fingerprint());
         assert_ne!(of("abc1234"), of("def5678"));
+        // A key member, never a request member: publishing it separates the
+        // builds, and sending it would change the child's input.
+        let p = provider("abc1234");
+        assert_eq!(p.cache_salt(), Some("abc1234"));
+        let canonical = crate::cache::canonical_json(&p.canonical_request(&request("hi")).unwrap());
+        assert!(!canonical.contains("abc1234"), "{canonical}");
     }
 
     /// Nothing the filesystem knows may reach the key — not contents, not
@@ -501,6 +537,57 @@ mod tests {
         );
         assert_eq!(preview["stdin"]["vars"]["user_input"], json!("hello"));
         assert!(!preview.to_string().contains("secret"));
+    }
+
+    /// The documented exception to "the keyed request is what is sent": the
+    /// `test` block is correlation metadata, like a request id, so two cases
+    /// with identical vars keep sharing an entry. The child still receives it —
+    /// the preview is what proves that.
+    #[test]
+    fn the_keyed_stdin_drops_the_test_block_but_keeps_the_protocol_envelope() {
+        let p = ExecProvider::new("e", vec!["./sut".into()], BTreeMap::new(), None, None, None);
+        let req = request("hello");
+
+        let canonical = p.canonical_request(&req).unwrap();
+        let stdin = &canonical["stdin"];
+        assert!(stdin.get("test").is_none(), "{stdin}");
+        assert_eq!(stdin["domarinn"]["kind"], json!("provider"));
+        assert!(stdin["domarinn"]["protocol"].is_number());
+        assert_eq!(stdin["vars"]["user_input"], json!("hello"));
+        assert_eq!(canonical["command"], json!("./sut"));
+
+        assert_eq!(
+            p.request_preview(&req).unwrap()["stdin"]["test"]["id"],
+            json!("t"),
+            "the real call still sends it"
+        );
+        assert!(p
+            .canonical_request(&request("x"))
+            .is_some_and(|c| c.get("env_digest").is_none()));
+    }
+
+    /// `env` selects the thing that answers (`MODEL_ENDPOINT: http://a` against
+    /// `…/b`), so it keys — as a digest, never as values: a canonical request is
+    /// persisted into every cache entry and entries travel to shared stores.
+    #[test]
+    fn the_env_digest_keys_without_publishing_the_environment() {
+        let p = ExecProvider::new(
+            "e",
+            vec!["./sut".into()],
+            BTreeMap::from([("SUT_TOKEN".to_string(), "SENTINEL-SECRET".to_string())]),
+            None,
+            None,
+            None,
+        );
+        let canonical = p.canonical_request(&request("hi")).unwrap();
+        assert_eq!(canonical["env_digest"], json!(p.env_digest.clone()));
+        assert!(canonical["env_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("blake3:"));
+        let serialized = crate::cache::canonical_json(&canonical);
+        assert!(!serialized.contains("SENTINEL-SECRET"), "{serialized}");
+        assert!(!serialized.contains("SUT_TOKEN"), "{serialized}");
     }
 
     #[test]

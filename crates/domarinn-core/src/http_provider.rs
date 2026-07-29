@@ -14,7 +14,9 @@ use serde_json::{json, Value as Json};
 use crate::config::HttpMethod;
 use crate::error_class::ErrorClass;
 use crate::net::{http_client, parse_retry_after, status_error, transport_error};
-use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
+use crate::provider::{
+    http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
+};
 use crate::template::TemplateEngine;
 use crate::types::{Output, RenderedPrompt};
 use crate::val::Val;
@@ -57,6 +59,85 @@ impl HttpProvider {
             client: http_client(DEFAULT_TIMEOUT),
         }
     }
+
+    /// Render this provider's templates against `req` and `env` into the request
+    /// that would go on the wire.
+    ///
+    /// The `env` object is a parameter rather than read here because it is the
+    /// one axis on which the sent request and the *keyed* one differ:
+    /// [`Provider::call`] passes [`crate::render::env_object`], while
+    /// [`Provider::canonical_request`] passes
+    /// [`crate::render::env_placeholder_object`]. Everything else — the vars,
+    /// the prompt, the order the templates are rendered in, the error each
+    /// failure produces — is shared, so the two cannot drift.
+    fn build_request(
+        &self,
+        req: &ProviderRequest,
+        env: &Json,
+    ) -> Result<BuiltHttpRequest, ProviderError> {
+        let engine = TemplateEngine::new();
+        let render_ctx = render_context(req, env);
+
+        let url = engine.render_str(&self.url, &render_ctx).map_err(|e| {
+            ProviderError::fatal(
+                ErrorClass::RENDER_FAILED,
+                anyhow::anyhow!("rendering url: {e}"),
+            )
+        })?;
+        // Infallible: `HttpMethod` is a closed set validated at config parse
+        // time, so there is no invalid-method error path left to handle here.
+        let method = match self.method {
+            HttpMethod::Get => reqwest::Method::GET,
+            HttpMethod::Post => reqwest::Method::POST,
+            HttpMethod::Put => reqwest::Method::PUT,
+            HttpMethod::Patch => reqwest::Method::PATCH,
+            HttpMethod::Delete => reqwest::Method::DELETE,
+            HttpMethod::Head => reqwest::Method::HEAD,
+        };
+
+        let mut headers = BTreeMap::new();
+        for (name, template) in &self.headers {
+            let value = engine.render_str(template, &render_ctx).map_err(|e| {
+                ProviderError::fatal(
+                    ErrorClass::RENDER_FAILED,
+                    anyhow::anyhow!("rendering header {name}: {e}"),
+                )
+            })?;
+            headers.insert(name.clone(), value);
+        }
+
+        let body = match &self.body {
+            Some(body) => Some(
+                engine
+                    .render_val(&Val::Tpl(body.clone()), &render_ctx)
+                    .map_err(|e| {
+                        ProviderError::fatal(
+                            ErrorClass::RENDER_FAILED,
+                            anyhow::anyhow!("rendering body: {e}"),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+
+        Ok(BuiltHttpRequest {
+            url,
+            method,
+            headers,
+            body,
+        })
+    }
+}
+
+/// One rendered outgoing request: what [`Provider::call`] sends, and — rendered
+/// against placeholder `env` — what the cache keys and stores.
+struct BuiltHttpRequest {
+    url: String,
+    method: reqwest::Method,
+    headers: BTreeMap<String, String>,
+    /// `None` when the provider declares no body template, which is not the
+    /// same as declaring an empty one.
+    body: Option<Json>,
 }
 
 /// A digest of the provider's declared headers, or `None` when it sets none.
@@ -216,46 +297,14 @@ impl Provider for HttpProvider {
         req: &ProviderRequest,
         _ctx: &CallCtx,
     ) -> Result<ProviderResponse, ProviderError> {
-        let engine = TemplateEngine::new();
-        let render_ctx = render_context(req);
+        let built = self.build_request(req, &crate::render::env_object())?;
 
-        let url = engine.render_str(&self.url, &render_ctx).map_err(|e| {
-            ProviderError::fatal(
-                ErrorClass::RENDER_FAILED,
-                anyhow::anyhow!("rendering url: {e}"),
-            )
-        })?;
-        // Infallible: `HttpMethod` is a closed set validated at config parse
-        // time, so there is no invalid-method error path left to handle here.
-        let method = match self.method {
-            HttpMethod::Get => reqwest::Method::GET,
-            HttpMethod::Post => reqwest::Method::POST,
-            HttpMethod::Put => reqwest::Method::PUT,
-            HttpMethod::Patch => reqwest::Method::PATCH,
-            HttpMethod::Delete => reqwest::Method::DELETE,
-            HttpMethod::Head => reqwest::Method::HEAD,
-        };
-
-        let mut request = self.client.request(method, &url);
-        for (name, template) in &self.headers {
-            let value = engine.render_str(template, &render_ctx).map_err(|e| {
-                ProviderError::fatal(
-                    ErrorClass::RENDER_FAILED,
-                    anyhow::anyhow!("rendering header {name}: {e}"),
-                )
-            })?;
+        let mut request = self.client.request(built.method, &built.url);
+        for (name, value) in &built.headers {
             request = request.header(name, value);
         }
-        if let Some(body) = &self.body {
-            let rendered = engine
-                .render_val(&Val::Tpl(body.clone()), &render_ctx)
-                .map_err(|e| {
-                    ProviderError::fatal(
-                        ErrorClass::RENDER_FAILED,
-                        anyhow::anyhow!("rendering body: {e}"),
-                    )
-                })?;
-            request = request.json(&rendered);
+        if let Some(body) = &built.body {
+            request = request.json(body);
         }
 
         let response = request.send().await.map_err(transport_error)?;
@@ -279,7 +328,7 @@ impl Provider for HttpProvider {
                         "headers": headers,
                     }
                 });
-                let value = engine.eval_value(expr, &ctx).map_err(|e| {
+                let value = TemplateEngine::new().eval_value(expr, &ctx).map_err(|e| {
                     ProviderError::fatal(
                         ErrorClass::PROVIDER_PROTOCOL,
                         anyhow::anyhow!("output_expr `{expr}`: {e}"),
@@ -310,30 +359,80 @@ impl Provider for HttpProvider {
         })
     }
 
-    // `request_preview` is deliberately left at its `None` default.
-    //
-    // This provider's url, headers, and body are templates rendered against
-    // `env` (see `render_context`), which is exactly how a suite supplies its
-    // credentials — `{"api_key": "{{ env.SUT_TOKEN }}"}` is the documented way
-    // to authenticate a black-box system under test. A rendered preview would
-    // bake that secret into `CaseResult`, which is persisted and uploaded by
-    // `--share`. The same reasoning is why `fingerprint` publishes the *unrendered*
-    // `self.body` and never the rendered one.
-    //
-    // If this is ever implemented, it needs a redaction pass over the rendered
-    // values, not a straight `render_val` — the drawer falls back to showing the
-    // rendered prompt, which leaks nothing, and that is the correct trade here.
+    /// The resolved request, rendered against placeholder `env`.
+    ///
+    /// The double render *is* the redaction pass this preview was withheld for.
+    /// This provider's url, headers, and body are templates rendered against
+    /// `env`, which is the documented way to supply a black-box system under
+    /// test's credentials — `{"api_key": "{{ env.SUT_TOKEN }}"}` — and a preview
+    /// is persisted into `CaseResult` and uploaded by `--share`. Rendering
+    /// against [`crate::render::env_placeholder_object`] resolves the vars and
+    /// the prompt for real while every `env` value comes out as the literal
+    /// `${env:NAME}` that names it.
+    ///
+    /// Headers are absent, as in every provider's preview envelope: that is
+    /// where the credential sits even when it is a pasted literal rather than an
+    /// `env` reference.
+    fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
+        let built = self
+            .build_request(req, &crate::render::env_placeholder_object())
+            .ok()?;
+        Some(http_request_preview(
+            built.method.as_str(),
+            &built.url,
+            built.body.unwrap_or(Json::Null),
+        ))
+    }
+
+    /// The same placeholder-rendered request, keyed rather than displayed.
+    ///
+    /// Two members are inserted only when the provider declares them, so the
+    /// envelope says nothing about a body or headers that do not exist:
+    ///
+    /// - `body`, when a body template is configured.
+    /// - `headers_digest`, when any header is. A digest rather than the values
+    ///   because a canonical request is persisted into every cache entry and
+    ///   entries travel to shared stores, and a header is exactly where a
+    ///   pasted-literal secret would sit. It digests the *rendered* headers, so
+    ///   a header reading a case var separates two cases while one reading
+    ///   `{{ env.TOKEN }}` does not — see [`headers_digest`] for the same
+    ///   argument applied to the unrendered templates in the fingerprint.
+    ///
+    /// A render failure yields `None`: an unrenderable request has no identity
+    /// to key on, and the live call surfaces the `RENDER_FAILED` itself.
+    fn canonical_request(&self, req: &ProviderRequest) -> Option<Json> {
+        let built = self
+            .build_request(req, &crate::render::env_placeholder_object())
+            .ok()?;
+        let mut canonical = json!({
+            "transport": "http",
+            "method": built.method.as_str(),
+            "url": built.url,
+        });
+        let members = canonical.as_object_mut().expect("json! object literal");
+        if let Some(body) = built.body {
+            members.insert("body".to_string(), body);
+        }
+        if let Some(digest) = headers_digest(&built.headers) {
+            members.insert("headers_digest".to_string(), Json::String(digest));
+        }
+        Some(canonical)
+    }
 }
 
-fn render_context(req: &ProviderRequest) -> Json {
+/// The template context for one call: the rendered vars, the prompt, and `env`.
+///
+/// `env` is a parameter because the caller decides whether its *values* are
+/// visible — see [`HttpProvider::build_request`]. Request vars intentionally
+/// omit the environment (so it stays out of the cache key); this is where
+/// `{{ env.X }}` in url/headers/body gets it.
+fn render_context(req: &ProviderRequest, env: &Json) -> Json {
     let mut obj = req
         .vars
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect::<serde_json::Map<_, _>>();
-    // Request vars intentionally omit the environment (so it stays out of the
-    // cache key); expose it here for `{{ env.X }}` in url/headers/body.
-    obj.insert("env".to_string(), crate::render::env_object());
+    obj.insert("env".to_string(), env.clone());
     if let Some(prompt) = &req.prompt {
         let text = match prompt {
             RenderedPrompt::Text(t) => t.clone(),
@@ -396,22 +495,132 @@ mod tests {
         }
     }
 
+    /// The redaction pass this provider's preview was withheld for. `env` is the
+    /// documented way to authenticate a black-box system under test, and both
+    /// documents are persisted — the canonical request into every cache entry,
+    /// the preview into a `--share`d run document — so the credential must be
+    /// replaced by the placeholder that names it, everywhere it appears.
     #[test]
-    fn request_preview_is_withheld_because_templates_can_carry_secrets() {
-        // A regression guard for a deliberate omission, not a TODO. This
-        // provider's url/headers/body are rendered against `env`, which is the
-        // documented way to authenticate a black-box system under test — so a
-        // captured preview would persist that credential into a `--share`d run
-        // document. Implementing this needs a redaction pass first.
+    fn a_call_time_credential_is_replaced_by_its_placeholder_in_both_documents() {
+        std::env::set_var("SUT_TOKEN", "SENTINEL-SECRET");
         let p = HttpProvider::new(
             "h",
             "https://sut.example/v1?key={{ env.SUT_TOKEN }}",
             None,
-            BTreeMap::new(),
-            Some(serde_json::json!({"api_key": "{{ env.SUT_TOKEN }}"})),
+            BTreeMap::from([(
+                "Authorization".to_string(),
+                "Bearer {{ env.SUT_TOKEN }}".to_string(),
+            )]),
+            Some(json!({"api_key": "{{ env.SUT_TOKEN }}", "q": "{{ doc }}"})),
             None,
         );
-        assert!(p.request_preview(&request_with_var("q", "hi")).is_none());
+        let req = request_with_var("doc", "hi");
+
+        let canonical = p.canonical_request(&req).unwrap();
+        let preview = p.request_preview(&req).unwrap();
+        for document in [&canonical, &preview] {
+            let text = crate::cache::canonical_json(document);
+            assert!(!text.contains("SENTINEL-SECRET"), "{text}");
+            assert!(text.contains("${env:SUT_TOKEN}"), "{text}");
+            assert_eq!(document["body"]["q"], json!("hi"), "vars render for real");
+        }
+        // Headers are digested rather than published in the keyed document, and
+        // absent from the previewed one: a header is where a pasted-literal
+        // secret would sit, and entries travel to shared stores.
+        assert!(canonical.get("headers").is_none());
+        assert!(canonical["headers_digest"]
+            .as_str()
+            .is_some_and(|d| d.starts_with("blake3:")));
+        assert!(preview.get("headers_digest").is_none());
+        std::env::remove_var("SUT_TOKEN");
+    }
+
+    /// A literal header selects what answers and must key; a credential header
+    /// must not, or a shared cache is partitioned by whose token was used.
+    #[test]
+    fn a_literal_header_keys_where_a_credential_header_does_not() {
+        let with_header = |name: &str, value: &str| {
+            HttpProvider::new(
+                "h",
+                "https://sut.example/v1",
+                None,
+                BTreeMap::from([(name.to_string(), value.to_string())]),
+                None,
+                None,
+            )
+            .canonical_request(&request_with_var("doc", "hi"))
+            .unwrap()
+        };
+        assert_ne!(
+            with_header("X-Model", "a")["headers_digest"],
+            with_header("X-Model", "b")["headers_digest"]
+        );
+
+        let under_token = |token: &str| {
+            std::env::set_var("HTTP_CANONICAL_TOKEN", token);
+            with_header("Authorization", "Bearer {{ env.HTTP_CANONICAL_TOKEN }}")
+        };
+        assert_eq!(under_token("token-a"), under_token("token-b"));
+        std::env::remove_var("HTTP_CANONICAL_TOKEN");
+    }
+
+    /// Only `env` is placeholdered. A header reading a case var renders for
+    /// real, so two cases asking different questions do not share an entry.
+    #[test]
+    fn a_header_that_reads_a_case_var_separates_the_requests() {
+        let for_region = |region: &str| {
+            HttpProvider::new(
+                "h",
+                "https://sut.example/v1",
+                None,
+                BTreeMap::from([("X-Region".to_string(), "{{ region }}".to_string())]),
+                None,
+                None,
+            )
+            .canonical_request(&request_with_var("region", region))
+            .unwrap()
+        };
+        assert_ne!(
+            for_region("eu")["headers_digest"],
+            for_region("us")["headers_digest"]
+        );
+    }
+
+    /// Both optional members are inserted only when the provider declares them,
+    /// the same discipline `fingerprint` follows.
+    #[test]
+    fn the_canonical_envelope_omits_what_was_never_declared() {
+        let p = HttpProvider::new(
+            "h",
+            "https://sut.example/v1",
+            Some(HttpMethod::Get),
+            BTreeMap::new(),
+            None,
+            None,
+        );
+        assert_eq!(
+            crate::cache::canonical_json(
+                &p.canonical_request(&request_with_var("x", "y")).unwrap()
+            ),
+            r#"{"method":"GET","transport":"http","url":"https://sut.example/v1"}"#
+        );
+    }
+
+    /// A request that cannot be rendered has no identity to key on. The live
+    /// call surfaces the same failure as `RENDER_FAILED`.
+    #[test]
+    fn a_request_that_cannot_render_is_uncacheable() {
+        let p = HttpProvider::new(
+            "h",
+            "https://sut.example/{{ region }}",
+            None,
+            BTreeMap::new(),
+            None,
+            None,
+        );
+        let req = request_with_var("unrelated", "y");
+        assert!(p.canonical_request(&req).is_none());
+        assert!(p.request_preview(&req).is_none());
     }
 
     #[tokio::test]

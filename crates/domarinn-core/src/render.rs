@@ -76,6 +76,29 @@ pub fn env_object() -> Json {
     Json::Object(map)
 }
 
+/// The environment with every value replaced by the literal `${env:NAME}`.
+///
+/// The keys are [`env_object`]'s, so a template renders against exactly the same
+/// definedness — `{{ env.X }}`, `env['X']`, and `env` iteration all see what
+/// they would see on the real call — and only the values are withheld.
+///
+/// Used to render an `http` provider's url/headers/body for cache keying and for
+/// persistence into a cache entry, so a call-time credential never enters a key
+/// or a stored entry. The consequence is deliberate and documented: two runs
+/// differing only in a `{{ env.X }}` value share one key (see
+/// `http_provider::warn_on_runtime_env`). `${env:X}` interpolation
+/// ([`crate::interp`]) resolves at load time, before the provider is built, and
+/// remains the supported way to make an environment value part of the key.
+pub fn env_placeholder_object() -> Json {
+    let map: serde_json::Map<String, Json> = std::env::vars()
+        .map(|(k, _)| {
+            let placeholder = format!("${{env:{k}}}");
+            (k, Json::String(placeholder))
+        })
+        .collect();
+    Json::Object(map)
+}
+
 /// Render a prompt against a context, loading `file://` content relative to
 /// `base_dir`.
 pub fn render_prompt(
@@ -144,6 +167,26 @@ mod tests {
         assert_eq!(ctx["payload"], Json::String("{{7*7}}".into()));
         assert_eq!(ctx["greeting"], Json::String("hi sam".into()));
         std::env::remove_var("DOMARINN_TEST_NAME");
+    }
+
+    /// Same keys as [`env_object`] — the definedness semantics a template sees
+    /// must not change, including `env['NAME']` lookups — with every value
+    /// replaced by its placeholder.
+    #[test]
+    fn every_placeholder_env_value_names_its_own_variable() {
+        let placeholders = env_placeholder_object();
+        let real = env_object();
+        assert_eq!(
+            placeholders.as_object().unwrap().keys().collect::<Vec<_>>(),
+            real.as_object().unwrap().keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !placeholders.as_object().unwrap().is_empty(),
+            "no env at all"
+        );
+        for (name, value) in placeholders.as_object().unwrap() {
+            assert_eq!(value, &Json::String(format!("${{env:{name}}}")));
+        }
     }
 
     #[test]

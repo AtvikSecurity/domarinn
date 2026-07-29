@@ -298,9 +298,34 @@ pub trait Provider: Send + Sync {
     /// still reports the request the cached entry stands for. Must exclude
     /// secrets: bodies only, never headers.
     ///
+    /// For what the *cache* keys on, which withholds more, see
+    /// [`Provider::canonical_request`].
+    ///
     /// `None` means "this provider does not describe its request", and the UI
     /// falls back to showing the rendered prompt alone.
     fn request_preview(&self, _req: &ProviderRequest) -> Option<Json> {
+        None
+    }
+
+    /// The redacted canonical outgoing request: what [`Provider::call`] would
+    /// send, with call-time env values replaced by stable placeholders and
+    /// correlation metadata (the exec `test` block) stripped. This is the
+    /// identity half of every cache key and is persisted verbatim into cache
+    /// entries.
+    ///
+    /// Distinct from [`Provider::request_preview`], which stays byte-faithful to
+    /// what goes on the wire because it exists to be read: two calls that differ
+    /// only in a credential must share an entry, so the keyed document withholds
+    /// what the previewed one shows.
+    ///
+    /// `None` = this call is uncacheable.
+    fn canonical_request(&self, _req: &ProviderRequest) -> Option<Json> {
+        None
+    }
+
+    /// The provider-level cache salt, when configured. Joins the cache key as
+    /// its own member; never sent to the provider.
+    fn cache_salt(&self) -> Option<&str> {
         None
     }
 
