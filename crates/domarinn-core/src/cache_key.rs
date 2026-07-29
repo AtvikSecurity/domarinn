@@ -117,9 +117,139 @@ pub fn request_cache_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{Provider, ProviderRequest, TestMeta};
+    use crate::types::RenderedPrompt;
+    use std::collections::BTreeMap;
 
     fn request() -> Json {
         serde_json::json!({"transport": "http", "url": "https://x.test/v1", "body": {"q": 1}})
+    }
+
+    // ── Golden literals for the live key space ───────────────────────────────
+    //
+    // Every other test on this path is *relative*: canonical-equals-preview, key
+    // inequality, share-and-bust pairs. All of them keep passing if the whole
+    // shape moves together — a renamed `transport`, a member added to an
+    // envelope, a provider that starts folding one more thing into its body.
+    // That failure is silent and total: every 0.5.0 key in every store moves and
+    // no test says so. These are the magic constants that say so.
+
+    /// The call every golden below is keyed on. Fixed and boring on purpose.
+    fn keyed_call() -> ProviderRequest {
+        let mut vars = BTreeMap::new();
+        vars.insert("x".to_string(), Json::String("a".into()));
+        ProviderRequest {
+            tools: Vec::new(),
+            prompt: Some(RenderedPrompt::Text("hi".into())),
+            vars,
+            params: serde_json::Map::new(),
+            test: TestMeta::default(),
+            case_salt: None,
+        }
+    }
+
+    fn openai() -> crate::openai::OpenAiProvider {
+        crate::openai::OpenAiProvider::new("p", "gpt-x", None, None, None, None)
+    }
+    fn anthropic() -> crate::anthropic::AnthropicProvider {
+        crate::anthropic::AnthropicProvider::new("p", "claude-x", None, None, None, None)
+    }
+    fn http() -> crate::http_provider::HttpProvider {
+        crate::http_provider::HttpProvider::new(
+            "p",
+            "https://sut.test/generate",
+            None,
+            BTreeMap::new(),
+            Some(serde_json::json!({"prompt": "{{ x }}"})),
+            None,
+        )
+    }
+    fn exec(cache_salt: Option<&str>) -> crate::exec_provider::ExecProvider {
+        crate::exec_provider::ExecProvider::new(
+            "p",
+            vec!["./sut".to_string()],
+            Default::default(),
+            None,
+            cache_salt.map(String::from),
+            None,
+        )
+    }
+
+    /// The key each provider kind produces for one fixed call.
+    ///
+    /// If one of these moves, every entry that provider kind ever wrote under
+    /// 0.5.x is unreachable. That is a migration to plan — a new legacy shape in
+    /// `cache_migrate.rs` — not a constant to update.
+    #[test]
+    fn golden_live_key_per_provider_kind() {
+        let (openai, anthropic, http, exec) = (openai(), anthropic(), http(), exec(None));
+        for (kind, provider, expected) in [
+            (
+                "openai",
+                &openai as &dyn Provider,
+                "sha256:15324316a2b3aa5a9f959a829d60b964eccfc26d5a14ce599d80e31007047b66",
+            ),
+            (
+                "anthropic",
+                &anthropic,
+                "sha256:966226683d9a9c8564d025eae2f6e3ee9b1b20192ddd849eed436d1051178e39",
+            ),
+            (
+                "http",
+                &http,
+                "sha256:894c2d308a88738d6aed73e74b4ab6262419f9b7f50bfb42f94d3628a90cf5c3",
+            ),
+            (
+                "exec",
+                &exec,
+                "sha256:92dcefcc2ae3856d1b66a54c4ef4aeefb183332a120ed4ac0a8c5f68d0dd8b00",
+            ),
+        ] {
+            let canonical = provider
+                .canonical_request(&keyed_call())
+                .unwrap_or_else(|| panic!("{kind} must be cacheable"));
+            let key = request_cache_key(&canonical, 0, provider.cache_salt(), None);
+            assert_eq!(key.0, expected, "{kind}: the live key moved");
+        }
+    }
+
+    /// …and the same with both salt members present, so the *composed* shape is
+    /// pinned rather than only the salt-free one. A salt that started being
+    /// merged, renamed, or inserted in a different order would pass every
+    /// relative test in this file and fail here.
+    #[test]
+    fn golden_live_key_with_both_salts() {
+        let exec = exec(Some("v1"));
+        let mut call = keyed_call();
+        call.case_salt = Some("d1".into());
+        let canonical = exec.canonical_request(&call).expect("exec is cacheable");
+        assert_eq!(
+            request_cache_key(&canonical, 0, exec.cache_salt(), call.case_salt.as_deref()).0,
+            "sha256:2338250032821b0d218a23b3d37b526883c459457feb9996b680f449cae6455e"
+        );
+    }
+
+    /// The exec protocol version is inside the key, and this is where you find
+    /// that out.
+    ///
+    /// `canonical_request` keeps the `domarinn` envelope deliberately — it is
+    /// sent, and a child may answer a v2 request differently — which makes
+    /// `PROTOCOL_VERSION` a key member. Without this assertion the bump would be
+    /// made by someone reasoning about the wire format, with no reason to think
+    /// about caches, and every warm exec store in the world would go quiet at
+    /// once.
+    #[test]
+    fn bumping_the_exec_protocol_version_re_keys_every_exec_entry() {
+        let canonical = exec(None)
+            .canonical_request(&keyed_call())
+            .expect("exec is cacheable");
+        assert_eq!(
+            canonical["stdin"]["domarinn"]["protocol"],
+            serde_json::json!(1),
+            "bumping PROTOCOL_VERSION re-keys every exec cache entry in every store; \
+             freeze the protocol-1 shape as a legacy generation in cache_migrate.rs \
+             before shipping"
+        );
     }
 
     #[test]

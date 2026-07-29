@@ -489,7 +489,11 @@ tests:
         "the first probe must be exactly the ≤0.4.x key"
     );
 
-    // Seed only the legacy key, exactly as an older domarinn left it.
+    // Seed only the legacy key. The entry itself is a current-era one filed
+    // under the old key rather than a faithful 0.4 artefact — what this test is
+    // about is *reachability*, and the key is the whole of that. The full
+    // round-trip over a genuinely 0.4-shaped entry (fingerprint, no request) is
+    // in `cache_era.rs`.
     let store = MemCache::default();
     let response = {
         let scratch = MemCache::default();
@@ -649,6 +653,9 @@ tests:
     let one_case = yaml.replace(&tests, "  - id: case-0\n    vars: {x: \"0\"}\n");
     let per_case = keys_probed_for(&one_case, checkout.path()).await.len();
     let probed_cases = (asked - 40) / (per_case - 1);
+    // The budget in `cache_migrate.rs` is 8 cases, so this is 8 plus a little
+    // slack — enough that re-tuning the budget does not mean rewriting this
+    // test, tight enough that a budget which stopped stopping still fails.
     assert!(
         probed_cases <= 12,
         "probing must taper off, not run for every case: {probed_cases} of 40 cases \

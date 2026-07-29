@@ -197,6 +197,17 @@ impl Provider for ExecProvider {
     /// same thing and must keep sharing an entry. The real call still sends it —
     /// this is a keying view of the request, not a second version of it.
     ///
+    /// The `domarinn` envelope is **deliberately kept**, and that makes
+    /// `PROTOCOL_VERSION` a cache-key member. It is sent, and a child is
+    /// entitled to answer a v2 request differently from a v1 one, so two
+    /// protocol versions are not the same question. The consequence is a flag
+    /// day: bumping `PROTOCOL_VERSION` re-keys every `exec` entry in every
+    /// store, and it MUST ship with the protocol-1 shape frozen as a new legacy
+    /// generation in [`crate::cache_migrate`] — otherwise every warm exec cache
+    /// in the world goes quiet at once, with no adoption path back.
+    /// `bumping_the_exec_protocol_version_re_keys_every_exec_entry` in
+    /// `cache_key.rs` is the tripwire that says so at the moment of the bump.
+    ///
     /// `env_digest` is present only when the provider declares `env:`, and is a
     /// digest rather than the map because this value is persisted into every
     /// cache entry and `env` is where an exec provider's credentials live.

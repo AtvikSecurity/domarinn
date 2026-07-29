@@ -317,6 +317,48 @@ async fn a_request_that_cannot_be_rendered_deterministically_is_never_keyed() {
     );
 }
 
+/// A `{{ env.X | default(…) }}` template keys differently on a machine where
+/// `X` is unset — documented, because the direction it fails in is the safe one.
+///
+/// The canonical request renders against placeholder `env`, which enumerates the
+/// *names* this process has: with `X` set the template resolves to the
+/// `${env:X}` placeholder, and with it unset the filter's default wins. Two
+/// keys, so two entries. That is a duplicate, never a false share — the failure
+/// mode this whole file exists to prevent is one machine replaying another's
+/// answers, and this cannot produce it. Worth a test rather than a note because
+/// the *reverse* would be a silent stale replay, and a future change to how
+/// placeholders are built could turn one into the other.
+#[tokio::test]
+async fn a_defaulted_env_template_partitions_rather_than_shares() {
+    const VAR: &str = "DOMARINN_KEYS_DEFAULTED";
+    let server = always_answers().await;
+    let yaml = http_suite(
+        &server.uri(),
+        &format!(r#"{{X-Model: "{{{{ env.{VAR} | default('fallback') }}}}"}}"#),
+        r#"{prompt: "{{ x }}"}"#,
+    );
+
+    let cache = MemCache::default();
+    std::env::remove_var(VAR);
+    run_suite(&yaml, &cache).await;
+    let before = calls(&server).await;
+    std::env::set_var(VAR, "anything at all");
+    run_suite(&yaml, &cache).await;
+    let after = calls(&server).await;
+    std::env::remove_var(VAR);
+
+    assert_eq!(
+        after - before,
+        1,
+        "the two renders are different requests, so they are different entries"
+    );
+    assert_eq!(
+        cache.entries(),
+        2,
+        "a duplicate entry is the cost; replaying the wrong answer is not"
+    );
+}
+
 /// Everything else about an `http` provider that must separate.
 #[tokio::test]
 async fn http_url_method_and_body_each_bust() {
