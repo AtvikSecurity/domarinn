@@ -302,6 +302,14 @@ pub struct LegacyGraded<'a> {
 /// entry shape to hold an answer no future lookup can ask for. The `similar`
 /// path pays the embedder once and is warm from then on.
 ///
+/// The one case where "costs a fraction of a cent once" is the wrong summary is
+/// offline: under `--cache-only` there is no re-embedding to fall back on, so a
+/// store warmed by 0.4.x hard-errors on every `similar` assertion until the
+/// suite has been run once in `ReadWrite` to lay the vectors down. That is a
+/// one-time upgrade step for one assert kind rather than a silent wrong answer,
+/// and it is the honest behaviour for a run that promised not to make network
+/// calls — but it is the thing to say in the release notes.
+///
 /// One wart is preserved here on purpose, because a frozen shape has to be
 /// frozen wart and all: the `vars` an `exec` verdict hashed is the *render
 /// context*, which carries a snapshot of the whole process environment. A

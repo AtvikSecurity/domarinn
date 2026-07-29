@@ -354,6 +354,13 @@ async fn adopt_legacy(cache: &RequestCache<'_>, exchange: &Exchange<'_>) -> Opti
 /// capped entry would be one that can never serve — a permanent miss written to
 /// a shared store on every run. An embedding of a large model is tens of
 /// kilobytes of floats, and that is the entry working, not a pathology.
+///
+/// The real boundary is the store's, not this function's: a remote backend
+/// rejects an oversized entry with 413 against `DOMARINN_CACHE_MAX_ENTRY_BYTES`
+/// (4 MiB by default), which the write path below logs and continues past — so
+/// a payload over that limit is re-paid on every run rather than failing one.
+/// That is the right place for the limit, because it is the only place that
+/// knows what the store will accept.
 fn fresh_entry(canonical: &Json, payload: Json, meta: EntryMeta) -> CacheEntry {
     CacheEntry {
         created_at: chrono::Utc::now(),

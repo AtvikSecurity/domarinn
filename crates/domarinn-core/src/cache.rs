@@ -290,11 +290,21 @@ pub struct CacheEntry {
     /// network-backed provider, where no such artifact exists to digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_digest: Option<String>,
-    /// Present only on grader-verdict entries.
+    /// Present only on a ≤0.4.x grader-verdict entry, adopted forward.
     ///
-    /// Its absence is exactly what "this is a provider response" means, so the
-    /// two never need a discriminator beyond this field. A grader lookup that
-    /// returns an entry without one is treated as a miss, never an error.
+    /// It marks an era rather than a kind, and the distinction changed in
+    /// 0.5.0. Through 0.4.x a grading was cached *as its verdict*, so this
+    /// field's presence meant "grading result" and its absence meant "provider
+    /// response". Since 0.5.0 a grader caches the request it made and re-derives
+    /// the verdict from the stored `raw`, so `None` now covers both a provider
+    /// response and a grader exchange, and `Some` means only one thing: an entry
+    /// old enough to have no payload to re-parse. Those are served as-is and
+    /// re-filed under the request key unchanged — see
+    /// [`crate::request_cache`] for the read contract, and
+    /// [`crate::cache_migrate`] for when this field stops being read at all.
+    ///
+    /// A grader lookup that finds an entry with neither a verdict nor a
+    /// re-parseable payload treats it as a miss, never an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<GradedVerdict>,
     /// Reasoning/thinking text from the original call. Without this a cache hit
