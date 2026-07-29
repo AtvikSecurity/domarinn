@@ -129,8 +129,8 @@ providers: [{id: p, type: exec, command: ["echo"]}]
         assert_eq!(provider.id(), "p");
         assert!(
             provider.cacheable(),
-            "exec is cached by default; the program's own identity is in the \
-             fingerprint, so a rebuild busts the entry without a hand-set salt"
+            "exec is cached like every other provider kind; `cache_salt` is a \
+             version pin rather than the thing that enables caching"
         );
     }
 

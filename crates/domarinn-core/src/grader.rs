@@ -49,14 +49,18 @@ pub struct DefaultGrader {
     /// map per grader, so a shared test binary cannot leak a warning between
     /// runs. The mutex is held for a map lookup, never across a request.
     rates: std::sync::Mutex<BTreeMap<String, Option<crate::pricing::ModelRate>>>,
-    /// Filesystem-derived identities (`exec` program identity, `grader.template`
-    /// contents), memoized per `(spec, base_dir)`.
+    /// Filesystem-derived identities — today just the contents of a
+    /// `grader.template` — memoized per `(spec, base_dir)`.
     ///
     /// [`Self::grading_fingerprint`] is called for every assertion of every
-    /// cell, so without this a 500-case suite stats its grader binary 500 times
-    /// — and worse, a rebuild landing mid-run would give later cells a different
-    /// key than earlier ones. One resolution per run is both cheaper and the
-    /// only self-consistent answer.
+    /// cell, so without this a 500-case suite re-reads its grading prompt 500
+    /// times. Worse than the cost: an edit landing mid-run would give later
+    /// cells a different key than earlier ones, so one run would write verdicts
+    /// under two identities. One resolution per run is both cheaper and the only
+    /// self-consistent answer.
+    ///
+    /// This used to memoize `exec` program identities too, which is no longer
+    /// keyed at all — see [`crate::exec::program_digest`].
     identities: std::sync::Mutex<BTreeMap<String, Json>>,
     /// The resolved per-call ceiling. Kept alongside the client that already
     /// carries it, because an `exec` assert has no client to carry it — without
