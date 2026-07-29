@@ -1,4 +1,8 @@
-//! E2E tests for the diff, view, cache, import, and gen-types commands.
+//! E2E tests for the diff, view, import, and gen-types commands.
+//!
+//! The `cache` subcommands live in `cache_cmd.rs`: they carry their own
+//! two-tier fixtures, and this file was within a few lines of the repo's
+//! per-file ratchet (`domarinn-core/tests/file_length.rs`).
 
 mod common;
 
@@ -746,148 +750,6 @@ fn runs_remote_without_server_exits_usage() {
         .current_dir(dir.path())
         .assert()
         .code(2);
-}
-
-#[test]
-fn cache_path_and_stats() {
-    let dir = tempfile::tempdir().unwrap();
-    // An empty directory has no legacy tier, so both commands report one tier.
-    bin()
-        .args(["cache", "path"])
-        .current_dir(dir.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("legacy tier").not());
-    bin()
-        .args(["cache", "stats"])
-        .current_dir(dir.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::starts_with("0 entries"))
-        .stdout(predicate::str::contains("legacy tier").not());
-}
-
-/// The whole point of `gc` is an age bound; without one it used to fall through
-/// to an unbounded purge, so `domarinn cache gc` silently did what `cache clear`
-/// does.
-#[test]
-fn cache_gc_without_older_than_is_a_usage_error_that_deletes_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
-    bin().arg("run").current_dir(dir.path()).assert().success();
-    let seeded = cache_stats(dir.path());
-    assert!(
-        seeded.starts_with("1 entries"),
-        "the run should have seeded exactly one entry; got: {seeded}"
-    );
-
-    bin()
-        .args(["cache", "gc"])
-        .current_dir(dir.path())
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("--older-than 30d"))
-        .stderr(predicate::str::contains("cache clear"));
-
-    assert_eq!(
-        cache_stats(dir.path()),
-        seeded,
-        "a refused gc must not remove anything"
-    );
-}
-
-/// A run layers a cwd-relative `.domarinn/cache` under the suite's own cache as
-/// a read-only tier, so `clear` has to remove it too — otherwise the next run
-/// re-adopts everything the operator just cleared.
-#[test]
-fn cache_clear_purges_the_legacy_cwd_relative_tier_too() {
-    let dir = tempfile::tempdir().unwrap();
-    seed_legacy_and_suite_caches(dir.path());
-
-    bin()
-        .args(["cache", "clear", "evals"])
-        .current_dir(dir.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("cleared 1 cache entry"))
-        .stdout(predicate::str::contains("legacy"));
-
-    assert_eq!(
-        entry_count(&dir.path().join(".domarinn/cache")),
-        0,
-        "the legacy tier must be emptied, not just reported"
-    );
-    assert_eq!(entry_count(&dir.path().join("evals/.domarinn/cache")), 0);
-}
-
-#[test]
-fn cache_stats_and_path_name_the_legacy_tier_when_one_exists() {
-    let dir = tempfile::tempdir().unwrap();
-    seed_legacy_and_suite_caches(dir.path());
-
-    bin()
-        .args(["cache", "stats", "evals"])
-        .current_dir(dir.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::starts_with("1 entries"))
-        .stdout(predicate::str::contains(
-            "legacy tier .domarinn/cache: 1 entries",
-        ))
-        .stdout(predicate::str::contains("read-only"));
-
-    bin()
-        .args(["cache", "path", "evals"])
-        .current_dir(dir.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("evals/.domarinn/cache"))
-        .stdout(predicate::str::contains("legacy tier: .domarinn/cache"));
-}
-
-/// One entry in `<dir>/.domarinn/cache` (what a pre-0.4 run left beside the
-/// process cwd) and one in `<dir>/evals/.domarinn/cache` (where the suite's
-/// cache lives now). The two suites differ so neither run can hit the other's
-/// entry and collapse the two tiers into one.
-fn seed_legacy_and_suite_caches(dir: &std::path::Path) {
-    std::fs::write(dir.join("domarinn.yaml"), suite("stale", "stale")).unwrap();
-    bin().arg("run").current_dir(dir).assert().success();
-
-    std::fs::create_dir_all(dir.join("evals")).unwrap();
-    std::fs::write(dir.join("evals/domarinn.yaml"), suite("fresh", "fresh")).unwrap();
-    bin()
-        .args(["run", "evals"])
-        .current_dir(dir)
-        .assert()
-        .success();
-
-    assert_eq!(entry_count(&dir.join(".domarinn/cache")), 1);
-    assert_eq!(entry_count(&dir.join("evals/.domarinn/cache")), 1);
-}
-
-/// `cache stats` stdout, for comparing a directory against itself across a
-/// command that should not have touched it.
-fn cache_stats(dir: &std::path::Path) -> String {
-    let out = bin()
-        .args(["cache", "stats"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "cache stats should succeed");
-    String::from_utf8(out.stdout).unwrap()
-}
-
-/// Entry files under a `<root>/<shard>/<hex>.json` cache directory.
-fn entry_count(root: &std::path::Path) -> usize {
-    let Ok(shards) = std::fs::read_dir(root) else {
-        return 0;
-    };
-    shards
-        .filter_map(Result::ok)
-        .filter_map(|shard| std::fs::read_dir(shard.path()).ok())
-        .flat_map(|files| files.filter_map(Result::ok))
-        .filter(|f| f.path().extension().is_some_and(|e| e == "json"))
-        .count()
 }
 
 #[test]

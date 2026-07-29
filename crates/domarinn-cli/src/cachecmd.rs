@@ -1,11 +1,12 @@
 //! The `cache` subcommands: stats, path, gc, clear.
 //!
 //! All four operate on the local disk tier only — see the `cache` help in
-//! `main.rs`. Each reports the read-only legacy tier a run would layer
-//! underneath ([`crate::cachecfg::LocalRoot`]) whenever one exists, because a
-//! `clear` that leaves it behind is a `clear` the next run undoes.
+//! `main.rs`. Each accounts for the read-only legacy tier a run would layer
+//! underneath ([`crate::cachecfg::LocalRoot`]), because a `clear` that leaves
+//! it behind is a `clear` the next run undoes. Reporting that tier and deleting
+//! it are separate questions, though: see [`cwd_contains`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use domarinn_cache::LocalDiskCache;
@@ -55,32 +56,65 @@ pub struct Where {
 }
 
 impl Where {
-    /// Resolve to the tiers a run would use, by the same precedence as
-    /// `domarinn run`: `--cache-dir`, then `DOMARINN_CACHE_DIR`, then
-    /// `.domarinn/cache` beside the suite — plus any legacy tier underneath.
-    fn local_root(&self) -> LocalRoot {
-        let base = self
-            .path
+    /// The suite directory this command names, which every other path resolves
+    /// against. Defaults to the process cwd.
+    fn suite_base(&self) -> PathBuf {
+        self.path
             .clone()
             .map(|p| {
                 let file = domarinn_core::loader::resolve_suite_path(&p);
                 domarinn_core::loader::suite_base_dir(&file)
             })
-            .unwrap_or_else(|| PathBuf::from("."));
-        crate::cachecfg::local_root(self.cache_dir.as_deref(), &base)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Resolve to the tiers a run would use, by the same precedence as
+    /// `domarinn run`: `--cache-dir`, then `DOMARINN_CACHE_DIR`, then
+    /// `.domarinn/cache` beside the suite — plus any legacy tier underneath.
+    /// Returns the suite directory too, since whether that legacy tier is this
+    /// project's leftover or another project's live cache depends on it.
+    fn resolve(&self) -> (PathBuf, LocalRoot) {
+        let base = self.suite_base();
+        let root = crate::cachecfg::local_root(self.cache_dir.as_deref(), &base);
+        (base, root)
     }
 }
 
+/// Whether a `clear`/`gc` may purge the legacy tier as well as the primary one.
+///
+/// The legacy tier is `.domarinn/cache` under the *process cwd*, so for a suite
+/// somewhere else entirely it is not a leftover at all — it is whatever project
+/// the operator happens to be standing in, and its cache is live. `cd ~/projB
+/// && domarinn cache clear ~/projA/evals` must not take projB's cache with it.
+///
+/// A genuine pre-0.4 leftover was written cwd-relative by invocations like
+/// `domarinn run ./evals` from a project root, so it only ever pairs with a
+/// suite at or under that root — which is exactly the test. Reporting is not
+/// gated this way: `stats` and `path` name the directory without touching it,
+/// and seeing it is how an operator finds out it is there.
+fn cwd_contains(suite_base: &Path) -> bool {
+    let (Ok(cwd), Ok(base)) = (
+        std::env::current_dir().and_then(|d| d.canonicalize()),
+        suite_base.canonicalize(),
+    ) else {
+        // Unreadable either way: decline to delete rather than guess.
+        return false;
+    };
+    base.starts_with(cwd)
+}
+
 pub fn execute(cmd: CacheCmd) -> u8 {
-    let root = match &cmd {
-        CacheCmd::Stats(w) | CacheCmd::Path(w) | CacheCmd::Clear(w) => w.local_root(),
-        CacheCmd::Gc { which, .. } => which.local_root(),
+    let (base, root) = match &cmd {
+        CacheCmd::Stats(w) | CacheCmd::Path(w) | CacheCmd::Clear(w) => w.resolve(),
+        CacheCmd::Gc { which, .. } => which.resolve(),
     };
     // The same two tiers `cachecfg::build_cache` gives a run, minus the
     // read-through wrapper: these commands address each tier, so a purge has to
     // reach the one a run only ever reads.
     let primary = LocalDiskCache::new(&root.root);
     let legacy = root.legacy.as_ref().map(LocalDiskCache::new);
+    // Destructive subcommands see a narrower legacy tier than reporting ones.
+    let legacy_is_ours = root.legacy.is_some() && cwd_contains(&base);
 
     match cmd {
         CacheCmd::Path(_) => {
@@ -97,9 +131,16 @@ pub fn execute(cmd: CacheCmd) -> u8 {
             };
             println!("{} entries, {}", stats.entries, mib(stats.total_bytes));
             if let Some(legacy) = &legacy {
+                // What `clear` would actually do with it, not what it does in
+                // the common case — the guard makes those differ.
+                let fate = if legacy_is_ours {
+                    "`cache clear` removes it"
+                } else {
+                    "owned by the current directory, so `cache clear` leaves it"
+                };
                 match legacy.stats().await {
                     Ok(s) => println!(
-                        "legacy tier {}: {} entries, {} (read-only during runs; `cache clear` removes it)",
+                        "legacy tier {}: {} entries, {} (read-only during runs; {fate})",
                         legacy.root().display(),
                         s.entries,
                         mib(s.total_bytes)
@@ -124,6 +165,7 @@ pub fn execute(cmd: CacheCmd) -> u8 {
                     return exit::USAGE;
                 }
             };
+            let legacy = legacy.filter(|_| legacy_is_ours);
             block_on(async move {
                 purge_tiers(
                     &primary,
@@ -134,15 +176,18 @@ pub fn execute(cmd: CacheCmd) -> u8 {
                 .await
             })
         }
-        CacheCmd::Clear(_) => block_on(async move {
-            purge_tiers(
-                &primary,
-                legacy.as_ref(),
-                &PurgeFilter::default(),
-                "cleared",
-            )
-            .await
-        }),
+        CacheCmd::Clear(_) => {
+            let legacy = legacy.filter(|_| legacy_is_ours);
+            block_on(async move {
+                purge_tiers(
+                    &primary,
+                    legacy.as_ref(),
+                    &PurgeFilter::default(),
+                    "cleared",
+                )
+                .await
+            })
+        }
     }
 }
 
