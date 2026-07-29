@@ -121,6 +121,14 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/{*path}", get(serve_asset))
         .fallback(spa_fallback);
 
+    // The MCP endpoint, only when enabled. Merged before the layers below so
+    // it inherits the request id, tracing, decompression, and the auth
+    // middleware that resolves the `Identity` its dispatcher authorizes on.
+    let api = match state.mcp.as_deref() {
+        Some(mcp) => api.merge(crate::mcp::routes(mcp)),
+        None => api,
+    };
+
     // Request-id + tracing. axum applies the LAST `.layer()` outermost, so the
     // three request-id/trace layers are added inner-first (propagate, trace,
     // set) to yield the canonical tower-http order a request/response flows
@@ -234,11 +242,19 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn meta(State(state): State<AppState>) -> ApiResult<Response> {
+    Ok(Json(meta_view(&state).await?).into_response())
+}
+
+/// Build the instance-metadata view.
+///
+/// Factored out of the handler so the MCP `get_server_info` tool answers from
+/// the same source rather than assembling a second, drifting copy.
+pub(crate) async fn meta_view(state: &AppState) -> anyhow::Result<MetaResponse> {
     let current = RESULT_SCHEMA_VERSION;
     let min = current.saturating_sub(1);
     let supported: Vec<u32> = (min..=current).collect();
     let setup_required = state.storage.count_users().await? == 0;
-    Ok(Json(MetaResponse {
+    Ok(MetaResponse {
         name: "domarinn".to_string(),
         version: domarinn_core::VERSION.to_string(),
         auth_mode: state.auth_mode,
@@ -251,8 +267,8 @@ async fn meta(State(state): State<AppState>) -> ApiResult<Response> {
             max_bytes: state.cache_limits.max_bytes,
             max_age_days: state.cache_limits.max_age_days,
         },
+        mcp_enabled: state.mcp.is_some(),
     })
-    .into_response())
 }
 
 // ---------------------------------------------------------------------------

@@ -329,6 +329,56 @@ fn row_to_user(row: &rusqlite::Row) -> rusqlite::Result<UserRow> {
 // Sessions
 // ---------------------------------------------------------------------------
 
+/// The credential-resolution query, factored out so it can run on either a
+/// pooled reader or the writer depending on whether `last_used_at` is bumped.
+fn query_session(
+    conn: &Connection,
+    token_hash: &str,
+    now: i64,
+) -> anyhow::Result<Option<SessionUser>> {
+    Ok(conn
+        .query_row(
+            "SELECT u.id, u.username, u.role
+             FROM sessions s JOIN users u ON u.id = s.user_id
+             WHERE s.token_hash = ?1 AND s.expires_at > ?2 AND u.disabled = 0",
+            params![token_hash, now],
+            |row| {
+                Ok(SessionUser {
+                    user_id: row.get(0)?,
+                    username: row.get(1)?,
+                    role: row.get(2)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// See [`query_session`] — same split, for API keys.
+fn query_api_key(
+    conn: &Connection,
+    prefix: &str,
+    key_hash: &str,
+) -> anyhow::Result<Option<ApiKeyAuth>> {
+    Ok(conn
+        .query_row(
+            "SELECT k.id, k.user_id, u.username, u.role, k.scope
+             FROM api_keys k JOIN users u ON u.id = k.user_id
+             WHERE k.prefix = ?1 AND k.key_hash = ?2 AND k.revoked = 0
+               AND u.disabled = 0",
+            params![prefix, key_hash],
+            |row| {
+                Ok(ApiKeyAuth {
+                    id: row.get(0)?,
+                    user_id: row.get(1)?,
+                    username: row.get(2)?,
+                    role: row.get(3)?,
+                    scope: row.get(4)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
 impl Storage {
     pub async fn create_session(
         &self,
@@ -350,26 +400,29 @@ impl Storage {
     }
 
     /// Resolve a session by its token hash. Returns `None` if it does not exist,
-    /// has expired, or belongs to a disabled user. Refreshes `last_used_at`.
-    pub async fn lookup_session(&self, token_hash: String) -> anyhow::Result<Option<SessionUser>> {
+    /// has expired, or belongs to a disabled user.
+    ///
+    /// `bump_last_used` selects the connection this runs on, which is the whole
+    /// point of the flag: refreshing `last_used_at` needs the exclusive writer,
+    /// so an unthrottled bump would serialize *every* authenticated request
+    /// against the single writer mutex. When `false` the lookup takes the
+    /// reader pool instead and touches no rows. [`crate::auth::SessionAuthenticator`]
+    /// decides, throttling the bump to at most once per session per minute.
+    pub async fn lookup_session(
+        &self,
+        token_hash: String,
+        bump_last_used: bool,
+    ) -> anyhow::Result<Option<SessionUser>> {
+        if !bump_last_used {
+            return self
+                .runs
+                .read(move |conn| query_session(conn, &token_hash, now_ms()))
+                .await;
+        }
         self.runs
             .write(move |conn| {
                 let now = now_ms();
-                let found: Option<SessionUser> = conn
-                    .query_row(
-                        "SELECT u.id, u.username, u.role
-                         FROM sessions s JOIN users u ON u.id = s.user_id
-                         WHERE s.token_hash = ?1 AND s.expires_at > ?2 AND u.disabled = 0",
-                        params![token_hash, now],
-                        |row| {
-                            Ok(SessionUser {
-                                user_id: row.get(0)?,
-                                username: row.get(1)?,
-                                role: row.get(2)?,
-                            })
-                        },
-                    )
-                    .optional()?;
+                let found = query_session(conn, &token_hash, now)?;
                 if found.is_some() {
                     conn.execute(
                         "UPDATE sessions SET last_used_at = ?2 WHERE token_hash = ?1",
@@ -432,33 +485,26 @@ impl Storage {
     }
 
     /// Resolve an API key by prefix + hash. Returns `None` unless the key exists,
-    /// is not revoked, and belongs to an enabled user. Refreshes `last_used_at`.
+    /// is not revoked, and belongs to an enabled user.
+    ///
+    /// See [`Storage::lookup_session`] for what `bump_last_used` buys: `false`
+    /// runs on the reader pool and writes nothing.
     pub async fn lookup_api_key(
         &self,
         prefix: String,
         key_hash: String,
+        bump_last_used: bool,
     ) -> anyhow::Result<Option<ApiKeyAuth>> {
+        if !bump_last_used {
+            return self
+                .runs
+                .read(move |conn| query_api_key(conn, &prefix, &key_hash))
+                .await;
+        }
         self.runs
             .write(move |conn| {
                 let now = now_ms();
-                let found: Option<ApiKeyAuth> = conn
-                    .query_row(
-                        "SELECT k.id, k.user_id, u.username, u.role, k.scope
-                         FROM api_keys k JOIN users u ON u.id = k.user_id
-                         WHERE k.prefix = ?1 AND k.key_hash = ?2 AND k.revoked = 0
-                           AND u.disabled = 0",
-                        params![prefix, key_hash],
-                        |row| {
-                            Ok(ApiKeyAuth {
-                                id: row.get(0)?,
-                                user_id: row.get(1)?,
-                                username: row.get(2)?,
-                                role: row.get(3)?,
-                                scope: row.get(4)?,
-                            })
-                        },
-                    )
-                    .optional()?;
+                let found = query_api_key(conn, &prefix, &key_hash)?;
                 if let Some(key) = &found {
                     conn.execute(
                         "UPDATE api_keys SET last_used_at = ?2 WHERE id = ?1",

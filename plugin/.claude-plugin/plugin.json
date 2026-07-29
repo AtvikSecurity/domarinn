@@ -1,0 +1,28 @@
+{
+  "name": "domarinn",
+  "displayName": "domarinn",
+  "version": "0.3.1",
+  "description": "LLM eval harness. Connects to a domarinn server's MCP endpoint for read-only access to eval history, and ships skills for authoring, running, and triaging eval suites with the domarinn CLI.",
+  "author": {
+    "name": "Atvik Security",
+    "url": "https://github.com/AtvikSecurity"
+  },
+  "homepage": "https://github.com/AtvikSecurity/domarinn",
+  "repository": "https://github.com/AtvikSecurity/domarinn",
+  "license": "MIT",
+  "keywords": ["evals", "llm", "testing", "mcp", "regression", "domarinn"],
+  "userConfig": {
+    "server_url": {
+      "type": "string",
+      "title": "domarinn server URL",
+      "description": "Base URL of your domarinn server, e.g. https://domarinn.example.com. Leave blank to use the CLI-only skills without connecting to a server.",
+      "default": "http://localhost:8321"
+    },
+    "api_token": {
+      "type": "string",
+      "title": "domarinn API token",
+      "description": "A read-scoped API key (domarinn_...) or static token. Create one under Settings -> API keys, or set DOMARINN_TOKENS=read:<token> on the server.",
+      "sensitive": true
+    }
+  }
+}

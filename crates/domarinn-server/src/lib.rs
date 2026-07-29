@@ -40,6 +40,7 @@ pub mod auth;
 pub mod domain;
 pub mod dto;
 pub mod extract;
+pub mod mcp;
 pub mod routes;
 pub mod sso;
 pub mod storage;
@@ -162,6 +163,18 @@ pub struct Settings {
     pub cookie_secure: Option<bool>,
     /// SSO providers (`DOMARINN_OIDC_*` / `DOMARINN_SAML_*`).
     pub sso: sso::SsoSettings,
+    /// Whether to mount the MCP endpoint (`DOMARINN_MCP_ENABLED`).
+    ///
+    /// Opt-in rather than always-on: the endpoint is authenticated like every
+    /// other `/api/v1` route, but an operator who does not want agents
+    /// touching their instance at all should be able to say so without
+    /// relying on credential hygiene.
+    pub mcp_enabled: Option<bool>,
+    /// Extra origins allowed to reach the MCP endpoint
+    /// (`DOMARINN_MCP_ALLOWED_ORIGINS`, comma-separated). Drives both the
+    /// spec-required `Origin` check and the route's CORS layer. When this and
+    /// `public_url` are both unset, only loopback is allowed.
+    pub mcp_allowed_origins: Option<String>,
 }
 
 impl Settings {
@@ -184,6 +197,10 @@ impl Settings {
             admin_password: env("DOMARINN_ADMIN_PASSWORD"),
             cookie_secure: parse_bool_env("DOMARINN_COOKIE_SECURE", env("DOMARINN_COOKIE_SECURE"))?,
             sso: sso::parse_sso_settings(&std::env::vars().collect())?,
+            // Fail loud on a typo: silently leaving the endpoint unmounted
+            // because someone wrote `DOMARINN_MCP_ENABLED=ture` is a bad hour.
+            mcp_enabled: parse_bool_env("DOMARINN_MCP_ENABLED", env("DOMARINN_MCP_ENABLED"))?,
+            mcp_allowed_origins: env("DOMARINN_MCP_ALLOWED_ORIGINS"),
         })
     }
 }
@@ -225,6 +242,9 @@ pub struct AppState {
     /// Whether session cookies carry the `Secure` attribute.
     pub(crate) cookie_secure: bool,
     pub(crate) sso: Arc<sso::SsoRegistry>,
+    /// MCP endpoint state. `None` means the endpoint is disabled and its route
+    /// is never mounted — presence *is* the feature flag.
+    pub(crate) mcp: Option<Arc<mcp::McpState>>,
 }
 
 impl AppState {
@@ -254,6 +274,11 @@ impl AppState {
         let sso_registry = Arc::new(
             sso::SsoRegistry::from_settings(&settings.sso, settings.public_url.as_deref()).await?,
         );
+        let mcp = mcp::state_from_settings(
+            settings.mcp_enabled.unwrap_or(false),
+            settings.public_url.as_deref(),
+            settings.mcp_allowed_origins.as_deref(),
+        );
         Ok(AppState {
             api_key_auth: Arc::new(ApiKeyAuthenticator::new(storage.clone())),
             session_auth: Arc::new(SessionAuthenticator::new(storage.clone())),
@@ -265,6 +290,7 @@ impl AppState {
             run_max_age_days: settings.run_max_age_days,
             cookie_secure,
             sso: sso_registry,
+            mcp,
         })
     }
 }

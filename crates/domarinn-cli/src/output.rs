@@ -23,19 +23,18 @@ pub enum Format {
     Md,
 }
 
-/// Persist a run under `.domarinn/runs/<run_id>/result.json` and update the
-/// `latest` pointer.
+/// Persist a run under `<store>/<run_id>/result.json` and update the `latest`
+/// pointer.
+///
+/// The store location comes from [`crate::loadrun`] rather than being spelled
+/// out here: writing to a different directory than every reader looks in is a
+/// bug that only shows up as "no runs found" much later.
 pub fn persist(result: &RunResult) -> std::io::Result<()> {
-    let dir = Path::new(".domarinn")
-        .join("runs")
-        .join(result.run_id.as_str());
+    let dir = crate::loadrun::runs_dir().join(result.run_id.as_str());
     std::fs::create_dir_all(&dir)?;
     let json = serde_json::to_vec_pretty(result).map_err(std::io::Error::other)?;
     std::fs::write(dir.join("result.json"), json)?;
-    std::fs::write(
-        Path::new(".domarinn").join("runs").join("latest"),
-        result.run_id.as_str(),
-    )?;
+    std::fs::write(crate::loadrun::latest_pointer(), result.run_id.as_str())?;
     Ok(())
 }
 
