@@ -102,59 +102,97 @@ echo "==> checking redirect stubs against mkdocs.yml's redirect_maps"
 # mkdocs-redirects (wired in mkdocs.yml's plugins:) already warns — and
 # --strict above already fails the build on — a redirect_maps entry whose
 # target page doesn't exist. It says nothing about whether the stub it wrote
-# is the one we actually expect, so check that too: parse redirect_maps
-# straight out of mkdocs.yml (a small heredoc, not hand-rolled YAML in bash)
-# and, for each entry, assert the old page's stub exists under site_dir and
-# points at the new page.
+# is the one we actually expect, so check that too. The stub location and the
+# target href are computed with the plugin's OWN functions (plus mkdocs' File
+# for the target URL) — never re-modelled here — so index.md/README.md sides,
+# #fragment and external targets, and the plugin's page-relative hrefs all
+# verify exactly as written. What the plugin does NOT guard, this adds: an
+# old side whose output path collides with a page that still builds would be
+# silently overwritten by the stub in on_post_build, so that is an error.
 OUT="$OUT" uv run python - <<'PYEOF'
 import os, pathlib, sys, yaml
 
+from mkdocs.structure.files import File
+from mkdocs_redirects.plugin import get_html_path, get_relative_html_path
+
 
 class MkDocsConfigLoader(yaml.SafeLoader):
-    """SafeLoader that tolerates mkdocs.yml's !!python/... tags.
+    """SafeLoader that tolerates every non-core tag mkdocs.yml may carry.
 
-    toc.slugify and superfences' custom_fences each wire a Python callable
-    that way; we only read `plugins` here, so swallow those tags rather than
-    choke on them.
+    toc.slugify and superfences' custom_fences wire !!python/... callables,
+    and mkdocs accepts !ENV anywhere; we only read `plugins`, `docs_dir` and
+    `use_directory_urls` here, so swallow the tags rather than reject a
+    config mkdocs itself considers valid.
     """
 
 
-MkDocsConfigLoader.add_multi_constructor(
-    "tag:yaml.org,2002:python/", lambda loader, suffix, node: None
-)
+for tag in ("tag:yaml.org,2002:python/", "!"):
+    MkDocsConfigLoader.add_multi_constructor(tag, lambda loader, suffix, node: None)
 
 config = yaml.load(pathlib.Path("mkdocs.yml").read_text(), Loader=MkDocsConfigLoader)
 
-redirect_maps = {}
-for entry in config.get("plugins", []):
-    if isinstance(entry, dict) and "redirects" in entry:
-        redirect_maps = (entry["redirects"] or {}).get("redirect_maps") or {}
-        break
+# `plugins:` is equally valid as a list (of names or one-key mappings) or as
+# one mapping; normalize to name -> options so neither shape slips through
+# with its redirects unchecked.
+plugins_cfg = config.get("plugins") or []
+plugins = {}
+if isinstance(plugins_cfg, dict):
+    plugins = {str(name): options or {} for name, options in plugins_cfg.items()}
+else:
+    for entry in plugins_cfg:
+        if isinstance(entry, dict):
+            plugins.update({str(k): v or {} for k, v in entry.items()})
+        else:
+            plugins[str(entry)] = {}
+redirect_maps = plugins.get("redirects", {}).get("redirect_maps") or {}
 
+use_directory_urls = config.get("use_directory_urls", True)
 site_dir = pathlib.Path(os.environ["OUT"])
+docs_dir = pathlib.Path(config.get("docs_dir", "docs"))
+
+# Output paths of every page really built from docs/. The plugin writes each
+# stub unconditionally in on_post_build, after the build proper.
+built = {
+    get_html_path(str(page.relative_to(docs_dir)), use_directory_urls)
+    for page in docs_dir.rglob("*.md")
+}
 
 errors = []
 verified = 0
 for old, new in redirect_maps.items():
-    # use_directory_urls is on, so 'getting-started.md' -> a stub at
-    # 'site/getting-started/index.html' that points at the new page's own
-    # directory-style URL. An index.md-style path (either side) instead maps
-    # to its *section root* — a different shape this checker doesn't attempt
-    # to follow. The map won't contain one for now; error loudly rather than
-    # silently checking the wrong file if that ever changes.
-    if pathlib.Path(old).name == "index.md" or pathlib.Path(new).name == "index.md":
-        errors.append(f"{old} -> {new}: index.md-style paths are unsupported here")
-        continue
-    if not old.endswith(".md") or not new.endswith(".md"):
-        errors.append(f"{old} -> {new}: both sides must be docs/-relative .md paths")
+    if not old.endswith(".md"):
+        errors.append(f"{old} -> {new}: the old side must be a docs/-relative .md path")
         continue
 
-    stub = site_dir / old[: -len(".md")] / "index.html"
-    new_url = new[: -len(".md")] + "/"
+    stub_rel = get_html_path(old, use_directory_urls)
+    if stub_rel in built:
+        errors.append(
+            f"{old} -> {new}: {stub_rel} is also the output of a page that "
+            f"still exists under {docs_dir}/ — the plugin would overwrite "
+            f"that page with the redirect stub"
+        )
+        continue
+
+    if new.lower().startswith(("http://", "https://")):
+        expected = new  # external targets are written into the stub verbatim
+    else:
+        new_path, sep, fragment = new.partition("#")
+        if not new_path.endswith(".md"):
+            errors.append(
+                f"{old} -> {new}: the new side must be a docs/-relative .md "
+                f"path (optionally with a #fragment) or an http(s) URL"
+            )
+            continue
+        # Exactly what on_post_build hands write_html: the built page's final
+        # URL, fragment reattached, made relative to the stub's directory.
+        new_url = File(new_path, "", "", use_directory_urls).url + sep + fragment
+        expected = get_relative_html_path(old, new_url, use_directory_urls)
+
+    stub = site_dir / stub_rel
     if not stub.is_file():
         errors.append(f"{old}: expected redirect stub {stub} was not written")
-    elif new_url not in stub.read_text():
-        errors.append(f"{old}: {stub} does not point at {new_url}")
+    elif f'"{expected}"' not in stub.read_text():
+        errors.append(f"{old}: {stub} does not point at {expected}")
     else:
         verified += 1
 
@@ -165,25 +203,26 @@ print(f"    {verified} redirects verified")
 PYEOF
 
 echo "==> style gates (docs/ link + fence conventions; report-only for now)"
-# TODO(docs-overhaul): flip both of these to blocking once the docs
-# restructure normalizes the patterns they report across docs/.
-RELATIVE_LINKS="$(grep -rn '](\./' docs || true)"
-if [ -z "$RELATIVE_LINKS" ]; then
-  echo "    0 './'-relative links in docs/"
-else
-  echo "    $(printf '%s\n' "$RELATIVE_LINKS" | wc -l) './'-relative link(s) in docs/ (sample, up to 5):"
-  printf '%s\n' "$RELATIVE_LINKS" | head -5 | sed 's/^/      /'
-fi
+# TODO(docs-overhaul): flip both gates to blocking once the docs restructure
+# normalizes the patterns they report across docs/.
+#
+# awk, not `head`: under pipefail, `printf … | head -5` dies of SIGPIPE the
+# moment the match list outgrows the pipe buffer — turning a report-only gate
+# into a build-killer exactly when violations are most numerous. awk reads
+# its whole input, so the pipeline always exits 0.
+report_gate() {
+  local pattern="$1" label="$2" matches
+  matches="$(grep -rn "$pattern" docs || true)"
+  if [ -z "$matches" ]; then
+    echo "    0 ${label} in docs/"
+  else
+    echo "    $(printf '%s\n' "$matches" | wc -l) ${label} in docs/ (sample, up to 5):"
+    printf '%s\n' "$matches" | awk 'NR <= 5 { print "      " $0 }'
+  fi
+}
 
-# TODO(docs-overhaul): flip to blocking once docs/ fences are normalized to
-# sh/console/bare (the repo convention).
-BASH_FENCES="$(grep -rn '^```bash' docs || true)"
-if [ -z "$BASH_FENCES" ]; then
-  echo "    0 '\`\`\`bash' fenced blocks in docs/"
-else
-  echo "    $(printf '%s\n' "$BASH_FENCES" | wc -l) '\`\`\`bash' fenced block(s) in docs/ (sample, up to 5):"
-  printf '%s\n' "$BASH_FENCES" | head -5 | sed 's/^/      /'
-fi
+report_gate '](\./' "'./'-relative link(s)"
+report_gate '^```bash' "'\`\`\`bash' fenced block(s)"
 
 echo "==> nesting rustdoc under ${OUT}/rustdoc"
 rm -rf "${OUT}/rustdoc"
