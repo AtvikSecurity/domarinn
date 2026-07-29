@@ -1,0 +1,520 @@
+//! What separates, and what shares, for the three network-backed providers.
+//!
+//! `http` had no cache coverage at all, which is how it kept two stale-replay
+//! bugs: `headers` were absent from the fingerprint, and `{{ env.X }}` changes
+//! the request without changing the key. Both are the shape where a test is
+//! worth most — the run *succeeds*, reports a plausible number, and is wrong.
+//!
+//! The ground truth throughout is the mock server's request count, not
+//! `summary.cache_hits`. A hit is only a hit if nobody was called: counting
+//! domarinn's own bookkeeping would let a broken key agree with itself.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Mutex;
+
+use async_trait::async_trait;
+use domarinn_core::cache::{
+    CacheBackend, CacheEntry, CacheError, CacheKey, CacheStats, PurgeFilter,
+};
+use domarinn_core::runner::{run, RunOptions};
+use domarinn_core::RunResult;
+use serde_json::json;
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+#[derive(Default)]
+struct MemCache {
+    map: Mutex<HashMap<String, CacheEntry>>,
+}
+
+impl MemCache {
+    fn entries(&self) -> usize {
+        self.map.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl CacheBackend for MemCache {
+    async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>, CacheError> {
+        Ok(self.map.lock().unwrap().get(&key.0).cloned())
+    }
+    async fn put(&self, key: &CacheKey, entry: &CacheEntry) -> Result<(), CacheError> {
+        self.map
+            .lock()
+            .unwrap()
+            .entry(key.0.clone())
+            .or_insert_with(|| entry.clone());
+        Ok(())
+    }
+    async fn stats(&self) -> Result<CacheStats, CacheError> {
+        Ok(CacheStats {
+            entries: self.entries() as u64,
+            ..Default::default()
+        })
+    }
+    async fn purge(&self, _filter: &PurgeFilter) -> Result<u64, CacheError> {
+        Ok(0)
+    }
+}
+
+async fn run_suite(yaml: &str, cache: &dyn CacheBackend) -> RunResult {
+    let suite = domarinn_core::load_str(yaml).unwrap();
+    run(&suite, Path::new("."), cache, None, &RunOptions::default())
+        .await
+        .unwrap()
+}
+
+/// A server that answers anything, so the only variable is whether it is asked.
+async fn always_answers() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "resp_1",
+            "model": "m",
+            "content": [{"type": "text", "text": "hello"}],
+            "choices": [{"message": {"role": "assistant", "content": "hello"}}],
+            "usage": {"input_tokens": 10, "output_tokens": 5,
+                      "prompt_tokens": 10, "completion_tokens": 5},
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn calls(server: &MockServer) -> usize {
+    server.received_requests().await.unwrap().len()
+}
+
+/// Run `a` then `b` against one shared cache and report how many live calls the
+/// second suite made. Zero means they share a key; more means they separate.
+async fn live_calls_for_second(server: &MockServer, a: &str, b: &str) -> usize {
+    let cache = MemCache::default();
+    run_suite(a, &cache).await;
+    let before = calls(server).await;
+    run_suite(b, &cache).await;
+    calls(server).await - before
+}
+
+// ── `http`: the two bugs this file exists for ────────────────────────────────
+
+fn http_suite(uri: &str, headers: &str, body: &str) -> String {
+    format!(
+        r#"
+version: 1
+project: test
+suite: keys
+providers:
+  - id: p
+    type: http
+    url: "{uri}/generate"
+    method: post
+    headers: {headers}
+    body: {body}
+tests:
+  - id: case-a
+    vars: {{x: "a"}}
+"#
+    )
+}
+
+/// Two providers differing only in a header must not share a cache entry.
+///
+/// This failed before `headers` joined the fingerprint. The failure mode is the
+/// bad kind: the run succeeds, the second model's column is filled with the
+/// first model's answers, and the comparison the suite exists to make reports a
+/// difference of zero that it never measured.
+#[tokio::test]
+async fn http_providers_differing_only_in_a_header_do_not_share_a_key() {
+    let server = always_answers().await;
+    let with_model = |model: &str| {
+        http_suite(
+            &server.uri(),
+            &format!(r#"{{X-Model: "{model}"}}"#),
+            r#"{prompt: "{{ x }}"}"#,
+        )
+    };
+
+    let second =
+        live_calls_for_second(&server, &with_model("gpt-5"), &with_model("claude-opus-5")).await;
+    assert_eq!(
+        second, 1,
+        "a different model header must be a different cache entry"
+    );
+}
+
+/// …and the same header must still share, or the fix would have traded a stale
+/// replay for a cache that never hits.
+#[tokio::test]
+async fn http_providers_with_the_same_headers_still_share() {
+    let server = always_answers().await;
+    let suite = http_suite(
+        &server.uri(),
+        r#"{X-Model: "gpt-5"}"#,
+        r#"{prompt: "{{ x }}"}"#,
+    );
+    assert_eq!(live_calls_for_second(&server, &suite, &suite).await, 0);
+}
+
+/// A provider that declares no headers keeps the key it had before the member
+/// existed. The `headers` member is inserted only when set, for exactly this
+/// reason — an unconditional `null` would hash differently from an absent
+/// member and re-key every headerless `http` provider in every store.
+#[tokio::test]
+async fn a_headerless_http_provider_is_unaffected_by_the_new_member() {
+    use domarinn_core::cache::canonical_json;
+
+    let server = always_answers().await;
+    let yaml = format!(
+        r#"
+version: 1
+project: test
+suite: keys
+providers:
+  - id: p
+    type: http
+    url: "{}/generate"
+    method: post
+    body: {{prompt: "{{{{ x }}}}"}}
+tests:
+  - id: case-a
+    vars: {{x: "a"}}
+"#,
+        server.uri()
+    );
+    let suite = domarinn_core::load_str(&yaml).unwrap();
+    let provider =
+        domarinn_core::provider_factory::build_provider(&suite.providers[0], None).unwrap();
+    let fp = canonical_json(&provider.fingerprint());
+    assert!(
+        !fp.contains("headers"),
+        "no header declared means no member at all: {fp}"
+    );
+}
+
+/// The header digest must not leak the header values into the entry.
+///
+/// A fingerprint is persisted into every cache entry, and a header is precisely
+/// where a bearer token sits — so this publishes a digest, never the map.
+#[tokio::test]
+async fn the_header_digest_does_not_leak_its_values() {
+    use domarinn_core::cache::canonical_json;
+
+    let yaml = r#"
+version: 1
+project: test
+suite: keys
+providers:
+  - id: p
+    type: http
+    url: "http://example.invalid/generate"
+    headers: {Authorization: "Bearer super-secret-value"}
+tests:
+  - id: case-a
+    vars: {x: "a"}
+"#;
+    let suite = domarinn_core::load_str(yaml).unwrap();
+    let provider =
+        domarinn_core::provider_factory::build_provider(&suite.providers[0], None).unwrap();
+    let fp = canonical_json(&provider.fingerprint());
+    assert!(fp.contains("blake3:"), "{fp}");
+    assert!(!fp.contains("super-secret-value"), "{fp}");
+    assert!(!fp.contains("Authorization"), "{fp}");
+}
+
+/// `${env:VAR}` resolves at load time, so its value lands in the fingerprint.
+///
+/// This is the keyed way to vary an `http` provider from the environment, and
+/// the reason the warning about `{{ env.X }}` can point somewhere useful rather
+/// than just saying "careful".
+#[tokio::test]
+async fn load_time_env_interpolation_separates_http_providers() {
+    let server = always_answers().await;
+    let yaml = http_suite(
+        &server.uri(),
+        r#"{X-Model: "${env:DOMARINN_KEYS_MODEL}"}"#,
+        r#"{prompt: "{{ x }}"}"#,
+    );
+
+    let cache = MemCache::default();
+    std::env::set_var("DOMARINN_KEYS_MODEL", "gpt-5");
+    run_suite(&yaml, &cache).await;
+    let before = calls(&server).await;
+    std::env::set_var("DOMARINN_KEYS_MODEL", "claude-opus-5");
+    run_suite(&yaml, &cache).await;
+    let after = calls(&server).await;
+    std::env::remove_var("DOMARINN_KEYS_MODEL");
+
+    assert_eq!(after - before, 1, "two models must not share one entry");
+    assert_eq!(cache.entries(), 2);
+}
+
+/// The counterpart, documenting today's behaviour rather than wishing it away:
+/// `{{ env.X }}` is rendered per request and is **not** in the key, so two
+/// values do collide. domarinn cannot tell a model selector from a credential,
+/// so it warns at construction and points at `${env:X}` instead of guessing.
+#[tokio::test]
+async fn runtime_env_templating_shares_a_key_and_is_warned_about() {
+    let server = always_answers().await;
+    let yaml = http_suite(
+        &server.uri(),
+        r#"{X-Model: "{{ env.DOMARINN_KEYS_RUNTIME }}"}"#,
+        r#"{prompt: "{{ x }}"}"#,
+    );
+
+    let cache = MemCache::default();
+    std::env::set_var("DOMARINN_KEYS_RUNTIME", "gpt-5");
+    run_suite(&yaml, &cache).await;
+    let before = calls(&server).await;
+    std::env::set_var("DOMARINN_KEYS_RUNTIME", "claude-opus-5");
+    run_suite(&yaml, &cache).await;
+    let after = calls(&server).await;
+    std::env::remove_var("DOMARINN_KEYS_RUNTIME");
+
+    assert_eq!(
+        after - before,
+        0,
+        "documenting the hazard: a runtime-rendered value is not in the key"
+    );
+    assert_eq!(cache.entries(), 1);
+}
+
+/// Everything else about an `http` provider that must separate.
+#[tokio::test]
+async fn http_url_method_and_body_each_bust() {
+    let server = always_answers().await;
+    let base = http_suite(&server.uri(), "{}", r#"{prompt: "{{ x }}"}"#);
+
+    let other_body = http_suite(&server.uri(), "{}", r#"{prompt: "{{ x }}", top_k: 5}"#);
+    assert_eq!(
+        live_calls_for_second(&server, &base, &other_body).await,
+        1,
+        "a different request body is a different question"
+    );
+
+    let other_url = http_suite(&server.uri(), "{}", r#"{prompt: "{{ x }}"}"#)
+        .replace("/generate", "/generate-v2");
+    assert_eq!(
+        live_calls_for_second(&server, &base, &other_url).await,
+        1,
+        "a different endpoint is a different provider"
+    );
+}
+
+// ── `anthropic` / `openai` ───────────────────────────────────────────────────
+
+/// `key_env` is a parameter, not a constant, because these tests run in
+/// parallel in one process and `std::env` is process-wide: a shared name meant
+/// one test's cleanup pulled the credential out from under another's run. Each
+/// test owns a name and never removes anyone else's.
+fn vendor_suite(kind: &str, uri: &str, model: &str, params: &str, key_env: &str) -> String {
+    format!(
+        r#"
+version: 1
+project: test
+suite: keys
+providers:
+  - id: p
+    type: {kind}
+    model: "{model}"
+    base_url: "{uri}"
+    api_key_env: {key_env}
+    params: {params}
+prompts:
+  - id: only
+    template: "say hello to {{{{ x }}}}"
+tests:
+  - id: case-a
+    vars: {{x: "a"}}
+"#
+    )
+}
+
+#[tokio::test]
+async fn a_vendor_provider_is_separated_by_model_base_url_and_params() {
+    const KEY: &str = "DOMARINN_KEYS_VENDOR_KEY";
+    std::env::set_var(KEY, "sk-test");
+    let server = always_answers().await;
+    let other = always_answers().await;
+
+    for kind in ["anthropic", "openai"] {
+        let base = vendor_suite(kind, &server.uri(), "model-a", "{}", KEY);
+
+        assert_eq!(
+            live_calls_for_second(
+                &server,
+                &base,
+                &vendor_suite(kind, &server.uri(), "model-b", "{}", KEY)
+            )
+            .await,
+            1,
+            "{kind}: a different model must not replay"
+        );
+
+        assert_eq!(
+            live_calls_for_second(
+                &server,
+                &base,
+                &vendor_suite(kind, &server.uri(), "model-a", "{temperature: 0.7}", KEY)
+            )
+            .await,
+            1,
+            "{kind}: params change the request"
+        );
+
+        // A different base_url reaches a different server, so the second run's
+        // calls land there — count them where they arrive.
+        let cache = MemCache::default();
+        run_suite(&base, &cache).await;
+        let before = calls(&other).await;
+        run_suite(
+            &vendor_suite(kind, &other.uri(), "model-a", "{}", KEY),
+            &cache,
+        )
+        .await;
+        assert_eq!(
+            calls(&other).await - before,
+            1,
+            "{kind}: a different gateway is a different provider"
+        );
+    }
+}
+
+/// Which *variable* a credential is read from must not partition a shared cache.
+///
+/// Two teammates, two API keys, one answer to the same question. Keying the
+/// credential channel would give each of them a private cache wearing the
+/// clothes of a shared one.
+#[tokio::test]
+async fn the_credential_does_not_partition_the_cache() {
+    const ONE: &str = "DOMARINN_KEYS_CRED_ONE";
+    const TWO: &str = "DOMARINN_KEYS_CRED_TWO";
+    std::env::set_var(ONE, "sk-one");
+    std::env::set_var(TWO, "sk-two");
+    let server = always_answers().await;
+
+    let base = vendor_suite("anthropic", &server.uri(), "model-a", "{}", ONE);
+    let other_env = vendor_suite("anthropic", &server.uri(), "model-a", "{}", TWO);
+
+    assert_eq!(
+        live_calls_for_second(&server, &base, &other_env).await,
+        0,
+        "a different credential is the same question"
+    );
+}
+
+/// Declared tools are part of the request: a call offered a tool and one that
+/// was not are different questions, and replaying one for the other reports "no
+/// tools were called" for a call that was never given any.
+///
+/// Covered as units in `cache_key.rs`; this is the same property through a real
+/// run, where the suite-level `tools:` block has to actually reach the request.
+#[tokio::test]
+async fn declaring_tools_busts_but_declaring_none_does_not() {
+    const KEY: &str = "DOMARINN_KEYS_TOOLS_KEY";
+    std::env::set_var(KEY, "sk-test");
+    let server = always_answers().await;
+    let with_tools = |tools: &str| {
+        format!(
+            r#"
+version: 1
+project: test
+suite: keys
+providers:
+  - id: p
+    type: anthropic
+    model: "model-a"
+    base_url: "{}"
+    api_key_env: {KEY}
+{tools}
+prompts:
+  - id: only
+    template: "hello {{{{ x }}}}"
+tests:
+  - id: case-a
+    vars: {{x: "a"}}
+"#,
+            server.uri()
+        )
+    };
+
+    let none = with_tools("");
+    let one = with_tools("tools:\n  - name: get_weather");
+    let two = with_tools("tools:\n  - name: get_weather\n  - name: get_time");
+
+    assert_eq!(
+        live_calls_for_second(&server, &none, &one).await,
+        1,
+        "offering a tool changes the question"
+    );
+    assert_eq!(
+        live_calls_for_second(&server, &one, &two).await,
+        1,
+        "so does offering a second one"
+    );
+    assert_eq!(
+        live_calls_for_second(&server, &none, &none).await,
+        0,
+        "and declaring none is the absence of a declaration, not an empty one"
+    );
+}
+
+/// A pricing edit re-costs a cached case without re-calling anybody.
+///
+/// `cost_usd` used to be frozen into the entry, so a warm suite reported
+/// whatever the rate sheet said the day it first ran — forever, and a `cost:`
+/// budget scored against it. Pricing is deliberately not in the key (that would
+/// discard every entry the day a vendor changes a price), so it is applied on
+/// read, exactly as a grading `threshold` is.
+#[tokio::test]
+async fn a_pricing_change_re_costs_a_cached_case_without_calling_again() {
+    const KEY: &str = "DOMARINN_KEYS_PRICING_KEY";
+    std::env::set_var(KEY, "sk-test");
+    let server = always_answers().await;
+    let priced = |input: f64| {
+        format!(
+            r#"
+version: 1
+project: test
+suite: keys
+providers:
+  - id: p
+    type: anthropic
+    model: "model-a"
+    base_url: "{}"
+    api_key_env: {KEY}
+    pricing: {{input_per_mtok: {input}, output_per_mtok: {input}}}
+prompts:
+  - id: only
+    template: "hello {{{{ x }}}}"
+tests:
+  - id: case-a
+    vars: {{x: "a"}}
+"#,
+            server.uri()
+        )
+    };
+
+    let cache = MemCache::default();
+    let cheap = run_suite(&priced(1.0), &cache).await;
+    let first_cost = cheap.cases[0]
+        .cost_usd
+        .expect("a priced provider reports cost");
+
+    // Ten times the price, same provider identity — pricing is not in the key,
+    // so this must be a hit.
+    let before = calls(&server).await;
+    let dear = run_suite(&priced(10.0), &cache).await;
+    assert_eq!(
+        calls(&server).await - before,
+        0,
+        "a pricing edit must not re-run the suite"
+    );
+    assert!(dear.cases[0].cached);
+
+    let second_cost = dear.cases[0].cost_usd.expect("still priced");
+    assert!(
+        second_cost > first_cost * 9.0,
+        "the cached case must be re-costed at the current rate: {first_cost} then {second_cost}"
+    );
+}

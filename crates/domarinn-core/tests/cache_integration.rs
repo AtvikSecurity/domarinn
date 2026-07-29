@@ -98,7 +98,9 @@ impl<'a> Case<'a> {
 }
 
 /// A suite of `cases` against one exec provider that prints `output`.
-/// `provider_salt: None` leaves the provider uncacheable.
+///
+/// `provider_salt: None` is just an unsalted provider — it used to mean
+/// "uncacheable", which is the rule these tests were originally written around.
 fn suite_with(provider_salt: Option<&str>, output: &str, cases: &[Case]) -> String {
     let salt_line = match provider_salt {
         Some(s) => format!("\n    cache_salt: \"{s}\""),
@@ -403,9 +405,12 @@ async fn exec_is_cached_without_a_provider_salt() {
     // This was `exec_without_a_provider_salt_is_never_cached`, and asserted the
     // opposite. An exec fingerprint used to be argv alone, which does not move
     // when the program behind it is rebuilt, so declining to cache was the only
-    // safe answer. The fingerprint now carries the program's own identity, so a
-    // rebuild busts the entry and caching by default is safe — the salt became
-    // an escape hatch rather than the entry ticket.
+    // safe answer. Then the fingerprint carried the program's own identity, and
+    // caching by default became safe — at the cost of making every exec key a
+    // property of one machine's filesystem. Both are gone now: `command` names
+    // what will answer, `cache_salt` says when that answer is stale, and a
+    // rebuild is reported rather than pre-emptively charged for. See
+    // `tests/cache_portability.rs` for the property that bought.
     let yaml = suite_with(None, "out", &[Case::new("case-a", "a")]);
     let cache = MemCache::default();
 
@@ -418,10 +423,10 @@ async fn exec_is_cached_without_a_provider_salt() {
 
 #[tokio::test]
 async fn a_per_case_salt_separates_entries_without_gating_them() {
-    // The two salts still answer different questions — a case salt says "this
-    // content is unchanged", a provider salt says "this build is unchanged" —
-    // but neither is what *enables* caching any more. A case salt now chooses
-    // the key of an entry that would have been written regardless.
+    // The two salts answer different questions — a case salt says "this content
+    // is unchanged", a provider salt says "this build is unchanged" — and
+    // neither is what *enables* caching. A case salt chooses the key of an entry
+    // that would have been written regardless.
     let yaml = suite_with(None, "out", &[Case::salted("case-a", "a", "digest-1")]);
     let cache = MemCache::default();
 
