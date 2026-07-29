@@ -19,7 +19,7 @@ fn example_dir(name: &str) -> std::path::PathBuf {
 fn file_vars_example_loads_validates_and_resolves_fixtures() {
     // Exercises the sandboxed file-var path end to end from the shipped example:
     // `!file`/`{$file}` fixtures are resolved relative to the suite dir.
-    let dir = example_dir("file-vars");
+    let dir = example_dir("07-file-vars");
     let (suite, raw) = domarinn_core::loader::load_file_raw(&dir).unwrap();
     assert!(domarinn_core::validate(&suite, &raw).is_empty());
     let expanded = domarinn_core::expand_tests(&suite, &dir).unwrap();
@@ -38,7 +38,7 @@ fn file_vars_example_loads_validates_and_resolves_fixtures() {
 
 #[test]
 fn matrix_example_loads_validates_and_sweeps() {
-    let dir = example_dir("matrix");
+    let dir = example_dir("08-matrix-sweeps");
     let (suite, raw) = domarinn_core::loader::load_file_raw(&dir).unwrap();
     assert!(domarinn_core::validate(&suite, &raw).is_empty());
     let expanded = domarinn_core::expand_tests(&suite, &dir).unwrap();
@@ -55,7 +55,7 @@ fn matrix_example_loads_validates_and_sweeps() {
 
 #[test]
 fn render_health_example_loads_and_validates() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/render-health");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/12-render-health");
     let (suite, raw) = domarinn_core::loader::load_file_raw(&dir).unwrap();
     let issues = domarinn_core::validate(&suite, &raw);
     assert!(

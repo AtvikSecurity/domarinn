@@ -101,7 +101,7 @@ fn schema_config_emits_json_schema() {
 #[test]
 fn shipped_example_validates() {
     let example =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/render-health");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/12-render-health");
     bin()
         .arg("validate")
         .arg(example)
