@@ -637,7 +637,7 @@ tests:
     );
 }
 
-// ── The grader-verdict cache ─────────────────────────────────────────────────
+// ── Grading, through the cache ───────────────────────────────────────────────
 
 /// Grader verdicts are reused across runs.
 ///
@@ -646,6 +646,12 @@ tests:
 /// provider response was a cache hit, which is the dominant recurring cost of
 /// running one. Renamed rather than replaced so `git log -S` and `git blame`
 /// point at the commit that closed the gap.
+///
+/// The mechanism underneath changed again in 0.5.0 — what is stored is the
+/// judge's *exchange* rather than a bespoke verdict entry, keyed by the same
+/// rule as every other cached call — and the invariant is deliberately written
+/// so it did not have to: exactly one judge call across two runs, however that
+/// is achieved. `grader_request_cache.rs` covers the how.
 #[tokio::test]
 async fn grader_verdicts_are_reused_across_runs() {
     let server = MockServer::start().await;
@@ -717,6 +723,10 @@ tests:
         server.received_requests().await.unwrap().len(),
         1,
         "the second run must reuse the verdict rather than re-pay the judge"
+    );
+    assert!(
+        second.cases[0].asserts[0].cached,
+        "…and must report that it did"
     );
 }
 

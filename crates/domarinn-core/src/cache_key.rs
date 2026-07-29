@@ -1,18 +1,18 @@
-//! Computing the cache key for a provider call.
+//! Computing the cache key. One function, one rule.
 //!
-//! Two key spaces live here, and every key in both is a canonical hash (see
-//! [`crate::cache::canonical_json`]) of an object whose members are named below.
-//! [`request_cache_key`] hashes the canonical outgoing request itself, under one
-//! rule for every kind of cached call — it is what the provider path keys on.
-//! [`grader_cache_key`] still hashes a grader fingerprint alongside the graded
-//! document. Their member names are disjoint, so no input can produce a key in
-//! both. `repeat` is always present in both (default 0) so N=1 and repeat-0 of
-//! N=3 agree.
+//! [`request_cache_key`] hashes the canonical outgoing request — a canonical
+//! hash (see [`crate::cache::canonical_json`]) of an object whose members are
+//! named below. *Every* cached call goes through it: a provider response, an
+//! `llm-rubric` judge's verdict, an embedding, an `exec` assert's grading. There
+//! is one place where "what makes two calls interchangeable" is decided, and
+//! this is it. `repeat` is always present (default 0) so N=1 and repeat-0 of N=3
+//! agree.
 //!
-//! The key space these replaced — a provider fingerprint hashed alongside the
-//! pieces of the request — is frozen in [`crate::cache_migrate`], which reads it
-//! to adopt entries written by 0.4.x and earlier. It is history now; nothing
-//! here may grow a dependency on it.
+//! The two key spaces this replaced — a provider fingerprint hashed alongside
+//! the pieces of the request, and a *grader* fingerprint hashed alongside the
+//! graded document — are frozen in [`crate::cache_migrate`], which reads them to
+//! adopt entries written by 0.4.x and earlier. They are history now; nothing
+//! here may grow a dependency on either.
 //!
 //! A salt joins the hash **only when set**: canonical JSON emits every member
 //! that is present, so a null member hashes differently from an absent one.
@@ -50,27 +50,6 @@ use serde_json::Value as Json;
 
 use crate::cache::CacheKey;
 
-/// Compute the cache key for one grading call.
-///
-/// **The "only when set" discipline above does not apply here.** That rule
-/// exists to keep keys written before a member existed valid, and this key
-/// space is new — it has no legacy entries to preserve. Every member is
-/// therefore included unconditionally, which is simpler and is the right
-/// default for a fresh key. Do not copy the conditional-insert pattern from
-/// [`crate::cache_migrate::legacy_provider_key`] into this function; it would be
-/// cargo-culting a constraint that does not exist here.
-///
-/// `kind` discriminates the two key spaces, so a grader key can never collide
-/// with a provider key even if their other members coincided.
-pub fn grader_cache_key(fingerprint: &Json, graded: &Json, repeat: u32) -> CacheKey {
-    CacheKey::compute(&serde_json::json!({
-        "kind": "grader-verdict",
-        "fingerprint": fingerprint,
-        "graded": graded,
-        "repeat": repeat,
-    }))
-}
-
 /// Compute the cache key for one outgoing request — the one rule.
 ///
 /// `sha256(canonical_json({request, repeat, provider_salt?, case_salt?}))`,
@@ -90,10 +69,11 @@ pub fn grader_cache_key(fingerprint: &Json, graded: &Json, repeat: u32) -> Cache
 /// `("a", "b")` and `("ab", None)` collide.
 ///
 /// Collision with the [`crate::cache_migrate::legacy_provider_key`] /
-/// [`grader_cache_key`] key spaces is structurally impossible rather than merely
-/// unlikely: `request` is not a member of either of those objects, and
-/// `fingerprint`/`prompt`/`vars` are not members of this one, so no pair of
-/// inputs can produce one canonical string.
+/// [`crate::cache_migrate::legacy_grader_verdict_key`] key spaces is
+/// structurally impossible rather than merely unlikely: `request` is not a
+/// member of either of those objects, and `fingerprint`/`prompt`/`vars`/`kind`
+/// are not members of this one, so no pair of inputs can produce one canonical
+/// string.
 pub fn request_cache_key(
     request: &Json,
     repeat: u32,
@@ -341,26 +321,9 @@ mod tests {
         );
     }
 
-    /// Grader keys and request keys cannot collide, and it is structural rather
-    /// than probabilistic: `request` is not a member of a grader key's object and
-    /// `kind`/`fingerprint`/`graded` are not members of this one, so no pair of
-    /// inputs can ever produce one canonical string. Fed the other key's own
-    /// parts as the request — the most adversarial input available — they still
-    /// differ. The same guard against the *provider* key space domarinn used to
-    /// publish lives in `cache_migrate.rs`, next to the frozen function.
-    #[test]
-    fn a_request_key_can_never_equal_a_grader_key() {
-        let fp = serde_json::json!({"type": "anthropic"});
-        let graded = serde_json::json!({"output": "hi"});
-        let grader_parts = serde_json::json!({
-            "kind": "grader-verdict",
-            "fingerprint": fp,
-            "graded": graded,
-            "repeat": 0,
-        });
-        assert_ne!(
-            request_cache_key(&grader_parts, 0, None, None),
-            grader_cache_key(&fp, &graded, 0)
-        );
-    }
+    // Both retired key spaces are guarded against the live one where their
+    // frozen functions live — `no_legacy_key_equals_the_live_key_for_one_call`
+    // and `no_legacy_grader_key_equals_the_live_request_key`, both in
+    // `cache_migrate.rs`. There is nothing left to guard here: this module knows
+    // exactly one key.
 }

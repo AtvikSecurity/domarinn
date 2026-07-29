@@ -20,9 +20,11 @@ use crate::errors::GraderError;
 use crate::exec::run_exec_json;
 use crate::exec_protocol::{AssertReq, AssertResp, Envelope, Kind, ProviderRef, TestRef};
 use crate::net::http_client;
+use crate::request_cache::{cached_exchange, EntryMeta, Exchange, LegacyVerdict, Served};
 use crate::runner::{AssertGrader, GradeCtx};
-use crate::template::TemplateEngine;
 use crate::types::{Output, TokenUsage};
+
+use grader_llm::Judge;
 
 /// Default ceiling on a grading call. Overridable per suite via
 /// `grader.timeout_ms`, because a reasoning grader given a generous
@@ -32,7 +34,12 @@ const GRADER_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_GRADER_MAX_TOKENS: u64 = 4096;
 
 /// The built-in grading system prompt.
-const SYSTEM_PROMPT: &str = "You are a strict evaluator. Grade the ASSISTANT OUTPUT against the \
+///
+/// `pub` because it is in the judge's request body and therefore in the cache
+/// key: an embedder replicating a key, or a test seeding a ≤0.4.x verdict entry
+/// to be adopted, needs the same bytes rather than a copy that can drift.
+pub const SYSTEM_PROMPT: &str =
+    "You are a strict evaluator. Grade the ASSISTANT OUTPUT against the \
 RUBRIC. Return a boolean `pass`, a `score` in [0,1], and brief `reasoning`. Judge only what the \
 rubric asks; do not reward effort.";
 
@@ -49,19 +56,6 @@ pub struct DefaultGrader {
     /// map per grader, so a shared test binary cannot leak a warning between
     /// runs. The mutex is held for a map lookup, never across a request.
     rates: std::sync::Mutex<BTreeMap<String, Option<crate::pricing::ModelRate>>>,
-    /// Filesystem-derived identities — today just the contents of a
-    /// `grader.template` — memoized per `(spec, base_dir)`.
-    ///
-    /// [`Self::grading_fingerprint`] is called for every assertion of every
-    /// cell, so without this a 500-case suite re-reads its grading prompt 500
-    /// times. Worse than the cost: an edit landing mid-run would give later
-    /// cells a different key than earlier ones, so one run would write verdicts
-    /// under two identities. One resolution per run is both cheaper and the only
-    /// self-consistent answer.
-    ///
-    /// This used to memoize `exec` program identities too, which is no longer
-    /// keyed at all — see [`crate::exec::program_digest`].
-    identities: std::sync::Mutex<BTreeMap<String, Json>>,
     /// The resolved per-call ceiling. Kept alongside the client that already
     /// carries it, because an `exec` assert has no client to carry it — without
     /// this, `grader.timeout_ms` silently applied to the HTTP judges only.
@@ -82,23 +76,9 @@ impl DefaultGrader {
             default_grader,
             embeddings: None,
             rates: std::sync::Mutex::new(BTreeMap::new()),
-            identities: std::sync::Mutex::new(BTreeMap::new()),
             timeout,
             client: http_client(timeout),
         }
-    }
-
-    /// A filesystem-derived identity, resolved once per run per distinct input.
-    fn memoized_identity(&self, key: Json, resolve: impl FnOnce() -> Json) -> Json {
-        let key = crate::cache::canonical_json(&key);
-        let mut memo = match self.identities.lock() {
-            Ok(guard) => guard,
-            // Same rule as `judge_rate`: a poisoned mutex means another thread
-            // panicked resolving one of these. Recover rather than propagating a
-            // panic into every remaining grading.
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        memo.entry(key).or_insert_with(resolve).clone()
     }
 
     /// The rate for a judge model, resolved once per distinct `(model, pricing)`
@@ -138,115 +118,18 @@ impl AssertGrader for DefaultGrader {
         output: &Output,
         ctx: &GradeCtx<'_>,
     ) -> Result<Graded, GraderError> {
-        let GradeCtx {
-            vars,
-            engine,
-            working_dir,
-            ..
-        } = ctx;
-        let outcome = match &assert.kind {
-            AssertKind::Exec {
-                command,
-                config,
-                // Cacheability only; it never reaches the child.
-                cache_salt: _,
-            } => {
-                self.grade_exec(command, config.as_ref(), output, vars, *working_dir, ctx)
-                    .await
-            }
-            AssertKind::LlmRubric {
-                value,
-                grader,
-                threshold,
-                params,
-            } => {
-                self.grade_llm_rubric(
-                    value,
-                    grader.as_deref(),
-                    *threshold,
-                    output,
-                    params.as_ref(),
-                    ctx,
-                )
-                .await
-            }
-            AssertKind::Similar { value, threshold } => {
-                self.grade_similar(value, *threshold, output, vars, engine)
-                    .await
-            }
-            _ => Err(GraderError::Internal("local assert routed to grader")),
-        };
         // `negate` is applied when the verdict becomes an outcome, not here:
         // caching a *negated* verdict would key the cache on the assertion's
         // polarity, so flipping `negate` would re-pay the judge for the same
-        // answer.
-        outcome
-    }
-
-    /// The grader's identity for this assertion, or `None` to skip caching it.
-    fn grading_fingerprint(
-        &self,
-        assert: &Assert,
-        base_dir: Option<&std::path::Path>,
-    ) -> Option<Json> {
-        grading_fingerprint(
-            self.default_grader.as_ref(),
-            self.embeddings.as_ref().map(|e| e.identity()),
-            assert,
-            self.on_disk_identity(assert, base_dir),
-        )
-    }
-}
-
-impl DefaultGrader {
-    /// The part of this assertion's grading identity that lives on disk: the
-    /// contents of a `grader.template`.
-    ///
-    /// Split from the key-shaping in [`grading_fingerprint`] so that stays a
-    /// pure function of its inputs, and so the filesystem is touched once per
-    /// run rather than once per graded cell.
-    ///
-    /// An `exec` assertion's *program* used to be here too, and its absence is
-    /// the rule working rather than an oversight. A template's bytes are pasted
-    /// into the prompt the judge reads, so they are part of the question and
-    /// belong in the key. A program's bytes are what *receives* the question;
-    /// keying them makes a verdict unshareable between machines to detect a
-    /// rebuild the suite already knows about. `cache_salt` is how an assertion
-    /// says a rebuild happened — see [`crate::exec::program_digest`].
-    fn on_disk_identity(&self, assert: &Assert, base_dir: Option<&std::path::Path>) -> Json {
-        let dir_key = base_dir.map(|d| d.display().to_string());
+        // answer. Likewise `threshold` — it is read by
+        // `GradedVerdict::to_outcome`, so editing one re-scores from cache
+        // instead of re-grading.
         match &assert.kind {
-            AssertKind::LlmRubric { grader, .. } => {
-                let Some(g) = grader.as_deref().or(self.default_grader.as_ref()) else {
-                    return Json::Null;
-                };
-                let Some(spec) = g.template.as_deref() else {
-                    return Json::Null;
-                };
-                self.memoized_identity(
-                    json!({"kind": "template", "spec": spec, "base_dir": dir_key}),
-                    || template_digest(spec, base_dir),
-                )
-            }
-            _ => Json::Null,
+            AssertKind::Exec { .. } => self.grade_exec(assert, output, ctx).await,
+            AssertKind::LlmRubric { .. } => self.grade_llm_rubric(assert, output, ctx).await,
+            AssertKind::Similar { value, .. } => self.grade_similar(value, output, ctx).await,
+            _ => Err(GraderError::Internal("local assert routed to grader")),
         }
-    }
-}
-
-/// A digest of the bytes a `grader.template` will contribute to the prompt.
-///
-/// The *path* is not the template: this branch made that file shape every
-/// verdict, so a key over the path replays scores produced by the previous
-/// judging prompt after the file is edited — with no cache miss and no warning.
-///
-/// A template that cannot be read digests to `null` rather than failing here.
-/// The failure belongs to [`render_grader_template`], which produces a real
-/// error message at grading time; a fingerprint's job is only to move when the
-/// inputs move.
-fn template_digest(spec: &str, base_dir: Option<&std::path::Path>) -> Json {
-    match read_grader_template(spec, base_dir) {
-        Ok(text) => json!(format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex())),
-        Err(_) => Json::Null,
     }
 }
 
@@ -284,110 +167,31 @@ fn sum_usage(a: Option<TokenUsage>, b: Option<TokenUsage>) -> Option<TokenUsage>
     }
 }
 
-/// A stable identity for the grading `assert` will perform.
+/// The ≤0.4.x verdict key's two halves for this grading, when it has history.
 ///
-/// Everything that can move a verdict, and nothing that cannot. Notably absent:
-///
-/// - **`threshold`** — a decision *about* a verdict, not part of one. Excluding
-///   it is what makes editing a threshold re-score from cache instead of
-///   re-paying the judge, and it is structurally absent rather than merely
-///   omitted: [`GradedVerdict`] has no threshold to include.
-/// - **the API key env var** — a secret, same rule as `Provider::fingerprint`.
-/// - **`vars`, the rubric, the case's identity** — these live in the *other*
-///   half of the key. This function describes the judge; what it was asked is
-///   `graded_payload`'s job in `runner_asserts`, and that is where the rubric
-///   is rendered and the case's vars are hashed. The split is why
-///   editing a `threshold:` re-scores from cache while editing a rubric does
-///   not: one is a decision about a verdict, the other is a different question.
-///
-/// [`SYSTEM_PROMPT`] is hashed in: it is a literal in this file that shapes
-/// every verdict, and nothing else in the key would notice an edit to it.
-///
-/// `verdict_mode` is included at its *effective* value even though it is
-/// currently rejected — so wiring it up further needs no cache-version bump.
-///
-/// `on_disk` carries whatever part of the identity had to be read off the
-/// filesystem (see [`DefaultGrader::on_disk_identity`]): the `exec` child's
-/// program, or a digest of the `grader.template` file's contents. It is a
-/// parameter rather than a filesystem call here so this stays a pure function
-/// and the disk is touched once per run rather than once per graded cell.
-fn grading_fingerprint(
-    default_grader: Option<&Grader>,
-    embeddings: Option<Json>,
+/// The one place the retired key space is still computed, and it is computed
+/// from [`crate::cache_migrate`]'s frozen copies rather than from anything live:
+/// see that module for why the shapes are literals and when they are deleted.
+/// `None` means nothing to probe — a `similar` assertion, or a rubric with no
+/// grader resolved — and the exchange goes straight to the strict-miss or live
+/// branch.
+fn legacy_verdict(
     assert: &Assert,
-    on_disk: Json,
-) -> Option<Json> {
-    fn provider_identity(kind: &ProviderKind) -> Option<Json> {
-        match kind {
-            ProviderKind::Anthropic {
-                model,
-                base_url,
-                params,
-                ..
-            } => Some(
-                json!({"type": "anthropic", "model": model, "base_url": base_url, "params": params}),
-            ),
-            ProviderKind::Openai {
-                model,
-                base_url,
-                params,
-                ..
-            } => Some(
-                json!({"type": "openai", "model": model, "base_url": base_url, "params": params}),
-            ),
-            ProviderKind::Embeddings {
-                model,
-                base_url,
-                params,
-                ..
-            } => Some(
-                json!({"type": "embeddings", "model": model, "base_url": base_url, "params": params}),
-            ),
-            _ => None,
-        }
-    }
-
-    let system_digest = format!("{}", blake3::hash(SYSTEM_PROMPT.as_bytes()).to_hex());
-
-    match &assert.kind {
-        AssertKind::LlmRubric { grader, params, .. } => {
-            let g = grader.as_deref().or(default_grader)?;
-            Some(json!({
-                "assert": "llm-rubric",
-                "provider": provider_identity(&g.provider)?,
-                "template": g.template,
-                // The file's *bytes*, not just its path — that file is the
-                // grading prompt, so editing it has to bust the verdict cache.
-                "template_digest": on_disk,
-                "verdict_mode": g.verdict_mode.unwrap_or_default(),
-                "assert_params": params,
-                "system_prompt": system_digest,
-            }))
-        }
-        // The embeddings client's identity, not merely "one exists": a cosine
-        // value is a property of the model that produced the vectors, so a key
-        // that omitted the model would replay one embedder's answers after the
-        // suite switched to another.
-        AssertKind::Similar { .. } => {
-            embeddings.map(|e| json!({"assert": "similar", "embeddings": e}))
-        }
-        // `command` names the child that will judge; `cache_salt` is how the
-        // suite says that child is a different version. The program's own bytes
-        // are deliberately absent, exactly as they are from an `exec` provider's
-        // fingerprint — see `ExecProvider::fingerprint`. Keying them would make
-        // a verdict unshareable across machines in order to notice a rebuild,
-        // and a verdict is the expensive half of a graded suite.
-        AssertKind::Exec {
-            command,
-            cache_salt,
-            config: _,
-        } => Some(json!({
-            "assert": "exec",
-            "command": command,
-            "cache_salt": cache_salt,
-        })),
-        _ => None,
-    }
+    default_grader: Option<&Grader>,
+    graded: &crate::cache_migrate::LegacyGraded<'_>,
+    base_dir: Option<&std::path::Path>,
+) -> Option<LegacyVerdict> {
+    let fingerprint = crate::cache_migrate::legacy_grading_fingerprint(
+        assert,
+        default_grader,
+        SYSTEM_PROMPT,
+        base_dir,
+    )?;
+    let graded = crate::cache_migrate::legacy_graded_payload(assert, graded)?;
+    Some(LegacyVerdict {
+        fingerprint,
+        graded,
+    })
 }
 
 /// The grader provider's params with the assertion's own merged over them.
@@ -459,13 +263,18 @@ fn render_grader_template(
 impl DefaultGrader {
     async fn grade_exec(
         &self,
-        command: &[String],
-        config: Option<&Json>,
+        assert: &Assert,
         output: &Output,
-        vars: &Json,
-        working_dir: Option<&std::path::Path>,
         ctx: &GradeCtx<'_>,
     ) -> Result<Graded, GraderError> {
+        let AssertKind::Exec {
+            command,
+            config,
+            cache_salt,
+        } = &assert.kind
+        else {
+            return Err(GraderError::Internal("grade_exec on a non-exec assert"));
+        };
         // `test` and `provider` used to be sent as empty strings, and `vars`
         // was discarded outright — three fields the wire format declares as
         // populated, so a child written against `docs/protocol.md` received
@@ -481,163 +290,371 @@ impl DefaultGrader {
             provider: ProviderRef {
                 id: ctx.provider_id.to_string(),
             },
-            config: config.cloned().unwrap_or(Json::Null),
-            vars: vars.clone(),
+            config: config.clone().unwrap_or(Json::Null),
+            vars: ctx.vars.clone(),
         };
         let request = serde_json::to_value(&request)
             .map_err(|e| GraderError::InvalidVerdict(format!("serializing assert request: {e}")))?;
-        let value = run_exec_json(
-            command,
-            &BTreeMap::new(),
-            working_dir,
-            self.timeout,
-            &request,
+
+        let served = cached_exchange(
+            ctx.cache.as_ref(),
+            Exchange {
+                canonical: exec_assert_canonical(command, &request),
+                case_salt: cache_salt.as_deref(),
+                legacy: legacy_verdict(
+                    assert,
+                    self.default_grader.as_ref(),
+                    &crate::cache_migrate::LegacyGraded {
+                        output,
+                        rubric: "",
+                        vars: ctx.vars,
+                        test_id: ctx.test_id,
+                        test_tags: ctx.test_tags,
+                        provider_id: ctx.provider_id,
+                    },
+                    ctx.working_dir,
+                ),
+            },
+            |payload| {
+                let resp: AssertResp = serde_json::from_value(payload.clone()).map_err(|e| {
+                    GraderError::InvalidVerdict(format!("bad assert response: {e}"))
+                })?;
+                let score = resp.score.unwrap_or(if resp.pass { 1.0 } else { 0.0 });
+                Ok(GradedVerdict::Exec {
+                    pass: resp.pass,
+                    score,
+                    reason: resp.reason.unwrap_or_default(),
+                    details: resp.details,
+                })
+            },
+            |verdict| EntryMeta {
+                output: Output::Text(verdict.to_outcome(None).reason),
+                usage: None,
+                cost_usd: None,
+                model: None,
+            },
+            |key| {
+                GraderError::Transport(format!(
+                    "cache-only: miss for the exec assert `{}` on this case ({key})",
+                    command.join(" ")
+                ))
+            },
+            async {
+                let value = run_exec_json(
+                    command,
+                    &BTreeMap::new(),
+                    ctx.working_dir,
+                    self.timeout,
+                    &request,
+                )
+                .await
+                .map_err(|e| GraderError::Transport(format!("exec assert failed: {e}")))?;
+                Ok(value)
+            },
         )
-        .await
-        .map_err(|e| GraderError::Transport(format!("exec assert failed: {e}")))?;
-        let resp: AssertResp = serde_json::from_value(value)
-            .map_err(|e| GraderError::InvalidVerdict(format!("bad assert response: {e}")))?;
-        let score = resp.score.unwrap_or(if resp.pass { 1.0 } else { 0.0 });
-        // Unpriced: the child spends whatever it spends against whatever
-        // endpoint it chose, and the protocol gives it no way to say so. A
-        // zero here would claim custom grading is free.
-        Ok(Graded::unpriced(GradedVerdict::Exec {
-            pass: resp.pass,
-            score,
-            reason: resp.reason.unwrap_or_default(),
-            details: resp.details,
-        }))
+        .await?;
+
+        Ok(match served {
+            Served::Verdict(graded) => *graded,
+            // Unpriced: the child spends whatever it spends against whatever
+            // endpoint it chose, and the protocol gives it no way to say so. A
+            // zero here would claim custom grading is free.
+            Served::Parsed(parsed) => Graded {
+                cached: parsed.cached,
+                ..Graded::unpriced(parsed.value)
+            },
+        })
     }
 
     async fn grade_similar(
         &self,
         reference: &crate::val::Val,
-        threshold: Option<f64>,
         output: &Output,
-        vars: &Json,
-        engine: &TemplateEngine,
+        ctx: &GradeCtx<'_>,
     ) -> Result<Graded, GraderError> {
         let embeddings = self
             .embeddings
             .as_ref()
             .ok_or(GraderError::Unconfigured { kind: "similar" })?;
-        let reference = engine
-            .render_val(reference, vars)
+        let reference = ctx
+            .engine
+            .render_val(reference, ctx.vars)
             .map_err(|e| GraderError::Misconfigured(format!("rendering reference: {e}")))?;
         let reference = reference
             .as_str()
             .map(str::to_string)
             .unwrap_or_else(|| reference.to_string());
         let output_text = output.as_text();
-        let (a, b) = tokio::try_join!(embeddings.embed(&output_text), embeddings.embed(&reference))
-            .map_err(GraderError::Transport)?;
-        // The threshold is applied by `to_outcome`, so the cached verdict is the
-        // raw similarity and changing a threshold costs nothing.
-        let _ = threshold;
+        // Two exchanges rather than one, each keyed on its own embed request.
+        // A vector is reusable by any later comparison — the same output
+        // measured against a second reference re-embeds only the reference —
+        // which is what caching the *requests* buys over caching the cosine.
+        //
+        // Still concurrent, as it was before the cache existed: the common case
+        // is two different texts and therefore two different keys. Two identical
+        // texts do miss together and pay twice on a cold run, which is a wasted
+        // call rather than a wrong answer — `CacheBackend::put` is
+        // first-write-wins — and serializing every `similar` assertion to avoid
+        // it would cost a round trip on all of them for the sake of the one
+        // where the cosine is trivially 1.
+        let (a, b) = tokio::try_join!(
+            self.embed_cached(embeddings, &output_text, ctx),
+            self.embed_cached(embeddings, &reference, ctx)
+        )?;
         // Two calls, so both halves are summed. Either half being unpriced
         // makes the pair unpriced — half a cost presented as a whole one is the
         // same lie the rate table refuses to tell elsewhere.
         let cost_usd = a
+            .value
             .cost
-            .zip(b.cost)
+            .zip(b.value.cost)
             .map(|(a, b)| a.saturating_add(b).to_usd());
         Ok(Graded {
+            // The threshold is applied by `to_outcome`, so what is cached is the
+            // raw similarity and changing a threshold costs nothing.
             verdict: GradedVerdict::Similarity {
-                cosine: crate::embeddings::cosine(&a.vector, &b.vector),
+                cosine: crate::embeddings::cosine(&a.value.vector, &b.value.vector),
             },
-            usage: sum_usage(a.usage, b.usage),
+            usage: sum_usage(a.value.usage, b.value.usage),
             cost_usd,
             model: None,
+            // Both halves, or the assertion still paid an embedder this run.
+            cached: a.cached && b.cached,
         })
+    }
+
+    /// One embedding, through the cache.
+    ///
+    /// No legacy ingredients: a ≤0.4.x `similar` entry holds a cosine, which
+    /// decomposes into neither vector — see
+    /// [`crate::cache_migrate::legacy_graded_payload`] for why re-embedding once
+    /// is the better trade.
+    async fn embed_cached(
+        &self,
+        embeddings: &crate::embeddings::EmbeddingsProvider,
+        text: &str,
+        ctx: &GradeCtx<'_>,
+    ) -> Result<crate::request_cache::Parsed<crate::embeddings::Embedded>, GraderError> {
+        let (url, body) = embeddings.request(text);
+        cached_exchange(
+            ctx.cache.as_ref(),
+            Exchange {
+                canonical: crate::provider::http_request_preview("POST", &url, body.clone()),
+                case_salt: None,
+                legacy: None,
+            },
+            |payload| {
+                embeddings
+                    .parse(payload)
+                    .map_err(GraderError::InvalidVerdict)
+            },
+            |embedded| EntryMeta {
+                output: Output::Json(json!({"dims": embedded.vector.len()})),
+                usage: embedded.usage.clone(),
+                cost_usd: embedded.cost.map(|c| c.to_usd()),
+                model: None,
+            },
+            |key| GraderError::Transport(format!("cache-only: miss for an embedding ({key})")),
+            async {
+                embeddings
+                    .post(&url, &body)
+                    .await
+                    .map_err(GraderError::Transport)
+            },
+        )
+        .await?
+        .parsed_only()
     }
 
     async fn grade_llm_rubric(
         &self,
-        rubric_template: &str,
-        assert_grader: Option<&Grader>,
-        threshold: Option<f64>,
+        assert: &Assert,
         output: &Output,
-        assert_params: Option<&crate::config::ParamMap>,
         ctx: &GradeCtx<'_>,
     ) -> Result<Graded, GraderError> {
-        let (vars, engine) = (ctx.vars, ctx.engine);
+        let AssertKind::LlmRubric {
+            value: rubric_template,
+            grader: assert_grader,
+            params: assert_params,
+            ..
+        } = &assert.kind
+        else {
+            return Err(GraderError::Internal("grade_llm_rubric on a non-rubric"));
+        };
         // The variant that motivated the whole type: nothing ran, and the fix is
         // to add a `grader:` block — not to retry.
         let grader = assert_grader
+            .as_deref()
             .or(self.default_grader.as_ref())
             .ok_or(GraderError::Unconfigured { kind: "llm-rubric" })?;
-        let rubric = engine
-            .render_str(rubric_template, vars)
+        let rubric = ctx
+            .engine
+            .render_str(rubric_template, ctx.vars)
             .map_err(|e| GraderError::Misconfigured(format!("rendering rubric: {e}")))?;
         let output_text = output.as_text();
         // The grading prompt. `grader.template` replaces the built-in framing
-        // when set; the two placeholders are the whole contract.
+        // when set; the two placeholders are the whole contract. Its *contents*
+        // land here, which is why editing that file busts the key with no
+        // separate digest to keep in step.
         let user = match &grader.template {
             Some(spec) => render_grader_template(spec, ctx.working_dir, &rubric, &output_text)?,
             None => format!("RUBRIC:\n{rubric}\n\nASSISTANT OUTPUT:\n{output_text}"),
         };
 
-        // A judge's cost is not a case's cost — no assertion grades it, and
-        // folding it into `cost_usd` would make a `cost:` budget depend on which
-        // model you picked to score with. It is still real money, so it is
-        // priced here and reported separately.
-        let verdict = match &grader.provider {
+        let (judge, model, base_url, api_key_env, params, pricing) = match &grader.provider {
             ProviderKind::Anthropic {
                 model,
                 base_url,
                 api_key_env,
                 params,
                 pricing,
-            } => {
-                self.anthropic_verdict(
-                    model,
-                    base_url.as_deref(),
-                    api_key_env.as_ref(),
-                    merge_params(params.as_ref(), assert_params).as_ref(),
-                    self.judge_rate(model, pricing.as_deref()).as_ref(),
-                    &user,
-                )
-                .await
-            }
+            } => (
+                Judge::Anthropic,
+                model,
+                base_url,
+                api_key_env,
+                params,
+                pricing,
+            ),
             ProviderKind::Openai {
                 model,
                 base_url,
                 api_key_env,
                 params,
                 pricing,
-            } => {
-                self.openai_verdict(
-                    model,
-                    base_url.as_deref(),
-                    api_key_env.as_ref(),
-                    merge_params(params.as_ref(), assert_params).as_ref(),
-                    self.judge_rate(model, pricing.as_deref()).as_ref(),
-                    &user,
-                )
-                .await
+            } => (Judge::Openai, model, base_url, api_key_env, params, pricing),
+            other => {
+                return Err(GraderError::Unsupported {
+                    provider: format!("{other:?}"),
+                    kind: "llm-rubric",
+                })
             }
-            other => Err(GraderError::Unsupported {
-                provider: format!("{other:?}"),
-                kind: "llm-rubric",
-            }),
         };
+        let params = merge_params(params.as_ref(), assert_params.as_ref());
+        // Before the cache, not inside the live branch: a suite that asks for
+        // extended thinking is misconfigured whether or not a verdict happens to
+        // be warm, and finding that out only on a cold cache is worse.
+        if matches!(judge, Judge::Anthropic) {
+            grader_llm::reject_thinking(params.as_ref())?;
+        }
+        // A judge's cost is not a case's cost — no assertion grades it, and
+        // folding it into `cost_usd` would make a `cost:` budget depend on which
+        // model you picked to score with. It is still real money, so it is
+        // priced here and reported separately.
+        let rate = self.judge_rate(model, pricing.as_deref());
+        let (url, body) = judge.request(model, base_url.as_deref(), params.as_ref(), &user);
 
-        // Fail closed: any grader problem is an error, surfaced to the runner.
-        // Passed through unwrapped — re-wrapping it in prose here is exactly
-        // what erased the distinction between "unconfigured" and "broke".
-        let v = verdict?;
-        let _ = threshold;
-        Ok(Graded {
-            verdict: GradedVerdict::Rubric {
-                score: v.score,
-                pass: v.pass,
-                reasoning: v.reasoning,
+        let served = cached_exchange(
+            ctx.cache.as_ref(),
+            Exchange {
+                // Absorbs everything the deleted `grading_fingerprint`
+                // enumerated: model, endpoint, merged params, the system prompt,
+                // the rendered rubric, the graded output, and the template's
+                // bytes. Credentials are headers, so the envelope excludes them
+                // structurally.
+                canonical: crate::provider::http_request_preview("POST", &url, body.clone()),
+                case_salt: None,
+                legacy: legacy_verdict(
+                    assert,
+                    self.default_grader.as_ref(),
+                    &crate::cache_migrate::LegacyGraded {
+                        output,
+                        rubric: &rubric,
+                        vars: ctx.vars,
+                        test_id: ctx.test_id,
+                        test_tags: ctx.test_tags,
+                        provider_id: ctx.provider_id,
+                    },
+                    ctx.working_dir,
+                ),
             },
-            usage: v.usage,
-            cost_usd: v.cost_usd,
-            model: v.model,
+            // Fail closed on both paths: a truncated or unparseable verdict is
+            // an error whether it arrived just now or a month ago.
+            |payload| judge.parse(payload, rate.as_ref()),
+            |verdict| EntryMeta {
+                // The judge's reasoning, so `domarinn cache` inspection shows
+                // something a human can read.
+                output: Output::Text(verdict.reasoning.clone()),
+                usage: verdict.usage.clone(),
+                cost_usd: verdict.cost_usd,
+                model: verdict.model.clone(),
+            },
+            |key| {
+                GraderError::Transport(format!(
+                    "cache-only: miss for the `{model}` judge on this rubric ({key})"
+                ))
+            },
+            async {
+                self.post_judge(judge, &url, &body, api_key_env.as_ref())
+                    .await
+            },
+        )
+        .await?;
+
+        Ok(match served {
+            Served::Verdict(graded) => *graded,
+            Served::Parsed(parsed) => {
+                let v = &parsed.value;
+                Graded {
+                    verdict: GradedVerdict::Rubric {
+                        score: v.score,
+                        pass: v.pass,
+                        reasoning: v.reasoning.clone(),
+                    },
+                    usage: v.usage.clone(),
+                    // Re-derived from the replayed payload at today's rate, with
+                    // what the entry recorded as the fallback.
+                    cost_usd: v.cost_usd.or(parsed.stored_cost_usd),
+                    model: v.model.clone(),
+                    cached: parsed.cached,
+                }
+            }
         })
     }
+}
+
+/// The keying view of an `exec` assert's request.
+///
+/// Two members of the sent document are dropped, for the two reasons the
+/// provider side drops things:
+///
+/// - **`test`** — a test id and its tags are correlation metadata, like a
+///   request id. Two cases asking the same thing of the same child must keep
+///   sharing an entry; a per-assert `cache_salt` is how a suite says otherwise.
+///   Same documented exception as
+///   [`crate::provider::Provider::canonical_request`].
+/// - **`vars.env`** — an assert's `vars` is the *render context*, which carries
+///   a snapshot of the whole process environment so `{{ env.X }}` resolves in
+///   sibling assertions. Keying it would make every entry a property of one
+///   machine's environment, and — since the canonical request is persisted into
+///   the entry — would write that machine's secrets into a shared store. The
+///   provider path already excludes `env` from its request identity for exactly
+///   this reason; this is the same rule, applied where the same context leaks
+///   in. The child still receives it: this is a keying view, not a second
+///   version of the request.
+///
+/// The `domarinn` envelope is **deliberately kept**, so `PROTOCOL_VERSION` is a
+/// key member here as it is for the `exec` provider. A bump re-keys every
+/// exec-assert entry in every store and must ship with the protocol-1 shape
+/// frozen in [`crate::cache_migrate`] — see
+/// `bumping_the_exec_protocol_version_re_keys_every_exec_entry` in
+/// `cache_key.rs`, the tripwire that says so at the moment of the bump.
+///
+/// No `env_digest` member: an `exec` assert declares no environment of its own
+/// (the child is spawned with an empty map), so there is nothing to digest.
+fn exec_assert_canonical(command: &[String], request: &Json) -> Json {
+    let mut stdin = request.clone();
+    if let Some(members) = stdin.as_object_mut() {
+        members.remove("test");
+        if let Some(vars) = members.get_mut("vars").and_then(|v| v.as_object_mut()) {
+            vars.remove("env");
+        }
+    }
+    let (program, args) = command
+        .split_first()
+        .map(|(p, a)| (p.as_str(), a))
+        .unwrap_or(("", &[]));
+    crate::provider::exec_request_preview(program, args, stdin)
 }
 
 #[cfg(test)]

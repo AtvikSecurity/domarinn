@@ -35,8 +35,12 @@ use crate::types::Output;
 
 #[path = "runner_asserts.rs"]
 mod runner_asserts;
+/// `pub(crate)` for one item: [`crate::request_cache`] writes entries too, and
+/// `request_to_persist` is the single size guard for an entry's `request`
+/// member. Reused rather than reimplemented — two copies of a truncation rule
+/// is how one of them starts storing something the other would have trimmed.
 #[path = "runner_cache.rs"]
-mod runner_cache;
+pub(crate) mod runner_cache;
 #[path = "runner_result.rs"]
 mod runner_result;
 
@@ -214,6 +218,15 @@ pub struct GradeCtx<'a> {
     pub provider_id: &'a str,
     pub test_id: &'a str,
     pub test_tags: &'a [String],
+    /// The cache this grader's own requests go through, or `None` to bypass it
+    /// entirely — no read, no write.
+    ///
+    /// `pub(crate)` because the type is: caching a grader's requests is
+    /// domarinn's job, not an implementor's, and an external [`AssertGrader`]
+    /// that wanted a cache of its own would be keying a request domarinn cannot
+    /// see. The other fields stay public because a child grader is *told* things
+    /// with them.
+    pub(crate) cache: Option<crate::request_cache::RequestCache<'a>>,
 }
 
 /// A grader for the non-local assert kinds (`exec`, `llm-rubric`, `similar`).
@@ -234,17 +247,24 @@ pub struct GradeCtx<'a> {
 /// one, so editing a `threshold:` re-scores every case from cache instead of
 /// re-paying the judge for an answer it already gave.
 ///
-/// [`Self::grading_fingerprint`] is the cacheability lever, mirroring
-/// [`crate::provider::Provider::cacheable`]: `None` means "do not cache this
-/// grading". Like a provider fingerprint it must exclude secrets, and it must
-/// include everything that can move a verdict — the grader's model and
-/// endpoint, the rendered rubric, the system prompt.
+/// **Caching is the implementation's own to do, and 0.5.0 moved it here.**
+/// Through 0.4.x this trait carried a `grading_fingerprint` method: the runner
+/// hashed it alongside the graded document and cached the *verdict*. That key
+/// space is gone. A grader now caches the requests it makes, under the one rule
+/// every other cached call follows ([`crate::cache_key::request_cache_key`] over
+/// the canonical request), because a fingerprint could only ever describe the
+/// judge — never the embedding call whose text is the whole question. An
+/// external implementor that relied on the method should delete it; the built-in
+/// grader's requests are cached without it, and a `--cache-only` run reaches a
+/// third-party grader with [`GradeCtx::working_dir`] and nothing else to replay
+/// from, exactly as before when it declined to publish a fingerprint.
 ///
 /// The returned [`crate::cache::Graded`] carries what the judge cost alongside
-/// its verdict. Reporting it is optional — [`crate::cache::Graded::unpriced`]
-/// is the honest answer when an implementation cannot see what it spent — but
-/// an implementation that *can* should, because a run whose judges cost more
-/// than its systems under test currently reports only the smaller half.
+/// its verdict, and whether it was replayed. Reporting cost is optional —
+/// [`crate::cache::Graded::unpriced`] is the honest answer when an
+/// implementation cannot see what it spent — but an implementation that *can*
+/// should, because a run whose judges cost more than its systems under test
+/// currently reports only the smaller half.
 #[async_trait]
 pub trait AssertGrader: Send + Sync {
     async fn grade(
@@ -253,24 +273,6 @@ pub trait AssertGrader: Send + Sync {
         output: &Output,
         ctx: &GradeCtx<'_>,
     ) -> Result<crate::cache::Graded, crate::errors::GraderError>;
-
-    /// A stable identity for the grading this assertion will perform, or `None`
-    /// to opt out of caching it.
-    ///
-    /// Must exclude secrets, exactly like `Provider::fingerprint`.
-    ///
-    /// `base_dir` is the suite's directory: the cwd an `exec` grader's child is
-    /// spawned in, and what a `grader.template` path resolves against. An
-    /// implementation reaching the filesystem must resolve against *it* rather
-    /// than the process cwd — the identity has to describe the thing that will
-    /// actually run, not a same-named file somewhere else.
-    fn grading_fingerprint(
-        &self,
-        _assert: &Assert,
-        _base_dir: Option<&std::path::Path>,
-    ) -> Option<Json> {
-        None
-    }
 }
 
 /// Run a suite and produce a [`RunResult`].
@@ -885,6 +887,7 @@ async fn run_cell(
             cache,
             cache_mode,
             grader_cache,
+            migration: &cache_state.migration,
             repeat,
             aborted,
             tool_calls: &response.tool_calls,

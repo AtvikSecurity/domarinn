@@ -201,6 +201,14 @@ pub struct Graded {
     /// The judge model that produced this verdict, as the API reported it —
     /// which is not necessarily the one configured, when an alias repoints.
     pub model: Option<String>,
+    /// Whether the request behind this verdict was replayed from cache.
+    ///
+    /// Reported by the grader rather than decided around it, because since
+    /// 0.5.0 the grader is what consults the cache: a `similar` verdict comes
+    /// from *two* embedding requests, and only the code that made them knows
+    /// whether both were replays. The runner reads this straight into
+    /// [`crate::result::AssertResult::cached`].
+    pub cached: bool,
 }
 
 impl Graded {
@@ -212,6 +220,7 @@ impl Graded {
             usage: None,
             cost_usd: None,
             model: None,
+            cached: false,
         }
     }
 }

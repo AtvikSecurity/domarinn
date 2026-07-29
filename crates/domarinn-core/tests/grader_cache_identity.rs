@@ -1,13 +1,19 @@
-//! What a grader-verdict cache key has to separate.
+//! What a grader's cache key has to separate.
 //!
-//! Verdict caching is on by default, so every gap in this key is a *silent*
+//! Grader caching is on by default, so every gap in this key is a *silent*
 //! wrong answer rather than a slow run: the second case is reported PASS with
 //! `cached: true`, the judge is never asked, and nothing in the output says the
 //! question it answered was a different one.
 //!
-//! Sibling of `cache_integration.rs`, which covers the provider-response cache
-//! and the fact that verdicts are reused at all. This file covers the inverse
-//! property — the cases that must *not* share an entry.
+//! Sibling of `grader_request_cache.rs`, which covers what a grader entry *is*
+//! and what a warm one replays, and of `cache_integration.rs`, which covers the
+//! provider-response cache. This file covers the inverse property — the cases
+//! that must not share an entry.
+//!
+//! Every claim here is re-plumbed since 0.5.0 and survives unchanged, which is
+//! the point of pinning behaviour rather than mechanism: the separations used to
+//! be enforced by a hand-built `graded_payload` hashed alongside a grader
+//! fingerprint, and now fall out of the request itself.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -82,13 +88,15 @@ async fn always_passes() -> MockServer {
     server
 }
 
-/// The rubric is rendered *inside* the grader, after the key is computed — so
-/// hashing `AssertKind::LlmRubric.value` hashes the template, not the question.
+/// Two cases whose rubrics render differently ask the judge different
+/// questions, so they never share an entry.
 ///
-/// Two cases of one matrix therefore collapsed onto a single entry whenever
-/// their outputs matched, which for a broken prompt answering everything the
-/// same way is the common case rather than a corner one. The second case
-/// reported PASS from a verdict about the first case's rubric.
+/// Historically this was a bug — the key hashed `AssertKind::LlmRubric.value`,
+/// the *template*, so two cases of one matrix collapsed onto a single entry
+/// whenever their outputs matched, and the second reported PASS from a verdict
+/// about the first case's rubric. Since 0.5.0 the separation is structural: the
+/// key is the judge's request body, and the rendered rubric is what that body
+/// says.
 #[tokio::test]
 async fn cases_whose_rendered_rubrics_differ_do_not_share_a_verdict() {
     let server = always_passes().await;
@@ -170,13 +178,19 @@ tests:
     assert!(result.cases.iter().any(|c| c.asserts[0].cached));
 }
 
-/// An `exec` grader child is now given the case's `vars`, `test` and `provider`
-/// instead of the empty stubs it used to receive — so those are inputs to the
-/// verdict and belong in the key. Without them, a grader that judges output
-/// *against the case's expectation* replays the first case's answer for every
-/// later case whose output happens to match.
+/// An `exec` grader child is given the case's `vars`, so two cells with equal
+/// output but different vars are not the same question and must not share an
+/// entry.
+///
+/// Narrowed in 0.5.0, and the narrowing is deliberate. The key is now the
+/// document written to the child's stdin, from which `test` is stripped — a
+/// test id and its tags are correlation metadata, exactly as on the provider
+/// side, and two cases asking the same thing must keep sharing an entry. So what
+/// separates these two cells is `vars.expected`, not their ids. A suite that
+/// genuinely wants per-case separation with identical inputs says so with a
+/// `cache_salt`.
 #[tokio::test]
-async fn exec_verdicts_are_separated_by_the_case_the_child_was_told_about() {
+async fn exec_verdicts_are_separated_by_the_vars_the_child_was_told_about() {
     let dir = tempfile::tempdir().unwrap();
     let counter = dir.path().join("calls");
     let judge = dir.path().join("judge.sh");

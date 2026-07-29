@@ -50,11 +50,11 @@ pub enum CaseChange {
     /// Same request, same output, same grading — and the verdict flipped
     /// anyway. Only one thing is left that could have moved: the grader.
     ///
-    /// This is the diagnosis the digests exist to make possible. Grader
-    /// verdicts are never cached (see [`crate::runner::AssertGrader`]), so an
-    /// `llm-rubric` suite re-grades on every run even at a 100% provider cache
-    /// hit rate — and without this, a flaky grader is indistinguishable from a
-    /// real regression.
+    /// This is the diagnosis the digests exist to make possible, and it is
+    /// worth *more* now that grading is cached, not less. A judge is only
+    /// re-asked when the question moved, so a verdict that flipped between two
+    /// runs of the same request is a grader that answered its own question two
+    /// ways — which without this reads as a real regression.
     UnstableGrader,
     /// Nothing moved.
     Stable,

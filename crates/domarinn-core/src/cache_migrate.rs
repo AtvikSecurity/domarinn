@@ -25,7 +25,10 @@
 //!
 //! # The shapes this machinery knows
 //!
-//! All of them are [`legacy_provider_key`] over one of these fingerprints:
+//! Two key spaces, both retired by 0.5.0's one rule.
+//!
+//! **Provider responses** — [`legacy_provider_key`] over one of these
+//! fingerprints:
 //!
 //! | Provider | Shapes | Shipped |
 //! |---|---|---|
@@ -33,6 +36,19 @@
 //! | `anthropic` | `{type, model, base_url, params}` | ≤0.4.0 |
 //! | `http` | `{type, url, method, body, output_expr, headers?}` | ≤0.4.0 |
 //! | `exec` | `{type, command, env, cache_salt}`, then four older generations | ≤0.4.0, then 0.3.1 and earlier (see [`legacy_exec_fingerprints`]) |
+//!
+//! **Grader verdicts** — [`legacy_grader_verdict_key`] over a grading
+//! fingerprint and the graded document, both frozen below:
+//!
+//! | Assert | Shapes | Shipped |
+//! |---|---|---|
+//! | `llm-rubric` | [`legacy_grading_fingerprint`] × [`legacy_graded_payload`] | ≤0.4.x |
+//! | `exec` | [`legacy_grading_fingerprint`] × [`legacy_graded_payload`] | ≤0.4.x |
+//! | `similar` | **deliberately not adopted** — see [`legacy_graded_payload`] | — |
+//!
+//! Both spaces are deleted on the same timeline (below), and both are probed
+//! out of one [`MigrationProbe`] budget: a store either has ≤0.4.x entries in it
+//! or it does not, and which half found the first one says nothing useful.
 //!
 //! The ≤0.4.0 shape of each is, by construction, whatever
 //! [`crate::provider::Provider::fingerprint`] returns today: that method is
@@ -67,7 +83,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use serde_json::Value as Json;
 
 use crate::cache::CacheKey;
+use crate::config::{Assert, AssertKind, Grader, ProviderKind};
 use crate::provider::ProviderRequest;
+use crate::types::Output;
 
 /// The provider cache key as domarinn computed it through 0.4.x.
 ///
@@ -114,6 +132,204 @@ pub fn legacy_provider_key(fingerprint: &Json, req: &ProviderRequest, repeat: u3
             .insert("case_salt".to_string(), Json::String(salt.clone()));
     }
     CacheKey::compute(&parts)
+}
+
+/// The grader-verdict cache key as domarinn computed it through 0.4.x.
+///
+/// **Frozen ≤0.4.x shape — do not edit.** It was `cache_key::grader_cache_key`
+/// until 0.5.0 put every grader-originated call — the judge's HTTP request, an
+/// embedding, an `exec` assert's protocol exchange — on
+/// [`crate::cache_key::request_cache_key`] like any other request. Preserved
+/// verbatim apart from the rename, because every byte of it is what a store in
+/// the wild was keyed with.
+///
+/// Adopting one of these is not the same manoeuvre as adopting a provider
+/// entry. A ≤0.4.x verdict entry holds a *verdict* and no `raw` payload, so
+/// there is nothing to re-parse; it is served as the verdict it is and re-filed
+/// under the request key unchanged, and the read contract in
+/// [`crate::request_cache`] keeps it servable from then on.
+pub fn legacy_grader_verdict_key(fingerprint: &Json, graded: &Json, repeat: u32) -> CacheKey {
+    CacheKey::compute(&serde_json::json!({
+        "kind": "grader-verdict",
+        "fingerprint": fingerprint,
+        "graded": graded,
+        "repeat": repeat,
+    }))
+}
+
+/// The half of a ≤0.4.x verdict key that described the *judge*.
+///
+/// **Frozen ≤0.4.x shape — do not edit.** Copied from `grader.rs`'s
+/// `grading_fingerprint` before it was deleted, minus the arms whose verdicts
+/// are not adopted. Everything it enumerated by hand — the judge's model,
+/// endpoint and merged params, the system prompt, the `grader.template` file's
+/// bytes — now falls out of the judge's request body instead.
+///
+/// `system_prompt` and `verdict_mode`'s default are parameters/current types
+/// rather than frozen literals, deliberately, and it is the same argument
+/// [`legacy_provider_key`] makes for taking a live
+/// [`crate::provider::Provider::fingerprint`]: if the built-in grading prompt is
+/// ever edited, the *live* key moves (the prompt is in the body) and this one
+/// must move with it — otherwise the probe would adopt a verdict produced by a
+/// prompt the run no longer uses. Freezing the old text here would preserve a
+/// key nobody should still hit.
+///
+/// `on_disk`-style filesystem work is done inline: a `grader.template` is read
+/// and digested per call. The memo `grader.rs` kept is not reproduced, because
+/// this runs on the miss path of at most [`PROBE_BUDGET`] cases rather than on
+/// every assertion of every cell.
+pub fn legacy_grading_fingerprint(
+    assert: &Assert,
+    default_grader: Option<&Grader>,
+    system_prompt: &str,
+    base_dir: Option<&Path>,
+) -> Option<Json> {
+    fn provider_identity(kind: &ProviderKind) -> Option<Json> {
+        match kind {
+            ProviderKind::Anthropic {
+                model,
+                base_url,
+                params,
+                ..
+            } => Some(
+                serde_json::json!({"type": "anthropic", "model": model, "base_url": base_url, "params": params}),
+            ),
+            ProviderKind::Openai {
+                model,
+                base_url,
+                params,
+                ..
+            } => Some(
+                serde_json::json!({"type": "openai", "model": model, "base_url": base_url, "params": params}),
+            ),
+            ProviderKind::Embeddings {
+                model,
+                base_url,
+                params,
+                ..
+            } => Some(
+                serde_json::json!({"type": "embeddings", "model": model, "base_url": base_url, "params": params}),
+            ),
+            _ => None,
+        }
+    }
+
+    let system_digest = format!("{}", blake3::hash(system_prompt.as_bytes()).to_hex());
+
+    match &assert.kind {
+        AssertKind::LlmRubric { grader, params, .. } => {
+            let g = grader.as_deref().or(default_grader)?;
+            Some(serde_json::json!({
+                "assert": "llm-rubric",
+                "provider": provider_identity(&g.provider)?,
+                "template": g.template,
+                "template_digest": legacy_template_digest(g.template.as_deref(), base_dir),
+                "verdict_mode": g.verdict_mode.unwrap_or_default(),
+                "assert_params": params,
+                "system_prompt": system_digest,
+            }))
+        }
+        AssertKind::Exec {
+            command,
+            cache_salt,
+            config: _,
+        } => Some(serde_json::json!({
+            "assert": "exec",
+            "command": command,
+            "cache_salt": cache_salt,
+        })),
+        // Everything else either had no fingerprint (a local assert never
+        // reached the grader) or is not adopted — see `legacy_graded_payload`.
+        _ => None,
+    }
+}
+
+/// A digest of a `grader.template`'s bytes, as ≤0.4.x computed it.
+///
+/// **Frozen ≤0.4.x shape — do not edit.** `Json::Null` both when there is no
+/// template and when the file cannot be read: the old code returned null for
+/// the unreadable case and never called this for the absent one, and the
+/// enclosing object stored null in both.
+fn legacy_template_digest(spec: Option<&str>, base_dir: Option<&Path>) -> Json {
+    let Some(spec) = spec else {
+        return Json::Null;
+    };
+    let Some(rel) = spec.strip_prefix("file://") else {
+        return Json::Null;
+    };
+    let path = match base_dir {
+        Some(dir) => match crate::sandbox::resolve_within(dir, rel) {
+            Ok(p) => p,
+            Err(_) => return Json::Null,
+        },
+        None => std::path::PathBuf::from(rel),
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            serde_json::json!(format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex()))
+        }
+        Err(_) => Json::Null,
+    }
+}
+
+/// Everything a ≤0.4.x verdict key needed about the *question*.
+///
+/// A struct because the members are used by different arms and travel together:
+/// `rubric` is the rendered rubric an `llm-rubric` verdict answered, and the
+/// rest are what an `exec` child was told about the cell.
+pub struct LegacyGraded<'a> {
+    /// The output that was graded.
+    pub output: &'a Output,
+    /// The **rendered** rubric — never the template. ≤0.4.x hashed the rendered
+    /// text, which is why two cases of one matrix did not share a verdict.
+    pub rubric: &'a str,
+    pub vars: &'a Json,
+    pub test_id: &'a str,
+    pub test_tags: &'a [String],
+    pub provider_id: &'a str,
+}
+
+/// The half of a ≤0.4.x verdict key that described what was *graded*.
+///
+/// **Frozen ≤0.4.x shape — do not edit.** Copied from `runner_asserts.rs`'s
+/// `graded_payload` before it was deleted.
+///
+/// `similar` is deliberately absent, and its absence is a decision rather than
+/// an omission. A ≤0.4.x `similar` entry holds one cosine value, which
+/// decomposes into neither of the two embedding vectors 0.5.0 caches — there is
+/// nothing to adopt it *into*. Re-embedding two short strings costs a fraction
+/// of a cent once, against a migration path that would have to invent a second
+/// entry shape to hold an answer no future lookup can ask for. The `similar`
+/// path pays the embedder once and is warm from then on.
+///
+/// One wart is preserved here on purpose, because a frozen shape has to be
+/// frozen wart and all: the `vars` an `exec` verdict hashed is the *render
+/// context*, which carries a snapshot of the whole process environment. A
+/// ≤0.4.x exec verdict is therefore only adoptable on a machine whose
+/// environment still matches the one that wrote it — the in-place-upgrade case,
+/// which is the same one the `mtime` program flavours above serve, and the only
+/// one that was ever reachable for these entries. The live key deliberately
+/// drops `env` (see `grader.rs`'s `exec_assert_canonical`), so the entry
+/// adoption re-files is portable even though the key it came from was not.
+pub fn legacy_graded_payload(assert: &Assert, graded: &LegacyGraded<'_>) -> Option<Json> {
+    let output = graded
+        .output
+        .as_json()
+        .unwrap_or_else(|| Json::String(graded.output.as_text().into_owned()));
+    match &assert.kind {
+        AssertKind::LlmRubric { .. } => Some(
+            serde_json::json!({"assert": "llm-rubric", "rubric": graded.rubric, "output": output}),
+        ),
+        AssertKind::Exec { config, .. } => Some(serde_json::json!({
+            "assert": "exec",
+            "config": config,
+            "output": output,
+            "vars": graded.vars,
+            "test": {"id": graded.test_id, "tags": graded.test_tags},
+            "provider": {"id": graded.provider_id},
+        })),
+        _ => None,
+    }
 }
 
 /// Cases allowed to probe for legacy entries before giving up, when none of
@@ -295,334 +511,5 @@ fn file_digest(path: &Path) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::provider::{Provider, TestMeta};
-    use std::collections::BTreeMap;
-
-    fn command(args: &[&str]) -> Vec<String> {
-        args.iter().map(|s| s.to_string()).collect()
-    }
-
-    // ── The frozen 7-part key ────────────────────────────────────────────────
-    //
-    // These moved here with `provider_cache_key` when 0.5.0 took the live path
-    // off it. They are no longer describing a design; they are describing a
-    // store in the wild, so the ones that survived the move are the ones whose
-    // failure would mean a stranded cache.
-
-    fn req(var: &str) -> ProviderRequest {
-        salted(var, None)
-    }
-
-    fn salted(var: &str, case_salt: Option<&str>) -> ProviderRequest {
-        let mut vars = BTreeMap::new();
-        vars.insert("x".to_string(), Json::String(var.into()));
-        ProviderRequest {
-            tools: Vec::new(),
-            prompt: None,
-            vars,
-            params: serde_json::Map::new(),
-            test: TestMeta::default(),
-            case_salt: case_salt.map(String::from),
-        }
-    }
-
-    fn fp() -> Json {
-        serde_json::json!({"type": "exec"})
-    }
-
-    /// The golden literal for the frozen shape itself.
-    ///
-    /// Every other test in this file compares two keys, so all of them would
-    /// still pass if the whole composite moved — which is precisely the failure
-    /// that strands a store, and it is silent. This one is a magic constant on
-    /// purpose: it is the key a 0.4.x domarinn wrote for these inputs, and if it
-    /// changes, the migration reads nothing.
-    #[test]
-    fn golden_seven_part_key() {
-        assert_eq!(
-            legacy_provider_key(&fp(), &req("a"), 0).0,
-            "sha256:0f1db1256de263796a24c8e28cdc00f746a3b633e53a9757fffb66089d4f7fc5"
-        );
-    }
-
-    /// The same, per provider kind, over the fingerprint each one published in
-    /// ≤0.4.0 — the shape [`crate::provider::Provider::legacy_fingerprints`]
-    /// leads with. A change to any provider's `fingerprint()` breaks its own pin
-    /// test *and* this one, which is the point: the pin says "the shape is
-    /// stable", this says "and the store that shape keyed is still reachable".
-    #[test]
-    fn golden_key_per_provider_kind() {
-        let openai = crate::openai::OpenAiProvider::new("p", "gpt-x", None, None, None, None);
-        let anthropic =
-            crate::anthropic::AnthropicProvider::new("p", "claude-x", None, None, None, None);
-        let http = crate::http_provider::HttpProvider::new(
-            "p",
-            "https://sut.test/generate",
-            None,
-            BTreeMap::new(),
-            None,
-            None,
-        );
-        let exec = crate::exec_provider::ExecProvider::new(
-            "p",
-            command(&["./sut"]),
-            Default::default(),
-            None,
-            Some("v1".into()),
-            None,
-        );
-
-        for (kind, provider) in [
-            ("openai", &openai as &dyn Provider),
-            ("anthropic", &anthropic),
-            ("http", &http),
-            ("exec", &exec),
-        ] {
-            let key = legacy_provider_key(&provider.fingerprint(), &req("a"), 0);
-            let expected = match kind {
-                "openai" => {
-                    "sha256:3eab215ad9714bb3de737c39ee2ffd4bc10a6ca3559827e12f3d51752bc65ba5"
-                }
-                "anthropic" => {
-                    "sha256:201a83d6a3f05e9ff211272aa914f29a5dffb7adb6ce062e8636c98f5d62965f"
-                }
-                "http" => "sha256:b0e9e3d55ddcd90bfc8d74ac77b584be21f5fb1c1126eeca5af74db285769e5a",
-                _ => "sha256:8f4c04d03bce936e39fab440d6dab66fe54dda15566670b212dd5e804ff51124",
-            };
-            assert_eq!(key.0, expected, "{kind}: the ≤0.4.x key moved");
-        }
-    }
-
-    /// The load-bearing backward-compatibility rule of the old shape: an
-    /// unsalted case hashed exactly like the pre-`case_salt` object, because the
-    /// member was inserted rather than defaulted to null. An entry written
-    /// before the field existed is reachable only while this holds.
-    #[test]
-    fn the_conditional_members_are_absent_rather_than_null() {
-        let before_case_salt = CacheKey::compute(&serde_json::json!({
-            "fingerprint": fp(),
-            "prompt": Json::Null,
-            "vars": {"x": "a"},
-            "params": {},
-            "repeat": 0,
-        }));
-        assert_eq!(legacy_provider_key(&fp(), &req("a"), 0), before_case_salt);
-
-        // And the same for `tools`: an empty declaration is the absence of one.
-        let mut empty_tools = req("a");
-        empty_tools.tools = Vec::new();
-        assert_eq!(
-            legacy_provider_key(&fp(), &empty_tools, 0),
-            before_case_salt
-        );
-    }
-
-    /// A set salt separates, an empty one is a real value, and neither is
-    /// normalized away.
-    #[test]
-    fn a_case_salt_separates_and_an_empty_one_is_not_unset() {
-        assert_ne!(
-            legacy_provider_key(&fp(), &salted("a", None), 0),
-            legacy_provider_key(&fp(), &salted("a", Some("d1")), 0)
-        );
-        assert_ne!(
-            legacy_provider_key(&fp(), &salted("a", Some("d1")), 0),
-            legacy_provider_key(&fp(), &salted("a", Some("d2")), 0)
-        );
-        assert_ne!(
-            legacy_provider_key(&fp(), &salted("a", Some("")), 0),
-            legacy_provider_key(&fp(), &salted("a", None), 0)
-        );
-    }
-
-    /// Declaring a tool moved the old key too — so an entry written by a suite
-    /// with `tools:` is only adoptable if that stays true.
-    #[test]
-    fn declared_tools_moved_the_key() {
-        let with_tools = |names: &[&str]| {
-            let mut r = req("a");
-            r.tools = names
-                .iter()
-                .map(|n| crate::config::ToolDef {
-                    name: (*n).to_string(),
-                    description: None,
-                    input_schema: None,
-                })
-                .collect();
-            r
-        };
-        assert_ne!(
-            legacy_provider_key(&fp(), &req("a"), 0),
-            legacy_provider_key(&fp(), &with_tools(&["get_weather"]), 0)
-        );
-        assert_ne!(
-            legacy_provider_key(&fp(), &with_tools(&["get_weather"]), 0),
-            legacy_provider_key(&fp(), &with_tools(&["get_weather", "get_time"]), 0)
-        );
-    }
-
-    /// The test id never entered the old key, so two cases with identical vars
-    /// shared one ≤0.4.x entry — the shape of an `exec` suite whose system under
-    /// test resolves its own prompt from the test id. Recorded because adoption
-    /// inherits it: those two cases still share the *new* entry the first of
-    /// them re-files.
-    #[test]
-    fn the_test_id_was_never_keyed() {
-        let mut a = req("same");
-        a.test = TestMeta {
-            id: "case-a".into(),
-            tags: vec![],
-        };
-        let mut b = req("same");
-        b.test = TestMeta {
-            id: "case-b".into(),
-            tags: vec![],
-        };
-        assert_eq!(
-            legacy_provider_key(&fp(), &a, 0),
-            legacy_provider_key(&fp(), &b, 0)
-        );
-    }
-
-    /// The point of the ordering: the shape most likely to be present is probed
-    /// first, so a store written by the previous release is found in one lookup.
-    #[test]
-    fn shapes_are_ordered_newest_first() {
-        let fps = legacy_exec_fingerprints(&command(&["./sut"]), None, Some("v1"), None);
-        assert_eq!(fps.len(), 4);
-        assert!(fps[0].get("program").is_some() && fps[0].get("env").is_some());
-        assert!(fps[2].get("program").is_some() && fps[2].get("env").is_none());
-        assert!(fps[3].get("program").is_none());
-    }
-
-    /// …and the newest shape of all is the one 0.4.0 shipped: the provider's own
-    /// current fingerprint. Every provider now has at least that one, where
-    /// before 0.5.0 the three network kinds had no history at all — their key
-    /// had never moved, so there was nothing to adopt. Now it has.
-    #[test]
-    fn the_current_fingerprint_leads_the_probe_list() {
-        let exec = crate::exec_provider::ExecProvider::new(
-            "p",
-            command(&["./sut"]),
-            Default::default(),
-            None,
-            Some("v1".into()),
-            None,
-        );
-        let shapes = exec.legacy_fingerprints();
-        assert_eq!(
-            shapes.len(),
-            5,
-            "the 0.4.0 shape plus four older generations"
-        );
-        assert_eq!(shapes[0], exec.fingerprint());
-        assert_eq!(
-            shapes[1..],
-            legacy_exec_fingerprints(&command(&["./sut"]), None, Some("v1"), None)[..]
-        );
-
-        let anthropic =
-            crate::anthropic::AnthropicProvider::new("p", "claude-x", None, None, None, None);
-        assert_eq!(
-            anthropic.legacy_fingerprints(),
-            vec![anthropic.fingerprint()]
-        );
-    }
-
-    /// No legacy key may equal the live key for the same call, or a probe would
-    /// re-read the key that just missed and the migration would be a no-op that
-    /// costs a lookup.
-    ///
-    /// Retargeted in 0.5.0: the old version compared *fingerprints*, which was
-    /// the right question while the fingerprint was half the key. Now the live
-    /// key hashes the canonical request instead, so the honest comparison is
-    /// key-to-key — and it holds structurally, since `request` is not a member of
-    /// the frozen object and `fingerprint` is not a member of the live one.
-    #[test]
-    fn no_legacy_key_equals_the_live_key_for_one_call() {
-        // A checkout where `./sut` resolves, because that is what separates the
-        // two `program` flavours: with nothing on disk both walk to `[]` and the
-        // 0.3.1 and 0.3.0 shapes collapse into one key. That costs a redundant
-        // lookup for a command naming nothing readable — which under the old
-        // rules was never cacheable, so it has nothing to adopt anyway.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("sut"), "#!/bin/sh\necho v1").unwrap();
-        let p = crate::exec_provider::ExecProvider::new(
-            "p",
-            command(&["./sut"]),
-            Default::default(),
-            None,
-            Some("v1".into()),
-            Some(dir.path()),
-        );
-        let request = p.canonical_request(&req("a")).expect("exec is cacheable");
-        let live = crate::cache_key::request_cache_key(&request, 0, p.cache_salt(), None);
-        let mut seen = std::collections::HashSet::new();
-        for fingerprint in p.legacy_fingerprints() {
-            let key = legacy_provider_key(&fingerprint, &req("a"), 0);
-            assert_ne!(key, live, "a legacy key collided with the live one");
-            assert!(
-                seen.insert(key.0.clone()),
-                "two legacy shapes produced one key, so a probe is wasted"
-            );
-        }
-    }
-
-    /// Both flavours are produced from one walk, and a file that resolves
-    /// contributes to both — the stat one is what a 0.3.1 store keyed on.
-    #[test]
-    fn a_resolvable_file_appears_in_both_flavours() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("sut"), "#!/bin/sh\necho v1").unwrap();
-
-        let (contents, stat) = legacy_programs(&command(&["./sut"]), Some(dir.path()));
-        assert_eq!(contents.as_array().unwrap().len(), 1);
-        assert_eq!(stat.as_array().unwrap().len(), 1);
-        assert!(contents[0].get("content").is_some(), "{contents}");
-        assert!(stat[0].get("mtime").is_some(), "{stat}");
-    }
-
-    /// A command naming nothing readable produces empty arrays. Such a provider
-    /// was not cacheable under the old rules, so there is nothing to adopt.
-    ///
-    /// The program name is deliberately one no machine has. An earlier draft
-    /// used `docker`, which is on `PATH` on plenty of developer machines and on
-    /// most CI images — so the test asserted "resolves to nothing" about
-    /// something that resolves.
-    #[test]
-    fn an_unresolvable_command_yields_empty_programs() {
-        let (contents, stat) = legacy_programs(
-            &command(&["definitely-not-a-real-binary-xyz", "run", "img"]),
-            None,
-        );
-        assert_eq!(contents, Json::Array(vec![]));
-        assert_eq!(stat, Json::Array(vec![]));
-    }
-
-    /// The budget is spent per case and stops a pointless probe loop, but one
-    /// adoption buys unlimited further probing.
-    #[test]
-    fn the_probe_budget_stops_when_nothing_is_adopted() {
-        let probe = MigrationProbe::new();
-        for _ in 0..PROBE_BUDGET {
-            assert!(probe.should_probe());
-        }
-        assert!(!probe.should_probe(), "budget must run out");
-
-        let probe = MigrationProbe::new();
-        assert!(probe.should_probe());
-        probe.record_adoption();
-        for _ in 0..(PROBE_BUDGET * 10) {
-            assert!(probe.should_probe(), "an adoption lifts the budget");
-        }
-    }
-
-    #[test]
-    fn a_disabled_probe_never_fires() {
-        let probe = MigrationProbe::disabled();
-        assert!(!probe.should_probe());
-        assert!(!probe.adopted_any());
-    }
-}
+#[path = "cache_migrate_tests.rs"]
+mod tests;

@@ -374,7 +374,7 @@ fn recost(usage: Option<&crate::types::TokenUsage>, provider: &dyn Provider) -> 
 /// `--no-raw` deliberately has no say here: it governs what a *run document*
 /// publishes, and a cache entry is not a run document — a later run without the
 /// flag replaying this entry should still see what was asked.
-fn request_to_persist(canonical: &Json) -> Json {
+pub(crate) fn request_to_persist(canonical: &Json) -> Json {
     /// The members that name *what was addressed*, across both envelope shapes:
     /// `{transport, method, url}` for http, `{transport, command, args}` for
     /// exec. Projection rather than removal, so an envelope shape added later

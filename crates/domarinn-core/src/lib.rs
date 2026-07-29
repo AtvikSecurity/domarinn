@@ -48,6 +48,7 @@ pub mod provenance;
 pub mod provider;
 pub mod provider_factory;
 pub mod render;
+mod request_cache;
 pub mod resolve;
 pub mod retry;
 pub mod runner;
