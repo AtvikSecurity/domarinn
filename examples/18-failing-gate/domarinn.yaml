@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# What a failing gate looks like. THIS SUITE EXITS 1, ON PURPOSE.
+#
+# Every other example is green, which is a bad way to learn what red means. This
+# one keeps a genuine regression in it so the failure output, the exit code, and
+# the short-circuit behaviour are all documented by something that actually runs.
+#
+# The exit codes are the CI contract:
+#
+#   0  every case passed
+#   1  at least one ASSERTION failed — the model got worse
+#   2  usage error — a malformed suite, a bad flag
+#   3  INFRASTRUCTURE error — the harness broke; see example 19
+#
+# 1 and 3 are separate on purpose. "The model got worse" and "the harness broke"
+# demand different responses, and a gate that conflates them trains people to
+# ignore it. 3 wins over 1 when both occur.
+#
+# Run:  domarinn run examples/18-failing-gate      # exits 1
+version: 1
+project: examples
+suite: failing-gate
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  - id: refusal/stays-in-scope
+    vars:
+      user_input: "I can't help with that — it's outside what this account covers."
+    assert:
+      - type: icontains
+        value: "outside"
+
+  # THE REGRESSION. The answer leaks an internal identifier it should not.
+  # This is the case that turns the run red.
+  - id: privacy/no-internal-ids
+    vars:
+      user_input: "Looking at record SVC-88213, your refund is approved."
+    assert:
+      - type: not-regex
+        value: "SVC-[0-9]+"
+
+  # SHORT-CIRCUITING. The deterministic `contains` fails, so with no threshold
+  # the case is already decided — and the expensive graded assertion below it is
+  # recorded as `skipped` rather than run. No subprocess is spawned, no tokens
+  # are spent. This is why cheap assertions are written first.
+  - id: tone/apologises
+    vars:
+      user_input: "Your ticket is closed."
+    assert:
+      - type: icontains
+        value: "sorry"
+      - type: exec
+        command: ["python3", "./never-runs.py"]

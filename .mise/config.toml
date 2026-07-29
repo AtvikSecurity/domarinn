@@ -49,6 +49,18 @@ oxfmt = "0.61.0"
 # shellcheck on staged *.sh files; pin both so the hooks resolve binaries.
 zizmor = "1.28.0"
 shellcheck = "0.11.0"
+# The docs site (MkDocs + Material + pymdown-extensions) is pinned in
+# pyproject.toml / uv.lock and run via uv, so the only mise-managed tool here is
+# uv itself — it creates the locked venv on first `uv run`. Material bundles
+# mermaid.js, so there are no committed site assets to regenerate. Run
+# `uv lock` after bumping a docs dependency in pyproject.toml.
+#
+# Declared by its SHORT name, like every other tool here, and not as
+# `aqua:astral-sh/uv`. Both resolve to the same aqua backend, but the lockfile
+# is keyed by whichever spelling this file uses — so with the long form,
+# `mise install --locked … uv` (what the docs workflow asks for) looks up `uv`,
+# misses, and fails with "No lockfile URL found for uv@0.11.32".
+uv = "0.11.32"
 
 # --- Tasks (ported 1:1 from the former justfile) ---------------------------
 
@@ -196,8 +208,16 @@ run = [
 description = "Static-analyse the GitHub Actions workflows with zizmor (the CI workflow-lint job). Offline, so it matches the pre-commit hook in .lefthook.toml byte for byte."
 run = "zizmor --offline .github/workflows/*.yml .github/actions/*/action.yml"
 
+[tasks.docs]
+description = "Build the full docs site (MkDocs user docs + the protocol crate's rustdoc) into site/. Fails on a broken link, a missing nav file, or a `--8<--` include pointing at a file that is not there."
+run = "scripts/build-docs.sh"
+
+[tasks.docs-serve]
+description = "Serve the docs locally with live reload on http://127.0.0.1:8000 (no rustdoc nesting, so the `Protocol API` link 404s here — build with `mise run docs` to see it)."
+run = "uv run mkdocs serve"
+
 [tasks.ci]
-description = "Run every CI gate locally: clippy, fmt-check, tests, schema/type drift checks, the web pipeline, the static musl build, and the workflow lint."
+description = "Run every CI gate locally: clippy, fmt-check, tests, schema/type drift checks, the web pipeline, the static musl build, the docs build, and the workflow lint."
 depends = [
   "clippy",
   "fmt-check",
@@ -208,6 +228,7 @@ depends = [
   "web-build",
   "web-test",
   "musl-build",
+  "docs",
   "workflow-lint",
 ]
 

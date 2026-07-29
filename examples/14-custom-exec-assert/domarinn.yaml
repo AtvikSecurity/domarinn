@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# An assertion you write yourself.
+#
+# The built-in assertions cover substrings, shapes, schemas and rubrics. When a
+# correctness rule is genuinely YOUR domain — a checksum, a units conversion, a
+# lookup against a table only you have — an `exec` assertion runs your program
+# and takes its verdict.
+#
+# The contract mirrors the provider one: read a JSON request on stdin, write
+# {"pass": bool, "score"?: float, "reason"?: string} on stdout. The request
+# carries the output, the case's vars, and whatever `config` you set here.
+#
+# Unlike the deterministic assertions, an exec assertion is GRADED: it runs
+# after them, and is skipped entirely when the case is already decided — see
+# example 18 for what that looks like and why it saves money.
+#
+# Run:  domarinn run examples/14-custom-exec-assert
+version: 1
+project: examples
+suite: custom-exec-assert
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  # The invoice total must equal the sum of its line items — arithmetic no
+  # substring match can express.
+  - id: invoice/adds-up
+    vars:
+      user_input: '{"lines":[19.99,5.00,0.51],"total":25.50}'
+    assert:
+      - type: exec
+        command: ["python3", "check-total.py"]
+        config:
+          tolerance: 0.005
+
+  - id: invoice/rounding-slack
+    vars:
+      user_input: '{"lines":[10.00,10.00],"total":20.004}'
+    assert:
+      - type: exec
+        command: ["python3", "check-total.py"]
+        config:
+          tolerance: 0.01

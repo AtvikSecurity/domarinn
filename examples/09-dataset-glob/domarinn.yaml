@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Cases from files, not from this file.
+#
+# Inline `tests:` stop scaling somewhere around thirty cases. A `file://` glob
+# keeps the suite readable and lets a dataset be owned, reviewed and diffed
+# separately from the configuration that runs it.
+#
+# Every path is resolved relative to THIS directory and sandboxed:
+# `file://../../etc/passwd` is refused, not read. Formats are chosen by
+# extension — .yaml/.yml, .json, .jsonl/.ndjson, .csv, .tsv.
+#
+# Run:  domarinn run examples/09-dataset-glob
+version: 1
+project: examples
+suite: dataset-glob
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+defaults:
+  # Applied to every case from every file, so a dataset row carries only what
+  # makes it distinct.
+  assert:
+    - type: length
+      min: 1
+
+tests:
+  # A glob, not a single file: adding cases/shipping.yaml adds its cases with no
+  # edit here. A glob that matches nothing is an error, not an empty suite.
+  - "file://cases/*.yaml"

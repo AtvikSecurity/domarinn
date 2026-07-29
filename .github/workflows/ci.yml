@@ -58,6 +58,11 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04
+    # The suite runs in seconds; anything approaching this is a hang. Bounded
+    # for the same reason as the `web` job below, and more sharply needed here:
+    # these tests spawn subprocesses and bind sockets, and a stub waiting on a
+    # request that never arrives blocks until its own deadline with no output.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:

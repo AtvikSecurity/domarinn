@@ -1,0 +1,7 @@
+- id: tone/no-blame
+  tags: [tone]
+  vars:
+    user_input: "Sorry about that — let's get this sorted for you."
+  assert:
+    - type: not-icontains
+      value: "your fault"

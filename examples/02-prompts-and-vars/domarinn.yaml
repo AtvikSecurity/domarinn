@@ -1,0 +1,80 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Prompts and variables.
+#
+# A `prompt` is a template; a test's `vars` fill it in. domarinn renders the
+# prompt once per case with real Jinja (minijinja), then hands the result to the
+# provider.
+#
+# A run is a GRID: every prompt is evaluated against every test. Two prompts and
+# three cases below is therefore SIX cells, not three — which is the point, since
+# comparing two phrasings of the same instruction on identical inputs is exactly
+# what a prompt suite is for. Every assertion here has to hold for both prompts.
+#
+# The system under test echoes whatever prompt it was given, which makes the
+# rendering visible to the assertions. Point `command` at your own program and
+# the same suite grades your system instead.
+#
+# Run:  domarinn run examples/02-prompts-and-vars
+version: 1
+project: examples
+suite: prompts-and-vars
+
+providers:
+  - id: echo
+    type: exec
+    # Relative to THIS FILE's directory, not the shell's working directory — so
+    # the suite runs the same from the repo root or from inside this folder.
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+prompts:
+  # A single-string template. Use `messages:` instead when you need roles.
+  - id: support-reply
+    template: |
+      You are a support agent for {{ product }}.
+      Answer in at most {{ max_sentences }} sentences.
+
+      Customer: {{ question }}
+
+  # The same information as a chat transcript. A provider that talks to a chat
+  # API wants this shape; one that takes a single string wants the one above.
+  - id: support-chat
+    messages:
+      - role: system
+        content: "You are a support agent for {{ product }}. Be brief."
+      - role: user
+        content: "{{ question }}"
+
+defaults:
+  # Every case inherits these, so a case only states what makes it different.
+  vars:
+    product: "Aurora Notes"
+    max_sentences: 2
+
+tests:
+  - id: refund/policy
+    vars:
+      question: "How do I get a refund?"
+    assert:
+      - type: contains
+        value: "Aurora Notes"
+      - type: contains
+        value: "refund"
+
+  - id: export/format
+    vars:
+      question: "Can I export my notes as Markdown?"
+    assert:
+      - type: icontains
+        value: "markdown"
+
+  # A case may override an inherited var. `product` appears in both prompts, so
+  # an assertion about it holds across the whole row.
+  - id: refund/other-product
+    vars:
+      product: "Aurora Notes Pro"
+      question: "How do I get a refund?"
+    assert:
+      - type: contains
+        value: "Aurora Notes Pro"

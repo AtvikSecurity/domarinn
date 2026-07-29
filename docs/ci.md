@@ -75,7 +75,7 @@ CI logs are deterministic: domarinn detects that its output is captured (not a t
 
 ## The reusable action
 
-A composite action lives at [`.github/actions/domarinn-eval/action.yml`](../.github/actions/domarinn-eval/action.yml). It resolves a `domarinn` binary, runs your suite, uploads the JUnit report + Markdown summary, posts (or updates) a single PR comment, and gates the job on the CLI's exit code.
+A composite action lives at [`.github/actions/domarinn-eval/action.yml`](https://github.com/AtvikSecurity/domarinn/blob/main/.github/actions/domarinn-eval/action.yml). It resolves a `domarinn` binary, runs your suite, uploads the JUnit report + Markdown summary, posts (or updates) a single PR comment, and gates the job on the CLI's exit code.
 
 ### Minimal workflow
 
@@ -264,9 +264,9 @@ A cache key holds nothing machine-specific, so a fresh checkout on a fresh runne
 
 ## This repo's CI (`ci.yml`)
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main` and on every PR. Superseded runs on the same ref are cancelled to save minutes, and the workflow has read-only repo permissions.
+[`.github/workflows/ci.yml`](https://github.com/AtvikSecurity/domarinn/blob/main/.github/workflows/ci.yml) runs on pushes to `main` and on every PR. Superseded runs on the same ref are cancelled to save minutes, and the workflow has read-only repo permissions.
 
-Every CI gate is a [mise task](../.mise/config.toml), and the workflow invokes those tasks — so `mise run <task>` locally runs byte-for-byte what CI runs, and **`mise run ci` runs the entire matrix in one go**.
+Every CI gate is a [mise task](https://github.com/AtvikSecurity/domarinn/blob/main/.mise/config.toml), and the workflow invokes those tasks — so `mise run <task>` locally runs byte-for-byte what CI runs, and **`mise run ci` runs the entire matrix in one go**.
 
 | Job              | Task it runs | What it guards |
 |------------------|--------------|----------------|
@@ -290,16 +290,16 @@ Releases are automated end to end. Nobody edits a version number by hand, and no
 ### How a release happens
 
 1. You merge a PR whose **title** is a conventional commit (`feat: …`, `fix: …`, `refactor!: …`). The title matters because the repo squash-merges, so the PR title becomes the commit on `main`.
-2. [`release-please.yml`](../.github/workflows/release-please.yml) sees the new commit and opens (or updates) a standing **`chore(main): release X.Y.Z`** pull request containing the `CHANGELOG.md` entry and the version bump.
+2. [`release-please.yml`](https://github.com/AtvikSecurity/domarinn/blob/main/.github/workflows/release-please.yml) sees the new commit and opens (or updates) a standing **`chore(main): release X.Y.Z`** pull request containing the `CHANGELOG.md` entry and the version bump.
 3. You merge that PR when you want to ship. Release Please tags the merge commit and publishes the GitHub Release.
-4. [`release.yml`](../.github/workflows/release.yml) and [`docker.yml`](#container-image-dockeryml) both fire on `release: published` and attach the binaries and images.
+4. [`release.yml`](https://github.com/AtvikSecurity/domarinn/blob/main/.github/workflows/release.yml) and [`docker.yml`](#container-image-dockeryml) both fire on `release: published` and attach the binaries and images.
 
 Versions are **bare semver** — the tag is `0.2.0`, not `v0.2.0`.
 
-While the project is pre-`1.0`, `feat` and `fix` bump the patch and a breaking change (`!`) bumps the minor, per `bump-minor-pre-major` / `bump-patch-for-minor-pre-major` in [`release-please-config.json`](../release-please-config.json).
+While the project is pre-`1.0`, `feat` and `fix` bump the patch and a breaking change (`!`) bumps the minor, per `bump-minor-pre-major` / `bump-patch-for-minor-pre-major` in [`release-please-config.json`](https://github.com/AtvikSecurity/domarinn/blob/main/release-please-config.json).
 
 > **Dependency bumps do not cut releases.** Renovate is configured
-> ([`renovate.json5`](../renovate.json5)) to emit `chore(deps)` / `ci(...)` and
+> ([`renovate.json5`](https://github.com/AtvikSecurity/domarinn/blob/main/renovate.json5)) to emit `chore(deps)` / `ci(...)` and
 > never a `!` marker, so its commits ride along in the next human-authored
 > release. To ship one urgently, land a hand-written `fix(deps): …` commit.
 
@@ -348,7 +348,7 @@ ver=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
   https://github.com/AtvikSecurity/domarinn/releases/latest | sed 's#.*/tag/##')
 ```
 
-That redirect needs no API token and is not rate-limited the way unauthenticated `api.github.com` is. `README.md`, [`getting-started`](./getting-started.md) and [`domarinn-eval`](../.github/actions/domarinn-eval/action.yml) all do this; the action additionally falls back to the old unversioned asset name so pinning `0.1.3` or earlier still downloads rather than rebuilding from source.
+That redirect needs no API token and is not rate-limited the way unauthenticated `api.github.com` is. `README.md`, [`getting-started`](./getting-started.md) and [`domarinn-eval`](https://github.com/AtvikSecurity/domarinn/blob/main/.github/actions/domarinn-eval/action.yml) all do this; the action additionally falls back to the old unversioned asset name so pinning `0.1.3` or earlier still downloads rather than rebuilding from source.
 
 Four decisions worth knowing if you touch this workflow:
 
@@ -363,7 +363,7 @@ Signing is keyless: the OIDC identity of the workflow is the signer, so there is
 
 ## Container image (`docker.yml`)
 
-[`.github/workflows/docker.yml`](../.github/workflows/docker.yml) publishes the container image to GHCR as `ghcr.io/atviksecurity/domarinn`.
+[`.github/workflows/docker.yml`](https://github.com/AtvikSecurity/domarinn/blob/main/.github/workflows/docker.yml) publishes the container image to GHCR as `ghcr.io/atviksecurity/domarinn`.
 
 The workflow itself is thin: it delegates to [`docker/github-builder`](https://github.com/docker/github-builder)'s reusable `build.yml`, which splits the platform list across runners (its default mapping sends `linux/arm64` to `ubuntu-24.04-arm`), merges the per-platform digests into one manifest list, generates an SBOM, and signs the result with keyless cosign. The Dockerfile is self-contained — it builds the UI and the binary internally.
 
@@ -379,7 +379,7 @@ Both `linux/amd64` and `linux/arm64` are published. Verify a pull with:
 $ docker buildx imagetools inspect ghcr.io/atviksecurity/domarinn:rolling
 ```
 
-[`docker-bake.hcl`](../docker-bake.hcl) is **not** used by CI — it exists so `docker buildx bake` reproduces the image locally.
+[`docker-bake.hcl`](https://github.com/AtvikSecurity/domarinn/blob/main/docker-bake.hcl) is **not** used by CI — it exists so `docker buildx bake` reproduces the image locally.
 
 Consume the image as described in [`./deploy.md`](./deploy.md):
 

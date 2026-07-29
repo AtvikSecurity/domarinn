@@ -1,0 +1,84 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# When the harness breaks, not the model. THIS SUITE EXITS 3, ON PURPOSE.
+#
+# A failed assertion means the system under test got worse. An ERROR means you
+# learned nothing — the call never produced a gradeable answer. Conflating the
+# two is how a gate starts lying, so domarinn keeps them apart end to end:
+# separate cell status, separate tally, separate exit code (3, which beats 1).
+#
+# Three mechanisms appear below.
+#
+# RETRIES. `runner.retries` only retries errors the provider marks
+# `retriable: true`. A rate limit is retriable; a rejected credential is not.
+# That distinction belongs to the provider, because only it knows — and getting
+# it wrong means either hammering a broken endpoint or giving up on a blip.
+#
+# EMPTY ANSWERS. A blank output is a *successful* call, so nothing upstream
+# raises and every assertion scores zero for a reason unrelated to the prompt.
+# A provider that knows why says so with `empty_reason`.
+#
+# SKIPPING. `runner.skip_on_empty_reason` turns named empty reasons into skips
+# rather than failures — for measuring one axis without a refusal counting
+# against it.
+#
+# Run:  domarinn run examples/19-errors-and-retries    # exits 3
+version: 1
+project: examples
+suite: errors-and-retries
+
+providers:
+  - id: flaky
+    type: exec
+    command: ["python3", "./flaky.py"]
+    cache_salt: "dev"
+
+runner:
+  retries:
+    max: 2
+    initial_ms: 10
+    max_ms: 50
+    # Spread the wake-ups so a batch of rate-limited calls does not retry in
+    # lockstep and rate-limit itself again.
+    jitter: true
+  # A refusal is a real behaviour, not a harness fault. Listing it here means a
+  # case answered with one is SKIPPED rather than scored zero — so a suite
+  # measuring, say, formatting quality is not dragged down by cases the model
+  # declined for unrelated reasons.
+  skip_on_empty_reason: ["refusal"]
+
+tests:
+  - id: ok/plain-answer
+    vars:
+      user_input: "ok"
+    assert:
+      - type: contains
+        value: "handled"
+
+  # The provider declines. With `refusal` listed above, this cell is SKIPPED —
+  # neither a pass nor a failure, and visible as such in the report.
+  - id: empty/refusal-is-skipped
+    vars:
+      user_input: "refuse"
+    assert:
+      - type: contains
+        value: "never evaluated"
+
+  # A retriable failure. It is attempted 1 + 2 more times, and still errors —
+  # so the cell is an ERROR and the run exits 3. `summary.retried_cases`
+  # records that the attempts happened.
+  - id: error/retriable-gives-up
+    vars:
+      user_input: "rate-limit"
+    assert:
+      - type: contains
+        value: "never evaluated"
+
+  # A FATAL failure: a rejected credential. Retrying it would be pointless, so
+  # the provider marks it non-retriable and domarinn tries exactly once.
+  - id: error/fatal-not-retried
+    vars:
+      user_input: "bad-key"
+    assert:
+      - type: contains
+        value: "never evaluated"

@@ -1,0 +1,25 @@
+# A BASE suite. Not run on its own — it is the layer `domarinn.yaml` extends.
+#
+# Put here whatever every suite in a family shares: the provider wiring, the
+# house safety assertions, the runner budget. A team suite then states only what
+# makes it different, and a change to the shared policy lands everywhere at once.
+version: 1
+project: examples
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+defaults:
+  vars:
+    product: "Aurora Notes"
+  # These are APPENDED to a child's `defaults.assert`, not replaced by it — so a
+  # child cannot accidentally drop the house rules by declaring its own.
+  assert:
+    - type: not-icontains
+      value: "as an AI"
+
+runner:
+  concurrency: 4

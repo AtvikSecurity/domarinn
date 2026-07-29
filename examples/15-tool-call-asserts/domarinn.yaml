@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Grading the DECISION, not the prose.
+#
+# When an agent's right answer is "call this tool with these arguments", there is
+# no sentence to match. domarinn declares the tools, your provider offers them to
+# the model, and the `tool-call` assertion grades which one it chose.
+#
+# domarinn never EXECUTES a tool. It is an evaluation harness, not an agent
+# runtime — what it wants back is the decision, which is the thing under test.
+#
+# /// A caution worth reading before you add `tools:` to an existing suite ///
+# Declaring tools changes measured behaviour, often a lot. A model that would
+# have written "I'll look that up for you" now emits a tool call and no prose,
+# so every rubric watching the text channel suddenly sees nothing. Add tools when
+# you intend to assert on tool calls — not as background context.
+#
+# Run:  domarinn run examples/15-tool-call-asserts
+version: 1
+project: examples
+suite: tool-call-asserts
+
+providers:
+  - id: agent
+    type: exec
+    command: ["python3", "./agent.py"]
+    cache_salt: "dev"
+
+# Suite-level, so every provider is offered the same surface. `input_schema` is
+# passed through verbatim and never rendered as a template.
+tools:
+  - name: lookup_order
+    description: Fetch an order by its id.
+    input_schema:
+      type: object
+      required: ["order_id"]
+      properties:
+        order_id: { type: integer }
+
+  - name: issue_refund
+    description: Refund an order. Irreversible.
+    input_schema:
+      type: object
+      required: ["order_id", "amount_usd"]
+      properties:
+        order_id: { type: integer }
+        amount_usd: { type: number }
+
+tests:
+  # The model should look the order up before saying anything about it.
+  - id: agent/looks-up-first
+    vars:
+      user_input: "What's the status of order 1042?"
+    assert:
+      - type: tool-call
+        name: lookup_order
+        # `args` is a SUBSET match: the call may carry more, but these must be
+        # present and equal. Asserting the whole object would make the test
+        # brittle against a harmless extra field.
+        args:
+          order_id: 1042
+      # The dangerous tool must not be touched for a read-only question.
+      - type: not-tool-call
+        name: issue_refund
+
+  # Arguments can be shape-checked instead of pinned, when the exact value is
+  # not what you are testing.
+  - id: agent/refund-shape
+    vars:
+      user_input: "Please refund order 77 for $19.99."
+    assert:
+      - type: tool-call
+        name: issue_refund
+        schema:
+          type: object
+          required: ["order_id", "amount_usd"]
+          properties:
+            order_id: { type: integer }
+            amount_usd: { type: number }
+
+  # A question needing no tool at all: the agent should just answer. This is the
+  # case that catches tool-eagerness, and it is the one most often missing.
+  - id: agent/no-tool-needed
+    vars:
+      user_input: "What are your opening hours?"
+    assert:
+      - type: not-tool-call
+        name: lookup_order
+      - type: not-tool-call
+        name: issue_refund
+      - type: icontains
+        value: "9"

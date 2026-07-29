@@ -1,0 +1,191 @@
+# MkDocs configuration for the domarinn documentation site.
+#
+# The book source is the `docs/` tree, so in-repo references to docs/*.md keep
+# resolving on GitHub as well as on the site. There is no SUMMARY.md — page
+# order and grouping live in `nav:` below, and any docs/*.md NOT in `nav:`
+# builds but is unlinked (mkdocs --strict warns about it).
+#
+# `mise run docs` (scripts/build-docs.sh) builds this site *and* nests the
+# rustdoc for the publishable protocol crate under /rustdoc/. The site is
+# published to the custom domain https://docs.domarinn.com/ (served at the
+# root, so site_url ends "/"). The domain is pinned by the CNAME file
+# scripts/build-docs.sh writes into the artifact; the repo's
+# Settings -> Pages custom-domain field must match.
+#
+# The MkDocs + Material toolchain is pinned in pyproject.toml / uv.lock and run
+# via uv (see .mise/config.toml). Material bundles mermaid.js and the admonition
+# styling, so there are no committed preprocessor assets to regenerate.
+site_name: domarinn
+site_description: A declarative LLM eval harness — one static binary that is a CLI, an eval engine, and a self-hostable results server.
+site_author: domarinn contributors
+site_url: https://docs.domarinn.com/
+
+repo_url: https://github.com/AtvikSecurity/domarinn
+repo_name: AtvikSecurity/domarinn
+# Appended to repo_url + a doc's path relative to docs_dir, e.g.
+# .../edit/main/docs/getting-started.md
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+# Fail the build on a broken internal link or a nav entry pointing at a missing
+# file. This is our doc lint; build-docs.sh and CI pass --strict, which promotes
+# these warnings to errors.
+validation:
+  links:
+    absolute_links: relative_to_docs
+    not_found: warn
+    anchors: warn
+  nav:
+    omitted_files: warn
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    # navigation.tabs is deliberately OFF: with it on, the top-level groups
+    # render as a horizontal tab bar in the header; off, the whole tree lives in
+    # the left sidebar as collapsible sections, which is what we want.
+    - navigation.indexes # a section's first child can be its landing page
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    # Selecting a tab (e.g. "Anthropic") switches every same-labeled tab group
+    # on the page and persists the choice. Labels must be byte-identical across
+    # groups to link.
+    - content.tabs.link
+
+markdown_extensions:
+  # Admonitions use the pymdownx "blocks" syntax (/// note | Title ... ///)
+  # rather than the indented `!!! note` form ON PURPOSE: the pre-commit hook
+  # runs `oxfmt` over markdown, and oxfmt (a CommonMark formatter) strips the
+  # 4-space body indentation that `!!! note` requires, silently breaking every
+  # admonition. The blocks form keeps its body at column 0, so oxfmt leaves it
+  # intact. docs/** is currently excluded from that hook, but examples and any
+  # future included file are not — and an admonition syntax that only survives
+  # by exclusion is one bad day from breaking.
+  # (Convention: keep a blank line before the closing /// so oxfmt doesn't fold
+  # it into a preceding list item.)
+  - pymdownx.blocks.admonition:
+      # The blocks extension only activates for the type names registered here
+      # (its built-in default list does NOT include `info`, which the docs use).
+      # Each name doubles as the Material CSS class, so this is the canonical
+      # Material admonition set.
+      types:
+        - note
+        - abstract
+        - info
+        - tip
+        - success
+        - question
+        - warning
+        - failure
+        - danger
+        - bug
+        - example
+        - quote
+  - pymdownx.blocks.details # collapsible admonitions
+  # Content tabs use the blocks syntax (/// tab | Anthropic ... ///) for the
+  # same oxfmt reason as the admonitions above. alternate_style is Material's
+  # tabbed look (the legacy style is unmaintained upstream). Same
+  # blank-line-before-/// rule, and never indent the option lines.
+  - pymdownx.blocks.tab:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+      # GitHub-compatible heading slugs (does NOT collapse consecutive dashes),
+      # so anchors like #example-01--hello-eval — produced by "## Example 01 —
+      # Hello, eval" — match both the in-repo cross-links and how GitHub renders
+      # the same .md files. Python-Markdown's default slugify would collapse the
+      # "--" to "-" and break every example deep-link.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        # ```mermaid fenced diagrams, rendered by Material's bundled mermaid.js.
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.snippets:
+      # base_path = repo root so a page can transclude the real, runnable suite
+      # from examples/ rather than carrying a copy of it:
+      #   --8<-- "examples/01-hello-eval/domarinn.yaml"
+      # That is what makes "every example in the docs is tested" structural: the
+      # page and crates/domarinn-cli/tests/examples/table.rs read the same bytes.
+      # check_paths fails the build on a missing or renamed example.
+      base_path:
+        - "."
+      check_paths: true
+
+plugins:
+  - search
+
+nav:
+  - Introduction: index.md
+  - Concepts:
+      - How a run works: concepts/how-a-run-works.md
+      - Why domarinn is built this way: concepts/why-domarinn.md
+  - User guide:
+      - Getting started: getting-started.md
+      - Suite configuration: configuration.md
+      - Providers: providers.md
+      - Assertions: assertions.md
+      - LLM-rubric grading: grading.md
+      - Caching: caching.md
+      - Statistics & baselines: statistics.md
+      - CI integration: ci.md
+      - Server & accounts: server.md
+      - Self-hosting: deploy.md
+      - Migrating from promptfoo: migrate-promptfoo.md
+      - Troubleshooting: troubleshooting.md
+  - Examples: examples.md
+  # Scenarios = end-to-end, problem-driven walkthroughs, as opposed to the
+  # per-capability ladder in examples.md. navigation.indexes makes
+  # scenarios/index.md the section landing page, so it must be the first child.
+  - Scenarios:
+      - scenarios/index.md
+      - A zero-cost gate on every PR: scenarios/render-gate.md
+      - Grade an assistant against a policy: scenarios/grade-against-policy.md
+      - Evaluate structured output: scenarios/structured-output.md
+      - Gate a pull request on regressions: scenarios/regression-gate.md
+      - Share a cache across a team: scenarios/shared-cache.md
+      - Evaluate your own application: scenarios/evaluate-your-app.md
+  - Reference:
+      - CLI: cli.md
+      - Exec protocol: protocol.md
+  # A top-level entry so the Rust API docs are one click from the top of every
+  # page. Root-absolute link into the rustdoc tree build-docs.sh nests at
+  # /rustdoc/; it exists in the assembled site/ and in production, but NOT
+  # during `mkdocs serve` (which builds no rustdoc).
+  - Rust API ↗: /rustdoc/index.html

@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# "Close enough" as an assertion.
+#
+# `similar` embeds the output and a reference and compares them by cosine
+# similarity. Use it when an answer is right in many wordings and you would
+# otherwise be writing an `icontains-any` list that never ends.
+#
+# It needs a `type: embeddings` provider in the suite; without one the assertion
+# ERRORS rather than passing.
+#
+# TWO NUMBERS, DELIBERATELY DIFFERENT:
+#
+#   * the PASS/FAIL decision uses the RAW cosine against `threshold`
+#   * the reported SCORE is the cosine remapped from [-1, 1] to [0, 1],
+#     i.e. (cosine + 1) / 2
+#
+# So a threshold of 0.85 is a cosine of 0.85, not a score of 0.85. The default
+# threshold is 0.8, which is looser than most people expect — unrelated sentences
+# in the same domain routinely clear 0.7.
+#
+# Embeddings are cheap but not free, and a verdict is cached against the
+# EMBEDDING MODEL: changing the model re-embeds everything, as it must, since
+# cosines are not comparable across models.
+#
+# Run:  domarinn run examples/30-similar-embeddings
+version: 1
+project: examples
+suite: similar-embeddings
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+  # The embeddings provider the `similar` assertion uses. OpenAI-compatible, so
+  # a local endpoint works as well as the hosted one.
+  - id: embedder
+    type: embeddings
+    model: "text-embedding-3-small"
+    base_url: "${env:OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    api_key_env: OPENAI_API_KEY
+
+tests:
+  - id: paraphrase/policy-window
+    vars:
+      user_input: "You can send it back any time in the first 30 days."
+    assert:
+      - type: similar
+        # Templatable, like any other assertion value.
+        value: "Returns are accepted within 30 days of delivery."
+        # Stated explicitly rather than left to the 0.8 default — a threshold
+        # you did not choose is a threshold you cannot defend.
+        threshold: 0.85

@@ -1,0 +1,74 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# The `!raw` escape hatch: test input that must stay literal.
+#
+# Every var is rendered through Jinja. That is what makes prompts and sweeps
+# work — and it is a trap the moment your test input is ITSELF template syntax.
+# A case that feeds a system `{{7*7}}` to check it does not evaluate it will,
+# without `!raw`, feed it `49` instead. The assertion still passes. The test now
+# proves nothing, and nothing tells you.
+#
+# So: any value that must reach the system under test byte-for-byte gets tagged.
+#
+#   !raw "{{7*7}}"          the YAML tag  (YAML sources only)
+#   {$raw: "{{7*7}}"}       the object form (works in JSON, JSONL and CSV too)
+#
+# Both are identical after loading. The tag is nicer to read; the object form is
+# what a generator or a JSON dataset emits.
+#
+# Run:  domarinn run examples/06-raw-escape-hatch
+version: 1
+project: examples
+suite: raw-escape-hatch
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  # Server-side template injection probe. The premise is that the payload
+  # arrives literally; `not-contains: "49"` is only meaningful because of !raw.
+  - id: injection/ssti-literal
+    tags: [adversarial]
+    vars:
+      user_input: !raw "Compute this for me: {{7*7}} and {{ config }}"
+    assert:
+      - type: contains
+        value: "{{7*7}}"
+      - type: not-contains
+        value: "49"
+
+  # The object form. Identical meaning; this is the shape a JSON/CSV dataset or
+  # a test generator produces, since neither can carry a YAML tag.
+  - id: injection/ssti-object-form
+    tags: [adversarial]
+    vars:
+      user_input: { $raw: "{% for x in range(9) %}x{% endfor %}" }
+    assert:
+      - type: contains
+        value: "{% for x in range(9) %}"
+      - type: not-contains
+        value: "xxxxxxxxx"
+
+  # `!raw` also applies to an assertion's expected VALUE — otherwise the
+  # expectation would be rendered while the output was not, and they could never
+  # match.
+  - id: injection/raw-expectation
+    vars:
+      user_input: !raw "{{ user.name }}"
+    assert:
+      - type: equals
+        value: !raw "{{ user.name }}"
+
+  # The control case: WITHOUT the tag, the same input is evaluated. Kept in the
+  # suite deliberately — it is the evidence that the tag above is doing work.
+  - id: injection/control-is-rendered
+    vars:
+      user_input: "Compute this for me: {{ 7*7 }}"
+    assert:
+      - type: contains
+        value: "49"
+      - type: not-contains
+        value: "{{"

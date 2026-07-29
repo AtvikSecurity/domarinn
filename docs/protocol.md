@@ -3,7 +3,7 @@
 This is the external contract for writing **providers**, **asserts**, and **test generators** in any language. If your program can read JSON from stdin and write JSON to stdout, it can plug into domarinn — no Rust, no SDK, no linking required.
 
 > The canonical shapes live in
-> [`crates/domarinn-protocol/src/lib.rs`](../crates/domarinn-protocol/src/lib.rs).
+> [`crates/domarinn-protocol/src/lib.rs`](https://github.com/AtvikSecurity/domarinn/blob/main/crates/domarinn-protocol/src/lib.rs).
 > This document mirrors that file; if the two ever disagree, the Rust source
 > wins.
 

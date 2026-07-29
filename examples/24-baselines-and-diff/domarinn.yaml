@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Is this run worse than the last one?
+#
+# A pass rate on its own cannot answer that. `--against` compares this run to a
+# baseline cell by cell and gates on REGRESSIONS — cases that passed before and
+# fail now — rather than on an absolute score, so a suite that was 80% green
+# yesterday does not have to be 100% green today to merge.
+#
+# Three ways to name a baseline, and the difference matters:
+#
+#   --against latest             the newest run in the LOCAL store
+#   --against <run-id>           a specific stored run
+#   --against server:baseline    the run pinned on a results server
+#
+# /// THE TRAP ///
+# `--against latest` resolves through a cwd-relative `.domarinn/runs/latest`.
+# A fresh CI checkout has no such directory, so it finds nothing, logs a WARNING,
+# and lets the job exit 0 on a real regression. It is right for local iteration
+# and silently useless in CI. Use `server:baseline` there — and note that "no
+# baseline pinned" is also a warning, not a failure, so the gate is only ever as
+# good as what is actually pinned.
+#
+# Baselines are keyed per provider id, so renaming a provider — or changing the
+# model inside its `command` — starts its history over.
+#
+# Run:  domarinn run examples/24-baselines-and-diff
+#       domarinn run examples/24-baselines-and-diff --against latest
+#       domarinn diff <base-run-id> <head-run-id>
+version: 1
+project: examples
+suite: baselines-and-diff
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  - id: regression/policy-window
+    vars:
+      user_input: "Returns are accepted within 30 days."
+    assert:
+      - type: contains
+        value: "30 days"
+  - id: regression/no-blame
+    vars:
+      user_input: "Sorry about that — let's get it sorted."
+    assert:
+      - type: not-icontains
+        value: "your fault"

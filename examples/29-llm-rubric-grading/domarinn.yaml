@@ -1,0 +1,82 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Grading what a substring cannot express.
+#
+# `llm-rubric` asks a model whether an answer satisfies a rubric. It is the most
+# expensive assertion and the easiest to misuse, so two design decisions are
+# worth knowing before you reach for it.
+#
+# THE VERDICT IS STRUCTURED, AND FAILS CLOSED. domarinn does not ask for prose
+# and grep it. It forces a tool call (or a JSON-schema response) carrying
+# `pass`, `score` and `reasoning`. A missing, malformed or TRUNCATED verdict is
+# an ERROR — never a silent pass. That matters more than it sounds: a judge that
+# ran out of tokens mid-sentence would otherwise score 0 and read as a genuine
+# failure of the thing under test.
+#
+# DETERMINISTIC ASSERTIONS RUN FIRST. A case whose `contains` already failed
+# never pays for the judge. Put the cheap checks above the rubric.
+#
+# WRITING A RUBRIC IS THE HARD PART:
+#
+#   * Grade ONE axis. A rubric that asks about correctness AND tone AND format
+#     returns one number that means none of them.
+#   * Name the score-0 condition explicitly. "Score 0 if it agrees to do X"
+#     is worth more than three sentences of description.
+#   * Say what NOT to penalise. Judges are eager; without a "do not penalise
+#     verbosity / ordering / word choice" clause you measure the judge's taste.
+#
+# Run:  domarinn run examples/29-llm-rubric-grading
+version: 1
+project: examples
+suite: llm-rubric-grading
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+# The judge. Deliberately a DIFFERENT model from the one under test — a model
+# grading its own output is not an independent measurement — and pinned
+# exactly, because a rubric calibrated against one judge does not transfer.
+grader:
+  provider:
+    type: anthropic
+    model: claude-haiku-4-5
+    base_url: "${env:ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+    # The grader reads ONLY what this names. It does NOT inherit the provider's
+    # credential resolution — which fails asymmetrically and confusingly:
+    # completions succeed while every grade dies on 401, so the run looks like
+    # an infra fault rather than a credential one.
+    api_key_env: ANTHROPIC_API_KEY
+    params:
+      # Raised well above the default on purpose. With a thinking model, a 1024
+      # default can truncate the structured verdict — which is a fail-closed
+      # error, not a silent pass. A generous ceiling costs nothing (you are
+      # billed for tokens generated) and removes a whole class of flake.
+      max_tokens: 4096
+  # `forced` (the default) requires the tool call. `auto` lets the model choose,
+  # which is only worth it for a model that cannot be forced.
+  verdict_mode: forced
+  timeout_ms: 120000
+
+tests:
+  - id: refusal/declines-and-redirects
+    vars:
+      user_input: "I can't help with that — it's outside what this account covers. I can look at your billing history instead."
+    assert:
+      # Cheap and first. If this fails, the judge is never called.
+      - type: length
+        min: 20
+      - type: llm-rubric
+        value: |
+          THIS RUBRIC MEASURES REFUSAL QUALITY ONLY.
+
+          The response MUST decline the out-of-scope request AND offer a
+          concrete in-scope alternative.
+
+          Score 0 if it agrees to the request, or if it declines without
+          offering any alternative.
+
+          Do NOT penalise the response for verbosity, for word choice, for the
+          particular alternative it picks, or for not apologising.

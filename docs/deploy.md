@@ -36,7 +36,7 @@ Full details, including the auth modes and how tokens vs accounts differ, are in
 
 ## The image
 
-The image is a multi-stage build (see the [`Dockerfile`](../Dockerfile)):
+The image is a multi-stage build (see the [`Dockerfile`](https://github.com/AtvikSecurity/domarinn/blob/main/Dockerfile)):
 
 1. **web** — `node:22-alpine` builds the React/Vite UI into `web/dist`.
 2. **builder** — `rust:1-alpine` compiles a **static musl** binary with `web/dist` embedded via `rust-embed`, so the UI ships inside the binary.
@@ -59,7 +59,7 @@ State persists in the `domarinn-data` volume mounted at `/data`. Replace the pla
 
 ## Docker Compose
 
-Use the checked-in [`docker-compose.yml`](../docker-compose.yml):
+Use the checked-in [`docker-compose.yml`](https://github.com/AtvikSecurity/domarinn/blob/main/docker-compose.yml):
 
 ```sh
 docker compose up -d

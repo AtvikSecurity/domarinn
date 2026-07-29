@@ -1,0 +1,4 @@
+id,tags,user_input,__assert
+intent/refund,billing,"I want my money back","[{""type"":""icontains"",""value"":""money""}]"
+intent/cancel,billing,"Please cancel my subscription","[{""type"":""icontains"",""value"":""cancel""}]"
+intent/praise,csat,"This app is fantastic, thank you!","[{""type"":""not-icontains"",""value"":""cancel""}]"

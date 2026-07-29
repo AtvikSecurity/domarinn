@@ -1,0 +1,74 @@
+# A zero-cost gate on every PR
+
+**The problem.** Prompts and templates rot silently. A variable gets renamed and stops substituting; a section separator leaks into the output; a refactor drops the authorization framing. None of it is caught by a type checker, and none of it is worth an LLM bill to catch.
+
+**The shape.** A suite that renders every template your system owns and grades the result with deterministic assertions only. No API key, no network, seconds to run — so it can be a *required* check on every pull request rather than a nightly job people learn to ignore.
+
+## 1. Make your system renderable
+
+The system under test runs in "render" mode: given a template id, produce the rendered text and print it. That is an [`exec` provider](../examples.md#example-13--your-own-system) — one JSON request in, one JSON response out.
+
+```yaml
+--8<-- "examples/12-render-health/domarinn.yaml"
+```
+
+/// tip | Deliberately no `cache_salt`
+
+Rendering is cheap, and a stale render is worse than a re-render. Omitting the salt means a rebuilt binary always re-renders — the equivalent of always passing `--no-cache`, without having to remember to.
+
+///
+
+## 2. Assert the structural invariants
+
+These are the ones worth having, in rough order of how often they catch something:
+
+| Assertion | Catches |
+| --------- | ------- |
+| `not-regex: "\\{\\{.*\\}\\}"` | An unsubstituted variable — a render hole. |
+| `not-contains` on your separator | Internal metadata or a user/system delimiter leaking through. |
+| `length: {min: 1}` | An empty render, usually a missing template. |
+| `length: {max: N}` | A runaway loop, before it becomes a token bill. |
+| `contains` on required framing | A refactor dropping a policy or authorization line. |
+
+Put the size ceiling in `defaults.assert` so it applies to every case without repetition.
+
+## 3. Make coverage automatic
+
+Listing templates by hand guarantees that the one added last Tuesday has no test. A [generator](../examples.md#example-11--test-generators) enumerates your registry instead, so a new template gets a render test the day it lands:
+
+```yaml
+tests:
+  - generator:
+      command: ["./target/release/my-eval", "generate-tests"]
+      timeout_ms: 60000
+```
+
+Back it with a unit test in your own codebase asserting the registry and the manifest agree. Otherwise a template can escape the enumeration and the coverage gap is invisible.
+
+## 4. Wire it into CI
+
+```yaml
+- name: Prompt render health
+  run: domarinn run eval/render-health.yaml
+```
+
+That is the whole step. Exit `0` passes, `1` means an assertion failed, `3` means the harness broke. No secrets, so it runs on fork pull requests too — which is exactly where you want a cheap check.
+
+## Verify it actually gates
+
+A gate nobody has seen fail is a gate nobody should trust. Break something on purpose:
+
+```console
+$ # temporarily remove a variable from a template, then:
+$ domarinn run eval/render-health.yaml
+$ echo $?
+1
+```
+
+If that prints `0`, your assertions are not asserting. [Example 18](../examples.md#example-18--a-failing-gate) is a suite that is red by design, kept green-in-CI precisely so the failure path stays exercised.
+
+## See also
+
+- [Example 12](../examples.md#example-12--render-health) — the suite above, runnable.
+- [Example 11](../examples.md#example-11--test-generators) — generators in detail.
+- [Scenario 04](regression-gate.md) — the graded layer that runs beside this one.

@@ -130,11 +130,13 @@ Spawns an external command that speaks the exec JSON protocol on stdio — the e
 providers:
   - id: local-agent
     type: exec
-    # A digest of the binary's contents is already in the cache key, so a
-    # rebuild busts it without a `cache_salt`.
+    # The cache key names the command, not the program's bytes — that is what
+    # makes an entry reusable on another machine, and also why a rebuild does
+    # not invalidate anything on its own. Set `cache_salt` when it should.
     command: ["./target/release/agent", "--mode", "eval"]
     env:
       AGENT_PROFILE: strict
+    cache_salt: "2026-07-28"
     timeout_ms: 30000
 ```
 

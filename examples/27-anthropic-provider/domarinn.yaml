@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Calling Anthropic, and telling domarinn what it costs.
+#
+# Same shape as the OpenAI provider, with two additions worth their own example:
+# `pricing`, and what happens when you get it wrong.
+#
+# domarinn ships a rate sheet for the models it knows. A model it does NOT know
+# prices at nothing — and `cost:` assertions then pass as "cost not reported;
+# budget not enforced". Green, and enforcing nothing. Whenever you are on a
+# negotiated rate, a preview model, or a gateway that rebills, state the price.
+#
+# Pricing is merged field-wise over the built-in rates and is deliberately NOT
+# part of the cache key: `cost_usd` is recomputed on every cache hit from the
+# stored token counts and the current rate sheet, so correcting a price re-prices
+# history instead of discarding it.
+#
+# Run:  domarinn run examples/27-anthropic-provider
+version: 1
+project: examples
+suite: anthropic-provider
+
+providers:
+  - id: claude
+    label: "claude-haiku-4-5"
+    type: anthropic
+    model: "claude-haiku-4-5"
+    # ANTHROPIC_BASE_URL is what the vendor's own tooling honours, so pointing
+    # this at a gateway needs no edit here.
+    base_url: "${env:ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+    api_key_env: ANTHROPIC_API_KEY
+    params:
+      max_tokens: 512
+    # USD per million tokens. Only the fields you state are overridden.
+    pricing:
+      input_per_mtok: 1.00
+      output_per_mtok: 5.00
+      cache_read_per_mtok: 0.10
+      cache_write_per_mtok: 1.25
+
+prompts:
+  - id: returns-policy
+    messages:
+      - role: system
+        content: "You are a support agent. Cite the policy window when it applies."
+      - role: user
+        content: "{{ question }}"
+
+tests:
+  - id: policy/return-window
+    vars:
+      question: "Can I return this after 45 days?"
+    assert:
+      - type: contains
+        value: "30 days"
+      # Meaningful only because `pricing` above is set and the API reports
+      # `usage`. Without either, this passes without enforcing anything.
+      - type: cost
+        max: 0.05
+      - type: tokens
+        max: 2000

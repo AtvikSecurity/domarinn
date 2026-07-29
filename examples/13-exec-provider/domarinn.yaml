@@ -1,0 +1,70 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Your own system as the system under test.
+#
+# This is the provider domarinn is built around. An `exec` provider runs YOUR
+# program, so the eval exercises the same code path production does — the same
+# rendering, the same client, the same guardrails — instead of a raw model
+# endpoint that resembles it.
+#
+# Three things are worth knowing before you point this at your binary:
+#
+#   1. `command` paths resolve relative to THIS FILE's directory, not the shell's
+#      working directory. `domarinn run examples/13-exec-provider` from the repo
+#      root and `domarinn run .` from inside it behave identically.
+#
+#   2. The cache fingerprint is the COMMAND, not the program's bytes. Rebuild
+#      your binary and the cache still answers with the old results — which is
+#      usually what you want during a refactor and never what you want after a
+#      behaviour change. `cache_salt` is the lever; see example 22.
+#
+#   3. Because the model is part of argv, it is part of the fingerprint. Two
+#      models cannot collide in the cache, and there is deliberately no flag
+#      that swaps a provider's model — you write a second provider.
+#
+# Run:  domarinn run examples/13-exec-provider
+version: 1
+project: examples
+suite: exec-provider
+
+providers:
+  - id: assistant-fast
+    label: "assistant (fast model)"
+    type: exec
+    command: ["python3", "./assistant.py", "--model", "fast"]
+    # Environment for the child process only. Values interpolate from the
+    # ambient environment, so a per-developer endpoint stays out of git:
+    #   ASSISTANT_ENDPOINT: "${env:ASSISTANT_ENDPOINT:-http://localhost:8080}"
+    env:
+      ASSISTANT_STYLE: "concise"
+    # A slow system under test needs a longer leash than the default.
+    timeout_ms: 30000
+
+  # A second provider, not a flag. Both run against every case, so the report
+  # compares them cell by cell.
+  - id: assistant-careful
+    label: "assistant (careful model)"
+    type: exec
+    command: ["python3", "./assistant.py", "--model", "careful"]
+    env:
+      ASSISTANT_STYLE: "thorough"
+    timeout_ms: 30000
+
+tests:
+  - id: billing/refund-window
+    vars:
+      user_input: "Can I still return this after 45 days?"
+    assert:
+      # True of both models: the answer states the policy window.
+      - type: contains
+        value: "30"
+      # `not-` keeps the safety requirement readable.
+      - type: not-icontains
+        value: "as an AI"
+
+  - id: billing/escalation
+    vars:
+      user_input: "This is the third time I've asked."
+    assert:
+      - type: icontains-any
+        values: ["escalate", "supervisor", "specialist"]

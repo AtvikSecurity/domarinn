@@ -1,0 +1,83 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Serialize Pages deploys (matches the official GitHub Pages flow) and never
+# cancel an in-flight one — a half-deployed site is worse than a stale one.
+# Deliberately NOT keyed on `github.ref` like the CI workflow's concurrency
+# group: two deploys racing for the same environment is exactly what this
+# prevents.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+# Least privilege at the top; the publish job widens it for itself only.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: build docs site
+    runs-on: ubuntu-24.04
+    # The build is seconds of mkdocs plus a cached `cargo doc`; anything near
+    # this is a hang, not slowness.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          install_args: rust uv
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
+        with:
+          key: docs
+
+      # Only needed for deployment (it configures the base path); skip on PRs.
+      - name: Configure Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0 # pin to SHA
+
+      # `mise run docs` is the same command a developer runs, so a green PR here
+      # means the site really does build on their machine too. --strict turns a
+      # broken internal link, a nav entry naming a missing page, or a `--8<--`
+      # include pointing at a deleted example into a failure.
+      - name: Build docs site
+        run: mise run docs
+
+      - name: Upload artifact
+        if: github.event_name != 'pull_request'
+        # MkDocs builds into site/, with rustdoc nested under site/rustdoc/ and
+        # the CNAME that pins docs.domarinn.com written alongside.
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0 # pin to SHA
+        with:
+          path: ./site
+
+  publish:
+    name: publish to GitHub Pages
+    # PRs build for breakage detection but must never deploy — a fork PR would
+    # otherwise publish arbitrary content to the production domain.
+    if: github.event_name != 'pull_request'
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Publish to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0 # pin to SHA

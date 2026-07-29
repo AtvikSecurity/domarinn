@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Cases from a spreadsheet.
+#
+# CSV is the format a non-engineer will hand you, so domarinn reads it directly.
+# Four column names are reserved and mean something; every OTHER column becomes
+# a var of that name.
+#
+#   id          the case id
+#   tags        comma-separated
+#   cache_salt  per-case cache salt
+#   __assert    the case's assertions, as JSON
+#
+# `.tsv` works the same way with tabs. For anything more structured than this,
+# reach for .jsonl.
+#
+# Run:  domarinn run examples/10-dataset-csv
+version: 1
+project: examples
+suite: dataset-csv
+
+providers:
+  - id: classifier
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  - "file://cases.csv"

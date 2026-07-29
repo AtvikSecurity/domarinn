@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Cost, latency, and token budgets.
+#
+# Three assertions answer "is this answer affordable" rather than "is it right":
+#
+#   cost     max USD for the call
+#   tokens   max tokens (total, or `count: billable` to exclude cached reads)
+#   latency  max milliseconds
+#
+# EACH ONE CAN PASS WITHOUT ENFORCING ANYTHING, which is the thing to know:
+#
+#   * `cost:` passes when nothing priced the call — "cost not reported; budget
+#     not enforced". That happens when the provider reports no usage, or when
+#     the model is not in the rate sheet and the suite sets no `pricing:` block.
+#   * `tokens:` needs the provider to report `usage`. Note `count: billable` is
+#     the LARGER number, not the smaller one: it is `total` PLUS the tokens paid
+#     to write a provider-side prompt cache, which are billed at a premium and
+#     are not part of the prompt the model answered.
+#   * `latency:` BYPASSES THE CACHE entirely, because a replayed response has no
+#     honest latency to report. It measures a real call or nothing.
+#
+# So a green cost budget is only evidence if you know the run priced itself. The
+# provider below reports usage AND cost_usd, which is what an exec provider
+# should do whenever it knows — otherwise these three assertions are decoration.
+#
+# Run:  domarinn run examples/31-budgets
+version: 1
+project: examples
+suite: budgets
+
+providers:
+  - id: metered
+    type: exec
+    command: ["python3", "./metered.py"]
+    cache_salt: "dev"
+
+tests:
+  - id: budget/cheap-answer
+    vars:
+      user_input: "short"
+    assert:
+      - type: contains
+        value: "ok"
+      - type: cost
+        max: 0.01
+      - type: tokens
+        max: 500
+      # Generous on purpose: a tight latency bound is a flaky test on a loaded
+      # CI runner, and a flaky gate gets muted.
+      - type: latency
+        max: 30000
+
+  # The same call, measured two ways. It populates a prompt cache: 500 in, 40
+  # out, and 2000 tokens paid to write the entry. `total` is 540 and `billable`
+  # is 2540 — a 4.7x gap that a `total` budget cannot see at all.
+  - id: budget/cache-writes-are-billable
+    vars:
+      user_input: "cached"
+    assert:
+      # The default. Measures the exchange: what was sent and what came back.
+      - type: tokens
+        max: 1000
+      # Opting in to cache economics. Budget this when your provider writes a
+      # prompt cache, or the calls that cost the most are the ones you never see.
+      - type: tokens
+        max: 3000
+        count: billable

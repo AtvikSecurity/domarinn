@@ -1,0 +1,19 @@
+# A dataset file is a bare YAML sequence of cases — the same shape an inline
+# `tests:` entry has. No wrapper key.
+- id: refunds/approved
+  tags: [billing]
+  vars:
+    user_input: "Your refund of $42.00 has been approved."
+  assert:
+    - type: icontains
+      value: "approved"
+
+- id: refunds/declined-with-reason
+  tags: [billing]
+  vars:
+    user_input: "We could not refund this order because it is outside the 30-day window."
+  assert:
+    - type: icontains
+      value: "30-day"
+    - type: not-icontains
+      value: "approved"

@@ -1,0 +1,858 @@
+//! Every shipped example, run end to end through the real binary.
+//!
+//! The examples under `examples/` are transcluded into the documentation with
+//! pymdownx snippets, so a page and this test read the *same bytes*: a page
+//! cannot drift from a working suite without something here going red.
+//!
+//! Loading and validating is deliberately not enough — `examples_roundtrip.rs`
+//! in domarinn-core already does that. A suite that loads and validates can
+//! still call an endpoint that does not exist, assert on a var that never
+//! renders, or produce four cells where its page promises seven.
+
+mod common;
+
+// `#[path]` rather than a bare `mod table;`: that would resolve to
+// `tests/table.rs`, which Cargo auto-discovers as a *separate* test target. A
+// `tests/examples/` directory with no `main.rs` is not auto-discovered, so the
+// whole harness links as one binary.
+#[path = "examples/stubs.rs"]
+mod stubs;
+#[path = "examples/table.rs"]
+mod table;
+
+use std::collections::BTreeSet;
+use std::io::{ErrorKind, Read, Write};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::time::Duration;
+
+use common::{stub_script, stub_server};
+use table::{Cells, Env, Example, Step, EXAMPLES};
+
+/// Send one raw request to a stub and return the whole response, headers and
+/// all. Raw rather than a client crate because what is under test *is* the
+/// framing.
+fn raw_request(url: &str, request: &str) -> String {
+    let addr = url.strip_prefix("http://").expect("stub url is http");
+    let mut sock = TcpStream::connect(addr).expect("stub is listening");
+    sock.write_all(request.as_bytes()).unwrap();
+    sock.flush().unwrap();
+    let mut response = String::new();
+    // The stub answers `connection: close`, so read-to-EOF terminates.
+    sock.read_to_string(&mut response).unwrap();
+    response
+}
+
+fn post(path: &str, body: &str) -> String {
+    format!(
+        "POST {path} HTTP/1.1\r\nhost: stub\r\ncontent-type: application/json\r\n\
+         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// The declared `content-length` of a response, for comparison against what it
+/// actually sent.
+fn declared_length(response: &str) -> usize {
+    response
+        .to_lowercase()
+        .split("content-length:")
+        .nth(1)
+        .and_then(|rest| rest.split("\r\n").next())
+        .and_then(|v| v.trim().parse().ok())
+        .expect("response declares a content-length")
+}
+
+fn body_of(response: &str) -> &str {
+    response
+        .split_once("\r\n\r\n")
+        .expect("response has a header/body split")
+        .1
+}
+
+/// The stub must wait for a declared request body before replying.
+///
+/// It used to answer at end-of-headers, which is fine for the GETs its first
+/// callers made but resets the connection under a POST: the client is still
+/// writing when the socket closes, so it reports a transport error instead of
+/// the status under test. Every model provider POSTs, so without this the
+/// example harness could not stub a single one of them.
+///
+/// The headers and body are sent as two writes *on purpose*. Sent as one, the
+/// kernel hands the server both in its first `read`, and a stub that never
+/// waits still looks correct — so the obvious version of this test passes
+/// against the very bug it is meant to catch.
+#[test]
+fn the_stub_waits_for_a_request_body_before_replying() {
+    let (url, server) = stub_script(
+        vec![("/v1/messages", vec![r#"{"ok":true}"#.to_string()])],
+        1,
+        Duration::from_secs(10),
+    );
+
+    let body = r#"{"model":"m","messages":[]}"#;
+    let addr = url.strip_prefix("http://").expect("stub url is http");
+    let mut sock = TcpStream::connect(addr).expect("stub is listening");
+    sock.write_all(
+        format!(
+            "POST /v1/messages HTTP/1.1\r\nhost: stub\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    sock.flush().unwrap();
+
+    // Nothing may come back yet: the request is incomplete, and a reply here is
+    // exactly what leaves a real client writing into a closed socket.
+    sock.set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let mut early = [0u8; 128];
+    match sock.read(&mut early) {
+        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+        Ok(n) => panic!(
+            "the stub replied before the body arrived: {:?}",
+            String::from_utf8_lossy(&early[..n])
+        ),
+        Err(e) => panic!("unexpected error reading from the stub: {e}"),
+    }
+
+    sock.write_all(body.as_bytes()).unwrap();
+    sock.flush().unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut response = String::new();
+    sock.read_to_string(&mut response).unwrap();
+
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "a POST with a body must be answered once complete, got: {response:?}"
+    );
+    assert_eq!(body_of(&response), r#"{"ok":true}"#);
+
+    // Guard against a vacuous pass: prove the stub routed *this* request rather
+    // than the assertions above passing on some unrelated reply.
+    assert_eq!(
+        server.join().unwrap(),
+        vec!["POST /v1/messages HTTP/1.1".to_string()],
+        "the stub did not record the POST it answered"
+    );
+}
+
+/// `stub_server` shares the same drain, and is what `share` / `ci-summary`
+/// exercise — those POST a whole run document, the largest body any test sends.
+#[test]
+fn the_one_shot_stub_also_drains_a_body_and_returns_it() {
+    let (url, server) = stub_server("200 OK", r#"{"url":"https://domarinn.test/runs/x"}"#);
+
+    let sent = r#"{"schema_version":2,"cases":[]}"#;
+    let response = raw_request(&url, &post("/api/v1/runs", sent));
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "got: {response:?}");
+    let captured = String::from_utf8(server.join().unwrap()).unwrap();
+    assert!(
+        captured.ends_with(sent),
+        "the stub must hand back the full body it drained, got: {captured:?}"
+    );
+}
+
+/// A route answers a *sequence*, not one fixed body.
+///
+/// This is what makes a `similar` example honest: the assertion embeds the
+/// output and the reference and takes their cosine, so a stub that returned one
+/// vector for both would score 1.0 against itself and the threshold on the page
+/// would be untested at every value.
+#[test]
+fn a_route_serves_a_different_body_per_request_then_repeats_the_last() {
+    let (url, server) = stub_script(
+        vec![(
+            "/embeddings",
+            vec![r#"{"n":1}"#.to_string(), r#"{"n":2}"#.to_string()],
+        )],
+        3,
+        Duration::from_secs(10),
+    );
+
+    let bodies: Vec<String> = (0..3)
+        .map(|_| body_of(&raw_request(&url, &post("/embeddings", "{}"))).to_string())
+        .collect();
+
+    assert_eq!(
+        bodies,
+        vec![r#"{"n":1}"#, r#"{"n":2}"#, r#"{"n":2}"#],
+        "the script must advance per request, then hold on its last body"
+    );
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+/// An unrouted request must produce a 404 a client can actually parse.
+///
+/// The 404 used to hardcode `content-length: 11` for the 12-byte body
+/// `{"error":""}`, so a client reading by length got truncated JSON and
+/// reported a deserialization failure — hiding the fact that it had simply
+/// asked for a path no route matched.
+#[test]
+fn an_unrouted_request_gets_a_parseable_404_that_names_the_path() {
+    let (url, server) = stub_script(
+        vec![("/v1/messages", vec![r#"{"ok":true}"#.to_string()])],
+        1,
+        Duration::from_secs(10),
+    );
+
+    let response = raw_request(&url, &post("/v1/nope", "{}"));
+
+    assert!(
+        response.starts_with("HTTP/1.1 404 Not Found"),
+        "got: {response:?}"
+    );
+    let body = body_of(&response);
+    assert_eq!(
+        declared_length(&response),
+        body.len(),
+        "content-length must match the body it describes, or the client truncates it"
+    );
+    serde_json::from_str::<serde_json::Value>(body)
+        .unwrap_or_else(|e| panic!("the 404 body must be valid JSON, got {body:?}: {e}"));
+    assert!(
+        body.contains("/v1/nope"),
+        "the 404 must name the unrouted path so the operator can see what missed: {body:?}"
+    );
+
+    server.join().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// The example harness
+// ---------------------------------------------------------------------------
+
+/// Environment a developer plausibly has exported that would change what these
+/// runs do — or spend their money.
+///
+/// Scrubbed for the same reason `common::bin` scrubs the CI variables: a test
+/// that reads the host's environment passes on one machine and fails on
+/// another. Here the stakes are higher than a wrong assertion. A row that
+/// redirects `ANTHROPIC_BASE_URL` at a stub is only offline because *this row*
+/// sets it; inheriting a real one from the shell would send the request to the
+/// vendor with the shell's real key attached.
+const HOST_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "DOMARINN_SERVER_URL",
+    "DOMARINN_TOKEN",
+    "DOMARINN_CACHE_DIR",
+    "DOMARINN_SMOKE_BASE_URL",
+    "DOMARINN_SMOKE_MODEL",
+    "DOMARINN_SMOKE_API_KEY",
+];
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("the repository root resolves from crates/domarinn-cli")
+}
+
+fn examples_root() -> PathBuf {
+    repo_root().join("examples")
+}
+
+fn scrubbed_bin() -> Command {
+    let mut cmd = common::bin();
+    for key in HOST_ENV {
+        cmd.env_remove(key);
+    }
+    cmd
+}
+
+/// `NN-kebab-name`: two digits, a dash, then lowercase words.
+///
+/// Policed rather than merely conventional because the docs address examples by
+/// this shape, and a misnamed directory is one the ladder cannot transclude.
+fn is_ladder_name(name: &str) -> bool {
+    let Some((num, rest)) = name.split_once('-') else {
+        return false;
+    };
+    num.len() == 2
+        && num.chars().all(|c| c.is_ascii_digit())
+        && !rest.is_empty()
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Every example directory that ships, by name.
+fn shipped_example_dirs() -> BTreeSet<String> {
+    let root = examples_root();
+    let mut out = BTreeSet::new();
+    for entry in std::fs::read_dir(&root).expect("examples/ exists") {
+        let entry = entry.expect("readable directory entry");
+        if !entry.file_type().expect("file type").is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        assert!(
+            is_ladder_name(&name),
+            "examples/{name}/ does not match the NN-kebab-name scheme the docs \
+             address examples by. Rename it, or move it out of examples/ if it \
+             is not an example."
+        );
+        assert!(
+            entry.path().join("domarinn.yaml").is_file(),
+            "examples/{name}/ has no domarinn.yaml, so there is no suite to run"
+        );
+        out.insert(name);
+    }
+    out
+}
+
+/// A directory under `examples/` that no row covers is an example nobody runs,
+/// and an example nobody runs is a page that lies. This is the guard that makes
+/// "every example is verified end to end" a property of the repository rather
+/// than of whoever reviewed the last pull request.
+#[test]
+fn every_shipped_example_is_in_the_table() {
+    let shipped = shipped_example_dirs();
+    // Guard against a vacuous pass: a broken glob — a moved crate, a renamed
+    // directory — yields an empty set that satisfies every assertion below,
+    // and this test would stay green forever while covering nothing.
+    assert!(
+        shipped.len() >= 4,
+        "found {} example directories under {}; the glob is broken, not the repo",
+        shipped.len(),
+        examples_root().display()
+    );
+
+    let covered: BTreeSet<&str> = EXAMPLES.iter().map(|e| e.dir).collect();
+    assert_eq!(
+        covered.len(),
+        EXAMPLES.len(),
+        "two rows name the same example directory"
+    );
+
+    let untested: Vec<&str> = shipped
+        .iter()
+        .filter(|d| !covered.contains(d.as_str()))
+        .map(String::as_str)
+        .collect();
+    assert!(
+        untested.is_empty(),
+        "these examples ship but nothing runs them: {untested:?}\n\
+         Add a row to crates/domarinn-cli/tests/examples/table.rs — a directory \
+         under examples/ and a row in that table are the same thing."
+    );
+
+    let stale: Vec<&str> = EXAMPLES
+        .iter()
+        .map(|e| e.dir)
+        .filter(|d| !shipped.contains(*d))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these rows name directories that no longer exist: {stale:?}"
+    );
+}
+
+/// An example the documentation never shows is dead weight that still has to be
+/// kept green; a `--8<--` pointing at a file that is not there renders as a
+/// broken page.
+///
+/// MkDocs' `check_paths` catches only the second, and only when the site is
+/// built. The reverse — an example no page transcludes — is invisible to it,
+/// which is exactly the direction that rots: an example gets renamed, the page
+/// keeps showing the old one, and nobody notices because both still exist.
+#[test]
+fn every_example_is_transcluded_and_every_transclusion_resolves() {
+    let root = repo_root();
+    let includes = snippet_includes(&root.join("docs"));
+    assert!(
+        !includes.is_empty(),
+        "no `--8<--` includes found under docs/; the scanner is broken, or the \
+         examples are not being transcluded anywhere"
+    );
+
+    // Forward: a snippet path must exist. Resolved against the repo root, which
+    // is what pymdownx.snippets' `base_path` is set to in mkdocs.yml.
+    let dangling: Vec<&(String, String)> = includes
+        .iter()
+        .filter(|(_, path)| !root.join(path).is_file())
+        .collect();
+    assert!(
+        dangling.is_empty(),
+        "doc snippets point at files that do not exist: {dangling:#?}"
+    );
+
+    // Reverse: every example is shown somewhere.
+    let shown: BTreeSet<&str> = includes
+        .iter()
+        .filter_map(|(_, path)| path.strip_prefix("examples/"))
+        .filter_map(|rest| rest.split('/').next())
+        .collect();
+    let undocumented: Vec<&str> = EXAMPLES
+        .iter()
+        .map(|e| e.dir)
+        .filter(|d| !shown.contains(d))
+        .collect();
+    assert!(
+        undocumented.is_empty(),
+        "these examples are tested but no page shows them: {undocumented:?}\n\
+         Transclude each with `--8<-- \"examples/<dir>/domarinn.yaml\"`, or \
+         delete it: an example whose only reader is CI is a maintenance cost \
+         with no payer."
+    );
+}
+
+/// Every `--8<-- "path"` in every markdown file under `dir`, as (page, path).
+fn snippet_includes(dir: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for entry in std::fs::read_dir(&current).expect("readable docs directory") {
+            let path = entry.expect("readable entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            for line in text.lines() {
+                let Some(rest) = line.trim_start().strip_prefix("--8<--") else {
+                    continue;
+                };
+                let quoted = rest.trim();
+                let include = quoted
+                    .strip_prefix('"')
+                    .and_then(|r| r.strip_suffix('"'))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{}: `--8<--` is not the inline quoted form this repo \
+                             uses, so nothing checks it: {line}",
+                            path.display()
+                        )
+                    });
+                // A `file:section` or `file:5:8` include names the file before
+                // the first colon.
+                let file = include.split(':').next().unwrap_or(include);
+                out.push((path.display().to_string(), file.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// A missing interpreter is not an example failure, and must not read like one.
+///
+/// Without this, `python3` absent turns every python-backed row red at once
+/// with "provider error" and nothing anywhere naming the cause.
+#[test]
+fn python3_is_available_for_the_examples_that_need_it() {
+    let users: Vec<&str> = EXAMPLES
+        .iter()
+        .filter(|e| {
+            std::fs::read_to_string(examples_root().join(e.dir).join("domarinn.yaml"))
+                .map(|s| s.contains("python3"))
+                .unwrap_or(false)
+        })
+        .map(|e| e.dir)
+        .collect();
+    if users.is_empty() {
+        return;
+    }
+    let ok = Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    assert!(
+        ok,
+        "python3 is not on PATH, but {} shipped example(s) use it as their \
+         system under test: {users:?}",
+        users.len()
+    );
+}
+
+#[test]
+fn every_example_behaves_as_its_row_claims() {
+    // One test over the table rather than one `#[test]` per example: a row is
+    // data, and generating per-row tests would need a macro whose expansion is
+    // harder to read than this loop.
+    assert!(!EXAMPLES.is_empty(), "the example table is empty");
+    for spec in EXAMPLES {
+        verify(spec);
+    }
+}
+
+/// The scoring example states arithmetic in its comments; this checks it.
+///
+/// `05-weights-and-thresholds` tells the reader that a partial-credit case
+/// scores `(1 + 1 + 0) / 3 = 0.667` and a weighted one `(1*3 + 0*1) / 4 = 0.75`.
+/// The table row can only see that both cases *passed*, which they would go on
+/// doing if the weighted mean changed, if a threshold stopped being read, or if
+/// the failing assertion inside each quietly started passing. Those numbers are
+/// the page's actual claim, so they are what gets asserted.
+#[test]
+fn example_05_scores_are_what_its_comments_claim() {
+    let run = run_example("05-weights-and-thresholds");
+    let score = |id: &str| {
+        run.cases
+            .iter()
+            .find(|c| c.cell.test_id == id)
+            .unwrap_or_else(|| panic!("case `{id}` is missing from the run"))
+            .score
+    };
+
+    // Guard against a vacuous pass: each of these cases must contain a failing
+    // assertion. Without one, the means below are trivially 1.0 and the example
+    // would demonstrate nothing about partial credit.
+    for id in ["gate/partial-credit", "gate/weighted"] {
+        let case = run.cases.iter().find(|c| c.cell.test_id == id).unwrap();
+        assert!(
+            case.asserts.iter().any(|a| a.score == 0.0),
+            "`{id}` is supposed to pass *despite* a failing assertion, but every \
+             assertion in it passed — the example no longer shows partial credit"
+        );
+    }
+
+    assert!(
+        (score("gate/partial-credit") - 2.0 / 3.0).abs() < 1e-9,
+        "partial-credit scored {}, the page says (1 + 1 + 0) / 3",
+        score("gate/partial-credit")
+    );
+    assert!(
+        (score("gate/weighted") - 0.75).abs() < 1e-9,
+        "weighted scored {}, the page says (1*3 + 0*1) / 4",
+        score("gate/weighted")
+    );
+}
+
+/// Run one shipped example offline and hand back its result document.
+fn run_example(dir: &str) -> domarinn_core::result::RunResult {
+    let tmp = tempfile::tempdir().expect("scratch directory");
+    let out = tmp.path().join("result.json");
+    scrubbed_bin()
+        .args(["run"])
+        .arg(examples_root().join(dir))
+        .args(["--format", "json", "--no-progress", "--out"])
+        .arg(&out)
+        .arg("--cache-dir")
+        .arg(tmp.path().join("cache"))
+        .current_dir(tmp.path())
+        .output()
+        .expect("the domarinn binary runs");
+    let text = std::fs::read_to_string(&out)
+        .unwrap_or_else(|e| panic!("example `{dir}` wrote no result document: {e}"));
+    serde_json::from_str(&text).expect("the result document parses")
+}
+
+fn verify(spec: &Example) {
+    let tmp = tempfile::tempdir().expect("scratch directory");
+    let dir = examples_root().join(spec.dir);
+    let stub = (!spec.stub.is_empty()).then(|| {
+        let routes = spec
+            .stub
+            .iter()
+            .map(|r| (r.fragment, r.bodies.iter().map(|b| b.to_string()).collect()))
+            .collect();
+        stub_script(routes, spec.stub_calls, Duration::from_secs(30))
+    });
+    let stub_url = stub.as_ref().map(|(url, _)| url.clone());
+
+    for (n, step) in spec.steps.iter().enumerate() {
+        let argv = substitute(step.argv, &dir, tmp.path());
+        let mut cmd = scrubbed_bin();
+        // cwd is the scratch directory because the local run store is
+        // cwd-relative; left at the repo root, every example would litter
+        // `.domarinn/runs/` into the working tree.
+        cmd.args(&argv).current_dir(tmp.path());
+        for (key, value) in spec.env {
+            cmd.env(key, resolve_env(value, stub_url.as_deref(), spec));
+        }
+        let out = cmd.output().expect("the domarinn binary runs");
+        let ctx = Context {
+            spec,
+            step: n,
+            argv: &argv,
+            cwd: tmp.path(),
+            out: &out,
+        };
+
+        let code = out.status.code().unwrap_or(-1);
+        if code != i32::from(step.exit) {
+            ctx.fail(&format!(
+                "exited {code} ({}), expected {} ({})",
+                exit_meaning(u8::try_from(code).unwrap_or(u8::MAX)),
+                step.exit,
+                exit_meaning(step.exit),
+            ));
+        }
+
+        // Side files first: a step may produce only these (a JUnit report, a
+        // Markdown summary) and assert nothing about cells at all.
+        for relative in step.writes {
+            let path = PathBuf::from(substitute(&[relative], &dir, tmp.path()).remove(0));
+            // Non-empty, not merely present: every writer here creates its file
+            // before it has anything to put in it, so existence alone would
+            // pass against a reporter that produced nothing.
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.len() > 0 => {}
+                Ok(_) => ctx.fail(&format!("{} was written but is empty", path.display())),
+                Err(e) => ctx.fail(&format!("{} was not written: {e}", path.display())),
+            }
+        }
+
+        // The result document, only when the row makes a claim that needs it.
+        // `Cells::NONE` with no other claim means "this step writes no result
+        // document I care about" — a `validate`, or a step whose whole subject
+        // is a side file in a format that is not the result JSON.
+        let claims_result = step.cells.total() > 0 || step.cache_hits > 0 || step.priced;
+        match (claims_result, result_path(&argv)) {
+            (true, Some(path)) => check_result(&ctx, step, &path),
+            (true, None) => ctx.fail(
+                "the row makes a claim about cells, but this step writes no JSON \
+                 result document (its argv has no `--format json --out …`)",
+            ),
+            (false, _) => {}
+        }
+    }
+
+    if let Some((_, handle)) = stub {
+        let served = handle.join().expect("the stub thread does not panic");
+        // The egress guard. Fewer calls than declared means the example never
+        // reached the stub — almost always because `${env:…}` stopped
+        // redirecting `base_url`, which in CI means the request went to the
+        // real vendor.
+        assert_eq!(
+            served.len(),
+            spec.stub_calls,
+            "example `{}` made {} request(s) to the stub, its row declares {}.\n\
+             Served:\n  {}\n\
+             If this is 0 the suite is talking to a real endpoint: check that \
+             examples/{}/domarinn.yaml still carries a `${{env:…}}` base_url and \
+             that the row sets the matching variable.",
+            spec.dir,
+            served.len(),
+            spec.stub_calls,
+            served.join("\n  "),
+            spec.dir,
+        );
+    }
+}
+
+fn substitute(argv: &[&str], dir: &Path, tmp: &Path) -> Vec<String> {
+    let (dir, tmp) = (dir.display().to_string(), tmp.display().to_string());
+    argv.iter()
+        .map(|a| a.replace("{dir}", &dir).replace("{tmp}", &tmp))
+        .collect()
+}
+
+/// The JSON result document this step writes, if it writes one.
+///
+/// Read back out of the argv rather than assumed, so a row that changes the
+/// flags cannot leave the harness checking a file nobody wrote. Restricted to
+/// `.json` because `--out` also carries the JUnit report, and handing that to
+/// a `RunResult` deserializer reports a parse error where the real answer is
+/// "that is not the result document".
+fn result_path(argv: &[String]) -> Option<PathBuf> {
+    argv.iter()
+        .position(|a| a == "--out")
+        .and_then(|i| argv.get(i + 1))
+        .filter(|p| p.ends_with(".json"))
+        .map(PathBuf::from)
+}
+
+fn resolve_env(value: &Env, stub_url: Option<&str>, spec: &Example) -> String {
+    let base = || {
+        stub_url.unwrap_or_else(|| {
+            panic!(
+                "example `{}` has a row using a stub URL but declares no stub routes",
+                spec.dir
+            )
+        })
+    };
+    match value {
+        Env::Literal(v) => (*v).to_string(),
+        Env::StubBase => base().to_string(),
+        Env::StubBaseV1 => format!("{}/v1", base()),
+    }
+}
+
+fn exit_meaning(code: u8) -> &'static str {
+    match code {
+        0 => "ok",
+        1 => "an assertion failed",
+        2 => "usage error",
+        3 => "infrastructure error",
+        _ => "not an exit code domarinn defines",
+    }
+}
+
+struct Context<'a> {
+    spec: &'a Example,
+    step: usize,
+    argv: &'a [String],
+    cwd: &'a Path,
+    out: &'a Output,
+}
+
+impl Context<'_> {
+    /// Everything needed to reproduce and diagnose, in one panic.
+    ///
+    /// Not `assert_cmd`'s own message: that shows the streams but not the
+    /// example, the command, or where the row lives — and the first question on
+    /// a red build is always "which example, and how do I run it".
+    fn fail(&self, what: &str) -> ! {
+        // A networked example fails this way for one overwhelmingly likely
+        // reason, and the generic message buries it. The stub-count assertion
+        // that names it outright only runs after every step, so a step that
+        // dies first would otherwise report "exited 3" and leave the reader to
+        // work out that the request went to the vendor.
+        let egress_hint = if self.spec.stub.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n  NOTE: this example is supposed to reach a local stub, not the \
+                 internet.\n        If examples/{}/domarinn.yaml stopped carrying a \
+                 `${{env:…}}` base_url,\n        or the row stopped setting the \
+                 matching variable, the request went to\n        the real vendor — \
+                 which errors in CI and SPENDS MONEY on a machine that\n        has a \
+                 key exported. Check that first.\n",
+                self.spec.dir
+            )
+        };
+        panic!(
+            "\nexample `{dir}` failed: {what}\n\
+             \n  shows:   {shows}\
+             \n  step:    {step} of {steps}\
+             \n  command: domarinn {argv}\
+             \n  cwd:     {cwd}\
+             \n  row:     crates/domarinn-cli/tests/examples/table.rs (dir = \"{dir}\")\
+             \n  file:    examples/{dir}/domarinn.yaml\n\
+             {egress_hint}\
+             \n--- stdout ---\n{stdout}\
+             \n--- stderr ---\n{stderr}\n\
+             \nIf the example changed on purpose, update its row. If it did not, \
+             the example is broken — and so is the page that transcludes it.\n",
+            dir = self.spec.dir,
+            shows = self.spec.shows,
+            step = self.step + 1,
+            steps = self.spec.steps.len(),
+            argv = self.argv.join(" "),
+            cwd = self.cwd.display(),
+            stdout = String::from_utf8_lossy(&self.out.stdout),
+            stderr = String::from_utf8_lossy(&self.out.stderr),
+        )
+    }
+}
+
+fn check_result(ctx: &Context, step: &Step, path: &Path) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        ctx.fail("the step wrote no result document — did the run reach the output stage?")
+    };
+    let run: domarinn_core::result::RunResult = match serde_json::from_str(&text) {
+        Ok(r) => r,
+        Err(e) => ctx.fail(&format!("the result document did not parse: {e}")),
+    };
+
+    let got = Cells {
+        passed: run.summary.passed,
+        failed: run.summary.failed,
+        errored: run.summary.errored,
+        skipped: run.summary.skipped,
+    };
+    if got != step.cells {
+        // A table, not a struct dump: the reader is comparing four numbers and
+        // wants to see which one moved.
+        ctx.fail(&format!(
+            "cell tallies differ\n\
+             \n  |       | expected | actual |\
+             \n  | pass  | {:>8} | {:>6} |\
+             \n  | fail  | {:>8} | {:>6} |\
+             \n  | error | {:>8} | {:>6} |\
+             \n  | skip  | {:>8} | {:>6} |\
+             \n\n  not passing: {}",
+            step.cells.passed,
+            got.passed,
+            step.cells.failed,
+            got.failed,
+            step.cells.errored,
+            got.errored,
+            step.cells.skipped,
+            got.skipped,
+            not_passing(&run),
+        ));
+    }
+    // From the document, not the sum above: a status this harness does not
+    // model would otherwise vanish silently.
+    if run.summary.total != step.cells.total() {
+        ctx.fail(&format!(
+            "summary.total is {} but the four statuses account for {} — the run \
+             carries a case status this harness does not model",
+            run.summary.total,
+            step.cells.total()
+        ));
+    }
+
+    let got_ids: BTreeSet<&str> = run.cases.iter().map(|c| c.cell.test_id.as_str()).collect();
+    let want_ids: BTreeSet<&str> = step.case_ids.iter().copied().collect();
+    if got_ids != want_ids {
+        ctx.fail(&format!(
+            "case ids differ\n  missing:    {:?}\n  unexpected: {:?}",
+            want_ids.difference(&got_ids).collect::<Vec<_>>(),
+            got_ids.difference(&want_ids).collect::<Vec<_>>(),
+        ));
+    }
+
+    if run.summary.cache_hits < step.cache_hits {
+        ctx.fail(&format!(
+            "the row expects at least {} cache hit(s), the run reports {}. \
+             A caching example whose second run re-does the work documents \
+             nothing — check the two steps share one --cache-dir and that \
+             nothing in the suite varies between them.",
+            step.cache_hits, run.summary.cache_hits
+        ));
+    }
+
+    // `AssertKind::Cost` passes when nothing priced the call, so an example
+    // whose page says "this run stayed under budget" can be green while
+    // enforcing nothing.
+    if step.priced {
+        match run.summary.cost_usd {
+            Some(c) if c > 0.0 => {}
+            other => ctx.fail(&format!(
+                "the row claims this example enforces a cost budget, but the run \
+                 priced itself at {other:?}. Either the stub omits `usage`, or \
+                 the model is not in the pricing table and the suite sets no \
+                 `pricing:` block — in which case every `cost:` assertion on the \
+                 page passed as \"cost not reported\"."
+            )),
+        }
+    }
+}
+
+/// The cases that did not pass, with the first reason each gave.
+fn not_passing(run: &domarinn_core::result::RunResult) -> String {
+    use domarinn_core::result::{AssertStatus, CaseStatus};
+    let rows: Vec<String> = run
+        .cases
+        .iter()
+        .filter(|c| c.status != CaseStatus::Pass)
+        .map(|c| {
+            let why = c
+                .asserts
+                .iter()
+                .find(|a| matches!(a.status, AssertStatus::Fail | AssertStatus::Error))
+                .map(|a| format!("{:?}: {}", a.kind, a.reason))
+                .unwrap_or_else(|| "no failing assertion recorded".to_string());
+            format!("{} [{}] {why}", c.cell.test_id, c.status.as_str())
+        })
+        .collect();
+    if rows.is_empty() {
+        "(none)".to_string()
+    } else {
+        format!("\n    {}", rows.join("\n    "))
+    }
+}

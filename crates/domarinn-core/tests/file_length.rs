@@ -13,6 +13,12 @@ const MAX_LINES: usize = 1000;
 const SOURCE_EXTS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "css", "scss"];
 
 /// Directories never descended into.
+///
+/// These are dependency and build trees, not source. `.venv` is the one that is
+/// easy to miss: `uv run` (which builds the docs site) materializes the pinned
+/// MkDocs toolchain into `.venv/` at the repo root, and Material ships vendored
+/// JavaScript far past the cap — so without this entry, building the docs makes
+/// the ratchet fail on somebody else's code.
 const SKIP_DIRS: &[&str] = &[
     "target",
     "node_modules",
@@ -20,6 +26,8 @@ const SKIP_DIRS: &[&str] = &[
     ".git",
     ".domarinn",
     ".worktrees",
+    ".venv",
+    "site",
 ];
 
 /// Repo-relative paths permitted to exceed the cap (with justification).
