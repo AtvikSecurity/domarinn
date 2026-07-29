@@ -478,6 +478,67 @@ tests:
 }
 
 #[tokio::test]
+async fn cache_only_adopts_rather_than_failing_the_run() {
+    // Where migration earns the most. A `--cache-only` run has no live call to
+    // fall back on, so without adoption an upgrade turns a warm offline CI job
+    // into an infrastructure failure — over answers the store already holds.
+    let checkout = Checkout::new("printf '{\"output\":\"ok\"}'");
+    let yaml = r#"
+version: 1
+project: test
+suite: portability
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "./sut"]
+    cache_salt: "v1"
+tests:
+  - id: case-a
+    vars: {x: "a"}
+"#
+    .to_string();
+
+    let probed = keys_probed_for(&yaml, checkout.path()).await;
+    let legacy = probed[1].clone();
+
+    // A store holding only what the previous version wrote.
+    let store = MemCache::default();
+    let response = {
+        let scratch = MemCache::default();
+        run_in(&yaml, checkout.path(), &scratch).await;
+        let entry = scratch.map.lock().unwrap().values().next().unwrap().clone();
+        entry
+    };
+    store.put(&legacy, &response).await.unwrap();
+
+    let suite = domarinn_core::load_str(&yaml).unwrap();
+    let strict = run(
+        &suite,
+        checkout.path(),
+        &store,
+        None,
+        &RunOptions {
+            cache_mode: domarinn_core::cache::CacheMode::ReadOnlyStrict,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        strict.summary.cache_hits, 1,
+        "the legacy entry must be adopted"
+    );
+    assert!(
+        strict
+            .cases
+            .iter()
+            .all(|c| c.status != domarinn_core::result::CaseStatus::Error),
+        "a cache-only run must not fail over an entry it can reach"
+    );
+}
+
+#[tokio::test]
 async fn migration_can_be_turned_off() {
     // The cost of probing is extra lookups, which against a high-latency remote
     // on a store with nothing to migrate is pure waste. `--no-cache-migration`

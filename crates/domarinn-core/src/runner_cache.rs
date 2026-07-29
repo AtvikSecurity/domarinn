@@ -143,7 +143,7 @@ pub(super) async fn call_with_cache(
                 tracing::debug!(%key, "cache miss");
                 // Before paying for this, check whether an older domarinn already
                 // answered it under a fingerprint shape that has since changed.
-                if let Some(entry) = adopt_legacy(provider, req, repeat, cache, mode, state).await {
+                if let Some(entry) = adopt_legacy(provider, req, repeat, cache, state).await {
                     // Re-file it under the current key so the next run finds it
                     // directly and the probe budget is not spent again. A write
                     // failure is not fatal: the entry was still served.
@@ -260,12 +260,16 @@ fn warn_on_program_drift(provider: &dyn Provider, entry: &CacheEntry, state: &Ca
 /// A read error on a legacy key is swallowed rather than propagated: this is a
 /// bonus lookup on a key that already missed, so failing the case over it would
 /// turn an optimisation into an outage.
+///
+/// Runs in every cache mode that got this far, `--cache-only` included — that
+/// is where it earns the most, since a run with no live call to fall back on
+/// would otherwise report an infrastructure failure over an answer the store
+/// already holds.
 async fn adopt_legacy(
     provider: &dyn Provider,
     req: &ProviderRequest,
     repeat: u32,
     cache: &dyn CacheBackend,
-    mode: CacheMode,
     state: &CacheRunState,
 ) -> Option<CacheEntry> {
     let legacy = provider.legacy_fingerprints();
@@ -289,10 +293,6 @@ async fn adopt_legacy(
             }
         }
     }
-    // Under `--cache-only` there is no live call to fall back on, so a fruitless
-    // probe here is the last word before the run reports a miss. Nothing to do
-    // about that beyond not pretending otherwise.
-    let _ = mode;
     None
 }
 
