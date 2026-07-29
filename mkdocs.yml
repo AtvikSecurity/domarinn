@@ -154,12 +154,17 @@ plugins:
   # the page is gone. mkdocs-redirects writes a static HTML stub at the old
   # path whose JS carries over any URL fragment (#anchor) to the new page, so
   # deep links keep working too; scripts/build-docs.sh verifies every entry
-  # against the built site. The five entries below are the reference-section
-  # restructure: each old top-level page moved under reference/ (configuration.md
-  # was also retitled to domarinn-yaml.md). The examples split needs no entry
-  # here: it kept /examples/ itself alive (its index reoccupies the old URL, so
-  # there is no old path to stub), and the old per-example anchors are forwarded
-  # by a script on docs/examples/index.md instead.
+  # against the built site. The first five entries below are the
+  # reference-section restructure: each old top-level page moved under
+  # reference/ (configuration.md was also retitled to domarinn-yaml.md). The
+  # examples split needs no entry here: it kept /examples/ itself alive (its
+  # index reoccupies the old URL, so there is no old path to stub), and the old
+  # per-example anchors are forwarded by a script on docs/examples/index.md
+  # instead. server.md and deploy.md are the server split: the old top-level
+  # server.md moved to reference/server.md (its REST API and MCP sections
+  # split further into their own reference/ pages, which need no redirect of
+  # their own since those URLs never existed before), and deploy.md became the
+  # self-hosting guide under guides/.
   - redirects:
       redirect_maps:
         configuration.md: reference/domarinn-yaml.md
@@ -167,6 +172,8 @@ plugins:
         assertions.md: reference/assertions.md
         cli.md: reference/cli.md
         protocol.md: reference/protocol.md
+        server.md: reference/server.md
+        deploy.md: guides/self-host.md
 
 nav:
   - Introduction: index.md
@@ -179,8 +186,7 @@ nav:
       - Caching: caching.md
       - Statistics & baselines: statistics.md
       - CI integration: ci.md
-      - Server & accounts: server.md
-      - Self-hosting: deploy.md
+      - Self-hosting: guides/self-host.md
       - Migrating from promptfoo: migrate-promptfoo.md
       - Troubleshooting: troubleshooting.md
   # No example-number ranges in these labels: nothing would keep them true
@@ -210,6 +216,9 @@ nav:
       - Providers: reference/providers.md
       - Assertions: reference/assertions.md
       - CLI: reference/cli.md
+      - Server: reference/server.md
+      - REST API: reference/rest-api.md
+      - MCP endpoint: reference/mcp.md
       - Exec protocol: reference/protocol.md
   # A top-level entry so the Rust API docs are one click from the top of every
   # page. Root-absolute link into the rustdoc tree build-docs.sh nests at
