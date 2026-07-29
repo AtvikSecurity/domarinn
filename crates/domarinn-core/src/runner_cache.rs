@@ -339,7 +339,8 @@ pub(super) fn response_to_entry(
 ) -> CacheEntry {
     CacheEntry {
         created_at: Utc::now(),
-        provider_fingerprint: provider.fingerprint(),
+        provider_fingerprint: Some(provider.fingerprint()),
+        request: None,
         // Which build answered — recorded, never keyed. See
         // `warn_on_program_drift` for what reads it back.
         program_digest: provider.program_digest().map(str::to_string),

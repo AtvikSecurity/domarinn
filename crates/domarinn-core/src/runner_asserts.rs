@@ -342,9 +342,12 @@ fn verdict_entry(
     let reason = graded.verdict.to_outcome(None).reason;
     crate::cache::CacheEntry {
         created_at: chrono::Utc::now(),
-        provider_fingerprint: grader
-            .grading_fingerprint(assert, Some(ctx.base_dir))
-            .unwrap_or(Json::Null),
+        provider_fingerprint: Some(
+            grader
+                .grading_fingerprint(assert, Some(ctx.base_dir))
+                .unwrap_or(Json::Null),
+        ),
+        request: None,
         output: Output::Text(reason),
         usage: graded.usage.clone(),
         cost_usd: graded.cost_usd,

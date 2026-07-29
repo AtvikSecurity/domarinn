@@ -61,6 +61,49 @@ pub fn grader_cache_key(fingerprint: &Json, graded: &Json, repeat: u32) -> Cache
     }))
 }
 
+/// Compute the cache key for one outgoing request — the one rule.
+///
+/// `sha256(canonical_json({request, repeat, provider_salt?, case_salt?}))`,
+/// where `request` is the redacted canonical request the call would send (see
+/// [`crate::provider::Provider::canonical_request`]). Every cached call — a
+/// provider response, a judge verdict, an embedding, an exec grading — is keyed
+/// by this one function, so there is a single place where "what makes two calls
+/// interchangeable" is decided.
+///
+/// The salts are inserted **only when set**, under the discipline the module
+/// docs spell out: canonical JSON emits every member that is present, so a
+/// `null` member hashes differently from an absent one. An empty string is a
+/// real salt value and is deliberately not normalized to "unset".
+///
+/// Two salt members rather than one merged string, because a provider-level and
+/// a case-level salt can both be set on one call: merging them would let
+/// `("a", "b")` and `("ab", None)` collide.
+///
+/// Collision with the legacy [`provider_cache_key`] / [`grader_cache_key`] key
+/// spaces is structurally impossible rather than merely unlikely: `request` is
+/// not a member of either legacy object, and `fingerprint`/`prompt`/`vars` are
+/// not members of this one, so no pair of inputs can produce one canonical
+/// string.
+pub fn request_cache_key(
+    request: &Json,
+    repeat: u32,
+    provider_salt: Option<&str>,
+    case_salt: Option<&str>,
+) -> CacheKey {
+    let mut parts = serde_json::json!({
+        "request": request,
+        "repeat": repeat,
+    });
+    let members = parts.as_object_mut().expect("json! object literal");
+    if let Some(salt) = provider_salt {
+        members.insert("provider_salt".to_string(), Json::String(salt.to_string()));
+    }
+    if let Some(salt) = case_salt {
+        members.insert("case_salt".to_string(), Json::String(salt.to_string()));
+    }
+    CacheKey::compute(&parts)
+}
+
 /// Compute the cache key for one provider call.
 pub fn provider_cache_key(fingerprint: &Json, req: &ProviderRequest, repeat: u32) -> CacheKey {
     let prompt = req
@@ -221,6 +264,124 @@ mod tests {
         assert_ne!(
             provider_cache_key(&fp(), &a, 0),
             provider_cache_key(&fp(), &b, 0)
+        );
+    }
+
+    fn request() -> Json {
+        serde_json::json!({"transport": "http", "url": "https://x.test/v1", "body": {"q": 1}})
+    }
+
+    #[test]
+    fn request_key_is_stable_for_same_inputs() {
+        assert_eq!(
+            request_cache_key(&request(), 0, None, None),
+            request_cache_key(&request(), 0, None, None)
+        );
+        assert_ne!(
+            request_cache_key(&request(), 0, None, None),
+            request_cache_key(&serde_json::json!({"transport": "exec"}), 0, None, None)
+        );
+    }
+
+    #[test]
+    fn request_key_separates_repeats() {
+        assert_ne!(
+            request_cache_key(&request(), 0, None, None),
+            request_cache_key(&request(), 1, None, None)
+        );
+    }
+
+    /// Each salt is inserted only when set, so a `None` hashes exactly like a
+    /// call made before that member existed. Reconstructing the object inline
+    /// keeps the assertion honest without a magic constant.
+    #[test]
+    fn an_unset_salt_leaves_the_salt_free_key_alone() {
+        let salt_free = CacheKey::compute(&serde_json::json!({
+            "request": request(),
+            "repeat": 0,
+        }));
+        assert_eq!(request_cache_key(&request(), 0, None, None), salt_free);
+
+        let provider_only = CacheKey::compute(&serde_json::json!({
+            "request": request(),
+            "repeat": 0,
+            "provider_salt": "p1",
+        }));
+        assert_eq!(
+            request_cache_key(&request(), 0, Some("p1"), None),
+            provider_only
+        );
+
+        let case_only = CacheKey::compute(&serde_json::json!({
+            "request": request(),
+            "repeat": 0,
+            "case_salt": "c1",
+        }));
+        assert_eq!(
+            request_cache_key(&request(), 0, None, Some("c1")),
+            case_only
+        );
+    }
+
+    /// An empty salt is a real value, deliberately not normalized to "unset" —
+    /// for both members.
+    #[test]
+    fn an_empty_salt_differs_from_an_unset_one() {
+        assert_ne!(
+            request_cache_key(&request(), 0, Some(""), None),
+            request_cache_key(&request(), 0, None, None)
+        );
+        assert_ne!(
+            request_cache_key(&request(), 0, None, Some("")),
+            request_cache_key(&request(), 0, None, None)
+        );
+    }
+
+    /// Two separate members rather than one merged salt: a provider-level and a
+    /// case-level salt can both be set on one call, and all four presence
+    /// combinations must stay distinct — a merged salt would let
+    /// `provider="a", case="b"` collide with `provider="ab"`.
+    #[test]
+    fn the_two_salts_compose_without_ambiguity() {
+        let keys = [
+            request_cache_key(&request(), 0, None, None),
+            request_cache_key(&request(), 0, Some("a"), None),
+            request_cache_key(&request(), 0, None, Some("b")),
+            request_cache_key(&request(), 0, Some("a"), Some("b")),
+        ];
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a, b, "salt presence combinations must stay distinct");
+            }
+        }
+        assert_ne!(
+            request_cache_key(&request(), 0, Some("a"), Some("b")),
+            request_cache_key(&request(), 0, Some("ab"), None)
+        );
+    }
+
+    /// The two key spaces cannot collide, and it is structural rather than
+    /// probabilistic: `request` is not a member of the legacy object and
+    /// `fingerprint`/`prompt`/`vars` are not members of this one, so no pair of
+    /// inputs can ever produce one canonical string. Fed the legacy key's own
+    /// parts as the request — the most adversarial input available — they still
+    /// differ.
+    #[test]
+    fn a_request_key_can_never_equal_a_legacy_provider_key() {
+        let legacy_parts = serde_json::json!({
+            "fingerprint": fp(),
+            "prompt": Json::Null,
+            "vars": {"x": "a"},
+            "params": {},
+            "repeat": 0,
+        });
+        assert_ne!(
+            request_cache_key(&legacy_parts, 0, None, None),
+            provider_cache_key(&fp(), &req("a"), 0)
+        );
+        assert_ne!(
+            request_cache_key(&fp(), 0, None, Some("d1")),
+            provider_cache_key(&fp(), &salted("a", Some("d1")), 0)
         );
     }
 

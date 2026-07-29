@@ -198,7 +198,8 @@ mod tests {
         CacheEntry {
             tool_calls: Vec::new(),
             created_at: chrono::Utc::now(),
-            provider_fingerprint: json!({"type": "exec"}),
+            provider_fingerprint: Some(json!({"type": "exec"})),
+            request: None,
             output: Output::Text("hi".into()),
             usage: None,
             cost_usd: None,

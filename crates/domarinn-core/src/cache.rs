@@ -220,7 +220,19 @@ impl Graded {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub created_at: DateTime<Utc>,
-    pub provider_fingerprint: Json,
+    /// What *selected* the provider that answered.
+    ///
+    /// Optional in both directions: entries in the wild carry it, so it must
+    /// keep deserializing, and it stops being written once the request itself is
+    /// what the entry records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_fingerprint: Option<Json>,
+    /// The redacted canonical request this entry answers. Together with the
+    /// key's repeat/salt members it re-hashes to exactly this entry's key — the
+    /// offline-migration and debugging contract. Stores the resolved URL /
+    /// command. `None` on entries written before 0.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<Json>,
     pub output: Output,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
@@ -366,6 +378,41 @@ mod tests {
         assert!(!CacheKey::is_valid("sha256:XYZ"));
         assert!(!CacheKey::is_valid("md5:abc"));
         assert!(!CacheKey::is_valid("sha256:AABB")); // too short + uppercase
+    }
+
+    /// Both members are optional in both directions: an entry written before
+    /// `request` existed still reads, an entry written after
+    /// `provider_fingerprint` stops being written still reads, and neither is
+    /// serialized when absent.
+    #[test]
+    fn an_entry_carries_a_request_or_a_fingerprint_or_neither() {
+        let legacy: CacheEntry = serde_json::from_value(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "provider_fingerprint": {"type": "exec"},
+            "output": "hi",
+            "domarinn_version": "0.4.0",
+        }))
+        .unwrap();
+        assert_eq!(legacy.provider_fingerprint, Some(json!({"type": "exec"})));
+        assert!(legacy.request.is_none());
+
+        let keyed: CacheEntry = serde_json::from_value(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "domarinn_version": "0.5.0",
+            "request": {"transport": "exec", "command": "./sut"},
+        }))
+        .unwrap();
+        assert_eq!(keyed.request.as_ref().unwrap()["command"], json!("./sut"));
+        assert!(keyed.provider_fingerprint.is_none());
+
+        let written = serde_json::to_value(&keyed).unwrap();
+        assert!(written.get("provider_fingerprint").is_none(), "{written}");
+        assert_eq!(written["request"]["command"], json!("./sut"));
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("request")
+            .is_none());
     }
 
     #[test]

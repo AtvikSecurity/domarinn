@@ -750,6 +750,7 @@ fn an_entry_written_by_a_newer_domarinn_still_deserializes() {
     let from_the_future = json!({
         "created_at": "2026-01-01T00:00:00Z",
         "provider_fingerprint": {"type": "exec"},
+        "request": {"transport": "exec", "command": "./sut", "args": []},
         "output": "hi",
         "domarinn_version": "99.0.0",
         "empty_reason": "thinking_only",
@@ -760,6 +761,7 @@ fn an_entry_written_by_a_newer_domarinn_still_deserializes() {
     let entry: CacheEntry = serde_json::from_value(from_the_future).unwrap();
     assert_eq!(entry.output.as_text(), "hi");
     assert_eq!(entry.domarinn_version, "99.0.0");
+    assert_eq!(entry.request.unwrap()["command"], json!("./sut"));
 }
 
 #[tokio::test]
