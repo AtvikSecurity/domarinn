@@ -25,6 +25,7 @@ project: examples
 suite: openai-provider
 
 providers:
+  # --8<-- [start:provider]
   - id: gpt
     # The label interpolates the same variable as `model`: it exists to name
     # the system under test wherever results are displayed, and a run against
@@ -42,6 +43,7 @@ providers:
     params:
       temperature: 0
       max_tokens: 256
+  # --8<-- [end:provider]
 
 prompts:
   - id: geography

@@ -42,6 +42,7 @@ tests:
     assert:
       - type: contains
         value: "ok"
+      # --8<-- [start:assert]
       - type: cost
         max: 0.01
       - type: tokens
@@ -50,6 +51,7 @@ tests:
       # CI runner, and a flaky gate gets muted.
       - type: latency
         max: 30000
+      # --8<-- [end:assert]
 
   # The same call, measured two ways. It populates a prompt cache: 500 in, 40
   # out, and 2000 tokens paid to write the entry. `total` is 540 and `billable`

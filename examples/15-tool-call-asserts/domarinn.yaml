@@ -28,6 +28,7 @@ providers:
 
 # Suite-level, so every provider is offered the same surface. `input_schema` is
 # passed through verbatim and never rendered as a template.
+# --8<-- [start:tools]
 tools:
   - name: lookup_order
     description: Fetch an order by its id.
@@ -45,6 +46,7 @@ tools:
       properties:
         order_id: { type: integer }
         amount_usd: { type: number }
+# --8<-- [end:tools]
 
 tests:
   # The model should look the order up before saying anything about it.
@@ -52,6 +54,7 @@ tests:
     vars:
       user_input: "What's the status of order 1042?"
     assert:
+      # --8<-- [start:assert]
       - type: tool-call
         name: lookup_order
         # `args` is a SUBSET match: the call may carry more, but these must be
@@ -62,6 +65,7 @@ tests:
       # The dangerous tool must not be touched for a read-only question.
       - type: not-tool-call
         name: issue_refund
+      # --8<-- [end:assert]
 
   # Arguments can be shape-checked instead of pinned, when the exact value is
   # not what you are testing.

@@ -40,20 +40,24 @@ providers:
 
   # The embeddings provider the `similar` assertion uses. OpenAI-compatible, so
   # a local endpoint works as well as the hosted one.
+  # --8<-- [start:provider]
   - id: embedder
     type: embeddings
     model: "${env:OPENAI_EMBED_MODEL:-text-embedding-3-small}"
     base_url: "${env:OPENAI_BASE_URL:-https://api.openai.com/v1}"
     api_key_env: OPENAI_API_KEY
+  # --8<-- [end:provider]
 
 tests:
   - id: paraphrase/policy-window
     vars:
       user_input: "You can send it back any time in the first 30 days."
     assert:
+      # --8<-- [start:assert]
       - type: similar
         # Templatable, like any other assertion value.
         value: "Returns are accepted within 30 days of delivery."
         # Stated explicitly rather than left to the 0.8 default — a threshold
         # you did not choose is a threshold you cannot defend.
         threshold: 0.85
+      # --8<-- [end:assert]

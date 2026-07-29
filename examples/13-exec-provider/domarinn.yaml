@@ -29,6 +29,7 @@ project: examples
 suite: exec-provider
 
 providers:
+  # --8<-- [start:provider]
   - id: assistant-fast
     label: "assistant (fast model)"
     type: exec
@@ -40,6 +41,7 @@ providers:
       ASSISTANT_STYLE: "concise"
     # A slow system under test needs a longer leash than the default.
     timeout_ms: 30000
+  # --8<-- [end:provider]
 
   # A second provider, not a flag. Both run against every case, so the report
   # compares them cell by cell.
