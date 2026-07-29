@@ -1,8 +1,13 @@
+<!-- Ownership: operating semantics (auth model, credential kinds, env vars,
+storage, logging) live in reference/server.md. Procedures (getting it running:
+Docker, compose, Kubernetes, proxies, backups, upgrades, first admin) live in
+guides/self-host.md. The env-var table exists ONLY in reference/server.md. -->
+
 # Self-hosting domarinn
 
 domarinn is **one static binary**. The `server` subcommand runs the results API and the embedded web UI; the same binary is the CLI, the eval engine, and its own container healthcheck. There are **zero runtime dependencies** — no sidecar database, no external cache, no libc. State is SQLite under the data directory.
 
-For the API surface, the auth model, and the full environment-variable reference, see [`./server.md`](./server.md). This page is about *hosting* it.
+For the API surface, the auth model, and the full environment-variable reference, see [`../reference/server.md`](../reference/server.md). This page is about *hosting* it.
 
 ## What the server is (and is not)
 
@@ -11,28 +16,35 @@ For the API surface, the auth model, and the full environment-variable reference
 
 ## Configuration
 
-The essentials for hosting are below; [`./server.md`](./server.md#environment-variables) has the complete table (auth modes, admin bootstrap, cache limits).
-
-| Env var                 | Default | Purpose |
-|-------------------------|---------|---------|
-| `DOMARINN_DATA_DIR`   | `/data` | Directory holding `domarinn.db` and `cache.db`. Mount a volume here. |
-| `DOMARINN_TOKENS`     | (unset) | Static bearer tokens as comma-separated `scope:secret` pairs (`read:…,write:…,admin:…`). Grants access; never changes the mode. |
-| `DOMARINN_AUTH_MODE`  | `closed` | The auth mode: `open` \| `protect-writes` \| `closed`. Unset means `closed` — every call and page requires auth. |
-| `DOMARINN_ADMIN_USER` / `DOMARINN_ADMIN_PASSWORD` | (unset) | Bootstrap a local admin account at startup (see [First run](#first-run-creating-the-admin)). |
-| `DOMARINN_PUBLIC_URL` | (unset) | Public base URL used in share links and absolute URLs behind a proxy. No trailing slash, no path prefix. |
-| `DOMARINN_MCP_ENABLED` | `false` | Mount the read-only [MCP endpoint](./server.md#mcp-endpoint) at `POST /api/v1/mcp` for AI agents. Opt-in; a typo is a startup error, not a silent `false`. |
-| `DOMARINN_MCP_ALLOWED_ORIGINS` | (unset) | Extra origins allowed to reach the MCP endpoint, comma-separated. Only needed for browser-hosted MCP clients on a different origin than `DOMARINN_PUBLIC_URL`. |
+The complete environment-variable table — auth modes, admin bootstrap, SSO, cache limits, MCP,
+logging — lives in [`../reference/server.md`](../reference/server.md#environment-variables); it is
+the sole owner of that table. The two you always set for hosting are `DOMARINN_DATA_DIR` (mount a
+volume there) and `DOMARINN_PUBLIC_URL` (the public base URL, no trailing slash, no path prefix).
 
 The server listens on **`0.0.0.0:8321`** (`--port` to change). Health is exposed at `/health` and `/api/v1/health`; the container `HEALTHCHECK` runs `domarinn healthcheck`, which probes the server from inside the container (the distroless image has no shell or curl).
 
 ## First run: creating the admin
 
-A brand-new instance comes up **`closed`** — every page and API call requires auth — with only the bootstrap surface open (health, meta, setup, login) so it can be claimed. Create the admin one of two ways:
+Until an admin account exists, `GET /api/v1/meta` reports `"setup_required": true`. A brand-new
+instance comes up **`closed`** — every page and API call requires auth — with only the bootstrap
+surface open (health, meta, setup, login) so it can be claimed. There are **two** ways to create
+that first admin:
 
-- **Bootstrap from the environment (recommended for containers).** Set `DOMARINN_ADMIN_USER` and `DOMARINN_ADMIN_PASSWORD`. On every startup the server idempotently ensures that enabled admin account exists — ideal with a secret store.
-- **Interactive setup.** Hit the `/setup` page (or `POST /api/v1/auth/setup`) once to create the first admin; it is a 409 once any user exists.
+**A. Interactive setup (via the UI or the API).** `POST /api/v1/auth/setup` with `{username, password}` creates the first admin and returns a session token. This endpoint is open **only while zero users exist**; afterwards it is a `409`. The web UI's `/setup` page drives exactly this call.
 
-Full details, including the auth modes and how tokens vs accounts differ, are in [`./server.md`](./server.md#accounts--auth-model).
+```sh
+curl -sX POST http://localhost:8321/api/v1/auth/setup \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"correct horse battery staple"}'
+# 201 { "token": "mses_...", "user": { "id": "...", "username": "admin", "role": "admin", ... } }
+```
+
+**B. Bootstrap from the environment (recommended for containers).** Set `DOMARINN_ADMIN_USER` and `DOMARINN_ADMIN_PASSWORD`. On every startup the server **idempotently** ensures that account exists as an enabled admin, creating it if missing and updating the password if it changed. This is the right choice for containers and Kubernetes — declare the admin in your secret store and the instance self-seeds.
+
+> An instance seeded this way needs no interactive setup: `setup_required` is
+> already `false` on first boot and the seeded admin can log straight in.
+
+Full details, including the auth modes and how tokens vs accounts differ, are in [`../reference/server.md`](../reference/server.md#accounts--auth-model).
 
 ## The image
 
@@ -225,4 +237,4 @@ Restoring is just putting the file back at `/data/domarinn.db` while the service
 
 Pull the new image tag and restart the single pod/container (`Recreate` on Kubernetes handles the ordering). Because the schema migrations run at startup and there is only ever one writer, upgrades are a stop-start with a backup taken first.
 
-Published tags are `rolling` (tracks `main`), plus `{{version}}`, `{{major}}.{{minor}}` and `{{major}}` for each release. There is deliberately **no `latest`** — pin a version, or track `rolling` if you want the tip of main. See [`./ci.md`](./ci.md#container-image-dockeryml).
+Published tags are `rolling` (tracks `main`), plus `{{version}}`, `{{major}}.{{minor}}` and `{{major}}` for each release. There is deliberately **no `latest`** — pin a version, or track `rolling` if you want the tip of main. See [`../ci.md`](../ci.md#container-image-dockeryml).
