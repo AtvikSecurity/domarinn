@@ -768,7 +768,15 @@ async fn run_cell(
     // the same code path as the call. Captured *before* the call so a failed
     // case still carries it — which is where it earns its keep: an HTTP 404
     // explains itself the moment the model id in the request is visible.
-    let request = json_to_persist(include_raw, provider.request_preview(&req), "request");
+    //
+    // Built only when it will be persisted. For `http` a preview is a full
+    // template render — engine, env snapshot, url/headers/body — per case, and
+    // under `--no-raw` every byte of it was being discarded. The cache no longer
+    // depends on this call: it keys on `canonical_request`, which the provider
+    // builds for itself inside `call_with_cache`.
+    let request = include_raw
+        .then(|| json_to_persist(true, provider.request_preview(&req), "request"))
+        .flatten();
 
     // Latency assertions must not observe a cached (near-zero) latency.
     let bypass_cache = has_latency_assert(&test.assert);

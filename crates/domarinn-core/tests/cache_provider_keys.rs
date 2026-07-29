@@ -279,6 +279,44 @@ async fn runtime_env_templating_shares_a_key_and_is_warned_about() {
     assert_eq!(cache.entries(), 1);
 }
 
+/// A request nobody can render the same way twice is not cached at all.
+///
+/// `uuid()` without a seed is a template error here by design — a persisted
+/// render must be reproducible. What this pins is the *cache's* response to
+/// that: no canonical request means no key, so the call goes live and unstored.
+/// The alternative, keying on a value that changes per call, is the worst of
+/// both: it never hits, and it grows the store by one dead entry per run
+/// forever.
+#[tokio::test]
+async fn a_request_that_cannot_be_rendered_deterministically_is_never_keyed() {
+    use domarinn_core::provider::ProviderRequest;
+
+    let server = always_answers().await;
+    let yaml = http_suite(&server.uri(), "{}", r#"{prompt: "{{ uuid() }}"}"#);
+    let suite = domarinn_core::load_str(&yaml).unwrap();
+    let provider =
+        domarinn_core::provider_factory::build_provider(&suite.providers[0], None).unwrap();
+    assert!(
+        provider
+            .canonical_request(&ProviderRequest::default())
+            .is_none(),
+        "an unrenderable request has no identity to key on"
+    );
+
+    let cache = MemCache::default();
+    let result = run_suite(&yaml, &cache).await;
+    assert_eq!(cache.entries(), 0, "no key, so nothing to store under one");
+    // The live call renders the same templates and fails the same way, so this
+    // surfaces as a case error rather than a silent uncached success. Recorded
+    // because it is the behaviour, not because the cache depends on it.
+    assert_eq!(
+        result.cases[0].error_class.as_ref().map(|c| c.0.as_str()),
+        Some("render_failed"),
+        "the live call reports the render failure: {:?}",
+        result.cases[0].error
+    );
+}
+
 /// Everything else about an `http` provider that must separate.
 #[tokio::test]
 async fn http_url_method_and_body_each_bust() {
@@ -376,6 +414,31 @@ async fn a_vendor_provider_is_separated_by_model_base_url_and_params() {
             calls(&other).await - before,
             1,
             "{kind}: a different gateway is a different provider"
+        );
+    }
+}
+
+/// Two spellings of one gateway must not partition the cache.
+///
+/// `base_url` is a caller-authored string and both spellings resolve to the same
+/// endpoint, so a trailing slash used to hand two teammates private halves of a
+/// shared store — the fingerprint carried the string verbatim. Keying the
+/// *resolved request* closes it: the url each provider would send is what the
+/// hash sees, and `endpoint()` trims before it builds one. Covered as a unit in
+/// Task 4; this is the same property through the live key path.
+#[tokio::test]
+async fn a_trailing_slash_on_base_url_shares_the_entry() {
+    const KEY: &str = "DOMARINN_KEYS_SLASH_KEY";
+    std::env::set_var(KEY, "sk-test");
+    let server = always_answers().await;
+
+    for kind in ["anthropic", "openai"] {
+        let plain = vendor_suite(kind, &server.uri(), "model-a", "{}", KEY);
+        let slashed = vendor_suite(kind, &format!("{}/", server.uri()), "model-a", "{}", KEY);
+        assert_eq!(
+            live_calls_for_second(&server, &plain, &slashed).await,
+            0,
+            "{kind}: one gateway spelled two ways is one question"
         );
     }
 }

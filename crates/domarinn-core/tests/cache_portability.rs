@@ -414,6 +414,28 @@ async fn keys_probed_for(yaml: &str, base_dir: &Path) -> Vec<CacheKey> {
     asked
 }
 
+/// The `ProviderRequest` the runner builds for a one-case, prompt-less suite
+/// whose only var is `x`.
+///
+/// Spelled out rather than captured because it is the *input* to the frozen key:
+/// a test that took the runner's word for it could not tell "the key shape is
+/// unchanged" from "the key shape and the reconstruction moved together".
+fn request_for(test_id: &str, x: &str) -> domarinn_core::provider::ProviderRequest {
+    domarinn_core::provider::ProviderRequest {
+        prompt: None,
+        vars: [("x".to_string(), serde_json::Value::String(x.to_string()))]
+            .into_iter()
+            .collect(),
+        params: serde_json::Map::new(),
+        test: domarinn_core::provider::TestMeta {
+            id: test_id.to_string(),
+            tags: Vec::new(),
+        },
+        case_salt: None,
+        tools: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn an_entry_written_under_a_previous_key_shape_is_adopted() {
     // The upgrade path. Before this, changing the fingerprint's shape stranded
@@ -443,6 +465,28 @@ tests:
     assert_ne!(
         current, legacy,
         "a legacy shape must not equal the current one"
+    );
+    assert_eq!(
+        probed.len(),
+        6,
+        "one live key, then the ≤0.4.0 shape and four older exec generations"
+    );
+    // The one that matters is the second: it is the key a 0.4.x domarinn wrote
+    // under, recomputed from the frozen function and this provider's frozen
+    // fingerprint. If these disagree the runner is probing for something nobody
+    // ever wrote, and every warm 0.4 store silently re-pays.
+    let suite = domarinn_core::load_str(&yaml).unwrap();
+    let provider =
+        domarinn_core::provider_factory::build_provider(&suite.providers[0], Some(checkout.path()))
+            .unwrap();
+    assert_eq!(
+        legacy,
+        domarinn_core::cache_migrate::legacy_provider_key(
+            &provider.fingerprint(),
+            &request_for("case-a", "a"),
+            0
+        ),
+        "the first probe must be exactly the ≤0.4.x key"
     );
 
     // Seed only the legacy key, exactly as an older domarinn left it.
@@ -593,11 +637,21 @@ tests:
     let asked = spy.asked.lock().unwrap().len();
 
     assert!(
-        asked < 40 * 2,
-        "probing must taper off, not run for every case: {asked} lookups for 40 cases"
-    );
-    assert!(
         asked >= 40,
         "every case must still check its own key: {asked} lookups for 40 cases"
+    );
+    // How many cases actually probed, derived rather than hardcoded: one cold
+    // case costs its own key plus every historical shape, so the per-case probe
+    // cost is measured from a single-case run of the same provider. Asserting
+    // the count of *probing cases* keeps the property ("a handful, not all 40")
+    // stable the day a shape is added or retired, where a literal ceiling would
+    // quietly become either unreachable or wrong.
+    let one_case = yaml.replace(&tests, "  - id: case-0\n    vars: {x: \"0\"}\n");
+    let per_case = keys_probed_for(&one_case, checkout.path()).await.len();
+    let probed_cases = (asked - 40) / (per_case - 1);
+    assert!(
+        probed_cases <= 12,
+        "probing must taper off, not run for every case: {probed_cases} of 40 cases \
+         probed ({asked} lookups at {per_case} per cold case)"
     );
 }

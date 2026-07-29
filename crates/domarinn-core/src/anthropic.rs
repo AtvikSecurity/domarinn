@@ -386,15 +386,6 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// The fingerprint is a member of every cache key (`cache_key.rs:42`), so
-    /// changing it invalidates **every** entry in every disk, S3, and server
-    /// store at once — the failure `cache_key.rs:10-12` warns about, one level
-    /// up. A test that pins only `provider_cache_key` cannot catch this,
-    /// because it holds the fingerprint fixed.
-    ///
-    /// If this fails, you have a cache migration to plan. New members belong
-    /// here **conditionally**, only when configured, mirroring the `case_salt`
-    /// discipline at `cache_key.rs:48-55`.
     /// The regression this whole subsystem exists for: `cost_usd` was
     /// hardcoded `None`, so `AssertKind::Cost` took its "not reported" branch
     /// and every budget assertion passed no matter what the call cost.
@@ -477,6 +468,16 @@ mod tests {
         );
     }
 
+    /// The fingerprint is frozen, and this is what freezes it.
+    ///
+    /// It was a member of every cache key through 0.4.x. Since 0.5.0 the key
+    /// hashes the canonical request instead, so a change here no longer
+    /// invalidates a store — it *strands* one, by making
+    /// `cache_migrate::legacy_provider_key` probe for entries nobody ever wrote.
+    /// It also feeds `digests::provider_digest`, which `--against` run diffing
+    /// compares, so moving it invents a config drift that never happened.
+    ///
+    /// If this fails, you have a migration to plan, not a constant to update.
     #[test]
     fn fingerprint_is_stable_for_default_config() {
         let p = AnthropicProvider::new("p", "claude-x", None, None, None, None);

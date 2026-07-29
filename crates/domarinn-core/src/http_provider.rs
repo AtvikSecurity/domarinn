@@ -265,12 +265,18 @@ impl Provider for HttpProvider {
     /// What selects this endpoint: where the request goes, how it is shaped, and
     /// how the answer is read back out.
     ///
+    /// Frozen history since 0.5.0, per [`Provider::fingerprint`] — the live key
+    /// hashes [`Self::canonical_request`] instead. What is written below in the
+    /// present tense describes the ≤0.4.x key this shape produced, which
+    /// `cache_migrate` still recomputes to adopt entries under it.
+    ///
     /// `headers` are in it as a digest. Without them, two providers wrapping one
     /// endpoint and differing only in a header — `X-Model: gpt-5` against
     /// `X-Model: claude-opus-5`, or one tenant's key against another's — shared
     /// every entry, so the second column of a comparison replayed the first's
     /// answers and the run reported a difference of zero it never measured. This
-    /// is the same collision `env` closes for `exec` providers.
+    /// is the same collision `env` closes for `exec` providers. The canonical
+    /// request closes it the same way, with a digest of the *rendered* headers.
     ///
     /// The templates are hashed unrendered, deliberately: see [`headers_digest`]
     /// for why that separates a model selector without partitioning a shared
@@ -278,11 +284,11 @@ impl Provider for HttpProvider {
     /// `body` are published unrendered.
     ///
     /// The member is inserted **only when a header is declared**, under the
-    /// discipline [`crate::cache_key`] spells out: canonical JSON emits every
-    /// member that is present, so a `null` one hashes differently from an absent
-    /// one. Adding it unconditionally would re-key every `http` provider that
-    /// sets no headers — which is most of them — to fix a collision none of them
-    /// can have.
+    /// discipline [`crate::cache_migrate::legacy_provider_key`] spells out:
+    /// canonical JSON emits every member that is present, so a `null` one hashes
+    /// differently from an absent one. Adding it unconditionally would re-key
+    /// every `http` provider that sets no headers — which is most of them — to
+    /// fix a collision none of them can have.
     fn fingerprint(&self) -> Json {
         let mut fp = json!({
             "type": "http",

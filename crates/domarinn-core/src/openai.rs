@@ -384,9 +384,6 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// See the matching test in `anthropic.rs` for why this is load-bearing:
-    /// the fingerprint feeds every cache key, so an unconditional change here
-    /// invalidates every cached entry in every store.
     /// The vendor trap: OpenAI's `prompt_tokens` *includes* `cached_tokens`,
     /// where Anthropic's `input_tokens` excludes its cache counters. Without
     /// the subtraction the cached span is billed at the full input rate on top
@@ -448,6 +445,10 @@ mod tests {
         assert_eq!(warm.cache_read_tokens, Some(6000));
     }
 
+    /// See the matching test in `anthropic.rs` for why this is load-bearing: the
+    /// fingerprint is frozen history now, read only by legacy-key probing and by
+    /// `provider_digest`, and a change here strands a store rather than
+    /// invalidating one.
     #[test]
     fn fingerprint_is_stable_for_default_config() {
         let p = OpenAiProvider::new("p", "gpt-x", None, None, None, None);

@@ -101,8 +101,9 @@ impl Provider for ExecProvider {
     ///
     /// `command` and `env` play exactly the part `model` and `base_url` play in
     /// the `anthropic` fingerprint: they name the thing that will answer. The
-    /// question itself — the rendered prompt, the vars, the tools — is hashed
-    /// separately by [`crate::cache_key::provider_cache_key`].
+    /// question itself — the rendered prompt, the vars, the tools — reaches the
+    /// cache key through [`Self::canonical_request`]; this value is frozen
+    /// history plus run-diff provenance, per [`Provider::fingerprint`].
     ///
     /// There is deliberately no member describing the program's *bytes*. One
     /// used to exist, and it made an `exec` fingerprint a property of the local
@@ -140,8 +141,13 @@ impl Provider for ExecProvider {
         self.program_digest.as_deref()
     }
 
-    fn legacy_fingerprints(&self) -> &[Json] {
-        &self.legacy_fingerprints
+    /// The ≤0.4.0 shape — this provider's own current fingerprint — followed by
+    /// the four older generations. See [`crate::cache_migrate`].
+    fn legacy_fingerprints(&self) -> Vec<Json> {
+        let mut shapes = Vec::with_capacity(1 + self.legacy_fingerprints.len());
+        shapes.push(self.fingerprint());
+        shapes.extend(self.legacy_fingerprints.iter().cloned());
+        shapes
     }
 
     async fn call(

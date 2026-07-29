@@ -210,12 +210,17 @@ pub trait Provider: Send + Sync {
     /// Stable id from the config.
     fn id(&self) -> &str;
 
-    /// What *selects* this provider — the identity half of every cache key.
+    /// What *selects* this provider: canonical JSON naming the thing that will
+    /// answer — type, plus `model`/`base_url`/`command`/`url` and any
+    /// `cache_salt`.
     ///
-    /// Canonical JSON naming the thing that will answer: type, plus
-    /// `model`/`base_url`/`command`/`url` and any `cache_salt`. The question
-    /// being asked is hashed separately, by
-    /// [`crate::cache_key::provider_cache_key`].
+    /// **Frozen.** It was the identity half of every cache key through 0.4.x;
+    /// since 0.5.0 the key hashes the canonical request instead
+    /// ([`Provider::canonical_request`]). Two things still read it, and both
+    /// break if it moves: `digests::provider_digest`, which `--against` run
+    /// diffing compares, and [`Provider::legacy_fingerprints`], which
+    /// reconstructs ≤0.4.x keys to adopt entries under them. So a change here no
+    /// longer invalidates a cache — it strands one.
     ///
     /// Two rules, both load-bearing:
     ///
@@ -275,12 +280,24 @@ pub trait Provider: Send + Sync {
 
     /// Fingerprints this provider published in earlier versions, newest first.
     ///
-    /// Consulted only on a miss, so entries written before a fingerprint changed
-    /// shape can be adopted instead of re-paid for. Empty for a provider whose
-    /// shape has never changed. See [`crate::cache_migrate`], which owns the
-    /// literals and is meant to be deleted once they stop appearing.
-    fn legacy_fingerprints(&self) -> &[Json] {
-        &[]
+    /// Consulted only on a miss, so entries keyed the ≤0.4.x way — a hash of the
+    /// fingerprint plus the request pieces — can be adopted instead of re-paid
+    /// for. See [`crate::cache_migrate`], which owns the historical literals,
+    /// the key function that consumes these, and the deletion timeline.
+    ///
+    /// The default is no longer empty: 0.5.0 moved the live key off the
+    /// fingerprint entirely, so *every* provider has exactly one shape to
+    /// migrate from even if its fingerprint never changed — its own current one.
+    /// Overriding this means prepending, never replacing: a provider whose
+    /// fingerprint has older generations returns
+    /// `[self.fingerprint(), …older…]`.
+    ///
+    /// Returned by value rather than as a slice because the ≤0.4.x shape is
+    /// computed rather than stored. The cost is one clone per probing miss,
+    /// which [`crate::cache_migrate::MigrationProbe`] caps at a handful of cases
+    /// per run.
+    fn legacy_fingerprints(&self) -> Vec<Json> {
+        vec![self.fingerprint()]
     }
 
     /// The request this provider *would* send for `req` — the payload the model

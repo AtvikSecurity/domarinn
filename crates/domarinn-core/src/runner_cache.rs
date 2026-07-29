@@ -17,13 +17,13 @@ use chrono::Utc;
 use serde_json::Value as Json;
 
 use crate::cache::{CacheBackend, CacheEntry, CacheKey, CacheMode};
-use crate::cache_key::provider_cache_key;
-use crate::cache_migrate::MigrationProbe;
+use crate::cache_key::request_cache_key;
+use crate::cache_migrate::{legacy_provider_key, MigrationProbe};
 use crate::error_class::ErrorClass;
 use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
 use crate::retry::{with_retry, RetryPolicy, RetryStats};
 
-use super::runner_result::json_to_persist;
+use super::runner_result::{json_to_persist, RAW_MAX_BYTES};
 
 /// Run-scoped state the cache path needs but a single cell must not own.
 ///
@@ -130,10 +130,24 @@ pub(super) async fn call_with_cache(
         repeat,
         state,
     } = cache;
+    // Two gates compose into one: a provider may decline caching outright
+    // (`cacheable`), and a *call* may have no stable identity to key on — an
+    // `http` request whose url or body will not render, a vendor call with no
+    // prompt. Either way there is no key, so the call goes live and unrecorded.
+    // A nondeterministic key would be worse than no key: it never hits, and it
+    // fills the store with entries nobody will ever ask for again.
     let use_cache = mode != CacheMode::Disabled && provider.cacheable();
-    let key = use_cache.then(|| provider_cache_key(&provider.fingerprint(), req, repeat));
+    let canonical = use_cache.then(|| provider.canonical_request(req)).flatten();
+    let key = canonical.as_ref().map(|request| {
+        request_cache_key(
+            request,
+            repeat,
+            provider.cache_salt(),
+            req.case_salt.as_deref(),
+        )
+    });
 
-    if let Some(key) = &key {
+    if let (Some(key), Some(canonical)) = (&key, &canonical) {
         match cache.get(key).await {
             Ok(Some(entry)) => {
                 tracing::debug!(%key, "cache hit");
@@ -142,12 +156,19 @@ pub(super) async fn call_with_cache(
             Ok(None) => {
                 tracing::debug!(%key, "cache miss");
                 // Before paying for this, check whether an older domarinn already
-                // answered it under a fingerprint shape that has since changed.
-                if let Some(entry) = adopt_legacy(provider, req, repeat, cache, state).await {
+                // answered it under the key shape that has since changed.
+                if let Some(mut entry) = adopt_legacy(provider, req, repeat, cache, state).await {
                     // Re-file it under the current key so the next run finds it
                     // directly and the probe budget is not spent again. A write
                     // failure is not fatal: the entry was still served.
                     if mode == CacheMode::ReadWrite {
+                        // An adopted entry predates the request being recorded,
+                        // so give it one: under the new key the request is what
+                        // the entry is *about*, and re-filing without it would
+                        // put a ≤0.4-era entry into the new era half-formed.
+                        // `provider_fingerprint` is left as written — it is the
+                        // provenance of the call that actually happened.
+                        entry.request = Some(request_to_persist(canonical));
                         if let Err(e) = cache.put(key, &entry).await {
                             tracing::warn!(error = %e, "adopting a legacy cache entry: write failed");
                         }
@@ -174,9 +195,9 @@ pub(super) async fn call_with_cache(
 
     match result {
         Ok(response) => {
-            if let Some(key) = &key {
+            if let (Some(key), Some(canonical)) = (&key, &canonical) {
                 if mode == CacheMode::ReadWrite {
-                    let entry = response_to_entry(provider, &response, stats);
+                    let entry = response_to_entry(provider, &response, stats, canonical);
                     // A cache write failure must not fail the run.
                     if let Err(e) = cache.put(key, &entry).await {
                         tracing::warn!(error = %e, "cache write failed");
@@ -251,7 +272,7 @@ fn warn_on_program_drift(provider: &dyn Provider, entry: &CacheEntry, state: &Ca
     );
 }
 
-/// Look for this request under a fingerprint shape domarinn used to publish.
+/// Look for this request under the key shape domarinn used to publish.
 ///
 /// Returns the first entry found, or `None` when there is nothing to adopt,
 /// when the probe budget is spent, or when the provider has no history. See
@@ -277,7 +298,7 @@ async fn adopt_legacy(
         return None;
     }
     for fingerprint in legacy {
-        let key: CacheKey = provider_cache_key(fingerprint, req, repeat);
+        let key: CacheKey = legacy_provider_key(&fingerprint, req, repeat);
         match cache.get(&key).await {
             Ok(Some(entry)) => {
                 state.migration.record_adoption();
@@ -332,15 +353,68 @@ fn recost(usage: Option<&crate::types::TokenUsage>, provider: &dyn Provider) -> 
     Some(crate::pricing::cost_of(usage?, rate)?.to_usd())
 }
 
+/// Fit a canonical request into an entry without ever losing what it addressed.
+///
+/// Same size cap as `raw` (an entry travels to a shared store, and a
+/// pathological payload must not bloat it), but a different answer on overflow:
+/// `raw` is dropped whole, where an oversized request keeps a slim envelope. The
+/// url or command is what makes an entry legible — "which endpoint did this
+/// answer come from" is the question a stored key cannot answer on its own — so
+/// it is recorded unconditionally. The body/stdin is what got big, and it is the
+/// part a reader can least act on.
+///
+/// Note the two members this drops for `http` when it trims: `body` and
+/// `headers_digest`. A slim entry therefore no longer re-hashes to its own key.
+/// That is the trade — the key is already stored (it is where the entry lives),
+/// so what is lost is offline re-derivation for the rare huge request, and what
+/// is kept is every entry staying under the cap.
+///
+/// `--no-raw` deliberately has no say here: it governs what a *run document*
+/// publishes, and a cache entry is not a run document — a later run without the
+/// flag replaying this entry should still see what was asked.
+fn request_to_persist(canonical: &Json) -> Json {
+    /// The members that name *what was addressed*, across both envelope shapes:
+    /// `{transport, method, url}` for http, `{transport, command, args}` for
+    /// exec. Projection rather than removal, so an envelope shape added later
+    /// trims to something honest instead of leaking a payload this never saw.
+    const ADDRESS_MEMBERS: &[&str] = &["transport", "method", "url", "command", "args"];
+
+    let fits = serde_json::to_vec(canonical)
+        .map(|bytes| bytes.len() <= RAW_MAX_BYTES)
+        .unwrap_or(false);
+    if fits {
+        return canonical.clone();
+    }
+    let Some(members) = canonical.as_object() else {
+        return Json::Null;
+    };
+    tracing::debug!(
+        max_bytes = RAW_MAX_BYTES,
+        "storing a slim canonical request: the full one exceeds the entry cap"
+    );
+    Json::Object(
+        ADDRESS_MEMBERS
+            .iter()
+            .filter_map(|name| members.get_key_value(*name))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    )
+}
+
 pub(super) fn response_to_entry(
     provider: &dyn Provider,
     response: &ProviderResponse,
     stats: RetryStats,
+    canonical: &Json,
 ) -> CacheEntry {
     CacheEntry {
         created_at: Utc::now(),
-        provider_fingerprint: Some(provider.fingerprint()),
-        request: None,
+        // The request replaces the fingerprint rather than joining it: the key
+        // is derived from the request now, so the fingerprint would be
+        // provenance for a key nothing computes. Entries in the wild still carry
+        // it, which is why the field survives as `Option`.
+        provider_fingerprint: None,
+        request: Some(request_to_persist(canonical)),
         // Which build answered — recorded, never keyed. See
         // `warn_on_program_drift` for what reads it back.
         program_digest: provider.program_digest().map(str::to_string),

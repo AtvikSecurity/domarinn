@@ -65,6 +65,13 @@ impl Provider for FlakyProvider {
     }
 }
 
+/// The canonical request a fixture entry is keyed on. Shape-faithful to an
+/// `exec` envelope so the entry looks like one a real call would write; nothing
+/// in these tests depends on its contents.
+fn test_request() -> Json {
+    serde_json::json!({"transport": "exec", "command": "./sut", "args": []})
+}
+
 /// Stats for fixtures that do not exercise the retry loop itself.
 fn test_stats() -> crate::retry::RetryStats {
     crate::retry::RetryStats {
@@ -94,7 +101,7 @@ fn cache_entries_preserve_raw_provider_metadata() {
         model: None,
     };
 
-    let entry = response_to_entry(&provider, &response, test_stats());
+    let entry = response_to_entry(&provider, &response, test_stats(), &test_request());
     assert_eq!(entry.raw, Some(raw.clone()));
     let replayed = entry_to_response(entry, &provider);
     assert_eq!(replayed.raw, Some(raw));
@@ -139,7 +146,7 @@ fn cache_round_trip_preserves_every_response_field() {
     };
 
     let replayed = entry_to_response(
-        response_to_entry(&provider, &original, test_stats()),
+        response_to_entry(&provider, &original, test_stats(), &test_request()),
         &provider,
     );
 
@@ -165,6 +172,69 @@ fn cache_round_trip_preserves_every_response_field() {
     // Without this a `tool-call` assertion passes on the first run of a suite
     // and fails on every run after, which is the common path.
     assert_eq!(tool_calls, original.tool_calls);
+}
+
+/// An entry records the request whole, and when it cannot, records what the
+/// request *addressed* rather than nothing.
+///
+/// `raw` answers an oversized payload by dropping it — truncated JSON is
+/// useless. A request cannot take that answer: the url or command is what makes
+/// a stored key legible at all, and it is the one thing a reader always wants.
+/// So the cap trims the payload and keeps the address.
+#[test]
+fn a_request_is_stored_whole_unless_it_blows_the_cap() {
+    let provider = FlakyProvider {
+        calls: AtomicU32::new(0),
+    };
+    let response = ProviderResponse::text("hi");
+
+    let small = response_to_entry(&provider, &response, test_stats(), &test_request());
+    assert_eq!(
+        small.request.as_ref(),
+        Some(&test_request()),
+        "an ordinary request is stored verbatim"
+    );
+
+    let huge_http = serde_json::json!({
+        "transport": "http",
+        "method": "POST",
+        "url": "https://sut.test/v1/messages",
+        "headers_digest": "blake3:deadbeef",
+        "body": {"prompt": "x".repeat(128 * 1024)},
+    });
+    let trimmed = response_to_entry(&provider, &response, test_stats(), &huge_http)
+        .request
+        .expect("a request is recorded even when it does not fit");
+    assert_eq!(
+        trimmed["url"], huge_http["url"],
+        "the endpoint is never lost"
+    );
+    assert_eq!(trimmed["method"], serde_json::json!("POST"));
+    assert_eq!(trimmed["transport"], serde_json::json!("http"));
+    assert!(
+        trimmed.get("body").is_none(),
+        "the payload is what got trimmed: {trimmed}"
+    );
+
+    let huge_exec = serde_json::json!({
+        "transport": "exec",
+        "command": "./sut",
+        "args": ["--mode", "strict"],
+        "stdin": {"vars": {"doc": "y".repeat(128 * 1024)}},
+    });
+    let trimmed = response_to_entry(&provider, &response, test_stats(), &huge_exec)
+        .request
+        .expect("a request is recorded even when it does not fit");
+    assert_eq!(
+        trimmed["command"],
+        serde_json::json!("./sut"),
+        "the command is never lost"
+    );
+    assert_eq!(trimmed["args"], serde_json::json!(["--mode", "strict"]));
+    assert!(
+        trimmed.get("stdin").is_none(),
+        "the payload is what got trimmed: {trimmed}"
+    );
 }
 
 /// Entries written before the `raw` field existed keep deserializing (and
