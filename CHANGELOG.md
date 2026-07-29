@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.0](https://github.com/AtvikSecurity/domarinn/compare/0.3.1...0.4.0) (2026-07-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **caching:** key on the request, not on the machine ([#26](https://github.com/AtvikSecurity/domarinn/issues/26))
+* **caching:** exec provider and exec grader cache entries are re-keyed by the switch from mtime to content digests. Existing entries are not served and will age out; no action is needed beyond expecting one cold run per suite. Network providers are unaffected.
+
+### Features
+
+* **caching:** key exec identity on content, correct the cache_salt docs ([#24](https://github.com/AtvikSecurity/domarinn/issues/24)) ([80479dc](https://github.com/AtvikSecurity/domarinn/commit/80479dc1e81b2b8d7214a0ec3dd739789741e235))
+* **caching:** key on the request, not on the machine ([#26](https://github.com/AtvikSecurity/domarinn/issues/26)) ([c90b9f7](https://github.com/AtvikSecurity/domarinn/commit/c90b9f7880f4b2f568860e126482f4b35d4035df))
+* **server:** authenticated MCP endpoint, dual-era and read-only ([#27](https://github.com/AtvikSecurity/domarinn/issues/27)) ([88739d3](https://github.com/AtvikSecurity/domarinn/commit/88739d33e36a98c20008a7f0147d64c857597926))
+
+
+### Documentation
+
+* publish a documentation site with 32 end-to-end tested examples ([#28](https://github.com/AtvikSecurity/domarinn/issues/28)) ([4d1bab7](https://github.com/AtvikSecurity/domarinn/commit/4d1bab78617a41855a3e78976eb9c814ca6e17d8))
+
 ## [0.3.1](https://github.com/AtvikSecurity/domarinn/compare/0.3.0...0.3.1) (2026-07-28)
 
 
