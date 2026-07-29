@@ -45,6 +45,23 @@ pub struct RunArgs {
     #[arg(long)]
     pub cache_only: bool,
 
+    /// Directory holding the local response cache.
+    ///
+    /// Defaults to `.domarinn/cache` beside the suite, so the same suite hits
+    /// the same cache no matter which directory you run it from. Point this at
+    /// a path CI restores to reuse a warm cache across jobs.
+    /// `DOMARINN_CACHE_DIR` sets the same thing; the flag wins.
+    #[arg(long, value_name = "DIR")]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Do not look for entries written under an older cache-key shape.
+    ///
+    /// domarinn probes for those on a miss so an upgrade does not throw away a
+    /// warm cache, and stops probing once it is clear there is nothing to find.
+    /// Pass this to skip the probing entirely.
+    #[arg(long)]
+    pub no_cache_migration: bool,
+
     /// Number of trials per cell (variance).
     #[arg(long, default_value_t = 1)]
     pub repeat: u32,
@@ -168,6 +185,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         repeat: args.repeat.max(1),
         allow_empty: args.allow_empty,
         grader_cache: !args.no_grader_cache,
+        cache_migration: !args.no_cache_migration,
         cache_mode,
         concurrency: args.concurrency,
         retries: if args.no_retries {
@@ -188,7 +206,11 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         },
     };
 
-    let cache = cachecfg::build_cache(&suite, server_url.as_deref());
+    let cache = cachecfg::build_cache(
+        &suite,
+        server_url.as_deref(),
+        &cachecfg::local_root(args.cache_dir.as_deref(), &base_dir),
+    );
 
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,

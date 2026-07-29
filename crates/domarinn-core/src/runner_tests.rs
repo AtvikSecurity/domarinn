@@ -96,7 +96,7 @@ fn cache_entries_preserve_raw_provider_metadata() {
 
     let entry = response_to_entry(&provider, &response, test_stats());
     assert_eq!(entry.raw, Some(raw.clone()));
-    let replayed = entry_to_response(entry);
+    let replayed = entry_to_response(entry, &provider);
     assert_eq!(replayed.raw, Some(raw));
 }
 
@@ -138,7 +138,10 @@ fn cache_round_trip_preserves_every_response_field() {
         model: Some("m-2026-01-01".to_string()),
     };
 
-    let replayed = entry_to_response(response_to_entry(&provider, &original, test_stats()));
+    let replayed = entry_to_response(
+        response_to_entry(&provider, &original, test_stats()),
+        &provider,
+    );
 
     let ProviderResponse {
         tool_calls,
@@ -176,7 +179,10 @@ fn legacy_cache_entries_without_raw_still_parse() {
     });
     let entry: CacheEntry = serde_json::from_value(legacy).unwrap();
     assert_eq!(entry.raw, None);
-    assert_eq!(entry_to_response(entry).raw, None);
+    let provider = FlakyProvider {
+        calls: AtomicU32::new(0),
+    };
+    assert_eq!(entry_to_response(entry, &provider).raw, None);
 }
 
 /// A `MakeWriter` that appends every line into a shared buffer.
@@ -238,13 +244,17 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
                 max_ms: 1,
                 ..Default::default()
             };
+            let state = crate::runner::runner_cache::CacheRunState::default();
             let outcome = call_with_cache(
                 &provider,
                 &req,
                 &ctx,
-                &cache,
-                CacheMode::Disabled,
-                0,
+                crate::runner::runner_cache::CacheCall {
+                    backend: &cache,
+                    mode: CacheMode::Disabled,
+                    repeat: 0,
+                    state: &state,
+                },
                 &retry_cfg,
             )
             .await

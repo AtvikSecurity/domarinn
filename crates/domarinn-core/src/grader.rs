@@ -49,14 +49,18 @@ pub struct DefaultGrader {
     /// map per grader, so a shared test binary cannot leak a warning between
     /// runs. The mutex is held for a map lookup, never across a request.
     rates: std::sync::Mutex<BTreeMap<String, Option<crate::pricing::ModelRate>>>,
-    /// Filesystem-derived identities (`exec` program identity, `grader.template`
-    /// contents), memoized per `(spec, base_dir)`.
+    /// Filesystem-derived identities — today just the contents of a
+    /// `grader.template` — memoized per `(spec, base_dir)`.
     ///
     /// [`Self::grading_fingerprint`] is called for every assertion of every
-    /// cell, so without this a 500-case suite stats its grader binary 500 times
-    /// — and worse, a rebuild landing mid-run would give later cells a different
-    /// key than earlier ones. One resolution per run is both cheaper and the
-    /// only self-consistent answer.
+    /// cell, so without this a 500-case suite re-reads its grading prompt 500
+    /// times. Worse than the cost: an edit landing mid-run would give later
+    /// cells a different key than earlier ones, so one run would write verdicts
+    /// under two identities. One resolution per run is both cheaper and the only
+    /// self-consistent answer.
+    ///
+    /// This used to memoize `exec` program identities too, which is no longer
+    /// keyed at all — see [`crate::exec::program_digest`].
     identities: std::sync::Mutex<BTreeMap<String, Json>>,
     /// The resolved per-call ceiling. Kept alongside the client that already
     /// carries it, because an `exec` assert has no client to carry it — without
@@ -196,18 +200,22 @@ impl AssertGrader for DefaultGrader {
 
 impl DefaultGrader {
     /// The part of this assertion's grading identity that lives on disk: the
-    /// `exec` child's program, or the contents of a `grader.template`.
+    /// contents of a `grader.template`.
     ///
     /// Split from the key-shaping in [`grading_fingerprint`] so that stays a
     /// pure function of its inputs, and so the filesystem is touched once per
     /// run rather than once per graded cell.
+    ///
+    /// An `exec` assertion's *program* used to be here too, and its absence is
+    /// the rule working rather than an oversight. A template's bytes are pasted
+    /// into the prompt the judge reads, so they are part of the question and
+    /// belong in the key. A program's bytes are what *receives* the question;
+    /// keying them makes a verdict unshareable between machines to detect a
+    /// rebuild the suite already knows about. `cache_salt` is how an assertion
+    /// says a rebuild happened — see [`crate::exec::program_digest`].
     fn on_disk_identity(&self, assert: &Assert, base_dir: Option<&std::path::Path>) -> Json {
         let dir_key = base_dir.map(|d| d.display().to_string());
         match &assert.kind {
-            AssertKind::Exec { command, .. } => self.memoized_identity(
-                json!({"kind": "program", "command": command, "base_dir": dir_key}),
-                || crate::exec::program_identity(command, base_dir),
-            ),
             AssertKind::LlmRubric { grader, .. } => {
                 let Some(g) = grader.as_deref().or(self.default_grader.as_ref()) else {
                     return Json::Null;
@@ -363,30 +371,21 @@ fn grading_fingerprint(
         AssertKind::Similar { .. } => {
             embeddings.map(|e| json!({"assert": "similar", "embeddings": e}))
         }
-        // Cached by default, like everything else that can be. `program` is
-        // what makes that safe: argv alone does not move when the binary behind
-        // it is rebuilt, so a key over `command` would serve stale verdicts
-        // after a rebuild — silently, and in CI. `cache_salt` remains the
-        // escape hatch for a program the identity cannot see.
+        // `command` names the child that will judge; `cache_salt` is how the
+        // suite says that child is a different version. The program's own bytes
+        // are deliberately absent, exactly as they are from an `exec` provider's
+        // fingerprint — see `ExecProvider::fingerprint`. Keying them would make
+        // a verdict unshareable across machines in order to notice a rebuild,
+        // and a verdict is the expensive half of a graded suite.
         AssertKind::Exec {
             command,
             cache_salt,
             config: _,
-        } => {
-            // Same rule as `ExecProvider::cacheable`: "by default" is not
-            // "unconditionally". With no identifiable program the key would be
-            // argv alone, which does not move when the child is rebuilt — so
-            // opt out of caching entirely unless the suite set a salt.
-            if !crate::exec::has_program_identity(&on_disk) && cache_salt.is_none() {
-                return None;
-            }
-            Some(json!({
-                "assert": "exec",
-                "command": command,
-                "program": on_disk,
-                "cache_salt": cache_salt,
-            }))
-        }
+        } => Some(json!({
+            "assert": "exec",
+            "command": command,
+            "cache_salt": cache_salt,
+        })),
         _ => None,
     }
 }

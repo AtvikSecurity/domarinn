@@ -205,6 +205,7 @@ mod tests {
             empty_reason: None,
             attempts: None,
             provider_latency_ms: None,
+            program_digest: None,
             domarinn_version: "test".into(),
         }
     }

@@ -1,13 +1,10 @@
 # Getting started
 
-domarinn evaluates prompts and the systems that render them. This guide takes
-you from install to a graded, shareable run in a few minutes.
+domarinn evaluates prompts and the systems that render them. This guide takes you from install to a graded, shareable run in a few minutes.
 
 ## Install
 
-**Prebuilt binary** (fastest; no toolchain needed). Each release publishes a
-fully static musl binary for `x86_64` and `aarch64`, so it runs on any Linux
-distro with no shared-library requirements:
+**Prebuilt binary** (fastest; no toolchain needed). Each release publishes a fully static musl binary for `x86_64` and `aarch64`, so it runs on any Linux distro with no shared-library requirements:
 
 ```sh
 arch=amd64            # or arm64
@@ -34,16 +31,11 @@ sudo mv "$bin" /usr/local/bin/domarinn
 domarinn --version
 ```
 
-Release tags are bare semver — `0.2.0`, not `v0.2.0` — and the same string
-appears in every asset name, so a downloaded file always says which release it
-came from.
+Release tags are bare semver — `0.2.0`, not `v0.2.0` — and the same string appears in every asset name, so a downloaded file always says which release it came from.
 
 ### Verifying a download
 
-Every release artifact is signed with [cosign](https://docs.sigstore.dev/) using
-keyless signing — there is no public key to fetch, because the signing identity
-*is* the GitHub Actions workflow that built it. The `.sigstore.json` bundle
-carries the certificate, the signature and the transparency-log entry together:
+Every release artifact is signed with [cosign](https://docs.sigstore.dev/) using keyless signing — there is no public key to fetch, because the signing identity *is* the GitHub Actions workflow that built it. The `.sigstore.json` bundle carries the certificate, the signature and the transparency-log entry together:
 
 ```sh
 curl -fsSLO "$rel/download/$ver/$bin.sigstore.json"
@@ -55,22 +47,13 @@ cosign verify-blob \
   "$bin"
 ```
 
-Keep the `--certificate-identity-regexp`. Without it cosign will accept a
-signature from *any* identity, which verifies that the file was signed by
-someone rather than that it was signed by this project.
+Keep the `--certificate-identity-regexp`. Without it cosign will accept a signature from *any* identity, which verifies that the file was signed by someone rather than that it was signed by this project.
 
-The same command verifies the checksum manifest and the SBOM — substitute either
-filename for `$bin` in both the `--bundle` and the final argument.
+The same command verifies the checksum manifest and the SBOM — substitute either filename for `$bin` in both the `--bundle` and the final argument.
 
-Each release also publishes an SPDX SBOM — `domarinn_<version>.spdx.json`, itself
-signed — cataloguing the Rust and npm dependency graphs that went into the
-binary. There is one per release, not one per architecture: it is generated from
-`Cargo.lock` and `web/pnpm-lock.yaml`, which say nothing about the target
-triple. Note that it does not come from the shipped binary either — release
-builds are stripped, so scanning the binary would report almost nothing.
+Each release also publishes an SPDX SBOM — `domarinn_<version>.spdx.json`, itself signed — cataloguing the Rust and npm dependency graphs that went into the binary. There is one per release, not one per architecture: it is generated from `Cargo.lock` and `web/pnpm-lock.yaml`, which say nothing about the target triple. Note that it does not come from the shipped binary either — release builds are stripped, so scanning the binary would report almost nothing.
 
-**With cargo.** domarinn is not published to crates.io, so `cargo install
-domarinn-cli` will not find it. Install from git instead:
+**With cargo.** domarinn is not published to crates.io, so `cargo install domarinn-cli` will not find it. Install from git instead:
 
 ```sh
 cargo install --git https://github.com/AtvikSecurity/domarinn --locked domarinn-cli
@@ -79,12 +62,9 @@ cargo install --git https://github.com/AtvikSecurity/domarinn --locked domarinn-
 cargo install --git https://github.com/AtvikSecurity/domarinn --tag <version> --locked domarinn-cli
 ```
 
-This builds the CLI only. The eval engine is complete, but the binary does not
-embed the web UI, so `domarinn server` serves a placeholder page — use the
-prebuilt binary, the container, or `mise run install` if you want the UI.
+This builds the CLI only. The eval engine is complete, but the binary does not embed the web UI, so `domarinn server` serves a placeholder page — use the prebuilt binary, the container, or `mise run install` if you want the UI.
 
-Keep `--locked`: it makes the build use the exact dependency versions the
-release was tested with.
+Keep `--locked`: it makes the build use the exact dependency versions the release was tested with.
 
 **From source** (needs a recent Rust toolchain):
 
@@ -107,17 +87,13 @@ mise run install-musl            # static musl single binary (needs a musl C too
 docker run -p 8321:8321 -v domarinn-data:/data ghcr.io/atviksecurity/domarinn:rolling
 ```
 
-`rolling` tracks the tip of `main`. Releases also publish semver tags — `0.1.2`,
-`0.1`, `0` — so pin one of those for anything you care about staying still.
-There is deliberately no `latest`, precisely so an unpinned tag cannot silently
-jump a major.
+`rolling` tracks the tip of `main`. Releases also publish semver tags — `0.1.2`, `0.1`, `0` — so pin one of those for anything you care about staying still. There is deliberately no `latest`, precisely so an unpinned tag cannot silently jump a major.
 
 Put `target/release/domarinn` on your `PATH`, or invoke it directly.
 
 ## Your first suite (offline, no API key)
 
-A suite is a `domarinn.yaml`. This one grades a tiny external program with
-deterministic assertions — no model calls, no key. Create `smoke/domarinn.yaml`:
+A suite is a `domarinn.yaml`. This one grades a tiny external program with deterministic assertions — no model calls, no key. Create `smoke/domarinn.yaml`:
 
 ```yaml
 # yaml-language-server: $schema=../domarinn.schema.json
@@ -137,9 +113,7 @@ tests:
         max: 100
 ```
 
-`exec` providers speak a tiny [JSON protocol](./protocol.md): domarinn writes a
-request to the program's stdin and reads its output from stdout. Here `sh`
-ignores the input and prints a fixed result.
+`exec` providers speak a tiny [JSON protocol](./protocol.md): domarinn writes a request to the program's stdin and reads its output from stdout. Here `sh` ignores the input and prints a fixed result.
 
 Validate, then run:
 
@@ -158,8 +132,7 @@ Exit code `0`. The run is saved under `smoke/.domarinn/runs/<id>/result.json`.
 
 ## The `!raw` escape hatch
 
-Test inputs sometimes contain literal template syntax that must not be
-interpolated. Mark them `!raw`:
+Test inputs sometimes contain literal template syntax that must not be interpolated. Mark them `!raw`:
 
 ```yaml
 tests:
@@ -171,15 +144,11 @@ tests:
         value: "49"
 ```
 
-Everything else renders through real Jinja (minijinja) with strict undefined —
-a typo'd variable is an error, not an empty string. See
-[configuration.md](./configuration.md#templating).
+Everything else renders through real Jinja (minijinja) with strict undefined — a typo'd variable is an error, not an empty string. See [configuration.md](./configuration.md#templating-and-the-raw-escape-hatch).
 
 ## Add a real model and an LLM grader
 
-Point a provider at a model and grade its output with a rubric. The grader
-returns a **structured** verdict and **fails closed** — see
-[grading.md](./grading.md).
+Point a provider at a model and grade its output with a rubric. The grader returns a **structured** verdict and **fails closed** — see [grading.md](./grading.md).
 
 ```yaml
 version: 1
@@ -218,8 +187,7 @@ export ANTHROPIC_API_KEY=sk-...
 domarinn run --repeat 5            # 5 trials per cell for variance
 ```
 
-Responses and grader verdicts are cached, so re-running is free and
-deterministic. See [caching.md](./caching.md) and [statistics.md](./statistics.md).
+Responses and grader verdicts are cached, so re-running is free and deterministic. See [caching.md](./caching.md) and [statistics.md](./statistics.md).
 
 ## View, compare, and share
 
@@ -236,10 +204,7 @@ domarinn server --data-dir ./data &        # UI + API on :8321
 DOMARINN_SERVER_URL=http://localhost:8321 domarinn run --share
 ```
 
-Open `http://localhost:8321` for the per-suite overview, `/runs` for the
-run list, plus the run-detail grid and
-side-by-side comparison. To add logins, admin users, and API keys, see
-[server.md](./server.md).
+Open `http://localhost:8321` for the per-suite overview, `/runs` for the run list, plus the run-detail grid and side-by-side comparison. To add logins, admin users, and API keys, see [server.md](./server.md).
 
 ## Where to go next
 

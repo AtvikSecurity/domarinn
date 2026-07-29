@@ -188,33 +188,22 @@ pub enum ProviderKind {
         env: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
-        /// Extra cache-busting token (e.g. a git SHA or binary hash).
+        /// Version pin for the program behind `command` — set it when you
+        /// rebuild that program and want the old answers thrown away.
         ///
-        /// Not normally needed: every `command` argument naming a readable file
-        /// contributes its path and a digest of its contents to the cache key,
-        /// so an edit or a rebuild busts the entry on its own. Set this when the
-        /// program's behavior depends on something that identity cannot see — a
-        /// model downloaded at startup, a remote config, a container image
-        /// behind a wrapper script.
+        /// The cache key names what will answer (`command`, `env`) and hashes
+        /// what is asked (the prompt, the vars, the tools). It deliberately says
+        /// nothing about the program's *bytes*, so that a key is identical on
+        /// every machine and a shared cache actually gets shared. The price is
+        /// that domarinn cannot tell one build of `./sut` from the next, and
+        /// this field is how you tell it: a git SHA, a release tag, or
+        /// `"$digest: src/**/*.rs"`.
+        ///
+        /// Leave it unset for a program that is not changing under you. A run
+        /// warns when a cached answer came from a different build than the one
+        /// on disk, so a forgotten pin is reported rather than silent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_salt: Option<String>,
-        /// Whether the program's own identity enters the cache key. Default
-        /// `true`; set `false` to make `cache_salt` the *sole* identity.
-        ///
-        /// Content digests are reproducible across machines, so the default is
-        /// right for a checked-in script. It is not right for a binary compiled
-        /// in CI: Rust builds are not byte-reproducible (embedded paths, debug
-        /// info), so two runners building identical source produce different
-        /// bytes and therefore different keys, and the shared cache never hits.
-        /// Only the suite knows those two builds are the same version — so it
-        /// says so, by pinning `cache_salt` to a digest of the *source* and
-        /// turning this off.
-        ///
-        /// Requires `cache_salt`: with neither an identity nor a salt the key
-        /// would be argv alone, which does not move when the program is
-        /// rebuilt, so responses are not cached at all.
-        #[serde(default = "default_true", skip_serializing_if = "is_true")]
-        program_identity: bool,
     },
     /// Native Anthropic Messages API client.
     Anthropic {
@@ -730,13 +719,6 @@ impl From<&str> for EnvNames {
 /// `serde(default)` helper for a flag that is on unless explicitly disabled.
 fn default_true() -> bool {
     true
-}
-
-/// Serde `skip_serializing_if` for a flag that defaults to `true`, so the
-/// common case stays absent from a serialized suite instead of being spelled
-/// out on every provider.
-fn is_true(value: &bool) -> bool {
-    *value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

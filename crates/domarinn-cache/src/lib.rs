@@ -8,13 +8,17 @@
 //! - [`S3Cache`] — any S3-compatible object store (AWS, MinIO, Garage, ...).
 //! - [`LayeredCache`] — a read-through pairing of a fast local and a shared
 //!   remote backend.
+//! - [`ReadOnlyCache`] — an adapter that serves reads and discards writes, for
+//!   draining a store rather than depending on it.
 
 mod disk;
 mod layered;
+mod readonly;
 mod remote_http;
 mod s3;
 
 pub use disk::LocalDiskCache;
 pub use layered::LayeredCache;
+pub use readonly::ReadOnlyCache;
 pub use remote_http::RemoteHttpCache;
 pub use s3::{S3Cache, S3Config};

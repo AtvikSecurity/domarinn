@@ -107,6 +107,10 @@ impl Provider for OpenAiProvider {
         &self.id
     }
 
+    fn rate(&self) -> Option<&crate::pricing::ModelRate> {
+        self.rate.as_ref()
+    }
+
     fn fingerprint(&self) -> Json {
         json!({
             "type": "openai",

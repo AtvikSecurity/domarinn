@@ -210,9 +210,23 @@ pub trait Provider: Send + Sync {
     /// Stable id from the config.
     fn id(&self) -> &str;
 
-    /// A stable identity used in cache keys. Canonical JSON of the provider's
-    /// behavior (type, model/command/url, params, and any `cache_salt`).
-    /// Must exclude secrets.
+    /// What *selects* this provider — the identity half of every cache key.
+    ///
+    /// Canonical JSON naming the thing that will answer: type, plus
+    /// `model`/`base_url`/`command`/`url` and any `cache_salt`. The question
+    /// being asked is hashed separately, by
+    /// [`crate::cache_key::provider_cache_key`].
+    ///
+    /// Two rules, both load-bearing:
+    ///
+    /// - **No secrets.** A fingerprint is persisted into every cache entry.
+    ///   Where a credential genuinely separates two providers, publish a digest
+    ///   of it rather than the value.
+    /// - **Nothing machine-local.** No path, no `mtime`, no digest of a local
+    ///   file, nothing read from the ambient environment. A fingerprint that
+    ///   varies by machine cannot be shared, which quietly turns the S3 and
+    ///   results-server backends into expensive local disk. See
+    ///   [`crate::exec::program_digest`] for the case that taught this.
     fn fingerprint(&self) -> Json;
 
     async fn call(
@@ -221,11 +235,52 @@ pub trait Provider: Send + Sync {
         ctx: &CallCtx,
     ) -> Result<ProviderResponse, ProviderError>;
 
-    /// Whether responses from this provider may be cached. Defaults to true;
-    /// exec providers return false unless a `cache_salt` pins the version of the
-    /// system under test, so a rebuilt binary is never served stale output.
+    /// Whether responses from this provider may be cached.
+    ///
+    /// Every built-in provider returns `true`. The hook survives for providers
+    /// whose answers are inherently unrepeatable, and for embedders adding their
+    /// own; `exec` used to return `false` without a `cache_salt`, which is the
+    /// history [`crate::exec_provider::ExecProvider::cacheable`] records.
     fn cacheable(&self) -> bool {
         true
+    }
+
+    /// A digest of the local artifact that answered, when there is one.
+    ///
+    /// Stored on the cache entry and compared on a hit, so that a rebuilt
+    /// program is *reported* rather than silently replayed. Deliberately not
+    /// part of [`Provider::fingerprint`] — see [`crate::exec::program_digest`]
+    /// for why paying the whole cache to detect a rebuild is the wrong trade.
+    ///
+    /// `None` for anything answering over a network, where the artifact is the
+    /// vendor's and no digest of it exists.
+    fn program_digest(&self) -> Option<&str> {
+        None
+    }
+
+    /// The rate this provider's tokens are priced at, when it is priced at all.
+    ///
+    /// Exposed so a cache hit can be *re-costed* from the stored token counts
+    /// rather than replaying a price that may be a year stale. Cost is not in
+    /// the cache key — putting it there would discard every entry the day a
+    /// vendor changes a price — so this is the same manoeuvre
+    /// [`crate::cache::GradedVerdict`] makes with a grading `threshold`: store
+    /// the raw measurement, apply the policy on read.
+    ///
+    /// `None` for a provider with no rate (an unknown model) and for `exec`,
+    /// where the child reports a cost domarinn has no way to re-derive.
+    fn rate(&self) -> Option<&crate::pricing::ModelRate> {
+        None
+    }
+
+    /// Fingerprints this provider published in earlier versions, newest first.
+    ///
+    /// Consulted only on a miss, so entries written before a fingerprint changed
+    /// shape can be adopted instead of re-paid for. Empty for a provider whose
+    /// shape has never changed. See [`crate::cache_migrate`], which owns the
+    /// literals and is meant to be deleted once they stop appearing.
+    fn legacy_fingerprints(&self) -> &[Json] {
+        &[]
     }
 
     /// The request this provider *would* send for `req` — the payload the model

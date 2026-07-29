@@ -109,6 +109,15 @@ pub struct RunOptions {
     /// Cache grader verdicts. Default `true`; `--no-grader-cache` disables it
     /// for one run without touching the provider-response cache.
     pub grader_cache: bool,
+    /// On a miss, look for the same request under a fingerprint shape an older
+    /// domarinn published, and adopt it rather than re-paying for the call.
+    ///
+    /// Default `true`, self-limiting, and worth roughly one upgrade's worth of
+    /// spend — see [`crate::cache_migrate`]. `--no-cache-migration` turns it off
+    /// for a run that would rather not spend the extra lookups, which against a
+    /// high-latency remote backend on a cache with nothing to migrate is the
+    /// only cost it has.
+    pub cache_migration: bool,
     /// Accept a run that resolved to zero cases instead of failing it.
     ///
     /// Two real cases justify it, both CI-shaped: a sharded matrix where a
@@ -128,6 +137,7 @@ impl Default for RunOptions {
             include_raw: true,
             provenance: crate::provenance::ProvenanceOptions::default(),
             grader_cache: true,
+            cache_migration: true,
             allow_empty: false,
         }
     }
@@ -301,6 +311,13 @@ pub async fn run_with_progress(
     // Precedence: `--no-cache` kills everything (via `cache_mode`), then
     // `--no-grader-cache`, then the suite's `cache.grader`, which defaults on.
     let grader_cache = opts.grader_cache && suite.cache.as_ref().is_none_or(|c| c.grader);
+    // One per run: the legacy-key probe spends a shared budget, and the
+    // rebuilt-program warning fires once per provider rather than once per cell.
+    let cache_state = &runner_cache::CacheRunState::new(if opts.cache_migration {
+        crate::cache_migrate::MigrationProbe::new()
+    } else {
+        crate::cache_migrate::MigrationProbe::disabled()
+    });
     let aborted = &AbortFlag::default();
     let skip_on_empty_reason: &[String] = suite
         .runner
@@ -534,6 +551,7 @@ pub async fn run_with_progress(
                     aborted,
                     skip_on_empty_reason,
                     &suite.tools,
+                    cache_state,
                 )
                 .await;
                 if let Some(sink) = progress {
@@ -643,6 +661,7 @@ async fn run_cell(
     aborted: &AbortFlag,
     skip_on_empty_reason: &[String],
     tools: &[crate::config::ToolDef],
+    cache_state: &runner_cache::CacheRunState,
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
     let cell = CellKey {
@@ -757,9 +776,12 @@ async fn run_cell(
         provider,
         &req,
         ctx,
-        cache,
-        effective_mode,
-        repeat,
+        runner_cache::CacheCall {
+            backend: cache,
+            mode: effective_mode,
+            repeat,
+            state: cache_state,
+        },
         retry_cfg,
     )
     .await

@@ -5,15 +5,90 @@
 //! server URL or credentials degrades to local disk with a warning, never a hard
 //! failure.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use domarinn_cache::{LayeredCache, LocalDiskCache, RemoteHttpCache, S3Cache, S3Config};
+use domarinn_cache::{
+    LayeredCache, LocalDiskCache, ReadOnlyCache, RemoteHttpCache, S3Cache, S3Config,
+};
 use domarinn_core::cache::CacheBackend;
 use domarinn_core::config::{CacheBackendKind, Suite};
 
+/// Environment fallback for `--cache-dir`.
+pub const CACHE_DIR_ENV: &str = "DOMARINN_CACHE_DIR";
+
+/// The cache directory a run should use, and any older location worth reading.
+pub struct LocalRoot {
+    /// Where entries are read from and written to.
+    pub root: PathBuf,
+    /// A directory a previous version would have used, if it exists and differs.
+    /// Read-only: entries found there are copied forward, never written back.
+    pub legacy: Option<PathBuf>,
+}
+
+/// Resolve where the local cache lives.
+///
+/// Precedence is `--cache-dir`, then `DOMARINN_CACHE_DIR`, then `.domarinn/cache`
+/// beside the suite.
+///
+/// Beside the *suite*, not beside the process. Every other path in a run —
+/// `file://`, `$digest:`, an `exec` child's cwd — resolves against the suite
+/// directory, and the cache was the one exception: running `domarinn run
+/// evals/s.yaml` from a repo root and `domarinn run s.yaml` from `evals/` used
+/// two different caches for identical work, so whichever you did second paid in
+/// full. Anchoring it to the suite makes the cache a property of what is being
+/// evaluated rather than of where you were standing.
+///
+/// That relocation would strand every entry written under the old rule, so a
+/// cwd-relative `.domarinn/cache` that still exists is offered as a read-only
+/// legacy tier — see [`build_cache`].
+pub fn local_root(flag: Option<&Path>, base_dir: &Path) -> LocalRoot {
+    let explicit = flag.map(PathBuf::from).or_else(|| {
+        std::env::var_os(CACHE_DIR_ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    });
+    if let Some(root) = explicit {
+        // An explicit directory is an explicit answer; reading some other
+        // directory as well would be second-guessing it.
+        return LocalRoot { root, legacy: None };
+    }
+
+    let root = base_dir.join(".domarinn").join("cache");
+    let cwd_relative = PathBuf::from(".domarinn").join("cache");
+    // Compared canonically: running from the suite directory makes the two the
+    // same place by different names, and layering a directory over itself would
+    // double every lookup for nothing.
+    let same = match (root.canonicalize(), cwd_relative.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    let legacy = (!same && cwd_relative.is_dir()).then_some(cwd_relative);
+    LocalRoot { root, legacy }
+}
+
 /// Build the cache backend for a run.
-pub fn build_cache(suite: &Suite, server_url: Option<&str>) -> Arc<dyn CacheBackend> {
-    let local: Arc<dyn CacheBackend> = Arc::new(LocalDiskCache::default_project());
+pub fn build_cache(
+    suite: &Suite,
+    server_url: Option<&str>,
+    local_root: &LocalRoot,
+) -> Arc<dyn CacheBackend> {
+    let mut local: Arc<dyn CacheBackend> = Arc::new(LocalDiskCache::new(&local_root.root));
+    if let Some(legacy) = &local_root.legacy {
+        tracing::debug!(
+            legacy = %legacy.display(),
+            root = %local_root.root.display(),
+            "reading the previous cwd-relative cache directory as a read-only tier"
+        );
+        // Read-through, exactly as a shared remote is: a hit down there is
+        // copied into the new root, so the old directory is drained rather than
+        // depended on, and nothing is ever written back into it.
+        local = Arc::new(LayeredCache::new(
+            local,
+            Arc::new(ReadOnlyCache::new(Arc::new(LocalDiskCache::new(legacy)))),
+        ));
+    }
+
     let backend = suite
         .cache
         .as_ref()
@@ -84,5 +159,37 @@ fn layer_s3(local: Arc<dyn CacheBackend>, suite: &Suite) -> Arc<dyn CacheBackend
             tracing::warn!(error = %e, backend = "s3", "S3 cache unavailable; using local disk");
             local
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The headline: where you stand does not decide which cache you get.
+    #[test]
+    fn the_default_root_is_beside_the_suite() {
+        let resolved = local_root(None, Path::new("/repo/evals"));
+        assert_eq!(resolved.root, PathBuf::from("/repo/evals/.domarinn/cache"));
+    }
+
+    #[test]
+    fn an_explicit_flag_wins_and_reads_nothing_else() {
+        let resolved = local_root(Some(Path::new("/ci/restored")), Path::new("/repo/evals"));
+        assert_eq!(resolved.root, PathBuf::from("/ci/restored"));
+        assert!(
+            resolved.legacy.is_none(),
+            "an explicit directory must not be silently layered over another"
+        );
+    }
+
+    /// A suite directory with no stray `.domarinn/cache` under the process cwd
+    /// has nothing to migrate, so no legacy tier is attached.
+    #[test]
+    fn no_legacy_tier_when_there_is_nothing_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = local_root(None, dir.path());
+        assert_eq!(resolved.root, dir.path().join(".domarinn").join("cache"));
+        assert!(resolved.legacy.is_none());
     }
 }
