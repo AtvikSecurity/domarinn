@@ -299,9 +299,9 @@ pub struct CacheEntry {
     /// the verdict from the stored `raw`, so `None` now covers both a provider
     /// response and a grader exchange, and `Some` means only one thing: an entry
     /// old enough to have no payload to re-parse. Those are served as-is and
-    /// re-filed under the request key unchanged — see
-    /// [`crate::request_cache`] for the read contract, and
-    /// [`crate::cache_migrate`] for when this field stops being read at all.
+    /// re-filed under the request key unchanged — see the `request_cache`
+    /// module (private) for the read contract, and [`crate::cache_migrate`] for
+    /// when this field stops being read at all.
     ///
     /// A grader lookup that finds an entry with neither a verdict nor a
     /// re-parseable payload treats it as a miss, never an error.

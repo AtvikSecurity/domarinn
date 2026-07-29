@@ -15,8 +15,9 @@ report them if you can.
 
 Note the model arrives as an argv flag rather than being read from the
 environment. That is deliberate: the cache key hashes the request, and argv is
-part of it, so two models can never share a cache entry. A variable this
-program read for itself would be invisible to the key.
+part of it, so two models can never share a cache entry. A variable this program
+read from the ambient environment, without the suite declaring it, would be
+invisible to the key.
 """
 
 import argparse

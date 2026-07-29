@@ -144,10 +144,14 @@ fn remote_tier(backend: &CacheBackendKind, has_s3_cfg: bool) -> RemoteTier {
 fn warn_if_deprecated(backend: &CacheBackendKind) {
     match backend {
         CacheBackendKind::Http => tracing::warn!(
-            "`backend: http` is a deprecated alias for `layered`; it behaves identically and will be removed"
+            "`backend: http` is a deprecated alias for `layered` that will be removed; it names \
+             the results server outright, so it ignores a `cache.s3` block that `layered` would \
+             have used"
         ),
         CacheBackendKind::S3 => tracing::warn!(
-            "`backend: s3` is a deprecated alias for `layered`; it behaves identically and will be removed"
+            "`backend: s3` is a deprecated alias for `layered` that will be removed; it names \
+             the object store outright, so without a `cache.s3` block it degrades to local disk \
+             alone where `layered` would have used the results server"
         ),
         CacheBackendKind::Disk | CacheBackendKind::Layered => {}
     }

@@ -166,7 +166,7 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Version pin for the program behind `command` — set it when you\nrebuild that program and want the old answers thrown away.\n\nA `cache_salt` joins the cache key of every request this provider\nanswers; change the salt, re-run exactly those requests.\n\nThe cache key names what will answer (`command`, `env`) and hashes\nwhat is asked (the prompt, the vars, the tools). It deliberately says\nnothing about the program's *bytes*, so that a key is identical on\nevery machine and a shared cache actually gets shared. The price is\nthat domarinn cannot tell one build of `./sut` from the next, and\nthis field is how you tell it: a git SHA, a release tag, or\n`\"$digest: src/**/*.rs\"`.\n\nLeave it unset for a program that is not changing under you. A run\nwarns when a cached answer came from a different build than the one\non disk, so a forgotten pin is reported rather than silent.",
+              "description": "Version pin for the program behind `command` — set it when you\nrebuild that program and want the old answers thrown away.\n\nA `cache_salt` joins the cache key of every request this provider\nanswers; change the salt, re-run exactly those requests.\n\nThe cache key hashes the request this provider would send — the\n`command` and its args, the stdin document (the prompt, the vars,\nthe params, the tools), and a digest of any declared `env` — and the\nsalt joins that hash as its own member. It deliberately says nothing\nabout the program's *bytes*, so that a key is identical on every\nmachine and a shared cache actually gets shared. The price is that\ndomarinn cannot tell one build of `./sut` from the next, and this\nfield is how you tell it: a git SHA, a release tag, or\n`\"$digest: src/**/*.rs\"`.\n\nLeave it unset for a program that is not changing under you. A run\nwarns when a cached answer came from a different build than the one\non disk, so a forgotten pin is reported rather than silent.",
               "type": [
                 "string",
                 "null"
@@ -1118,7 +1118,7 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Version pin for the program behind `command` — set it when you\nrebuild that program and want the old answers thrown away.\n\nA `cache_salt` joins the cache key of every request this provider\nanswers; change the salt, re-run exactly those requests.\n\nThe cache key names what will answer (`command`, `env`) and hashes\nwhat is asked (the prompt, the vars, the tools). It deliberately says\nnothing about the program's *bytes*, so that a key is identical on\nevery machine and a shared cache actually gets shared. The price is\nthat domarinn cannot tell one build of `./sut` from the next, and\nthis field is how you tell it: a git SHA, a release tag, or\n`\"$digest: src/**/*.rs\"`.\n\nLeave it unset for a program that is not changing under you. A run\nwarns when a cached answer came from a different build than the one\non disk, so a forgotten pin is reported rather than silent.",
+              "description": "Version pin for the program behind `command` — set it when you\nrebuild that program and want the old answers thrown away.\n\nA `cache_salt` joins the cache key of every request this provider\nanswers; change the salt, re-run exactly those requests.\n\nThe cache key hashes the request this provider would send — the\n`command` and its args, the stdin document (the prompt, the vars,\nthe params, the tools), and a digest of any declared `env` — and the\nsalt joins that hash as its own member. It deliberately says nothing\nabout the program's *bytes*, so that a key is identical on every\nmachine and a shared cache actually gets shared. The price is that\ndomarinn cannot tell one build of `./sut` from the next, and this\nfield is how you tell it: a git SHA, a release tag, or\n`\"$digest: src/**/*.rs\"`.\n\nLeave it unset for a program that is not changing under you. A run\nwarns when a cached answer came from a different build than the one\non disk, so a forgotten pin is reported rather than silent.",
               "type": [
                 "string",
                 "null"
@@ -1548,13 +1548,13 @@
           "const": "layered"
         },
         {
-          "description": "Deprecated alias for `layered`; behaves identically and will be removed\nin a future release.",
+          "description": "Deprecated alias for `layered`, removed in a future release. It names the\nresults server outright, so it ignores a `cache.s3` block that `layered`\nwould have used.",
           "type": "string",
           "const": "http",
           "deprecated": true
         },
         {
-          "description": "Deprecated alias for `layered`; behaves identically and will be removed\nin a future release.",
+          "description": "Deprecated alias for `layered`, removed in a future release. It names the\nobject store outright, so without a `cache.s3` block it degrades to local\ndisk alone where `layered` would have used the results server.",
           "type": "string",
           "const": "s3",
           "deprecated": true

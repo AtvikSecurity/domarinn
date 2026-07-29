@@ -198,12 +198,14 @@ pub enum ProviderKind {
         /// A `cache_salt` joins the cache key of every request this provider
         /// answers; change the salt, re-run exactly those requests.
         ///
-        /// The cache key names what will answer (`command`, `env`) and hashes
-        /// what is asked (the prompt, the vars, the tools). It deliberately says
-        /// nothing about the program's *bytes*, so that a key is identical on
-        /// every machine and a shared cache actually gets shared. The price is
-        /// that domarinn cannot tell one build of `./sut` from the next, and
-        /// this field is how you tell it: a git SHA, a release tag, or
+        /// The cache key hashes the request this provider would send — the
+        /// `command` and its args, the stdin document (the prompt, the vars,
+        /// the params, the tools), and a digest of any declared `env` — and the
+        /// salt joins that hash as its own member. It deliberately says nothing
+        /// about the program's *bytes*, so that a key is identical on every
+        /// machine and a shared cache actually gets shared. The price is that
+        /// domarinn cannot tell one build of `./sut` from the next, and this
+        /// field is how you tell it: a git SHA, a release tag, or
         /// `"$digest: src/**/*.rs"`.
         ///
         /// Leave it unset for a program that is not changing under you. A run
@@ -749,8 +751,8 @@ pub struct CacheCfg {
     // moves `config_digest` (a hash of the serialized suite) once, for suites
     // that have a `cache:` block and never wrote this key — so one `--against`
     // comparison across the upgrade reports config drift. Cache keys are built
-    // from provider fingerprints, not from this digest, so nothing is
-    // invalidated.
+    // from the outgoing request — a grader-originated one like any other — not
+    // from this digest, so nothing is invalidated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grader: Option<bool>,
 }
@@ -765,13 +767,15 @@ pub enum CacheBackendKind {
     /// set, else the HTTP results server (via
     /// `--server-url`/`DOMARINN_SERVER_URL`).
     Layered,
-    /// Deprecated alias for `layered`; behaves identically and will be removed
-    /// in a future release.
-    #[deprecated(note = "use `layered`; `http` behaves identically")]
+    /// Deprecated alias for `layered`, removed in a future release. It names the
+    /// results server outright, so it ignores a `cache.s3` block that `layered`
+    /// would have used.
+    #[deprecated(note = "use `layered`; `http` ignores a `cache.s3` block")]
     Http,
-    /// Deprecated alias for `layered`; behaves identically and will be removed
-    /// in a future release.
-    #[deprecated(note = "use `layered`; `s3` behaves identically")]
+    /// Deprecated alias for `layered`, removed in a future release. It names the
+    /// object store outright, so without a `cache.s3` block it degrades to local
+    /// disk alone where `layered` would have used the results server.
+    #[deprecated(note = "use `layered`; `s3` without `cache.s3` is local disk alone")]
     S3,
 }
 
