@@ -57,7 +57,7 @@ it is a provider — no Rust, no SDK.
 | `command`    | `[string]`          | –          | The command and its argv. |
 | `env`        | `{string: string}`  | `{}`       | Extra environment variables for the child. |
 | `timeout_ms` | integer             | `60000`    | Per-call timeout in milliseconds. |
-| `cache_salt` | string              | *(none)*   | Cache-busting token. **Required to cache.** |
+| `cache_salt` | string              | *(none)*   | Extra cache-busting token. Not normally needed — see below. |
 
 ### Wire behavior
 
@@ -84,13 +84,29 @@ The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus
 your `env`. The full wire contract, exit-code rules, and minimal Bash/Python
 examples live in **[protocol.md](./protocol.md)**.
 
-### Caching requires `cache_salt`
+### Caching, and when you need `cache_salt`
 
-`exec` providers are **not cacheable** unless `cache_salt` is set. Because
-domarinn cannot see inside your binary, it will not risk serving stale output
-from a rebuilt program: with no salt every call runs fresh. Set `cache_salt` to
-a value that changes whenever your program's behavior changes — a git SHA, a
-binary hash, a version string. See [caching.md](./caching.md#cache_salt).
+`exec` providers are **cached by default**, and `cache_salt` is the escape hatch
+rather than the entry ticket. What makes that safe is that the cache key covers
+the *program*, not just the argv naming it: every argument that resolves to a
+readable file contributes its path, size and modification time, with `command[0]`
+resolved through `PATH` and relative paths resolved against the suite directory.
+A rebuild therefore busts the entry on its own.
+
+Set `cache_salt` in the two cases identity cannot reach:
+
+- **No argument names a file** — `docker run …`, a wrapper behind a shell
+  builtin. There is nothing to key on beyond argv, so domarinn declines to cache
+  at all until you supply a salt that says "I know what moves this."
+- **Behavior depends on something off-disk** — a model pulled at startup, a
+  remote config.
+
+Anything else that steers the program should be an argument or an `env` entry
+rather than a salt: both are in the fingerprint, and
+[`${env:VAR}`](#environment-driven-config) lets you drive them from the ambient
+environment while keeping them keyed. A variable the child reads *without* the
+suite declaring it is invisible to the cache — see
+[caching.md](./caching.md#exec-providers-and-the-provider-salt).
 
 ### Error and retry classification
 
@@ -104,11 +120,12 @@ Retries follow the suite's `runner.retries` policy.
 providers:
   - id: my-service
     type: exec
-    command: ["./provider.py"]
+    # `./provider.py` resolves to a file, so editing it busts the cache on its
+    # own — no `cache_salt` needed here.
+    command: ["./provider.py", "--model", "${env:MY_MODEL:-sonnet}"]
     env:
-      MODEL_ENDPOINT: "http://localhost:8080"
+      MODEL_ENDPOINT: "${env:MODEL_ENDPOINT:-http://localhost:8080}"
     timeout_ms: 30000
-    cache_salt: "v3"       # bump when ./provider.py changes
 ```
 
 ---
@@ -391,7 +408,9 @@ Details:
   `timeout_ms` (default 60000 ms).
 - **API keys never appear in cache keys.** A provider's cache identity
   (`fingerprint`) covers its type, model/command/url, params, and any
-  `cache_salt`, but excludes secrets.
+  `cache_salt`, but excludes secrets. For `exec` it also covers the program's
+  identity and a digest of the declared `env` — a digest precisely because `env`
+  is a credential channel, so the values never reach the stored entry.
 
 The two failure classes map to `ProviderError::Retriable { retry_after }` and
 `ProviderError::Fatal` internally, which is what the runner's retry loop keys
@@ -403,8 +422,8 @@ off.
 
 - **[protocol.md](./protocol.md)** — the exec JSON protocol wire format for
   `exec` providers, asserts, and generators.
-- **[caching.md](./caching.md)** — content-addressed caching and the
-  `cache_salt` requirement for `exec` providers.
+- **[caching.md](./caching.md)** — content-addressed caching, how an `exec`
+  provider's program identity keys it, and when `cache_salt` is needed.
 - **[assertions.md](./assertions.md)** — how provider outputs are graded, and
   the budget assertions that read `usage` / `cost_usd`.
 - **[grading.md](./grading.md)** — using `anthropic` / `openai` providers as

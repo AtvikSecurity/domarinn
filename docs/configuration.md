@@ -156,17 +156,18 @@ escape hatch for testing anything you can run as a process.
 | `command` | list of strings | **yes** | argv; the program plus its arguments. |
 | `env` | map string→string | no | Extra environment variables for the child process. |
 | `timeout_ms` | int | no | Per-call timeout in milliseconds. |
-| `cache_salt` | string | no | **Provider-level** cache-busting token — a version pin for the program behind the command. **Without it, exec providers are not cached**, so a rebuilt binary is never served a stale response. Set it to a git SHA or a binary hash. Distinct from a test case's own [`cache_salt`](#inline-and-loaded-test-fields), which keys a single case; see [caching.md](./caching.md). |
+| `cache_salt` | string | no | **Provider-level** cache-busting token — a version pin for the program behind the command. Not normally needed: exec providers are cached by default, keyed on the identity of every `command` argument that names a readable file, so a rebuild busts the entry itself. Set it when nothing in the command resolves to a file (`docker run …`), or when behavior depends on something off-disk. Distinct from a test case's own [`cache_salt`](#inline-and-loaded-test-fields), which keys a single case; see [caching.md](./caching.md). |
 
 ```yaml
 providers:
   - id: local-agent
     type: exec
+    # The binary's mtime and size are already in the cache key, so a rebuild
+    # busts it without a `cache_salt`.
     command: ["./target/release/agent", "--mode", "eval"]
     env:
       AGENT_PROFILE: strict
     timeout_ms: 30000
-    cache_salt: "git-3f2a9c1"   # bump when the binary changes
 ```
 
 ### `type: anthropic`

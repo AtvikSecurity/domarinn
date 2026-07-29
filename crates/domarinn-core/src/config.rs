@@ -378,9 +378,12 @@ pub struct TestCase {
     /// Opaque per-case cache-busting token, folded into this case's provider
     /// cache key. Use it when the system under test loads content domarinn
     /// cannot see (its own prompt files), so editing that content busts only
-    /// the cases that use it. Never sent to the provider. It does not make a
-    /// provider cacheable on its own — an `exec` provider still needs its own
-    /// `cache_salt` for that.
+    /// the cases that use it. Never sent to the provider.
+    ///
+    /// This keys *one case*, and is a different lever from a provider's own
+    /// `cache_salt`, which pins the program behind a command. It is not a
+    /// prerequisite for either: an `exec` provider is cached by default, keyed
+    /// on the identity of every `command` argument that names a readable file.
     ///
     /// Used **verbatim**, and deliberately not templated: a useful salt is a
     /// digest of something domarinn cannot see, so it could only be derived from

@@ -64,21 +64,56 @@ identity of the *program* — the path, size and modification time of every
 argument that names a readable file — not just the command line, so rebuilding
 the binary busts its entries automatically.
 
-That covers a compiled binary (`./target/release/appd`) and an interpreter plus
-a script (`python3 grade.py`). It does **not** cover a program resolved from
-`PATH` with no path separator, or one whose behavior depends on something not on
-disk. Set `cache_salt` for those — it composes with the automatic identity
-rather than replacing it:
+That covers a compiled binary (`./target/release/appd`), an interpreter plus a
+script (`python3 grade.py`), and a program installed on `PATH` (`my-agent`) —
+`command[0]` is resolved through `PATH` when it names no directory, because a
+`PATH`-installed agent is both the most common exec provider and precisely the
+one a rebuild moves. Relative paths resolve against the suite directory, which is
+the cwd the child is spawned in.
+
+What it does **not** cover is a command where *no* argument names a readable file
+— `docker run …`, a wrapper invoked through a shell builtin — or one whose
+behavior depends on something not on disk at all. There is no identity beyond
+argv there, so domarinn declines to cache rather than replay stale output. Set
+`cache_salt` for those; it composes with the automatic identity rather than
+replacing it:
 
 ```yaml
 providers:
   - id: renderer
     type: exec
-    command: ["./target/release/appd", "render"]
-    cache_salt: "abc1234"     # bump on rebuild; without it, exec is not cached
+    command: ["docker", "run", "--rm", "appd:latest", "render"]
+    cache_salt: "abc1234"     # no argv entry is a file, so identity needs a pin
 ```
 
 Keep this a **version pin**. It answers one question: *is this the same build?*
+
+The [two rules under Per-case salts](#per-case-salts) state the same boundary in
+full, and are the authoritative version if these ever drift.
+
+#### The child's environment is only keyed when you declare it
+
+The fingerprint covers the provider's **declared** `env` (as a digest, never the
+values) alongside the program's identity. But the child also inherits domarinn's
+own environment, and *that* half is invisible to the cache key. A variable the
+program reads for itself, without the suite declaring it, changes behavior while
+every cache entry stays valid — so two runs that differ only in an exported
+variable will replay each other's answers.
+
+Put anything that steers behavior where the fingerprint can see it, either as an
+argument or in `env`. [`${env:VAR}` interpolation](./providers.md#environment-driven-config)
+is how you source it from the ambient environment and still have it keyed, since
+it resolves at load time, before the fingerprint is computed:
+
+```yaml
+providers:
+  - id: agent
+    type: exec
+    command: ["my-agent", "--model", "${env:AGENT_MODEL:-sonnet}"]
+```
+
+`AGENT_MODEL=opus` now changes the model *and* the cache key together. An unset
+variable with no `:-default` is a hard load error, not a silent fallback.
 
 ### Per-case salts
 
@@ -215,8 +250,10 @@ provider responses:
 For sharing to hold, keep the provider configuration identical across
 environments: the key includes the provider fingerprint, so a different model,
 `base_url`, params, or `cache_salt` is simply a different entry that nobody else
-hits. Note that grading is not cached, so an LLM-graded suite still pays its
-grader on every run no matter how warm the response cache is. See
+hits. Grader verdicts are cached too, in their own key space keyed on the
+grader's fingerprint and the graded payload, so a warm run re-pays neither the
+provider nor the judge. `--no-grader-cache` re-grades while still replaying
+provider responses, which is how you measure judge variance deliberately. See
 [grading.md](./grading.md).
 
 ## Managing the local cache
