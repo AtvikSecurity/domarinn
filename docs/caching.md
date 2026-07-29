@@ -60,9 +60,17 @@ on every edit. That is what per-case salts exist to avoid.
 ### `exec` providers and the provider salt
 
 An `exec` provider is cached like every other kind. Its fingerprint includes the
-identity of the *program* — the path, size and modification time of every
+identity of the *program* — the path and a **digest of the contents** of every
 argument that names a readable file — not just the command line, so rebuilding
 the binary busts its entries automatically.
+
+Contents rather than timestamps, deliberately. `git` does not record `mtime`, so
+a fresh checkout stamps every file with its checkout time and no two machines
+ever agree; keying on that would make the fingerprint unshareable and quietly
+disable the S3 and results-server caches for every exec provider. A digest is
+identical wherever the same bytes land, so a warm shared cache survives a fresh
+clone. (Arguments above 256 MiB fall back to length and mtime — a bounded escape
+for a multi-gigabyte file on the command line, not the common path.)
 
 That covers a compiled binary (`./target/release/appd`), an interpreter plus a
 script (`python3 grade.py`), and a program installed on `PATH` (`my-agent`) —
@@ -87,6 +95,31 @@ providers:
 ```
 
 Keep this a **version pin**. It answers one question: *is this the same build?*
+
+#### Opting out: `program_identity: false`
+
+Content digests are reproducible across machines, which is what makes a shared
+cache work for a checked-in script. They are *not* reproducible for a binary
+compiled in CI: Rust builds are not byte-reproducible (embedded paths, debug
+info), so two runners building identical source produce different bytes, hash
+differently, and never hit each other's entries.
+
+Only your suite knows those two builds are the same version. Say so — pin
+`cache_salt` to a digest of the **source** and turn identity off:
+
+```yaml
+providers:
+  - id: agent
+    type: exec
+    command: ["./target/release/agent"]
+    cache_salt: "src-3f2a9c1"   # digest of the source tree, not the artifact
+    program_identity: false     # the salt is now the whole identity
+```
+
+The fingerprint is then independent of the built artifact entirely, so every
+runner that builds the same source shares one set of entries. `cache_salt` is
+required: with neither an identity nor a salt the key would be argv alone, which
+does not move when the program is rebuilt, so nothing is cached at all.
 
 The [two rules under Per-case salts](#per-case-salts) state the same boundary in
 full, and are the authoritative version if these ever drift.
@@ -165,16 +198,18 @@ Two rules worth stating plainly:
 
 - **An `exec` provider is cached by default, and a `cache_salt` is the escape
   hatch rather than the entry ticket.** What makes that safe is that the cache
-  key includes the *program*, not just the argv that names it: the path, size and
-  modification time of every argument that resolves to a file, with the program
+  key includes the *program*, not just the argv that names it: the path and a
+  content digest of every argument that resolves to a file, with the program
   itself resolved through `PATH` and relative paths resolved against the suite
   directory (the cwd the child is spawned in). A rebuild therefore busts the
-  entry on its own. When nothing in the command resolves to a file — `docker run
-  …`, say — there is no identity beyond argv, and domarinn declines to cache
-  rather than replay stale output after a rebuild; set `cache_salt` to say "I
-  know what moves this" and caching resumes. The provider's `env` is in the key
-  too (as a digest, never the values), so two providers wrapping one script with
-  different endpoints do not collide.
+  entry on its own, and identical bytes key identically on every machine. When
+  nothing in the command resolves to a file — `docker run …`, say — there is no
+  identity beyond argv, and domarinn declines to cache rather than replay stale
+  output after a rebuild; set `cache_salt` to say "I know what moves this" and
+  caching resumes. `program_identity: false` hands the whole job to the salt,
+  for artifacts that are rebuilt rather than checked in. The provider's `env` is
+  in the key too (as a digest, never the values), so two providers wrapping one
+  script with different endpoints do not collide.
 - **The salt is never sent to the provider** and is never templated — it is used
   verbatim. Putting the digest in `vars` instead would work, but `vars` are
   forwarded to the system under test and enter the template namespace.

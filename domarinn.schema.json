@@ -166,11 +166,15 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path, size and mtime to the cache key, so a rebuild\nbusts the entry on its own. Set this when the program's behavior\ndepends on something that identity cannot see — a model downloaded at\nstartup, a remote config, a container image behind a wrapper script.",
+              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path and a digest of its contents to the cache key,\nso an edit or a rebuild busts the entry on its own. Set this when the\nprogram's behavior depends on something that identity cannot see — a\nmodel downloaded at startup, a remote config, a container image\nbehind a wrapper script.",
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "program_identity": {
+              "description": "Whether the program's own identity enters the cache key. Default\n`true`; set `false` to make `cache_salt` the *sole* identity.\n\nContent digests are reproducible across machines, so the default is\nright for a checked-in script. It is not right for a binary compiled\nin CI: Rust builds are not byte-reproducible (embedded paths, debug\ninfo), so two runners building identical source produce different\nbytes and therefore different keys, and the shared cache never hits.\nOnly the suite knows those two builds are the same version — so it\nsays so, by pinning `cache_salt` to a digest of the *source* and\nturning this off.\n\nRequires `cache_salt`: with neither an identity nor a salt the key\nwould be argv alone, which does not move when the program is\nrebuilt, so responses are not cached at all.",
+              "type": "boolean"
             },
             "type": {
               "type": "string",
@@ -1118,11 +1122,15 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path, size and mtime to the cache key, so a rebuild\nbusts the entry on its own. Set this when the program's behavior\ndepends on something that identity cannot see — a model downloaded at\nstartup, a remote config, a container image behind a wrapper script.",
+              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path and a digest of its contents to the cache key,\nso an edit or a rebuild busts the entry on its own. Set this when the\nprogram's behavior depends on something that identity cannot see — a\nmodel downloaded at startup, a remote config, a container image\nbehind a wrapper script.",
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "program_identity": {
+              "description": "Whether the program's own identity enters the cache key. Default\n`true`; set `false` to make `cache_salt` the *sole* identity.\n\nContent digests are reproducible across machines, so the default is\nright for a checked-in script. It is not right for a binary compiled\nin CI: Rust builds are not byte-reproducible (embedded paths, debug\ninfo), so two runners building identical source produce different\nbytes and therefore different keys, and the shared cache never hits.\nOnly the suite knows those two builds are the same version — so it\nsays so, by pinning `cache_salt` to a digest of the *source* and\nturning this off.\n\nRequires `cache_salt`: with neither an identity nor a salt the key\nwould be argv alone, which does not move when the program is\nrebuilt, so responses are not cached at all.",
+              "type": "boolean"
             },
             "type": {
               "type": "string",

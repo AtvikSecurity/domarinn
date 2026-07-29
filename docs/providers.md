@@ -58,6 +58,7 @@ it is a provider — no Rust, no SDK.
 | `env`        | `{string: string}`  | `{}`       | Extra environment variables for the child. |
 | `timeout_ms` | integer             | `60000`    | Per-call timeout in milliseconds. |
 | `cache_salt` | string              | *(none)*   | Extra cache-busting token. Not normally needed — see below. |
+| `program_identity` | bool          | `true`     | Whether the program's content digest enters the cache key. Set `false` (with a `cache_salt`) for artifacts rebuilt per-run. |
 
 ### Wire behavior
 
@@ -89,9 +90,12 @@ examples live in **[protocol.md](./protocol.md)**.
 `exec` providers are **cached by default**, and `cache_salt` is the escape hatch
 rather than the entry ticket. What makes that safe is that the cache key covers
 the *program*, not just the argv naming it: every argument that resolves to a
-readable file contributes its path, size and modification time, with `command[0]`
-resolved through `PATH` and relative paths resolved against the suite directory.
-A rebuild therefore busts the entry on its own.
+readable file contributes its path and a **digest of its contents**, with
+`command[0]` resolved through `PATH` and relative paths resolved against the
+suite directory. A rebuild therefore busts the entry on its own, and — because a
+digest does not depend on filesystem timestamps, which `git` never records —
+identical bytes key identically on every machine, so a shared cache survives a
+fresh clone.
 
 Set `cache_salt` in the two cases identity cannot reach:
 
@@ -100,6 +104,12 @@ Set `cache_salt` in the two cases identity cannot reach:
   at all until you supply a salt that says "I know what moves this."
 - **Behavior depends on something off-disk** — a model pulled at startup, a
   remote config.
+
+Set **`program_identity: false`** (alongside a `cache_salt`) for the third case:
+a binary **compiled per-run in CI**. Rust builds are not byte-reproducible, so
+two runners building identical source hash differently and never share entries.
+Pin the salt to a digest of the *source* and turn identity off — see
+[caching.md](./caching.md#opting-out-program_identity-false).
 
 Anything else that steers the program should be an argument or an `env` entry
 rather than a salt: both are in the fingerprint, and
