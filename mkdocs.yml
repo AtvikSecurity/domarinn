@@ -177,9 +177,16 @@ nav:
       - Self-hosting: deploy.md
       - Migrating from promptfoo: migrate-promptfoo.md
       - Troubleshooting: troubleshooting.md
-  - Examples: examples.md
+  - Examples:
+      - examples/index.md
+      - First steps (01–05): examples/first-steps.md
+      - Templates & test data (06–11): examples/templates-and-test-data.md
+      - Your own system (12–15): examples/your-own-system.md
+      - Running & reporting (16–20, 25): examples/running-and-reporting.md
+      - Caching & statistics (21–24): examples/caching-and-statistics.md
+      - Models, grading & budgets (26–32): examples/models-grading-and-budgets.md
   # Scenarios = end-to-end, problem-driven walkthroughs, as opposed to the
-  # per-capability ladder in examples.md. navigation.indexes makes
+  # per-capability ladder grouped under examples/. navigation.indexes makes
   # scenarios/index.md the section landing page, so it must be the first child.
   - Scenarios:
       - scenarios/index.md

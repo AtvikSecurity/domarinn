@@ -18,7 +18,7 @@ Symptoms, causes, and fixes. Every entry here is something that actually caught 
 
 **Cause.** When nothing priced the call, the assertion passes with the note *"cost not reported; budget not enforced"*. That happens when the provider reports no `usage`, or when the model is not in domarinn's rate sheet and the suite sets no `pricing:` block.
 
-**Fix.** Set a [`pricing:` block](examples.md#example-27--anthropic-and-what-it-costs) on the provider, or have your `exec` provider report `cost_usd` directly. `tokens:` has the same failure mode and the same fix. Check `summary.cost_usd` is non-null before believing a cost gate.
+**Fix.** Set a [`pricing:` block](examples/models-grading-and-budgets.md#example-27--anthropic-and-what-it-costs) on the provider, or have your `exec` provider report `cost_usd` directly. `tokens:` has the same failure mode and the same fix. Check `summary.cost_usd` is non-null before believing a cost gate.
 
 ### A `similar` assertion that passes at any threshold
 
@@ -38,7 +38,7 @@ Symptoms, causes, and fixes. Every entry here is something that actually caught 
 
 **Cause.** Every var is rendered through Jinja. `{{7*7}}` becomes `49` on the way in.
 
-**Fix.** Tag the value `!raw`, or use the `{$raw: …}` object form in JSON/JSONL/CSV where a YAML tag cannot travel. See [example 06](examples.md#example-06--the-raw-escape-hatch), which keeps a control case proving the untagged form really is rendered.
+**Fix.** Tag the value `!raw`, or use the `{$raw: …}` object form in JSON/JSONL/CSV where a YAML tag cannot travel. See [example 06](examples/templates-and-test-data.md#example-06--the-raw-escape-hatch), which keeps a control case proving the untagged form really is rendered.
 
 /// danger | This failure is silent
 
@@ -68,7 +68,7 @@ The assertion still passes. Nothing warns you. The test simply stops testing wha
 
 **Cause.** [The key is the request](caching.md#the-rule), and the request carries only an id. When your program resolves its own prompts across a process boundary, domarinn never sees that content, so nothing in the key changed.
 
-**Fix.** The [two-level salt pattern](examples.md#example-22--cache-salts). A coarse `cache_salt` on the provider as a build pin, and a per-case `cache_salt: "$digest: prompts/{{ prompt_id }}.md"` so editing one prompt busts only the cases that use it. Do **not** make the provider-level salt a content digest of everything the program reads — that discards the whole cache on any edit, which is what the per-case salt exists to avoid.
+**Fix.** The [two-level salt pattern](examples/caching-and-statistics.md#example-22--cache-salts). A coarse `cache_salt` on the provider as a build pin, and a per-case `cache_salt: "$digest: prompts/{{ prompt_id }}.md"` so editing one prompt busts only the cases that use it. Do **not** make the provider-level salt a content digest of everything the program reads — that discards the whole cache on any edit, which is what the per-case salt exists to avoid.
 
 ### A rebuild did not re-run anything
 
@@ -132,13 +132,13 @@ This fails asymmetrically, which is what makes it confusing: the system under te
 
 **Cause.** A model offered tools stops writing prose and starts emitting tool calls. Every rubric watching the text channel now sees nothing, and cases that were green go red for reasons unrelated to whatever you were testing.
 
-**Fix.** Add `tools:` when you intend to assert on tool calls, not as background context. Assert with `tool-call`, not with a prose rubric. See [example 15](examples.md#example-15--tool-call-assertions).
+**Fix.** Add `tools:` when you intend to assert on tool calls, not as background context. Assert with `tool-call`, not with a prose rubric. See [example 15](examples/your-own-system.md#example-15--tool-call-assertions).
 
 ### A refusal is scoring zero and dragging down the suite
 
 **Cause.** A blank output is a *successful* call. Nothing raises, and every assertion scores zero for a reason that has nothing to do with what you were measuring.
 
-**Fix.** Have the provider report `empty_reason` (`refusal`, `truncated`, `tool_use_only`, …), then list the ones you want excluded in `runner.skip_on_empty_reason`. Those cells become `skip` rather than `fail`. See [example 19](examples.md#example-19--errors-and-retries).
+**Fix.** Have the provider report `empty_reason` (`refusal`, `truncated`, `tool_use_only`, …), then list the ones you want excluded in `runner.skip_on_empty_reason`. Those cells become `skip` rather than `fail`. See [example 19](examples/running-and-reporting.md#example-19--errors-and-retries).
 
 ### The reusable Action posts a stub comment on a green run
 
@@ -151,4 +151,4 @@ This fails asymmetrically, which is what makes it confusing: the system under te
 - [How a run works](concepts/how-a-run-works.md) — the model behind most of the above.
 - [Caching](caching.md) — the full key semantics.
 - [CI integration](ci.md) — exit codes and gating.
-- [Examples](examples.md) — every entry here has a runnable counterpart.
+- [Examples](examples/index.md) — every entry here has a runnable counterpart.

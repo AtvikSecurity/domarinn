@@ -1,6 +1,6 @@
 # Scenarios
 
-The [Examples](../examples.md) page is a ladder of **per-capability** suites — one feature per file. **Scenarios** are the layer above: end-to-end walkthroughs for a real situation, tying several capabilities, the right commands, and the verification steps together.
+The [Examples](../examples/index.md) page is a ladder of **per-capability** suites — one feature per file. **Scenarios** are the layer above: end-to-end walkthroughs for a real situation, tying several capabilities, the right commands, and the verification steps together.
 
 Each one is built from suites on the Examples page, so everything here is runnable and everything here is tested.
 
@@ -34,6 +34,6 @@ Trying to do both in one suite means either paying for the cheap checks or skipp
 
 ## See also
 
-- [Examples](../examples.md) — the per-capability ladder these are built from.
+- [Examples](../examples/index.md) — the per-capability ladder these are built from.
 - [Getting started](../getting-started.md) — install and first run.
 - [Troubleshooting](../troubleshooting.md) — when a step does not go green.

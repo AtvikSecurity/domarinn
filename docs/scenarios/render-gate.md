@@ -6,7 +6,7 @@
 
 ## 1. Make your system renderable
 
-The system under test runs in "render" mode: given a template id, produce the rendered text and print it. That is an [`exec` provider](../examples.md#example-13--your-own-system) — one JSON request in, one JSON response out.
+The system under test runs in "render" mode: given a template id, produce the rendered text and print it. That is an [`exec` provider](../examples/your-own-system.md#example-13--your-own-system) — one JSON request in, one JSON response out.
 
 ```yaml
 --8<-- "examples/12-render-health/domarinn.yaml"
@@ -36,7 +36,7 @@ Put the size ceiling in `defaults.assert` so it applies to every case without re
 
 ## 3. Make coverage automatic
 
-Listing templates by hand guarantees that the one added last Tuesday has no test. A [generator](../examples.md#example-11--test-generators) enumerates your registry instead, so a new template gets a render test the day it lands:
+Listing templates by hand guarantees that the one added last Tuesday has no test. A [generator](../examples/templates-and-test-data.md#example-11--test-generators) enumerates your registry instead, so a new template gets a render test the day it lands:
 
 ```yaml
 tests:
@@ -67,10 +67,10 @@ $ echo $?
 1
 ```
 
-If that prints `0`, your assertions are not asserting. [Example 18](../examples.md#example-18--a-failing-gate) is a suite that is red by design, kept green-in-CI precisely so the failure path stays exercised.
+If that prints `0`, your assertions are not asserting. [Example 18](../examples/running-and-reporting.md#example-18--a-failing-gate) is a suite that is red by design, kept green-in-CI precisely so the failure path stays exercised.
 
 ## See also
 
-- [Example 12](../examples.md#example-12--render-health) — the suite above, runnable.
-- [Example 11](../examples.md#example-11--test-generators) — generators in detail.
+- [Example 12](../examples/your-own-system.md#example-12--render-health) — the suite above, runnable.
+- [Example 11](../examples/templates-and-test-data.md#example-11--test-generators) — generators in detail.
 - [Scenario 04](regression-gate.md) — the graded layer that runs beside this one.

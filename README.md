@@ -97,7 +97,7 @@ Full documentation is published at **<https://docs.domarinn.com/>** (source in [
 - [Grading](docs/grading.md) · [Caching](docs/caching.md) · [Statistics](docs/statistics.md) · [CLI reference](docs/cli.md)
 - [Server & accounts](docs/server.md) · [Deploy](docs/deploy.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/protocol.md)
 - [MCP endpoint](docs/server.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
-- **[Examples](docs/examples.md)** — 32 runnable suites, one capability each, every one executed in CI
+- **[Examples](docs/examples/index.md)** — 32 runnable suites, one capability each, every one executed in CI
 - **[Scenarios](docs/scenarios/index.md)** · [How a run works](docs/concepts/how-a-run-works.md) · [Troubleshooting](docs/troubleshooting.md) · [Migrating from promptfoo](docs/migrate-promptfoo.md)
 
 ## For agents

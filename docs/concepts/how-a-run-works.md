@@ -39,7 +39,7 @@ Within a case, evaluation happens in two passes.
 - **No threshold** (all-must-pass): the graded assertions matter only while every deterministic one has passed. The moment one fails, the case is already decided, and the judge is skipped.
 - **With a threshold**: compute the best and worst achievable weighted means, treating the remaining assertions as all-`1.0` and all-`0.0`. The judge runs only if the threshold sits between them.
 
-This is why you write `contains` above `llm-rubric` and not the other way round. See [example 18](../examples.md#example-18--a-failing-gate), which keeps a skipped grader in it deliberately.
+This is why you write `contains` above `llm-rubric` and not the other way round. See [example 18](../examples/running-and-reporting.md#example-18--a-failing-gate), which keeps a skipped grader in it deliberately.
 
 ## The grader is structured, and fails closed
 
@@ -53,13 +53,13 @@ The distinction matters because the alternative is worse than it looks: a judge 
 
 Every outgoing call — a provider, the judge, an embedding, an `exec` grader — is keyed by one rule: **hash what is sent.** The SHA-256 of the redacted request, plus the trial index, plus any `cache_salt` in scope. Nothing about your machine, your binary, or your credentials.
 
-That is what makes a cache shareable, and it has a consequence you must know about: **a rebuild of your own binary does not invalidate anything**, because the key hashes what the program *sends*, not its bytes. [`cache_salt`](../examples.md#example-22--cache-salts) is the lever for that, and it exists at two granularities for good reason.
+That is what makes a cache shareable, and it has a consequence you must know about: **a rebuild of your own binary does not invalidate anything**, because the key hashes what the program *sends*, not its bytes. [`cache_salt`](../examples/caching-and-statistics.md#example-22--cache-salts) is the lever for that, and it exists at two granularities for good reason.
 
 The full rule, every knob, and what a 0.5 upgrade does to a warm store are in [caching.md](../caching.md#the-rule).
 
 ## See also
 
 - [Why domarinn is built this way](why-domarinn.md) — the decisions behind the above.
-- [Examples](../examples.md) — every idea here, as a suite you can run.
+- [Examples](../examples/index.md) — every idea here, as a suite you can run.
 - [Caching](../caching.md) — backends, salts, and what busts what.
 - [Assertions](../assertions.md) — scoring, weights, and the full type list.

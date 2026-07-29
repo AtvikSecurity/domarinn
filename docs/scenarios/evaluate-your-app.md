@@ -41,7 +41,7 @@ Three response fields do disproportionate work:
 | `empty_reason` | a refusal or a tool-only turn being distinguished from a blank failure |
 | `error.retriable` | retries that fire on rate limits and not on rejected credentials |
 
-Omit them and the corresponding assertions pass while enforcing nothing. See [example 31](../examples.md#example-31--budgets) and [example 19](../examples.md#example-19--errors-and-retries).
+Omit them and the corresponding assertions pass while enforcing nothing. See [example 31](../examples/models-grading-and-budgets.md#example-31--budgets) and [example 19](../examples/running-and-reporting.md#example-19--errors-and-retries).
 
 ## 4. Generate the cases from your registry
 
@@ -53,7 +53,7 @@ tests:
       command: ["./target/release/my-eval", "generate-tests"]
 ```
 
-See [example 11](../examples.md#example-11--test-generators). Back it with a test in your own codebase asserting the registry and the manifest agree.
+See [example 11](../examples/templates-and-test-data.md#example-11--test-generators). Back it with a test in your own codebase asserting the registry and the manifest agree.
 
 ## 5. Guard the thing that silently invalidates everything
 
@@ -70,6 +70,6 @@ Without a guard like this, a suite can sit on a model nobody serves — and ever
 
 ## See also
 
-- [Example 13](../examples.md#example-13--your-own-system) — the suite above.
+- [Example 13](../examples/your-own-system.md#example-13--your-own-system) — the suite above.
 - [Exec protocol](../protocol.md) — the full contract, in three languages.
 - [Scenario 01](render-gate.md) — the free layer to put in front of this one.

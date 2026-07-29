@@ -65,12 +65,12 @@ vars:
 
 /// warning | Watch for template syntax in the payload
 
-A JSON fixture containing `{{` will be rendered before it reaches the system. If the payload must arrive byte-for-byte, tag it [`!raw`](../examples.md#example-06--the-raw-escape-hatch) — or load it from a file with `{$file: "…", raw: true}`, as [example 07](../examples.md#example-07--file-content-vars) does.
+A JSON fixture containing `{{` will be rendered before it reaches the system. If the payload must arrive byte-for-byte, tag it [`!raw`](../examples/templates-and-test-data.md#example-06--the-raw-escape-hatch) — or load it from a file with `{$file: "…", raw: true}`, as [example 07](../examples/templates-and-test-data.md#example-07--file-content-vars) does.
 
 ///
 
 ## See also
 
-- [Example 04](../examples.md#example-04--structured-output) — the parseability layer.
-- [Example 29](../examples.md#example-29--llm-rubric-grading) — writing the rubric.
+- [Example 04](../examples/first-steps.md#example-04--structured-output) — the parseability layer.
+- [Example 29](../examples/models-grading-and-budgets.md#example-29--llm-rubric-grading) — writing the rubric.
 - [Assertions](../assertions.md) — `contains-json` and schema handling in full.

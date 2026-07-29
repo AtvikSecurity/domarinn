@@ -42,7 +42,7 @@ $ domarinn list tests .
 
 **Templating is Jinja, not Nunjucks.** `{{ var }}` is the same. Filters mostly are not: domarinn ships `json_encode`, `b64encode`, `sha256`, `slugify`, `regex_replace`, `truncate` and friends, plus `now()`, `uuid()` and `randint()`. Check any filter you rely on.
 
-**JavaScript and Python assertions do not exist.** There is no `javascript:` or `python:` assertion type. The replacement is [an `exec` assertion](examples.md#example-14--a-custom-assertion) — your program, any language, over a small JSON protocol. It is a process boundary rather than an embedded interpreter, which costs a spawn and buys you a checker you can run and test on its own.
+**JavaScript and Python assertions do not exist.** There is no `javascript:` or `python:` assertion type. The replacement is [an `exec` assertion](examples/your-own-system.md#example-14--a-custom-assertion) — your program, any language, over a small JSON protocol. It is a process boundary rather than an embedded interpreter, which costs a spawn and buys you a checker you can run and test on its own.
 
 **Some graded assertion types have no equivalent.** `moderation`, `factuality`, `answer-relevance`, `select-best`, `perplexity`, `rouge`, `levenshtein` and `classifier` are not implemented. Most are expressible as an `llm-rubric` with an explicit rubric, which is more work to write and considerably easier to reason about when it disagrees with you.
 
@@ -56,14 +56,14 @@ $ domarinn list tests .
 
 Worth knowing about, because they have no promptfoo equivalent and change how a suite is used:
 
-- **[Regression gating](examples.md#example-24--baselines-and-diff)** against a stored baseline, with a defined exit-code contract — `1` for a failed assertion, `3` for a broken harness.
+- **[Regression gating](examples/caching-and-statistics.md#example-24--baselines-and-diff)** against a stored baseline, with a defined exit-code contract — `1` for a failed assertion, `3` for a broken harness.
 - **[Statistics](statistics.md)** — Wilson confidence intervals, McNemar paired significance, pass@k. A pass rate with an error bar.
-- **[Errors that are not failures](examples.md#example-19--errors-and-retries)** — a separate status, tally and exit code, so "the harness broke" never reads as "the model got worse".
-- **[A fail-closed grader](examples.md#example-29--llm-rubric-grading)** — structured verdicts, with truncation an error rather than a zero.
+- **[Errors that are not failures](examples/running-and-reporting.md#example-19--errors-and-retries)** — a separate status, tally and exit code, so "the harness broke" never reads as "the model got worse".
+- **[A fail-closed grader](examples/models-grading-and-budgets.md#example-29--llm-rubric-grading)** — structured verdicts, with truncation an error rather than a zero.
 - **A [self-hostable results server](server.md)** with accounts, run comparison and a shared cache, in the same single binary.
 
 ## See also
 
 - [Getting started](getting-started.md) — if you would rather write a fresh suite than convert one.
 - [Suite configuration](configuration.md) — the complete reference.
-- [Examples](examples.md) — the capability ladder.
+- [Examples](examples/index.md) — the capability ladder.

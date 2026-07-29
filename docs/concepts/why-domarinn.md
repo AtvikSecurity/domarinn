@@ -8,7 +8,7 @@ domarinn inverts the assumption. Below is what follows from that, and the handfu
 
 An `exec` command or an `http` endpoint is a normal provider. Prompts are optional, because a system that resolves its own prompts does not want yours.
 
-The consequence people notice first: **what you test is what ships**. The eval drives the same code path production does. The consequence people notice second is the price — domarinn cannot see inside your program, so it cannot know when your prompt changed. That is why [`cache_salt` exists at two granularities](../examples.md#example-22--cache-salts) rather than one.
+The consequence people notice first: **what you test is what ships**. The eval drives the same code path production does. The consequence people notice second is the price — domarinn cannot see inside your program, so it cannot know when your prompt changed. That is why [`cache_salt` exists at two granularities](../examples/caching-and-statistics.md#example-22--cache-salts) rather than one.
 
 ## Deterministic assertions run first
 
@@ -44,7 +44,7 @@ This is the decision that makes a shared cache actually work. A key that varies 
 
 Templating that cannot express a loop stops being useful about a week in. But a template engine applied to *test inputs* is a hazard: a case designed to prove a system does not evaluate `{{7*7}}` will feed it `49` instead, pass, and prove nothing.
 
-So: full minijinja, plus a per-value [`!raw`](../examples.md#example-06--the-raw-escape-hatch) that is never rendered. Interpolation is also deliberately narrow — `${env:…}` reaches provider config and *never* test vars, so an untrusted fixture cannot smuggle a different endpoint or key name into a provider.
+So: full minijinja, plus a per-value [`!raw`](../examples/templates-and-test-data.md#example-06--the-raw-escape-hatch) that is never rendered. Interpolation is also deliberately narrow — `${env:…}` reaches provider config and *never* test vars, so an untrusted fixture cannot smuggle a different endpoint or key name into a provider.
 
 ## One binary
 
@@ -54,4 +54,4 @@ The CLI, the engine, the results server and the web UI are one static executable
 
 - [How a run works](how-a-run-works.md) — the mechanics.
 - [Migrating from promptfoo](../migrate-promptfoo.md) — what changes, concretely.
-- [Examples](../examples.md) — each decision above, as something you can run.
+- [Examples](../examples/index.md) — each decision above, as something you can run.
