@@ -166,11 +166,15 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path, size and mtime to the cache key, so a rebuild\nbusts the entry on its own. Set this when the program's behavior\ndepends on something that identity cannot see — a model downloaded at\nstartup, a remote config, a container image behind a wrapper script.",
+              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path and a digest of its contents to the cache key,\nso an edit or a rebuild busts the entry on its own. Set this when the\nprogram's behavior depends on something that identity cannot see — a\nmodel downloaded at startup, a remote config, a container image\nbehind a wrapper script.",
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "program_identity": {
+              "description": "Whether the program's own identity enters the cache key. Default\n`true`; set `false` to make `cache_salt` the *sole* identity.\n\nContent digests are reproducible across machines, so the default is\nright for a checked-in script. It is not right for a binary compiled\nin CI: Rust builds are not byte-reproducible (embedded paths, debug\ninfo), so two runners building identical source produce different\nbytes and therefore different keys, and the shared cache never hits.\nOnly the suite knows those two builds are the same version — so it\nsays so, by pinning `cache_salt` to a digest of the *source* and\nturning this off.\n\nRequires `cache_salt`: with neither an identity nor a salt the key\nwould be argv alone, which does not move when the program is\nrebuilt, so responses are not cached at all.",
+              "type": "boolean"
             },
             "type": {
               "type": "string",
@@ -635,7 +639,7 @@
           "format": "double"
         },
         "cache_salt": {
-          "description": "Opaque per-case cache-busting token, folded into this case's provider\ncache key. Use it when the system under test loads content domarinn\ncannot see (its own prompt files), so editing that content busts only\nthe cases that use it. Never sent to the provider. It does not make a\nprovider cacheable on its own — an `exec` provider still needs its own\n`cache_salt` for that.\n\nUsed **verbatim**, and deliberately not templated: a useful salt is a\ndigest of something domarinn cannot see, so it could only be derived from\nthe environment — and `env` is deliberately kept out of the request\nidentity (see [`crate::render`]) so that unrelated environment drift\nnever busts a shared cache. Keeping it a literal also means it can never\nfail to render and is never a template-injection surface. Compute the\ndigest outside the suite and write the value in.",
+          "description": "Opaque per-case cache-busting token, folded into this case's provider\ncache key. Use it when the system under test loads content domarinn\ncannot see (its own prompt files), so editing that content busts only\nthe cases that use it. Never sent to the provider.\n\nThis keys *one case*, and is a different lever from a provider's own\n`cache_salt`, which pins the program behind a command. It is not a\nprerequisite for either: an `exec` provider is cached by default, keyed\non the identity of every `command` argument that names a readable file.\n\nUsed **verbatim**, and deliberately not templated: a useful salt is a\ndigest of something domarinn cannot see, so it could only be derived from\nthe environment — and `env` is deliberately kept out of the request\nidentity (see [`crate::render`]) so that unrelated environment drift\nnever busts a shared cache. Keeping it a literal also means it can never\nfail to render and is never a template-injection surface. Compute the\ndigest outside the suite and write the value in.",
           "type": [
             "string",
             "null"
@@ -1118,11 +1122,15 @@
               "minimum": 0
             },
             "cache_salt": {
-              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path, size and mtime to the cache key, so a rebuild\nbusts the entry on its own. Set this when the program's behavior\ndepends on something that identity cannot see — a model downloaded at\nstartup, a remote config, a container image behind a wrapper script.",
+              "description": "Extra cache-busting token (e.g. a git SHA or binary hash).\n\nNot normally needed: every `command` argument naming a readable file\ncontributes its path and a digest of its contents to the cache key,\nso an edit or a rebuild busts the entry on its own. Set this when the\nprogram's behavior depends on something that identity cannot see — a\nmodel downloaded at startup, a remote config, a container image\nbehind a wrapper script.",
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "program_identity": {
+              "description": "Whether the program's own identity enters the cache key. Default\n`true`; set `false` to make `cache_salt` the *sole* identity.\n\nContent digests are reproducible across machines, so the default is\nright for a checked-in script. It is not right for a binary compiled\nin CI: Rust builds are not byte-reproducible (embedded paths, debug\ninfo), so two runners building identical source produce different\nbytes and therefore different keys, and the shared cache never hits.\nOnly the suite knows those two builds are the same version — so it\nsays so, by pinning `cache_salt` to a digest of the *source* and\nturning this off.\n\nRequires `cache_salt`: with neither an identity nor a salt the key\nwould be argv alone, which does not move when the program is\nrebuilt, so responses are not cached at all.",
+              "type": "boolean"
             },
             "type": {
               "type": "string",

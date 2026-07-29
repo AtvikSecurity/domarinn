@@ -60,25 +60,93 @@ on every edit. That is what per-case salts exist to avoid.
 ### `exec` providers and the provider salt
 
 An `exec` provider is cached like every other kind. Its fingerprint includes the
-identity of the *program* — the path, size and modification time of every
+identity of the *program* — the path and a **digest of the contents** of every
 argument that names a readable file — not just the command line, so rebuilding
 the binary busts its entries automatically.
 
-That covers a compiled binary (`./target/release/appd`) and an interpreter plus
-a script (`python3 grade.py`). It does **not** cover a program resolved from
-`PATH` with no path separator, or one whose behavior depends on something not on
-disk. Set `cache_salt` for those — it composes with the automatic identity
-rather than replacing it:
+Contents rather than timestamps, deliberately. `git` does not record `mtime`, so
+a fresh checkout stamps every file with its checkout time and no two machines
+ever agree; keying on that would make the fingerprint unshareable and quietly
+disable the S3 and results-server caches for every exec provider. A digest is
+identical wherever the same bytes land, so a warm shared cache survives a fresh
+clone. (Arguments above 256 MiB fall back to length and mtime — a bounded escape
+for a multi-gigabyte file on the command line, not the common path.)
+
+That covers a compiled binary (`./target/release/appd`), an interpreter plus a
+script (`python3 grade.py`), and a program installed on `PATH` (`my-agent`) —
+`command[0]` is resolved through `PATH` when it names no directory, because a
+`PATH`-installed agent is both the most common exec provider and precisely the
+one a rebuild moves. Relative paths resolve against the suite directory, which is
+the cwd the child is spawned in.
+
+What it does **not** cover is a command where *no* argument names a readable file
+— `docker run …`, a wrapper invoked through a shell builtin — or one whose
+behavior depends on something not on disk at all. There is no identity beyond
+argv there, so domarinn declines to cache rather than replay stale output. Set
+`cache_salt` for those; it composes with the automatic identity rather than
+replacing it:
 
 ```yaml
 providers:
   - id: renderer
     type: exec
-    command: ["./target/release/appd", "render"]
-    cache_salt: "abc1234"     # bump on rebuild; without it, exec is not cached
+    command: ["docker", "run", "--rm", "appd:latest", "render"]
+    cache_salt: "abc1234"     # no argv entry is a file, so identity needs a pin
 ```
 
 Keep this a **version pin**. It answers one question: *is this the same build?*
+
+#### Opting out: `program_identity: false`
+
+Content digests are reproducible across machines, which is what makes a shared
+cache work for a checked-in script. They are *not* reproducible for a binary
+compiled in CI: Rust builds are not byte-reproducible (embedded paths, debug
+info), so two runners building identical source produce different bytes, hash
+differently, and never hit each other's entries.
+
+Only your suite knows those two builds are the same version. Say so — pin
+`cache_salt` to a digest of the **source** and turn identity off:
+
+```yaml
+providers:
+  - id: agent
+    type: exec
+    command: ["./target/release/agent"]
+    cache_salt: "src-3f2a9c1"   # digest of the source tree, not the artifact
+    program_identity: false     # the salt is now the whole identity
+```
+
+The fingerprint is then independent of the built artifact entirely, so every
+runner that builds the same source shares one set of entries. `cache_salt` is
+required: with neither an identity nor a salt the key would be argv alone, which
+does not move when the program is rebuilt, so nothing is cached at all.
+
+The [two rules under Per-case salts](#per-case-salts) state the same boundary in
+full, and are the authoritative version if these ever drift.
+
+#### The child's environment is only keyed when you declare it
+
+The fingerprint covers the provider's **declared** `env` (as a digest, never the
+values) alongside the program's identity. But the child also inherits domarinn's
+own environment, and *that* half is invisible to the cache key. A variable the
+program reads for itself, without the suite declaring it, changes behavior while
+every cache entry stays valid — so two runs that differ only in an exported
+variable will replay each other's answers.
+
+Put anything that steers behavior where the fingerprint can see it, either as an
+argument or in `env`. [`${env:VAR}` interpolation](./providers.md#environment-driven-config)
+is how you source it from the ambient environment and still have it keyed, since
+it resolves at load time, before the fingerprint is computed:
+
+```yaml
+providers:
+  - id: agent
+    type: exec
+    command: ["my-agent", "--model", "${env:AGENT_MODEL:-sonnet}"]
+```
+
+`AGENT_MODEL=opus` now changes the model *and* the cache key together. An unset
+variable with no `:-default` is a hard load error, not a silent fallback.
 
 ### Per-case salts
 
@@ -130,16 +198,18 @@ Two rules worth stating plainly:
 
 - **An `exec` provider is cached by default, and a `cache_salt` is the escape
   hatch rather than the entry ticket.** What makes that safe is that the cache
-  key includes the *program*, not just the argv that names it: the path, size and
-  modification time of every argument that resolves to a file, with the program
+  key includes the *program*, not just the argv that names it: the path and a
+  content digest of every argument that resolves to a file, with the program
   itself resolved through `PATH` and relative paths resolved against the suite
   directory (the cwd the child is spawned in). A rebuild therefore busts the
-  entry on its own. When nothing in the command resolves to a file — `docker run
-  …`, say — there is no identity beyond argv, and domarinn declines to cache
-  rather than replay stale output after a rebuild; set `cache_salt` to say "I
-  know what moves this" and caching resumes. The provider's `env` is in the key
-  too (as a digest, never the values), so two providers wrapping one script with
-  different endpoints do not collide.
+  entry on its own, and identical bytes key identically on every machine. When
+  nothing in the command resolves to a file — `docker run …`, say — there is no
+  identity beyond argv, and domarinn declines to cache rather than replay stale
+  output after a rebuild; set `cache_salt` to say "I know what moves this" and
+  caching resumes. `program_identity: false` hands the whole job to the salt,
+  for artifacts that are rebuilt rather than checked in. The provider's `env` is
+  in the key too (as a digest, never the values), so two providers wrapping one
+  script with different endpoints do not collide.
 - **The salt is never sent to the provider** and is never templated — it is used
   verbatim. Putting the digest in `vars` instead would work, but `vars` are
   forwarded to the system under test and enter the template namespace.
@@ -215,8 +285,10 @@ provider responses:
 For sharing to hold, keep the provider configuration identical across
 environments: the key includes the provider fingerprint, so a different model,
 `base_url`, params, or `cache_salt` is simply a different entry that nobody else
-hits. Note that grading is not cached, so an LLM-graded suite still pays its
-grader on every run no matter how warm the response cache is. See
+hits. Grader verdicts are cached too, in their own key space keyed on the
+grader's fingerprint and the graded payload, so a warm run re-pays neither the
+provider nor the judge. `--no-grader-cache` re-grades while still replaying
+provider responses, which is how you measure judge variance deliberately. See
 [grading.md](./grading.md).
 
 ## Managing the local cache

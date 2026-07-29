@@ -619,4 +619,59 @@ providers:
             other => panic!("expected openai provider, got {other:?}"),
         }
     }
+
+    /// Interpolation reaches individual `command` argv entries, not just scalar
+    /// provider fields. This is the supported way to vary the model of a system
+    /// under test that takes it as a flag, so it is worth pinning explicitly.
+    #[test]
+    fn env_interpolation_resolves_inside_an_exec_command() {
+        std::env::set_var("DOMARINN_TEST_EXEC_MODEL", "opus-4-8");
+        let suite = load_str(
+            r#"
+version: 1
+providers:
+  - {id: p, type: exec, command: ["./sut", "--model", "${env:DOMARINN_TEST_EXEC_MODEL}"]}
+"#,
+        );
+        std::env::remove_var("DOMARINN_TEST_EXEC_MODEL");
+        match &suite.unwrap().providers[0].kind {
+            crate::config::ProviderKind::Exec { command, .. } => {
+                assert_eq!(command, &["./sut", "--model", "opus-4-8"]);
+            }
+            other => panic!("expected exec provider, got {other:?}"),
+        }
+    }
+
+    /// The load-bearing half: an interpolated argv entry must reach the *cache
+    /// identity*, not merely the spawned command. Interpolation runs before the
+    /// `Suite` is deserialized, so the resolved value is inside the `command`
+    /// that `ExecProvider::fingerprint` hashes — which is what lets two models
+    /// share one `cache_salt` without replaying each other's answers.
+    #[test]
+    fn an_interpolated_exec_argument_changes_the_cache_fingerprint() {
+        let fingerprint_at = |model: &str| {
+            std::env::set_var("DOMARINN_TEST_EXEC_FP_MODEL", model);
+            let suite = load_str(
+                r#"
+version: 1
+providers:
+  - id: p
+    type: exec
+    command: ["./sut", "--model", "${env:DOMARINN_TEST_EXEC_FP_MODEL}"]
+    cache_salt: "shared"
+"#,
+            )
+            .unwrap();
+            std::env::remove_var("DOMARINN_TEST_EXEC_FP_MODEL");
+            crate::provider_factory::build_provider(&suite.providers[0], None)
+                .unwrap()
+                .fingerprint()
+        };
+
+        assert_ne!(
+            fingerprint_at("opus-4-8"),
+            fingerprint_at("sonnet-4-8"),
+            "same salt, different model: the fingerprints must not collide"
+        );
+    }
 }

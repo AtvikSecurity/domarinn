@@ -17,11 +17,23 @@ use std::time::Duration;
 /// silently, and worst of all in CI. That hazard is the reason exec caching
 /// used to be opt-in behind a hand-managed `cache_salt`.
 ///
-/// Every argument that names a readable file contributes its path, length and
-/// modification time. That covers the two shapes that matter — a compiled
-/// binary (`./sut`) and an interpreter plus a script (`python3 grade.py`) —
-/// and costs a `stat` per argument rather than hashing megabytes of executable
-/// on every cache lookup.
+/// Every argument that names a readable file contributes its path and a digest
+/// of its **contents**. That covers the two shapes that matter — a compiled
+/// binary (`./sut`) and an interpreter plus a script (`python3 grade.py`).
+///
+/// Contents rather than `mtime`, which is what this used to key on. `mtime` is
+/// machine-local: `git` does not record it, so a fresh checkout stamps every
+/// file with its checkout time and no two runners ever agree. That made the
+/// fingerprint unshareable across machines, which silently disabled the S3 and
+/// results-server caches for every `exec` provider — the opposite of what those
+/// backends exist for. A content digest is identical wherever the same bytes
+/// land, so a warm shared cache survives a fresh clone.
+///
+/// The cost is one read per argument, paid once per provider construction
+/// rather than per cache lookup, so the ordinary case is a few milliseconds.
+/// Arguments larger than [`MAX_HASHED_BYTES`] fall back to length and mtime —
+/// a bounded escape for a pathological argument (a multi-gigabyte model file
+/// passed on the command line), not the common path.
 ///
 /// # Resolved the way the child will resolve it
 ///
@@ -57,21 +69,47 @@ pub fn program_identity(command: &[String], base_dir: Option<&Path>) -> serde_js
         if !meta.is_file() {
             continue;
         }
-        // Nanoseconds as well as seconds: a rebuild that lands in the same
-        // second and happens to produce an equal-length artifact is ordinary
-        // for a small script, and second-granularity would not see it.
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-        parts.push(serde_json::json!({
-            "path": arg,
-            "len": meta.len(),
-            "mtime": mtime.map(|d| d.as_secs()),
-            "mtime_ns": mtime.map(|d| d.subsec_nanos()),
-        }));
+        parts.push(match content_digest(&resolved, meta.len()) {
+            Some(content) => serde_json::json!({ "path": arg, "content": content }),
+            // Too large to hash, or unreadable despite stat'ing. Fall back to
+            // the metadata this function used to key on exclusively. The shape
+            // differs from the hashed one, so the two can never collide.
+            None => {
+                // Nanoseconds as well as seconds: a rebuild that lands in the
+                // same second and happens to produce an equal-length artifact
+                // is ordinary, and second-granularity would not see it.
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+                serde_json::json!({
+                    "path": arg,
+                    "len": meta.len(),
+                    "mtime": mtime.map(|d| d.as_secs()),
+                    "mtime_ns": mtime.map(|d| d.subsec_nanos()),
+                })
+            }
+        });
     }
     serde_json::Value::Array(parts)
+}
+
+/// Files at or below this size are keyed on their contents; larger ones fall
+/// back to stat metadata. blake3 runs at roughly a gigabyte per second and this
+/// is paid once per provider construction, so the cap exists to bound the
+/// pathological argument rather than the ordinary binary.
+pub const MAX_HASHED_BYTES: u64 = 256 * 1024 * 1024;
+
+/// blake3 of a file's contents, or `None` when it is too large to hash or could
+/// not be read — in which case the caller falls back to stat metadata.
+fn content_digest(path: &Path, len: u64) -> Option<String> {
+    if len > MAX_HASHED_BYTES {
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut file, &mut hasher).ok()?;
+    Some(format!("blake3:{}", hasher.finalize().to_hex()))
 }
 
 /// Where on disk `arg` points, resolved the way the spawned child would resolve

@@ -32,13 +32,15 @@ pub fn build_provider(
             env,
             timeout_ms,
             cache_salt,
-        } => Ok(Box::new(ExecProvider::new(
+            program_identity,
+        } => Ok(Box::new(ExecProvider::with_program_identity(
             cfg.id.clone(),
             command.clone(),
             env.clone(),
             *timeout_ms,
             cache_salt.clone(),
             base_dir,
+            *program_identity,
         ))),
         ProviderKind::Anthropic {
             model,

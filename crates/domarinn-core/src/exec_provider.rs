@@ -48,16 +48,51 @@ impl ExecProvider {
         cache_salt: Option<String>,
         base_dir: Option<&std::path::Path>,
     ) -> Self {
+        Self::with_program_identity(id, command, env, timeout_ms, cache_salt, base_dir, true)
+    }
+
+    /// Like [`Self::new`], but able to decline program identity entirely.
+    ///
+    /// `program_identity: false` means "the salt is the whole identity" — see
+    /// the `program_identity` field on [`crate::config::ProviderKind::Exec`]
+    /// for when that is the right call. Nothing is stat'ed or hashed in that
+    /// case, so the fingerprint is identical on every machine.
+    pub fn with_program_identity(
+        id: impl Into<String>,
+        command: Vec<String>,
+        env: BTreeMap<String, String>,
+        timeout_ms: Option<u64>,
+        cache_salt: Option<String>,
+        base_dir: Option<&std::path::Path>,
+        program_identity: bool,
+    ) -> Self {
         let id = id.into();
-        let program = crate::exec::program_identity(&command, base_dir);
+        let program = if program_identity {
+            crate::exec::program_identity(&command, base_dir)
+        } else {
+            // Deliberately empty: indistinguishable, and identical, to a command
+            // whose arguments resolve to nothing. Both mean "the salt is the
+            // identity", so both should key the same way.
+            Json::Array(Vec::new())
+        };
         if !crate::exec::has_program_identity(&program) && cache_salt.is_none() {
-            tracing::warn!(
-                provider = %id,
-                command = ?command,
-                "could not identify the program behind this exec provider, so its \
-                 responses will not be cached — a key over argv alone would replay \
-                 stale output after a rebuild. Set `cache_salt` to cache anyway."
-            );
+            if program_identity {
+                tracing::warn!(
+                    provider = %id,
+                    command = ?command,
+                    "could not identify the program behind this exec provider, so its \
+                     responses will not be cached — a key over argv alone would replay \
+                     stale output after a rebuild. Set `cache_salt` to cache anyway."
+                );
+            } else {
+                tracing::warn!(
+                    provider = %id,
+                    command = ?command,
+                    "`program_identity: false` without a `cache_salt` leaves nothing to \
+                     key on but argv, so this provider's responses will not be cached. \
+                     Set `cache_salt` to the version the salt is standing in for."
+                );
+            }
         }
         ExecProvider {
             id,
@@ -332,7 +367,7 @@ mod tests {
         let p = ExecProvider::new("p", command, BTreeMap::new(), None, None, Some(dir.path()));
         assert!(p.cacheable());
         let fp = crate::cache::canonical_json(&p.fingerprint());
-        assert!(fp.contains("\"len\""), "{fp}");
+        assert!(fp.contains("\"content\""), "{fp}");
         // The argv string, not the resolved path: two machines sharing a cache
         // must not miss on each other for having checked the repo out elsewhere.
         assert!(!fp.contains(&dir.path().display().to_string()), "{fp}");
@@ -345,7 +380,7 @@ mod tests {
     fn a_path_resolved_program_is_identified() {
         let p = ExecProvider::new("p", vec!["sh".into()], BTreeMap::new(), None, None, None);
         assert!(p.cacheable());
-        assert!(crate::cache::canonical_json(&p.fingerprint()).contains("\"len\""));
+        assert!(crate::cache::canonical_json(&p.fingerprint()).contains("\"content\""));
     }
 
     /// Two backends behind one wrapper script is a normal A/B shape. Sharing a
@@ -387,7 +422,7 @@ mod tests {
         let before = ExecProvider::new("p", command.clone(), BTreeMap::new(), None, None, None);
         let before_fp = crate::cache::canonical_json(&before.fingerprint());
         assert!(
-            before_fp.contains("\"len\""),
+            before_fp.contains("\"content\""),
             "an existing program must contribute its identity: {before_fp}"
         );
 
@@ -397,6 +432,89 @@ mod tests {
         assert_ne!(
             before_fp,
             crate::cache::canonical_json(&after.fingerprint())
+        );
+    }
+
+    /// The counterpart to the test above, and the reason identity is a content
+    /// digest rather than `mtime`: identical bytes must key identically no
+    /// matter what the filesystem says about them. `git` does not record
+    /// `mtime`, so every fresh checkout re-stamps it — keying on that made the
+    /// fingerprint unshareable across machines and quietly disabled the S3 and
+    /// results-server caches for every exec provider.
+    #[test]
+    fn identical_content_keys_identically_across_mtimes() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = dir.path().join("sut");
+        std::fs::write(&prog, "#!/bin/sh\necho v1").unwrap();
+        let command = vec![prog.to_string_lossy().to_string()];
+        let fingerprint = || {
+            let p = ExecProvider::new("p", command.clone(), BTreeMap::new(), None, None, None);
+            crate::cache::canonical_json(&p.fingerprint())
+        };
+
+        let before = fingerprint();
+        // Rewriting the same bytes moves mtime (and, on a fresh clone, would
+        // move it by days) while leaving the program identical.
+        std::fs::write(&prog, "#!/bin/sh\necho v1").unwrap();
+        assert_eq!(before, fingerprint(), "mtime must not enter the key");
+    }
+
+    /// `program_identity: false` hands the whole identity to `cache_salt`. The
+    /// point is a binary compiled in CI: Rust builds are not byte-reproducible,
+    /// so two runners building identical source hash differently and never
+    /// share a cache entry. Only the suite knows they are the same version.
+    #[test]
+    fn declining_program_identity_makes_the_salt_the_whole_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = dir.path().join("sut");
+        let command = vec![prog.to_string_lossy().to_string()];
+        let fingerprint = || {
+            let p = ExecProvider::with_program_identity(
+                "p",
+                command.clone(),
+                BTreeMap::new(),
+                None,
+                Some("src-3f2a9c1".to_string()),
+                None,
+                false,
+            );
+            assert!(p.cacheable(), "a salt is identity enough");
+            crate::cache::canonical_json(&p.fingerprint())
+        };
+
+        std::fs::write(&prog, "build one").unwrap();
+        let first = fingerprint();
+        // A different build of the "same" source — different bytes entirely,
+        // which the default would treat as a different program.
+        std::fs::write(&prog, "build two, differing bytes").unwrap();
+        assert_eq!(first, fingerprint(), "only the salt may key this provider");
+
+        // Sanity: with identity on, those two builds *do* separate — otherwise
+        // the assertion above would pass for the wrong reason.
+        let with_identity = |contents: &str| {
+            std::fs::write(&prog, contents).unwrap();
+            let p = ExecProvider::new("p", command.clone(), BTreeMap::new(), None, None, None);
+            crate::cache::canonical_json(&p.fingerprint())
+        };
+        assert_ne!(with_identity("build one"), with_identity("build two"));
+    }
+
+    /// Opting out without a salt leaves argv alone, which does not move when the
+    /// program is rebuilt — the original stale-replay hazard. Decline to cache.
+    #[test]
+    fn declining_program_identity_without_a_salt_is_not_cacheable() {
+        let p = ExecProvider::with_program_identity(
+            "p",
+            vec!["sh".into()],
+            BTreeMap::new(),
+            None,
+            None,
+            None,
+            false,
+        );
+        assert!(
+            !p.cacheable(),
+            "no identity and no salt: argv alone must not key a cache"
         );
     }
 

@@ -191,12 +191,30 @@ pub enum ProviderKind {
         /// Extra cache-busting token (e.g. a git SHA or binary hash).
         ///
         /// Not normally needed: every `command` argument naming a readable file
-        /// contributes its path, size and mtime to the cache key, so a rebuild
-        /// busts the entry on its own. Set this when the program's behavior
-        /// depends on something that identity cannot see — a model downloaded at
-        /// startup, a remote config, a container image behind a wrapper script.
+        /// contributes its path and a digest of its contents to the cache key,
+        /// so an edit or a rebuild busts the entry on its own. Set this when the
+        /// program's behavior depends on something that identity cannot see — a
+        /// model downloaded at startup, a remote config, a container image
+        /// behind a wrapper script.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_salt: Option<String>,
+        /// Whether the program's own identity enters the cache key. Default
+        /// `true`; set `false` to make `cache_salt` the *sole* identity.
+        ///
+        /// Content digests are reproducible across machines, so the default is
+        /// right for a checked-in script. It is not right for a binary compiled
+        /// in CI: Rust builds are not byte-reproducible (embedded paths, debug
+        /// info), so two runners building identical source produce different
+        /// bytes and therefore different keys, and the shared cache never hits.
+        /// Only the suite knows those two builds are the same version — so it
+        /// says so, by pinning `cache_salt` to a digest of the *source* and
+        /// turning this off.
+        ///
+        /// Requires `cache_salt`: with neither an identity nor a salt the key
+        /// would be argv alone, which does not move when the program is
+        /// rebuilt, so responses are not cached at all.
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        program_identity: bool,
     },
     /// Native Anthropic Messages API client.
     Anthropic {
@@ -378,9 +396,12 @@ pub struct TestCase {
     /// Opaque per-case cache-busting token, folded into this case's provider
     /// cache key. Use it when the system under test loads content domarinn
     /// cannot see (its own prompt files), so editing that content busts only
-    /// the cases that use it. Never sent to the provider. It does not make a
-    /// provider cacheable on its own — an `exec` provider still needs its own
-    /// `cache_salt` for that.
+    /// the cases that use it. Never sent to the provider.
+    ///
+    /// This keys *one case*, and is a different lever from a provider's own
+    /// `cache_salt`, which pins the program behind a command. It is not a
+    /// prerequisite for either: an `exec` provider is cached by default, keyed
+    /// on the identity of every `command` argument that names a readable file.
     ///
     /// Used **verbatim**, and deliberately not templated: a useful salt is a
     /// digest of something domarinn cannot see, so it could only be derived from
@@ -709,6 +730,13 @@ impl From<&str> for EnvNames {
 /// `serde(default)` helper for a flag that is on unless explicitly disabled.
 fn default_true() -> bool {
     true
+}
+
+/// Serde `skip_serializing_if` for a flag that defaults to `true`, so the
+/// common case stays absent from a serialized suite instead of being spelled
+/// out on every provider.
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
