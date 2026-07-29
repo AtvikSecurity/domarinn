@@ -92,6 +92,64 @@ pub fn latest_run(dir: &Path) -> domarinn_core::result::RunResult {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// Offset just past the `\r\n\r\n` that ends a request head, once it has all
+/// arrived.
+fn head_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+}
+
+/// The `content-length` a request head declares, or `0` when it declares none.
+///
+/// Shared by both stubs rather than inlined twice: a drain loop is only correct
+/// if it agrees with the sender about how many bytes are still coming, and two
+/// copies of a header parse are one edit away from disagreeing.
+fn content_length(head: &[u8]) -> usize {
+    let head = String::from_utf8_lossy(head).to_lowercase();
+    head.split("content-length:")
+        .nth(1)
+        .and_then(|rest| rest.split("\r\n").next())
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Read a whole request: headers, then however many body bytes they declare.
+///
+/// Draining the body before replying is not politeness. A server that answers
+/// at end-of-headers and closes leaves the client writing into a closed pipe,
+/// which surfaces as a transport error rather than the status under test — so a
+/// stub that skips this can only serve request shapes that carry no body.
+fn read_request(sock: &mut std::net::TcpStream) -> Vec<u8> {
+    use std::io::Read;
+
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if let Some(start) = head_end(&buf) {
+            if buf.len() >= start + content_length(&buf[..start]) {
+                break;
+            }
+        }
+        match sock.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+    buf
+}
+
+/// One HTTP/1.1 response whose `content-length` cannot disagree with its body,
+/// because it is computed from it.
+///
+/// The 404 in [`stub_script`] used to hardcode `11` for a 12-byte body, so a
+/// client reading by length got truncated JSON and reported a parse error
+/// instead of the 404.
+fn http_response(status: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
 /// A one-shot stand-in for the results server: accepts a single request,
 /// answers it with `body`, and hands back its base URL.
 ///
@@ -109,42 +167,16 @@ pub fn stub_server_owned(
     status: String,
     body: String,
 ) -> (String, std::thread::JoinHandle<Vec<u8>>) {
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let response = format!(
-        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
-    );
+    let response = http_response(&status, &body);
 
     let handle = std::thread::spawn(move || {
         let (mut sock, _) = listener.accept().unwrap();
-        // Drain the full request before replying. Responding early would let the
-        // client hit a closed pipe mid-write and report a transport error
-        // instead of the status under test.
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            let n = sock.read(&mut chunk).unwrap_or(0);
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            let headers_end = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
-            if let Some(start) = headers_end {
-                let head = String::from_utf8_lossy(&buf[..start]).to_lowercase();
-                let len: usize = head
-                    .split("content-length:")
-                    .nth(1)
-                    .and_then(|r| r.split("\r\n").next())
-                    .and_then(|v| v.trim().parse().ok())
-                    .unwrap_or(0);
-                if buf.len() >= start + len {
-                    break;
-                }
-            }
-        }
+        // Drain the full request before replying — see `read_request`.
+        let buf = read_request(&mut sock);
         sock.write_all(response.as_bytes()).unwrap();
         sock.flush().ok();
         buf
@@ -170,7 +202,32 @@ pub fn stub_routes(
     count: usize,
     deadline: std::time::Duration,
 ) -> (String, std::thread::JoinHandle<Vec<String>>) {
-    use std::io::{Read, Write};
+    // One body per route is the degenerate script, so there is a single
+    // implementation of the socket handling rather than two that drift.
+    stub_script(
+        routes.into_iter().map(|(f, b)| (f, vec![b])).collect(),
+        count,
+        deadline,
+    )
+}
+
+/// [`stub_routes`] where each route answers a *sequence* of bodies — one per
+/// matching request, repeating the last once the script runs out.
+///
+/// A single fixed body per route cannot express a case whose whole point is
+/// that two calls differ. The `similar` assertion embeds the output and the
+/// reference and takes their cosine, so one repeated embedding scores 1.0
+/// against itself and the threshold under test is never exercised at any value.
+///
+/// Order is deterministic because a run is serial by default
+/// (`domarinn-core/src/runner.rs` resolves concurrency to 1); a suite that sets
+/// `runner.concurrency` must be driven with `-j 1` to rely on a script.
+pub fn stub_script(
+    routes: Vec<(&'static str, Vec<String>)>,
+    count: usize,
+    deadline: std::time::Duration,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    use std::io::Write;
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -179,6 +236,8 @@ pub fn stub_routes(
     let handle = std::thread::spawn(move || {
         let started = std::time::Instant::now();
         let mut served = Vec::new();
+        // How far into each route's script we have got.
+        let mut cursor = vec![0usize; routes.len()];
         while served.len() < count && started.elapsed() < deadline {
             let Ok((mut sock, _)) = listener.accept() else {
                 std::thread::sleep(std::time::Duration::from_millis(5));
@@ -187,28 +246,33 @@ pub fn stub_routes(
             sock.set_nonblocking(false).ok();
             sock.set_read_timeout(Some(deadline)).ok();
 
-            // These are GETs, so the headers are the whole request — no need to
-            // drain a body before routing.
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 4096];
-            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                match sock.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                }
-            }
+            // Drain the body too, not just the head: model providers POST, and
+            // replying early resets the connection mid-write (see
+            // `read_request`).
+            let buf = read_request(&mut sock);
             let line = String::from_utf8_lossy(&buf)
                 .lines()
                 .next()
                 .unwrap_or_default()
                 .to_string();
 
-            let response = match routes.iter().find(|(fragment, _)| line.contains(fragment)) {
-                Some((_, body)) => format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
+            let response = match routes
+                .iter()
+                .position(|(fragment, _)| line.contains(fragment))
+            {
+                Some(i) => {
+                    let script = &routes[i].1;
+                    let at = cursor[i].min(script.len().saturating_sub(1));
+                    cursor[i] += 1;
+                    http_response("200 OK", &script[at])
+                }
+                // Named, not blank: an unmatched request becomes an errored
+                // cell, and the operator needs the path to know what went
+                // unrouted.
+                None => http_response(
+                    "404 Not Found",
+                    &format!("{{\"error\":\"no stub route for {line}\"}}"),
                 ),
-                None => "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: 11\r\nconnection: close\r\n\r\n{\"error\":\"\"}".to_string(),
             };
             sock.write_all(response.as_bytes()).ok();
             sock.flush().ok();
