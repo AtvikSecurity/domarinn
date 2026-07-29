@@ -61,6 +61,9 @@ shellcheck = "0.11.0"
 # `mise install --locked … uv` (what the docs workflow asks for) looks up `uv`,
 # misses, and fails with "No lockfile URL found for uv@0.11.32".
 uv = "0.11.32"
+# The docs screenshot pipeline's seed script asserts data-at-rest hygiene with
+# a jq filter over the runs API; pin it like every other CI-relevant tool.
+jq = "1.8.2"
 
 # --- Tasks (ported 1:1 from the former justfile) ---------------------------
 
