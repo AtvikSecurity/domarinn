@@ -26,7 +26,10 @@ suite: openai-provider
 
 providers:
   - id: gpt
-    label: "gpt-4o-mini"
+    # The label interpolates the same variable as `model`: it exists to name
+    # the system under test wherever results are displayed, and a run against
+    # qwen3:4b must not report itself as gpt-4o-mini.
+    label: "${env:OPENAI_MODEL:-gpt-4o-mini}"
     type: openai
     model: "${env:OPENAI_MODEL:-gpt-4o-mini}"
     # Defaults to the real API, and redirects with one variable — the same one
