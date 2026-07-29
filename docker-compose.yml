@@ -68,5 +68,42 @@ services:
       retries: 3
       start_period: 10s
 
+  # --- Ollama (optional; off by default) -------------------------------
+  #
+  # A local OpenAI-compatible endpoint for suites that call a model — no API
+  # key, no network egress. It lives behind its own compose profile: nothing
+  # in the `domarinn` service above depends on it, and a plain `docker compose
+  # up` never starts it.
+  #
+  #   docker compose --profile ollama up -d --wait ollama
+  #   docker compose --profile ollama exec ollama ollama pull qwen3:4b
+  #   OPENAI_BASE_URL=http://localhost:11434/v1 domarinn run examples/26-openai-provider
+  #
+  # See the local-LLM guide for the full walkthrough.
+  ollama:
+    image: ollama/ollama:0.32.5
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "ps"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Uncomment to run on an NVIDIA GPU (needs the NVIDIA Container Toolkit on
+    # the host):
+    #deploy:
+    #  resources:
+    #    reservations:
+    #      devices:
+    #        - driver: nvidia
+    #          count: all
+    #          capabilities: [gpu]
+
 volumes:
   domarinn-data:
+  ollama-models:
