@@ -100,10 +100,14 @@ pub struct Defaults {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
     /// Suite-wide fallback for [`TestCase::cache_salt`], used only by cases that
-    /// do not set their own. A *constant* value here busts the whole suite on
-    /// every change — it is a fallback, not the granularity mechanism. Note it
-    /// does not reach generator-produced cases (they are appended after the
-    /// defaults merge).
+    /// do not set their own.
+    ///
+    /// A `cache_salt` joins the cache key of every case that does not set its
+    /// own salt, generator-produced cases included; change the salt, re-run
+    /// exactly those requests.
+    ///
+    /// A *constant* value here busts the whole suite on every change — it is a
+    /// fallback, not the granularity mechanism.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_salt: Option<String>,
 }
@@ -190,6 +194,9 @@ pub enum ProviderKind {
         timeout_ms: Option<u64>,
         /// Version pin for the program behind `command` — set it when you
         /// rebuild that program and want the old answers thrown away.
+        ///
+        /// A `cache_salt` joins the cache key of every request this provider
+        /// answers; change the salt, re-run exactly those requests.
         ///
         /// The cache key names what will answer (`command`, `env`) and hashes
         /// what is asked (the prompt, the vars, the tools). It deliberately says
@@ -382,15 +389,17 @@ pub struct TestCase {
     /// otherwise it passes only if every assert passes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
-    /// Opaque per-case cache-busting token, folded into this case's provider
-    /// cache key. Use it when the system under test loads content domarinn
-    /// cannot see (its own prompt files), so editing that content busts only
-    /// the cases that use it. Never sent to the provider.
+    /// Opaque per-case cache-busting token. Use it when the system under test
+    /// loads content domarinn cannot see (its own prompt files), so editing
+    /// that content busts only the cases that use it. Never sent to the
+    /// provider.
+    ///
+    /// A `cache_salt` joins the cache key of this case's provider request(s);
+    /// change the salt, re-run exactly those requests.
     ///
     /// This keys *one case*, and is a different lever from a provider's own
-    /// `cache_salt`, which pins the program behind a command. It is not a
-    /// prerequisite for either: an `exec` provider is cached by default, keyed
-    /// on the identity of every `command` argument that names a readable file.
+    /// `cache_salt`, which pins the program behind a command. Neither is a
+    /// prerequisite for the other: every provider is cached by default.
     ///
     /// Used **verbatim**, and deliberately not templated: a useful salt is a
     /// digest of something domarinn cannot see, so it could only be derived from
@@ -518,13 +527,16 @@ pub enum AssertKind {
         command: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config: Option<Json>,
-        /// Extra cache-busting token for this assertion's verdicts.
+        /// Version pin for this grader — set it when you rebuild the program
+        /// behind `command` and want its old verdicts thrown away.
+        ///
+        /// A `cache_salt` joins the cache key of this assertion's grading
+        /// requests; change the salt, re-run exactly those requests.
         ///
         /// Same rule as an `exec` *provider*'s: verdicts are cached by default,
-        /// keyed partly on the identity of every `command` argument that names a
-        /// readable file, so a rebuilt grader busts its own entries. Set this
-        /// when the grader's behavior depends on something that identity cannot
-        /// see.
+        /// and the key says nothing about the grader program's bytes, so a
+        /// rebuilt grader keeps answering from the entries it already wrote.
+        /// This field is how you retire them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_salt: Option<String>,
     },
@@ -716,11 +728,6 @@ impl From<&str> for EnvNames {
     }
 }
 
-/// `serde(default)` helper for a flag that is on unless explicitly disabled.
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CacheCfg {
@@ -728,27 +735,43 @@ pub struct CacheCfg {
     pub backend: CacheBackendKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s3: Option<S3Cfg>,
-    /// Cache grader verdicts as well as provider responses. Default `true`.
+    /// Deprecated: prefer the `--no-grader-cache` run flag. When set, `false`
+    /// disables grader-request caching for every run of this suite. Accepted
+    /// with a warning.
     ///
-    /// On by default because it is the dominant recurring cost of an LLM-graded
-    /// suite: without it the judge is re-paid on every run even when every
-    /// provider response was a cache hit. Every way a verdict could go stale is
-    /// in the key — the rubric, the grader's model and endpoint, its params, the
-    /// system prompt, and the graded output itself.
-    ///
-    /// Turn it off to measure judge variance deliberately, or use
-    /// `--no-grader-cache` for one run.
-    #[serde(default = "default_true")]
-    pub grader: bool,
+    /// Grader requests are cached by default because they are the dominant
+    /// recurring cost of an LLM-graded suite: without it the judge is re-paid on
+    /// every run even when every provider response was a cache hit. Every way a
+    /// verdict could go stale is in the key — the rubric, the grader's model and
+    /// endpoint, its params, the system prompt, and the graded output itself.
+    //
+    // Not serialized when unset, where the old `bool` always wrote `true`. That
+    // moves `config_digest` (a hash of the serialized suite) once, for suites
+    // that have a `cache:` block and never wrote this key — so one `--against`
+    // comparison across the upgrade reports config drift. Cache keys are built
+    // from provider fingerprints, not from this digest, so nothing is
+    // invalidated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grader: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheBackendKind {
+    /// Local content-addressed cache only.
     #[default]
     Disk,
+    /// Local disk fronted by a shared remote: auto-picks S3 when `cache.s3` is
+    /// set, else the HTTP results server (via
+    /// `--server-url`/`DOMARINN_SERVER_URL`).
     Layered,
+    /// Deprecated alias for `layered`; behaves identically and will be removed
+    /// in a future release.
+    #[deprecated(note = "use `layered`; `http` behaves identically")]
     Http,
+    /// Deprecated alias for `layered`; behaves identically and will be removed
+    /// in a future release.
+    #[deprecated(note = "use `layered`; `s3` behaves identically")]
     S3,
 }
 
@@ -796,6 +819,52 @@ mod tests {
             assert_eq!(from_lower, variant);
         }
         assert!(serde_json::from_value::<HttpMethod>(serde_json::json!("Trace")).is_err());
+    }
+
+    /// Deprecating the aliases must not retire them: a suite that says
+    /// `backend: http` still loads, and still loads as `Http` — remapping it to
+    /// `Layered` here would change how a missing `cache.s3` degrades and which
+    /// warning says so.
+    #[test]
+    #[allow(deprecated)]
+    fn the_deprecated_backend_aliases_still_deserialize_to_their_own_variants() {
+        for (wire, variant) in [
+            ("disk", CacheBackendKind::Disk),
+            ("layered", CacheBackendKind::Layered),
+            ("http", CacheBackendKind::Http),
+            ("s3", CacheBackendKind::S3),
+        ] {
+            let parsed: CacheBackendKind = serde_json::from_value(serde_json::json!(wire)).unwrap();
+            assert_eq!(
+                std::mem::discriminant(&parsed),
+                std::mem::discriminant(&variant),
+                "`backend: {wire}` must keep parsing as itself"
+            );
+            assert_eq!(
+                serde_json::to_value(&variant).unwrap(),
+                serde_json::json!(wire),
+                "and must round-trip back to the same spelling"
+            );
+        }
+    }
+
+    /// The tri-state that makes the deprecation warning possible: "unset" and
+    /// "explicitly true" are the same *behavior* but not the same *value*, and
+    /// only the second is worth warning about.
+    #[test]
+    fn cache_grader_distinguishes_unset_from_explicitly_set() {
+        let unset: CacheCfg = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(unset.grader, None);
+        let on: CacheCfg = serde_json::from_value(serde_json::json!({"grader": true})).unwrap();
+        assert_eq!(on.grader, Some(true));
+        let off: CacheCfg = serde_json::from_value(serde_json::json!({"grader": false})).unwrap();
+        assert_eq!(off.grader, Some(false));
+        // An unset field stays out of the serialized config, so a suite that
+        // never mentioned it does not grow a deprecated key on a round-trip.
+        assert_eq!(
+            serde_json::to_value(&unset).unwrap(),
+            serde_json::json!({"backend": "disk"})
+        );
     }
 
     #[test]

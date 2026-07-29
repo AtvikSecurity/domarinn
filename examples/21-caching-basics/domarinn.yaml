@@ -46,13 +46,14 @@ providers:
 
 cache:
   # `disk` (the default) stores under `.domarinn/cache` beside this suite.
-  # `http` and `s3` put a shared tier behind that local one; `layered` combines
-  # them. Note the config names only the KIND — the URL and credentials come
-  # from the environment, so a suite is safe to commit.
+  # `layered` puts a shared tier behind that local one — S3 when a `cache.s3`
+  # block is set, else the results server. (`http` and `s3` are deprecated
+  # aliases for it.) Note the config names only the KIND — the URL and
+  # credentials come from the environment, so a suite is safe to commit.
   backend: disk
-  # Grader verdicts are cached too, on by default. Turn it off while iterating
-  # on a rubric, when you want the judge re-consulted every time.
-  grader: true
+
+# Grader requests are cached too, on by default. Pass `--no-grader-cache` while
+# iterating on a rubric, when you want the judge re-consulted every time.
 
 tests:
   - id: summary/short

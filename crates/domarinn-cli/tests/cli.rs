@@ -393,6 +393,49 @@ fn stdout_stays_pure_results_diagnostics_go_to_stderr() {
     );
 }
 
+/// A deprecation nobody sees is a deprecation that never happened: both knobs
+/// this release supersedes have to say so on the run that used them, and the run
+/// itself still has to pass — a warning is advice, not a failure.
+#[test]
+fn deprecated_cache_knobs_warn_on_stderr_without_failing_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(
+        dir.path(),
+        r#"
+version: 1
+suite: smoke
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"hello world\"}'"]
+cache:
+  backend: http
+  grader: true
+tests:
+  - id: greet
+    vars: {}
+    assert:
+      - {type: contains, value: "hello"}
+"#,
+    );
+    let output = bin()
+        .arg("run")
+        .current_dir(dir.path())
+        .env_remove("DOMARINN_SERVER_URL")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "a deprecation must not fail a run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`backend: http` is a deprecated alias for `layered`"),
+        "the alias warning should appear on stderr; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cache.grader is deprecated; use --no-grader-cache"),
+        "the cache.grader warning should appear on stderr; got:\n{stderr}"
+    );
+}
+
 /// With `--log-format json`, every stderr line is a JSON object and the cache
 /// fallback surfaces as a structured `WARN` event. This proves the print
 /// conversion end-to-end: an `eprintln!` warning could never satisfy this.

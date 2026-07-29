@@ -1,9 +1,10 @@
 //! Building the cache backend for a run from the suite `cache:` config.
 //!
-//! `disk` uses the local content-addressed cache. `http`/`s3`/`layered` wrap the
-//! local cache in a read-through [`LayeredCache`] over a shared remote. A missing
-//! server URL or credentials degrades to local disk with a warning, never a hard
-//! failure.
+//! `disk` uses the local content-addressed cache. `layered` wraps it in a
+//! read-through [`LayeredCache`] over a shared remote — S3 when `cache.s3` is
+//! set, else the HTTP results server. `http` and `s3` are deprecated aliases
+//! that name one of those tiers outright. A missing server URL or credentials
+//! degrades to local disk with a warning, never a hard failure.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -94,18 +95,61 @@ pub fn build_cache(
         .as_ref()
         .map(|c| c.backend.clone())
         .unwrap_or_default();
+    warn_if_deprecated(&backend);
 
+    match remote_tier(
+        &backend,
+        suite.cache.as_ref().and_then(|c| c.s3.as_ref()).is_some(),
+    ) {
+        RemoteTier::None => local,
+        RemoteTier::Http => layer_remote(local, server_url),
+        RemoteTier::S3 => layer_s3(local, suite),
+    }
+}
+
+/// The shared tier a `backend:` selection resolves to.
+///
+/// Named separately because `http` and `s3` are deprecated *aliases* of
+/// `layered`: what an alias promises is that the spelling does not decide
+/// behavior, this mapping does — and a mapping is something a test can hold to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteTier {
+    /// Local disk only.
+    None,
+    /// The HTTP results server.
+    Http,
+    /// An S3-compatible object store.
+    S3,
+}
+
+#[allow(deprecated)]
+fn remote_tier(backend: &CacheBackendKind, has_s3_cfg: bool) -> RemoteTier {
     match backend {
-        CacheBackendKind::Disk => local,
-        CacheBackendKind::Http => layer_remote(local, server_url),
-        CacheBackendKind::S3 => layer_s3(local, suite),
+        CacheBackendKind::Disk => RemoteTier::None,
+        CacheBackendKind::Http => RemoteTier::Http,
+        CacheBackendKind::S3 => RemoteTier::S3,
+        // The one selection that looks at the suite: a `cache.s3` block is the
+        // user saying which remote they meant.
         CacheBackendKind::Layered => {
-            if suite.cache.as_ref().and_then(|c| c.s3.as_ref()).is_some() {
-                layer_s3(local, suite)
+            if has_s3_cfg {
+                RemoteTier::S3
             } else {
-                layer_remote(local, server_url)
+                RemoteTier::Http
             }
         }
+    }
+}
+
+#[allow(deprecated)]
+fn warn_if_deprecated(backend: &CacheBackendKind) {
+    match backend {
+        CacheBackendKind::Http => tracing::warn!(
+            "`backend: http` is a deprecated alias for `layered`; it behaves identically and will be removed"
+        ),
+        CacheBackendKind::S3 => tracing::warn!(
+            "`backend: s3` is a deprecated alias for `layered`; it behaves identically and will be removed"
+        ),
+        CacheBackendKind::Disk | CacheBackendKind::Layered => {}
     }
 }
 
@@ -191,5 +235,46 @@ mod tests {
         let resolved = local_root(None, dir.path());
         assert_eq!(resolved.root, dir.path().join(".domarinn").join("cache"));
         assert!(resolved.legacy.is_none());
+    }
+
+    /// What "deprecated alias" has to mean: the same tier, for both the suite
+    /// that names a remote and the suite that has none to name.
+    #[test]
+    #[allow(deprecated)]
+    fn the_deprecated_aliases_choose_the_same_tier_layered_would() {
+        for has_s3_cfg in [false, true] {
+            assert_eq!(
+                remote_tier(&CacheBackendKind::Http, has_s3_cfg),
+                RemoteTier::Http,
+                "`http` names the HTTP tier outright, `cache.s3` or not"
+            );
+            assert_eq!(
+                remote_tier(&CacheBackendKind::S3, has_s3_cfg),
+                RemoteTier::S3,
+                "`s3` names the S3 tier outright — a missing `cache.s3` block \
+                 degrades to disk with an s3-specific warning rather than \
+                 falling back to HTTP"
+            );
+        }
+        // ...and `layered` is exactly those two, chosen by the config.
+        assert_eq!(
+            remote_tier(&CacheBackendKind::Layered, false),
+            remote_tier(&CacheBackendKind::Http, false)
+        );
+        assert_eq!(
+            remote_tier(&CacheBackendKind::Layered, true),
+            remote_tier(&CacheBackendKind::S3, true)
+        );
+    }
+
+    /// The default is local-only: a suite with no `cache:` block never reaches
+    /// for a remote, so it cannot be degraded by one.
+    #[test]
+    fn disk_is_local_only() {
+        assert_eq!(
+            remote_tier(&CacheBackendKind::Disk, true),
+            RemoteTier::None,
+            "`disk` ignores a `cache.s3` block rather than being upgraded by it"
+        );
     }
 }

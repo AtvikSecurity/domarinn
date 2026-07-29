@@ -310,7 +310,14 @@ pub async fn run_with_progress(
     let schemas = &crate::jsonschema_cache::SchemaCache::new();
     // Precedence: `--no-cache` kills everything (via `cache_mode`), then
     // `--no-grader-cache`, then the suite's `cache.grader`, which defaults on.
-    let grader_cache = opts.grader_cache && suite.cache.as_ref().is_none_or(|c| c.grader);
+    // Both levers are ANDed: either can disable, neither can force-enable.
+    let suite_grader_cache = suite.cache.as_ref().and_then(|c| c.grader);
+    let grader_cache = opts.grader_cache && suite_grader_cache.unwrap_or(true);
+    // Once per run, and here rather than in the CLI so that an embedder — the
+    // server runs suites too — tells its users the same thing.
+    if suite_grader_cache.is_some() {
+        tracing::warn!("cache.grader is deprecated; use --no-grader-cache");
+    }
     // One per run: the legacy-key probe spends a shared budget, and the
     // rebuilt-program warning fires once per provider rather than once per cell.
     let cache_state = &runner_cache::CacheRunState::new(if opts.cache_migration {
