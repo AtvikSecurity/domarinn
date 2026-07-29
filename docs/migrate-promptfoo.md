@@ -65,5 +65,5 @@ Worth knowing about, because they have no promptfoo equivalent and change how a 
 ## See also
 
 - [Getting started](getting-started.md) — if you would rather write a fresh suite than convert one.
-- [Suite configuration](configuration.md) — the complete reference.
+- [domarinn.yaml](reference/domarinn-yaml.md) — the complete reference.
 - [Examples](examples/index.md) — the capability ladder.

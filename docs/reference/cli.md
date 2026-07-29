@@ -67,7 +67,7 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--provider <ID>` | Only run this provider (repeatable). |
 | `--prompt <ID>` | Only run this prompt (repeatable). |
 | `--no-cache` | Never read or write the cache. |
-| `--cache-only` | Read cache only; a miss is an infrastructure error (offline CI). The credential preflight is skipped, and a case carrying a `latency` assertion is refused rather than called live — see [caching.md](./caching.md#cache-modes). |
+| `--cache-only` | Read cache only; a miss is an infrastructure error (offline CI). The credential preflight is skipped, and a case carrying a `latency` assertion is refused rather than called live — see [caching.md](../caching.md#cache-modes). |
 | `--no-grader-cache` | Grader-originated requests (the LLM judge, `exec` graders, embeddings) bypass the cache; responses of the systems under test are still replayed. Use it to measure judge variance deliberately. Replaces the deprecated suite key `cache.grader: false`. |
 | `--cache-dir DIR` | Where the local cache lives. Defaults to `.domarinn/cache` beside the suite, so the same suite hits the same cache from any directory. `DOMARINN_CACHE_DIR` sets the same thing; the flag wins. |
 | `--no-cache-migration` | Skip looking for entries written under an older cache-key shape. domarinn probes for those on a miss so an upgrade does not discard a warm cache, and stops once it is clear there is nothing to find. |
@@ -117,7 +117,7 @@ Set the environment variable in the image or on the machine when this is an orga
 
 **Live progress.** When stderr is a terminal, `run` draws a single progress bar on **stderr** — elapsed time, a bar, `done/total`, and a running pass/fail/error tally. It is purely cosmetic: it never touches **stdout**, so piping or redirecting results (`domarinn run --format json > out.json`) is byte-identical with or without it. The bar is suppressed automatically when stderr is not a terminal (e.g. captured CI logs), under `-vv`+ (so it never clobbers streamed diagnostics), and with `--no-progress`.
 
-See [configuration.md](./configuration.md) for the suite file and [statistics.md](./statistics.md) for `--repeat`/`--against`.
+See [domarinn.yaml](./domarinn-yaml.md) for the suite file and [statistics.md](../statistics.md) for `--repeat`/`--against`.
 
 ## `domarinn validate [PATH]`
 
@@ -191,7 +191,7 @@ DOMARINN_SERVER_URL=https://evals.example domarinn share 01JD3V9GQ8 --strict
 
 ## `domarinn ci-summary [RUN] [flags]`
 
-Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as GitHub Actions step outputs. See [`ci.md`](./ci.md#the-ci-summary-command).
+Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as GitHub Actions step outputs. See [`ci.md`](../ci.md#the-ci-summary-command).
 
 | Flag | Meaning |
 |---|---|
@@ -218,10 +218,10 @@ Manage the **local** content-addressed cache. All four take a suite path (defaul
 
 Two scope rules worth knowing:
 
-- **Local tier only.** These never reach an S3 bucket or the server. Remote retention is the bucket's lifecycle rules and the server's [prune endpoint plus hourly retention task](./server.md#cache-shared-provider-cache).
+- **Local tier only.** These never reach an S3 bucket or the server. Remote retention is the bucket's lifecycle rules and the server's [prune endpoint plus hourly retention task](../server.md#cache-shared-provider-cache).
 - **The pre-0.4 legacy tier is reported always, purged only when it is yours.** A cwd-relative `.domarinn/cache` left by an older domarinn is shown by `stats` and `path`, but `clear`/`gc` touch it only when the suite sits at or under the current directory — `cd ~/projB && domarinn cache clear ~/projA/evals` must not take projB's cache with it. `stats` says which of the two applies.
 
-See [caching.md](./caching.md) for the key rule, backends, and team sharing.
+See [caching.md](../caching.md) for the key rule, backends, and team sharing.
 
 ## `domarinn import promptfoo <PATH>`
 
@@ -258,7 +258,7 @@ domarinn list tests . --generators
 
 ## `domarinn server [--port N] [--data-dir DIR]`
 
-Run the self-hostable results server + embedded web UI (default port `8321`, binds `0.0.0.0`; default data dir `/data`, env `DOMARINN_DATA_DIR`). See [server.md](./server.md) and [deploy.md](./deploy.md).
+Run the self-hostable results server + embedded web UI (default port `8321`, binds `0.0.0.0`; default data dir `/data`, env `DOMARINN_DATA_DIR`). See [server.md](../server.md) and [deploy.md](../deploy.md).
 
 ```sh
 domarinn server --port 8321 --data-dir ./data
@@ -273,6 +273,6 @@ Probe **this binary's own** server health and exit `0`/non-zero accordingly. Des
 ## CI usage
 
 - **Validate on every push:** `domarinn validate` (fast, no provider calls).
-- **Gate PRs on eval quality:** `domarinn run --against server:baseline` (exit `1` on regression), or use the reusable action at `.github/actions/domarinn-eval`. See [ci.md](./ci.md).
+- **Gate PRs on eval quality:** `domarinn run --against server:baseline` (exit `1` on regression), or use the reusable action at `.github/actions/domarinn-eval`. See [ci.md](../ci.md).
 - **Contract-test the schema:** regenerate `domarinn schema config` and fail on drift (wired in `ci.yml`).
 - **Read the exit code**, not just stdout: `1` = the model regressed (block the PR), `3` = the harness broke (retry / page an operator, don't blame the PR).

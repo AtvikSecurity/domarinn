@@ -36,7 +36,7 @@ Every fixture path resolves *relative to the suite directory* and is sandboxed: 
 
 /// warning | `raw: true` is not optional for untrusted input
 
-Every var goes through Jinja. A fixture containing `{{7*7}}` renders as `49` unless you mark it raw — which silently destroys the premise of any test whose whole point is that the payload stayed literal. See [Suite configuration](../configuration.md).
+Every var goes through Jinja. A fixture containing `{{7*7}}` renders as `49` unless you mark it raw — which silently destroys the premise of any test whose whole point is that the payload stayed literal. See [domarinn.yaml](../reference/domarinn-yaml.md).
 
 ///
 

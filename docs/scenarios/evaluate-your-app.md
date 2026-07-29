@@ -71,5 +71,5 @@ Without a guard like this, a suite can sit on a model nobody serves — and ever
 ## See also
 
 - [Example 13](../examples/your-own-system.md#example-13--your-own-system) — the suite above.
-- [Exec protocol](../protocol.md) — the full contract, in three languages.
+- [Exec protocol](../reference/protocol.md) — the full contract, in three languages.
 - [Scenario 01](render-gate.md) — the free layer to put in front of this one.

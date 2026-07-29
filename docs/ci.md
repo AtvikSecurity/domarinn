@@ -24,7 +24,7 @@ Every domarinn run exits with a code your CI can branch on. **`3` (infra) wins o
 | `2`  | config/usage | Bad config, bad flags, or a suite that won't load. | Fix the suite/workflow. |
 | `3`  | infra        | A provider crashed, the server was unreachable, or an internal error. | Retry / page an operator — **not** the PR's fault. |
 
-This is the same contract the CLI documents in [`./cli.md`](./cli.md#exit-codes).
+This is the same contract the CLI documents in [`cli.md`](./reference/cli.md#exit-codes).
 
 ---
 

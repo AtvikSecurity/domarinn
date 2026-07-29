@@ -27,23 +27,28 @@ Read [How a run works](concepts/how-a-run-works.md) first — four ideas that ex
 
 | Guide | What it covers |
 | ----- | -------------- |
-| [Suite configuration](configuration.md) | The complete `domarinn.yaml` reference: providers, prompts, tests, defaults, grader, runner, cache, composition, and the `!raw` escape hatch. |
-| [Assertions](assertions.md) | Every assertion type, weights and thresholds, short-circuiting, and fail-closed semantics. |
-| [Providers](providers.md) | `exec`, `http`, `anthropic`, `openai`, and `embeddings`, plus the exec protocol. |
 | [Grading](grading.md) | The LLM-rubric grader: structured tool-use / JSON-schema verdicts, fail-closed, grader selection. |
 | [Caching](caching.md) | The one key rule, every cache knob, salts, backends, and sharing a cache between teammates. |
 | [Statistics](statistics.md) | `--repeat`, Wilson confidence intervals, McNemar significance, pass@k, and baselines. |
 | [Troubleshooting](troubleshooting.md) | Symptom, cause, fix — including the several ways a gate can be green and check nothing. |
 
+## Reference
+
+| Page | What it covers |
+| ---- | -------------- |
+| [domarinn.yaml](reference/domarinn-yaml.md) | Every top-level key of the suite file: providers, prompts, tests, defaults, grader, runner, cache, composition, and the `!raw` escape hatch. |
+| [Providers](reference/providers.md) | `exec`, `http`, `anthropic`, `openai`, and `embeddings` — behavior, wire protocol, and pricing. |
+| [Assertions](reference/assertions.md) | Every assertion type, weights and thresholds, short-circuiting, and fail-closed semantics. |
+| [CLI reference](reference/cli.md) | Every command and flag, and the CI exit-code contract. |
+| [Exec protocol](reference/protocol.md) | The JSON protocol for writing providers, assertions, and test generators in any language. |
+
 ## Running and hosting
 
 | Doc | What it covers |
 | --- | -------------- |
-| [CLI reference](cli.md) | Every command and flag, and the CI exit-code contract. |
 | [CI integration](ci.md) | Gating pull requests, the reusable GitHub Action, PR comments, and a shared cache in CI. |
 | [Server](server.md) | The results server, the web UI, and accounts: local logins, roles, API keys, admin, auth modes. |
 | [Deploy](deploy.md) | Docker, docker-compose, Kubernetes, backups, and reverse-proxy notes. |
-| [Exec protocol](protocol.md) | The JSON protocol for writing providers, assertions, and test generators in any language. |
 
 ## Why domarinn
 

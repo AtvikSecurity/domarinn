@@ -27,7 +27,7 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-`docs/protocol.md` in the main repository is the normative specification, including the request
+`docs/reference/protocol.md` in the main repository is the normative specification, including the request
 and response field tables and the vocabulary for `empty_reason` and `class`.
 
 ## Why this crate exists separately from `domarinn-types`

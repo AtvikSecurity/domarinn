@@ -11,7 +11,7 @@ domarinn server [--port 8321] [--data-dir /data]
 | `--port`     | `8321`  | Listen port. The server always binds `0.0.0.0`. |
 | `--data-dir` | `/data` | State directory (also `DOMARINN_DATA_DIR`). Holds the SQLite databases. |
 
-The server runs until Ctrl-C (graceful shutdown). Health is exposed at both `/health` and `/api/v1/health`. See [`./cli.md`](./cli.md) for the rest of the binary's subcommands and [`./deploy.md`](./deploy.md) for Docker/Kubernetes hosting.
+The server runs until Ctrl-C (graceful shutdown). Health is exposed at both `/health` and `/api/v1/health`. See [`cli.md`](./reference/cli.md) for the rest of the binary's subcommands and [`./deploy.md`](./deploy.md) for Docker/Kubernetes hosting.
 
 - [Quick start](#quick-start)
 - [Accounts & auth model](#accounts--auth-model)
@@ -290,7 +290,7 @@ These require an **account-backed** identity (session or API key). A static toke
 `GET /runs/{id}` reports two cost figures, and they are never summed: `cost_usd` is what the systems under test cost, `grader_cost_usd` is what grading them cost. It also carries `cache_read_tokens`, `cache_write_tokens` and `cache_savings_usd`. All four are `null` for runs ingested before the columns existed — which is **not** the same as zero, and readers render it as unknown rather than as "no activity". There is no backfill; see the migration note in `storage/schema.rs` for why.
 
 <a id="run-ingest"></a>**Ingest** (`POST /api/v1/runs`) accepts a `RunResult`
-JSON document (see [`./protocol.md`](./protocol.md) and `domarinn schema result`). The body must carry a `schema_version` within the supported window (`result_schema_version - 1 ..= result_schema_version`), else `422`. Ingest is **idempotent by content**:
+JSON document (see [`protocol.md`](./reference/protocol.md) and `domarinn schema result`). The body must carry a `schema_version` within the supported window (`result_schema_version - 1 ..= result_schema_version`), else `422`. Ingest is **idempotent by content**:
 
 | Status | Meaning |
 |--------|---------|
@@ -491,7 +491,7 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 | `DOMARINN_SERVER_URL` | Target server base URL for `domarinn run --share` / `share` (or the `--server-url` flag). |
 | `DOMARINN_TOKEN`      | A single bearer token the CLI sends when uploading a run or using the HTTP cache backend. |
 
-See [`./cli.md`](./cli.md) and [`./caching.md`](./caching.md) for the client side.
+See [`cli.md`](./reference/cli.md) and [`./caching.md`](./caching.md) for the client side.
 
 ---
 

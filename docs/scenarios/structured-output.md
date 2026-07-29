@@ -73,4 +73,4 @@ A JSON fixture containing `{{` will be rendered before it reaches the system. If
 
 - [Example 04](../examples/first-steps.md#example-04--structured-output) — the parseability layer.
 - [Example 29](../examples/models-grading-and-budgets.md#example-29--llm-rubric-grading) — writing the rubric.
-- [Assertions](../assertions.md) — `contains-json` and schema handling in full.
+- [Assertions](../reference/assertions.md) — `contains-json` and schema handling in full.

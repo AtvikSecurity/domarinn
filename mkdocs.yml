@@ -154,12 +154,19 @@ plugins:
   # the page is gone. mkdocs-redirects writes a static HTML stub at the old
   # path whose JS carries over any URL fragment (#anchor) to the new page, so
   # deep links keep working too; scripts/build-docs.sh verifies every entry
-  # against the built site. Still empty: the examples split kept /examples/
-  # itself alive (its index reoccupies the old URL, so there is no old path to
-  # stub), and the old per-example anchors are forwarded by a script on
-  # docs/examples/index.md instead.
+  # against the built site. The five entries below are the reference-section
+  # restructure: each old top-level page moved under reference/ (configuration.md
+  # was also retitled to domarinn-yaml.md). The examples split needs no entry
+  # here: it kept /examples/ itself alive (its index reoccupies the old URL, so
+  # there is no old path to stub), and the old per-example anchors are forwarded
+  # by a script on docs/examples/index.md instead.
   - redirects:
-      redirect_maps: {}
+      redirect_maps:
+        configuration.md: reference/domarinn-yaml.md
+        providers.md: reference/providers.md
+        assertions.md: reference/assertions.md
+        cli.md: reference/cli.md
+        protocol.md: reference/protocol.md
 
 nav:
   - Introduction: index.md
@@ -168,9 +175,6 @@ nav:
       - Why domarinn is built this way: concepts/why-domarinn.md
   - User guide:
       - Getting started: getting-started.md
-      - Suite configuration: configuration.md
-      - Providers: providers.md
-      - Assertions: assertions.md
       - LLM-rubric grading: grading.md
       - Caching: caching.md
       - Statistics & baselines: statistics.md
@@ -202,8 +206,11 @@ nav:
       - Share a cache across a team: scenarios/shared-cache.md
       - Evaluate your own application: scenarios/evaluate-your-app.md
   - Reference:
-      - CLI: cli.md
-      - Exec protocol: protocol.md
+      - domarinn.yaml: reference/domarinn-yaml.md
+      - Providers: reference/providers.md
+      - Assertions: reference/assertions.md
+      - CLI: reference/cli.md
+      - Exec protocol: reference/protocol.md
   # A top-level entry so the Rust API docs are one click from the top of every
   # page. Root-absolute link into the rustdoc tree build-docs.sh nests at
   # /rustdoc/; it exists in the assembled site/ and in production, but NOT

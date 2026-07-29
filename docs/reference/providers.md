@@ -1,3 +1,8 @@
+<!-- Canonicality: domarinn-yaml.md documents the suite file's shape — every top-level
+key, once. Any key whose meaning varies by provider type is documented once in
+providers.md. If you are writing the same sentence in both places, it belongs in
+providers.md. -->
+
 # Providers
 
 A **provider** is a system under test: the thing domarinn sends inputs to and grades the output of. Every suite lists at least one under `providers:`, and the run matrix is `providers × prompts × tests × repeats`.
@@ -20,31 +25,20 @@ Every provider has an `id` (used in results and cache keys) and an optional `lab
 
 ### Environment-driven config
 
-Any string in a provider's configuration may contain a `${env:VAR}` placeholder, resolved once at load time — handy for a per-developer endpoint or a per-environment gateway that shouldn't be committed:
-
-```yaml
-providers:
-  - id: gateway
-    type: openai
-    model: "${env:LLM_MODEL}"
-    base_url: "${env:LLM_BASE_URL:-https://api.openai.com/v1}"
-    api_key_env: LLM_API_KEY
-```
-
-An unset `${env:VAR}` with no `:-default` is a hard load error that names the field and the variable; `$${env:VAR}` escapes to a literal. This resolves the *endpoint*, not the *secret* — API keys are still read at call time from the variable named by `api_key_env`. The same interpolation covers a `grader`'s `provider` block and `cache.s3`, but never test `vars`. See [Environment interpolation](./configuration.md#environment-interpolation-envvar) for the full rules.
+Any string in a provider's configuration — including elements of an `exec` provider's `command` argv and `env` map — may contain a `${env:VAR}` placeholder, resolved once at load time — handy for a per-developer endpoint or a per-environment gateway that shouldn't be committed. The full rules (`:-default`, the `$${...}` escape, and exactly which parts of the suite this covers) are documented once, in [domarinn.yaml → Environment interpolation](./domarinn-yaml.md#environment-interpolation-envvar).
 
 ---
 
-## `exec` — the flagship
+## `exec`
 
-An `exec` provider shells out to a command that speaks the **exec JSON protocol**. If your program can read JSON from stdin and write JSON to stdout, it is a provider — no Rust, no SDK.
+The flagship provider, and the escape hatch for testing anything you can run as a process: it shells out to a command that speaks the **exec JSON protocol**. If your program can read JSON from stdin and write JSON to stdout, it is a provider — no Rust, no SDK.
 
 | Field        | Type                | Default    | Meaning |
 |--------------|---------------------|------------|---------|
-| `command`    | `[string]`          | –          | The command and its argv. |
-| `env`        | `{string: string}`  | `{}`       | Extra environment variables for the child. |
+| `command`    | `[string]`          | –          | The command and its argv. Elements may contain [`${env:VAR}`](#environment-driven-config) placeholders. |
+| `env`        | `{string: string}`  | `{}`       | Extra environment variables for the child. Values may contain `${env:VAR}` placeholders too. |
 | `timeout_ms` | integer             | `60000`    | Per-call timeout in milliseconds. |
-| `cache_salt` | string              | *(none)*   | Version pin for the program — set it when a rebuild should discard cached answers. See below. |
+| `cache_salt` | string              | *(none)*   | **Provider-level** version pin for the program — set it when a rebuild should discard cached answers. See below. Distinct from a test case's own [`cache_salt`](./domarinn-yaml.md#inline-and-loaded-test-fields), which keys a single case instead; see [caching.md](../caching.md#the-rule). |
 
 ### Wire behavior
 
@@ -64,22 +58,14 @@ The price is that domarinn cannot tell one build of your program from the next, 
 
 Anything else that steers the program belongs in argv or `env` rather than in a salt, where the key can see it. [`${env:VAR}`](#environment-driven-config) drives those from the ambient environment while keeping them keyed; a variable the child reads *without* the suite declaring it is invisible to the cache.
 
-Full details — the two salt levels, `$digest:`, and what the child's environment does and does not key — are in [caching.md](./caching.md#exec-providers-and-the-provider-salt).
+Full details — the two salt levels, `$digest:`, and what the child's environment does and does not key — are in [caching.md](../caching.md#exec-providers-and-the-provider-salt).
 
 ### Error and retry classification
 
 An `exec` call is treated as **retriable** when the transport itself failed in a recoverable way — a **spawn** failure or a **timeout** — or when the child reports `{"error": {"retriable": true}}` in its response. A **non-zero exit**, **unparseable stdout**, or a child error with `retriable: false` is **fatal**. Retries follow the suite's `runner.retries` policy.
 
 ```yaml
-providers:
-  - id: my-service
-    type: exec
-    # `./provider.py` resolves to a file, so editing it busts the cache on its
-    # own — no `cache_salt` needed here.
-    command: ["./provider.py", "--model", "${env:MY_MODEL:-sonnet}"]
-    env:
-      MODEL_ENDPOINT: "${env:MODEL_ENDPOINT:-http://localhost:8080}"
-    timeout_ms: 30000
+--8<-- "examples/13-exec-provider/domarinn.yaml:provider"
 ```
 
 ---
@@ -105,13 +91,7 @@ Behavior:
 - A missing prompt is a fatal error (this provider requires a prompt).
 
 ```yaml
-providers:
-  - id: claude
-    type: anthropic
-    model: claude-sonnet-4-5
-    params:
-      temperature: 0.0
-      max_tokens: 1024
+--8<-- "examples/27-anthropic-provider/domarinn.yaml:provider"
 ```
 
 ---
@@ -136,13 +116,14 @@ Behavior:
 - A missing prompt is a fatal error.
 
 ```yaml
-providers:
-  # OpenAI proper.
-  - id: gpt
-    type: openai
-    model: gpt-4o-mini
+--8<-- "examples/26-openai-provider/domarinn.yaml:provider"
+```
 
-  # A self-hosted OpenAI-compatible gateway.
+The same shape works unchanged against a self-hosted gateway — only `base_url` and `api_key_env` differ:
+
+```yaml
+providers:
+  # A self-hosted OpenAI-compatible gateway (vLLM, LiteLLM, Ollama, ...).
   - id: local-llama
     type: openai
     model: llama-3.1-8b-instruct
@@ -163,17 +144,10 @@ A model the table does not know reports **no cost at all** rather than a guessed
 Override the rates, or price a model the table has never heard of, with `pricing` (USD per **million** tokens, merged field-wise over any built-in row):
 
 ```yaml
-providers:
-  - id: via-gateway
-    type: anthropic
-    model: our-fine-tune
-    base_url: https://gateway.internal/v1
-    pricing:
-      input_per_mtok: 2.00
-      output_per_mtok: 8.00
-      cache_read_per_mtok: 0.20
-      cache_write_per_mtok: 2.50
+--8<-- "examples/27-anthropic-provider/domarinn.yaml:pricing"
 ```
+
+That works just as well for a model the built-in table has never heard of — a negotiated rate, a preview model, or a fine-tune behind a gateway — as it does for overriding a known one.
 
 An `exec` provider that reports its own `cost_usd` always wins: it is the only party that knows whether it hit a proxy, a batch endpoint, or a different model entirely.
 
@@ -225,21 +199,10 @@ response.headers  # response headers as an object
 
 One input can still change what happens without changing the key, and it is worth knowing:
 
-- **The environment**, depending on which syntax you use. `${env:VAR}` resolves at **load time**, so the substituted value is keyed — use it for anything that changes the answer. `{{ env.VAR }}` renders **per request** and is keyed as a literal `${env:NAME}` placeholder — use it for credentials, where keying the value would give every API key its own private cache. A provider whose url, headers or body reference `{{ env.X }}` warns at startup naming the variable, because domarinn cannot tell a model selector from a token. See [caching.md](./caching.md#which-env-syntax).
+- **The environment**, depending on which syntax you use. `${env:VAR}` resolves at **load time**, so the substituted value is keyed — use it for anything that changes the answer. `{{ env.VAR }}` renders **per request** and is keyed as a literal `${env:NAME}` placeholder — use it for credentials, where keying the value would give every API key its own private cache. A provider whose url, headers or body reference `{{ env.X }}` warns at startup naming the variable, because domarinn cannot tell a model selector from a token. See [caching.md](../caching.md#which-env-syntax).
 
 ```yaml
-providers:
-  - id: gateway
-    type: http
-    url: "https://api.example.com/v1/generate"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ api_token }}"     # from a test var
-      Content-Type: "application/json"
-    body:
-      prompt: "{{ prompt }}"
-      max_tokens: 256
-    output_expr: "response.json.completion"
+--8<-- "examples/28-http-provider/domarinn.yaml:provider"
 ```
 
 ---
@@ -264,21 +227,10 @@ Behavior:
 - Each `similar` assertion embeds **two** strings (the output and the reference), and both calls are priced and reported as that assertion's grading cost. Only `input_per_mtok` applies: an embedding call has no output tokens and the endpoint reports no cache counters, so the other `pricing` fields would price components that do not exist.
 
 ```yaml
-providers:
-  - id: sut
-    type: openai
-    model: gpt-4o-mini
-  - id: embed                 # not tested directly; enables `similar`
-    type: embeddings
-    model: text-embedding-3-small
-
-tests:
-  - vars: { q: "capital of Japan" }
-    assert:
-      - type: similar
-        value: "The capital of Japan is Tokyo."
-        threshold: 0.85
+--8<-- "examples/30-similar-embeddings/domarinn.yaml:provider"
 ```
+
+See [`similar`](./assertions.md#similar) for the assertion this provider exists to serve.
 
 ---
 
@@ -309,8 +261,7 @@ The two failure classes map to `ProviderError::Retriable { retry_after }` and `P
 ## See also
 
 - **[protocol.md](./protocol.md)** — the exec JSON protocol wire format for `exec` providers, asserts, and generators.
-- **[caching.md](./caching.md)** — the one key rule, every cache knob in one table, and when `cache_salt` is needed.
+- **[caching.md](../caching.md)** — the one key rule, every cache knob in one table, and when `cache_salt` is needed.
 - **[assertions.md](./assertions.md)** — how provider outputs are graded, and the budget assertions that read `usage` / `cost_usd`.
-- **[grading.md](./grading.md)** — using `anthropic` / `openai` providers as the LLM-rubric grader.
-- **[configuration.md](./configuration.md)** — the full suite schema (`prompts`, `tests`, `defaults`, `runner`, `cache`).
-</content>
+- **[grading.md](../grading.md)** — using `anthropic` / `openai` providers as the LLM-rubric grader.
+- **[domarinn.yaml](./domarinn-yaml.md)** — the full suite schema (`prompts`, `tests`, `defaults`, `runner`, `cache`).

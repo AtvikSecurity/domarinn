@@ -14,7 +14,7 @@ The system under test is a shell one-liner that prints a fixed answer, so this s
 --8<-- "examples/01-hello-eval/domarinn.yaml"
 ```
 
-An `exec` provider is any program that reads one JSON request on stdin and writes one JSON response on stdout. That is the entire contract — see the [exec protocol](../protocol.md). Swap the `command` for your own program and this suite is already testing your system.
+An `exec` provider is any program that reads one JSON request on stdin and writes one JSON response on stdout. That is the entire contract — see the [exec protocol](../reference/protocol.md). Swap the `command` for your own program and this suite is already testing your system.
 
 ---
 

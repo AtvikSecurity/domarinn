@@ -93,9 +93,9 @@ See **[docs/getting-started.md](docs/getting-started.md)** for a full walkthroug
 
 Full documentation is published at **<https://docs.domarinn.com/>** (source in [`docs/`](docs/)):
 
-- [Getting started](docs/getting-started.md) · [Configuration](docs/configuration.md) · [Assertions](docs/assertions.md) · [Providers](docs/providers.md)
-- [Grading](docs/grading.md) · [Caching](docs/caching.md) · [Statistics](docs/statistics.md) · [CLI reference](docs/cli.md)
-- [Server & accounts](docs/server.md) · [Deploy](docs/deploy.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/protocol.md)
+- [Getting started](docs/getting-started.md) · [domarinn.yaml](docs/reference/domarinn-yaml.md) · [Assertions](docs/reference/assertions.md) · [Providers](docs/reference/providers.md)
+- [Grading](docs/grading.md) · [Caching](docs/caching.md) · [Statistics](docs/statistics.md) · [CLI reference](docs/reference/cli.md)
+- [Server & accounts](docs/server.md) · [Deploy](docs/deploy.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/reference/protocol.md)
 - [MCP endpoint](docs/server.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
 - **[Examples](docs/examples/index.md)** — 32 runnable suites, one capability each, every one executed in CI
 - **[Scenarios](docs/scenarios/index.md)** · [How a run works](docs/concepts/how-a-run-works.md) · [Troubleshooting](docs/troubleshooting.md) · [Migrating from promptfoo](docs/migrate-promptfoo.md)

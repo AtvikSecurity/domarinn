@@ -34,7 +34,7 @@ The `type` field selects the assertion. Names are kebab-case.
 | `latency`        | deterministic | `max: int` (ms)                        | measured latency `<= max` (bypasses the cache; refused under `--cache-only`) |
 | `tokens`         | deterministic | `max: int`, `count?: total\|billable`   | token count `<= max` (passes with a note if unreported) |
 | `exec`           | graded        | `command: [string]`, `config?`, `cache_salt?` | the subprocess returns `pass: true` |
-| `llm-rubric`     | graded        | `value: string`, `grader?`, `threshold?`, `params?` | the LLM grader's verdict passes (see [grading.md](./grading.md)) |
+| `llm-rubric`     | graded        | `value: string`, `grader?`, `threshold?`, `params?` | the LLM grader's verdict passes (see [grading.md](../grading.md)) |
 | `similar`        | graded        | `value: any`, `threshold?` (default 0.8) | embedding cosine similarity `>= threshold` |
 
 Deterministic assertions are those for which `is_local()` is true — everything except `exec`, `llm-rubric`, and `similar`.
@@ -109,7 +109,7 @@ tests:
         weight: 1
 ```
 
-`threshold` can be set per test case, or in `defaults.threshold` to apply to every case in the suite. See [configuration.md](./configuration.md).
+`threshold` can be set per test case, or in `defaults.threshold` to apply to every case in the suite. See [domarinn.yaml](./domarinn-yaml.md).
 
 ---
 
@@ -236,7 +236,7 @@ Exact-match against an expected value. The expected `value` is a templatable `va
   value: !raw "{{7*7}}"
 ```
 
-`!raw` (or its format-agnostic form `{$raw: "…"}`) marks a value as never-rendered; see [configuration.md](./configuration.md) for the `Val` rules.
+`!raw` (or its format-agnostic form `{$raw: "…"}`) marks a value as never-rendered; see [domarinn.yaml](./domarinn-yaml.md) for the `Val` rules.
 
 ### `starts-with`
 
@@ -340,17 +340,12 @@ These read the call's **run metrics** rather than the output text:
 | `tokens`  | token count (optional) | `count: total` (default) is the whole exchange — the prompt (cached span included) plus the response; `count: billable` adds the cache *write* |
 
 ```yaml
-- type: latency
-  max: 2000          # ms
-- type: cost
-  max: 0.01          # USD
-- type: tokens
-  max: 1500
+--8<-- "examples/31-budgets/domarinn.yaml:assert"
 ```
 
 Behavior details:
 
-- **`latency` bypasses the cache.** A cached response has a near-zero replay latency, which would make the assertion meaningless. When a case contains a `latency` assertion the runner disables the cache for that cell so the latency reflects a real call. Under `--cache-only` there is no live call to fall back on, so that case is **refused** — `there is nothing honest to replay` — while the rest of the suite still replays. See [caching.md](./caching.md#cache-modes).
+- **`latency` bypasses the cache.** A cached response has a near-zero replay latency, which would make the assertion meaningless. When a case contains a `latency` assertion the runner disables the cache for that cell so the latency reflects a real call. Under `--cache-only` there is no live call to fall back on, so that case is **refused** — `there is nothing honest to replay` — while the rest of the suite still replays. See [caching.md](../caching.md#cache-modes).
 - **Unknown metrics pass with a note.** If the provider does not report cost or token usage, `cost` and `tokens` **pass** with `cost not reported; budget not enforced` / `tokens not reported; budget not enforced` — they never fail a case for missing data. (The native `anthropic` and `openai` providers report token usage but not cost, so `tokens` is enforced while `cost` is a no-op unless your provider fills in `cost_usd`.)
 - **A warm prompt cache does not shrink a `tokens` budget.** Both vendors report the cached span of a prompt in its own field rather than in `input_tokens`, so a total over `input + output` alone would measure only the *uncached* fraction — and a 6,000-token prompt would fail the budget cold and pass it a few minutes later at 200, with no config change. `count: total` therefore counts the prompt that was sent. `count: billable` adds the cache *write*, which is spend rather than prompt.
 
@@ -373,7 +368,7 @@ Runs an external command as a custom grader over the **exec assert protocol**. T
 
 - `pass` (boolean) is required. `score` defaults to `1.0` when `pass` is true, `0.0` otherwise. `reason` and `details` are surfaced in results.
 - A failing assert (`pass: false`) is a normal `fail`, not an `error` — the command should still exit `0`. A **non-zero exit**, a timeout, or unparseable stdout is an infrastructure `error`.
-- The round-trip is cached like any other request, keyed on the command and what it is sent. An optional `cache_salt` on the assertion is a version pin for the grader program, scoped to that assertion's gradings; see [caching.md](./caching.md#every-knob-once).
+- The round-trip is cached like any other request, keyed on the command and what it is sent. An optional `cache_salt` on the assertion is a version pin for the grader program, scoped to that assertion's gradings; see [caching.md](../caching.md#every-knob-once).
 
 See [protocol.md](./protocol.md) for the full `assert` request/response wire format.
 
@@ -382,24 +377,20 @@ See [protocol.md](./protocol.md) for the full `assert` request/response wire for
 Grades the output against a natural-language rubric using an LLM judge that returns a **structured** verdict (never parsed from prose).
 
 ```yaml
-- type: llm-rubric
-  value: "The answer is polite and declines to give medical advice."
-  threshold: 0.7            # optional: pass on score, not the boolean
+--8<-- "examples/29-llm-rubric-grading/domarinn.yaml:assert"
 ```
 
 - The `grader` is resolved per-assert first, then from the suite-level `grader:`. An `llm-rubric` with **no** grader configured anywhere is an `error`.
 - With a `threshold`, the assertion passes when `score >= threshold`; without one, it uses the verdict's boolean `pass`.
 
-Everything about grader configuration, the forced-tool / strict-JSON verdict, truncation handling, and best practices lives in **[grading.md](./grading.md)**.
+Everything about grader configuration, the forced-tool / strict-JSON verdict, truncation handling, and best practices lives in **[grading.md](../grading.md)**.
 
 ### `similar`
 
 Passes when the embedding **cosine similarity** between the output and a reference meets a threshold. Requires a `type: embeddings` provider in the suite (see [providers.md](./providers.md#embeddings)).
 
 ```yaml
-- type: similar
-  value: "The mitochondria is the powerhouse of the cell."
-  threshold: 0.85      # default is 0.8
+--8<-- "examples/30-similar-embeddings/domarinn.yaml:assert"
 ```
 
 - The reference `value` is templatable (rendered against the test vars).
@@ -413,25 +404,10 @@ Passes when the embedding **cosine similarity** between the output and a referen
 
 Passes when the model **decided to call** a tool. domarinn never runs one — see [the protocol's Tools section](./protocol.md#tools) for why a single turn is enough to grade the decision.
 
-Declare the tools at suite level, then assert on what the model did with them:
+Declare the tools at suite level (see [`tools`](./domarinn-yaml.md#tools)), then assert on what the model did with them:
 
 ```yaml
-tools:
-  - name: get_weather
-    description: Look up the current weather
-    input_schema:
-      type: object
-      required: [city]
-      properties: { city: { type: string } }
-
-tests:
-  - vars: { city: "Oslo" }
-    assert:
-      - type: tool-call
-        name: get_weather
-        args: { city: "{{ city }}" }        # a subset match, and templated
-      - type: not-tool-call                 # the negative matters just as much
-        name: delete_account
+--8<-- "examples/15-tool-call-asserts/domarinn.yaml:assert"
 ```
 
 | Field    | Type       | Meaning |
@@ -516,8 +492,6 @@ tests:
 
 ## Notes
 
-- **Cache is exact content-addressing only.** Two requests that mean the same thing but differ by a byte are distinct entries; `similar` measures output similarity for *grading*, never for cache lookup. See [caching.md](./caching.md#the-rule).
+- **Cache is exact content-addressing only.** Two requests that mean the same thing but differ by a byte are distinct entries; `similar` measures output similarity for *grading*, never for cache lookup. See [caching.md](../caching.md#the-rule).
 - **Deterministic assertions never spend money or hit the network** — they are the cheap gate in front of the graded ones. Order and weight them so the most decisive checks run first.
 - **`equals`, `similar`, and `jinja` see the template engine; the other substring assertions do not.** Use `!raw` on an `equals`/`similar` value when it contains template syntax that must stay literal.
-</content>
-</invoke>

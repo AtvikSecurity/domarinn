@@ -62,4 +62,4 @@ The full rule, every knob, and what a 0.5 upgrade does to a warm store are in [c
 - [Why domarinn is built this way](why-domarinn.md) — the decisions behind the above.
 - [Examples](../examples/index.md) — every idea here, as a suite you can run.
 - [Caching](../caching.md) — backends, salts, and what busts what.
-- [Assertions](../assertions.md) — scoring, weights, and the full type list.
+- [Assertions](../reference/assertions.md) — scoring, weights, and the full type list.

@@ -38,11 +38,11 @@ tests:
 schema, which is far more reliable than recalling field names — including yours.
 
 Provider types are `openai`, `anthropic`, `http`, and `exec`. `exec` runs a local command speaking
-the exec protocol (see `docs/protocol.md`) and is how you evaluate something that is not an LLM API.
+the exec protocol (see `docs/reference/protocol.md`) and is how you evaluate something that is not an LLM API.
 
 ## Writing assertions that mean something
 
-Assertion types live in `docs/assertions.md`; read it before inventing one. The judgment calls:
+Assertion types live in `docs/reference/assertions.md`; read it before inventing one. The judgment calls:
 
 - **Prefer deterministic assertions.** `contains`, `icontains`, `regex`, `is-json`, `json-schema`,
   and `latency` cost nothing and never drift. Reach for `llm-rubric` only when correctness is

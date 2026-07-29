@@ -1,4 +1,9 @@
-# Suite configuration (`domarinn.yaml`)
+<!-- Canonicality: domarinn-yaml.md documents the suite file's shape — every top-level
+key, once. Any key whose meaning varies by provider type is documented once in
+providers.md. If you are writing the same sentence in both places, it belongs in
+providers.md. -->
+
+# domarinn.yaml
 
 A domarinn suite is a single declarative YAML file (conventionally `domarinn.yaml`) that describes **what to test**, **which systems to test it against**, and **how to judge the answers**. You point the CLI at it — `domarinn run .` uses `domarinn.yaml` in the current directory, or pass an explicit file. This page documents every field of that file, verified against the schema in `domarinn-core`.
 
@@ -78,15 +83,25 @@ description: Checks that the assistant declines out-of-scope requests.
 
 ## `providers`
 
-Each provider is one system under test. Every provider has an `id` (unique within the suite), an optional human-friendly `label`, and a `type` discriminator that selects one of five kinds. Fields other than `id`, `label`, and `type` belong to the chosen kind.
+Each provider is one system under test. Every provider has an `id` (unique within the suite), an optional human-friendly `label`, and a `type` discriminator that selects one of five kinds. Fields other than `id`, `label`, and `type` belong to the chosen kind — and because their meaning varies by `type`, they are documented once, in [`providers.md`](./providers.md), rather than here.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `id` | string | **yes** | Unique identifier; used in reports and `only_providers`/`skip_providers`. |
 | `label` | string | no | Display name in output. |
-| `type` | enum | **yes** | One of `exec`, `anthropic`, `openai`, `http`, `embeddings`. |
+| `type` | enum | **yes** | One of the five kinds below. |
 
-See [`providers.md`](./providers.md) for behavior and protocol details; the tables below cover the config surface.
+| `type` | Selects |
+|--------|---------|
+| [`exec`](./providers.md#exec) | An external command speaking the exec JSON protocol — the escape hatch for testing anything you can run as a process. |
+| [`anthropic`](./providers.md#anthropic) | A native Anthropic Messages API client. |
+| [`openai`](./providers.md#openai) | An OpenAI-compatible chat-completions client — OpenAI itself, or any compatible gateway. |
+| [`http`](./providers.md#http) | An arbitrary HTTP endpoint, templated with the test context. |
+| [`embeddings`](./providers.md#embeddings) | An embeddings endpoint that powers the [`similar`](./assertions.md#similar) assertion. **Not** a system under test. |
+
+> API keys and other secrets are **never** written in the suite. Every provider
+> type names the *environment variable* to read (`api_key_env`); the value
+> stays in the environment and is read at call time, never interpolated.
 
 ### Environment interpolation (`${env:VAR}`)
 
@@ -114,122 +129,6 @@ Scope is deliberately narrow. Interpolation runs **only** over provider-bearing 
 > This resolves the *endpoint*, not the *secret*. API keys are still read at
 > call time from the variable named by `api_key_env` — never written into the
 > suite, and never interpolated here.
-
-### `type: exec`
-
-Spawns an external command that speaks the exec JSON protocol on stdio — the escape hatch for testing anything you can run as a process.
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `command` | list of strings | **yes** | argv; the program plus its arguments. |
-| `env` | map string→string | no | Extra environment variables for the child process. |
-| `timeout_ms` | int | no | Per-call timeout in milliseconds. |
-| `cache_salt` | string | no | **Provider-level** version pin for the program behind the command. Exec providers are cached by default; the key hashes the request they send, which says nothing about the program's bytes — that is what makes an entry reusable on another machine, and also why domarinn cannot spot a rebuild by itself. Set this (a commit SHA, a tag, `"$digest: src/**"`) when a rebuild should discard the old answers. Distinct from a test case's own [`cache_salt`](#inline-and-loaded-test-fields), which keys a single case; see [caching.md](./caching.md#the-rule). |
-
-```yaml
-providers:
-  - id: local-agent
-    type: exec
-    # The cache key hashes what this provider sends, not the bytes of the
-    # program that sends it — that is what makes an entry reusable on another
-    # machine, and also why a rebuild does not invalidate anything on its own.
-    # Set `cache_salt` when it should.
-    command: ["./target/release/agent", "--mode", "eval"]
-    env:
-      AGENT_PROFILE: strict
-    cache_salt: "2026-07-28"
-    timeout_ms: 30000
-```
-
-### `type: anthropic`
-
-Native Anthropic Messages API client.
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `model` | string | **yes** | Model id. |
-| `base_url` | string | no | Override the API base URL. |
-| `api_key_env` | string | no | Name of the env var holding the API key (default `ANTHROPIC_API_KEY`). |
-| `params` | map | no | Passed to the API **verbatim** (e.g. `max_tokens`, `temperature`). Nothing is forced — no default temperature. |
-
-```yaml
-providers:
-  - id: claude
-    type: anthropic
-    model: claude-sonnet-4-5
-    api_key_env: ANTHROPIC_API_KEY
-    params: { max_tokens: 2048, temperature: 0.0 }
-```
-
-### `type: openai`
-
-OpenAI-compatible chat-completions client — works against any endpoint that implements that API.
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `model` | string | **yes** | Model id. |
-| `base_url` | string | no | Endpoint base URL (default `https://api.openai.com/v1`). Point it at any compatible server. |
-| `api_key_env` | string | no | Env var holding the key (default `OPENAI_API_KEY`). |
-| `params` | map | no | Passed to the API verbatim. |
-
-```yaml
-providers:
-  - id: gpt
-    type: openai
-    model: gpt-4o
-    base_url: https://api.openai.com/v1
-    params: { max_tokens: 1024 }
-```
-
-### `type: http`
-
-Call an arbitrary HTTP endpoint. Headers and the body are templated with the test context, and `output_expr` pulls the model's answer out of the response.
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `url` | string | **yes** | Request URL. |
-| `method` | string | no | HTTP method (default `POST`). |
-| `headers` | map string→string | no | Request headers. **Values are templated.** |
-| `body` | JSON | no | Request body. **Templated** (string leaves rendered recursively). |
-| `output_expr` | string | no | A minijinja expression that selects the output from the response object, which exposes `response.status`, `response.text`, `response.json`, and `response.headers`. |
-
-```yaml
-providers:
-  - id: my-service
-    type: http
-    url: https://api.example.com/v1/complete
-    method: POST
-    headers:
-      authorization: "Bearer {{ env.MY_SERVICE_TOKEN }}"
-      content-type: application/json
-    body:
-      prompt: "{{ question }}"
-      max_tokens: 512
-    output_expr: "response.json.choices[0].text"
-```
-
-### `type: embeddings`
-
-An embeddings endpoint used by the [`similar`](./assertions.md) assertion to compute cosine similarity. It is **not** a system under test — it is skipped when running the test matrix and is only invoked when a `similar` assertion needs an embedding.
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `model` | string | **yes** | Embedding model id. |
-| `base_url` | string | no | Override the API base URL. |
-| `api_key_env` | string | no | Env var holding the key. |
-| `params` | map | no | Passed to the API verbatim. |
-| `pricing` | object | no | Rate override; only `input_per_mtok` applies. See [providers.md](./providers.md#embeddings). |
-
-```yaml
-providers:
-  - id: embed
-    type: embeddings
-    model: text-embedding-3-small
-```
-
-> API keys and other secrets are **never** written in the suite. Providers name
-> the *environment variable* to read (`api_key_env`); the value stays in the
-> environment.
 
 ---
 
@@ -306,7 +205,7 @@ Inline tests, and every test loaded from a file, share the same shape:
 | `matrix_id` | string | no | minijinja template for a matrix cell's id, rendered against the axis values. See [Matrix / parameter sweeps](#matrix--parameter-sweeps). |
 | `assert` | list | no | Assertions to run against the output. See [`assertions.md`](./assertions.md). |
 | `threshold` | float | no | If set, the case **passes when its weighted-mean assertion score ≥ `threshold`**. If unset, the case passes only when **every** assertion passes. |
-| `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of **this case's** provider requests only. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](./caching.md#per-case-salts). |
+| `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of **this case's** provider requests only. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](../caching.md#per-case-salts). |
 | `only_providers` | list of provider ids | no | Restrict this case to these providers. |
 | `skip_providers` | list of provider ids | no | Exclude these providers from this case. |
 
@@ -330,17 +229,10 @@ Assertions carry two common controls in addition to their `type`: `weight` (defa
 A case with a `matrix` **fans out over the cartesian product of its axes** — one concrete case per combination. Each axis maps a var name to the list of values it takes, and each combination's axis values are merged into `vars` (the axis **wins** over a base var of the same name, for that key only):
 
 ```yaml
-tests:
-  - id: greet
-    matrix:
-      style: [terse, warm]
-      temperature: [0, 1]
-    vars: { name: "Ada" }   # base var, present in every cell
-    assert:
-      - { type: icontains, value: "Ada" }
+--8<-- "examples/08-matrix-sweeps/domarinn.yaml:matrix"
 ```
 
-This expands to **four** cases. Axes iterate in **sorted key order**, and the default id encodes every `key=value` pair, so ids are deterministic and stable across runs (which keeps [`CaseKey`](#test-ids)s — and therefore diffing — stable):
+The `greet` case expands to **four** cases: a 2×2 sweep over `style` and `temperature`. Axes iterate in **sorted key order**, and the default id encodes every `key=value` pair, so ids are deterministic and stable across runs (which keeps [`CaseKey`](#test-ids)s — and therefore diffing — stable):
 
 ```
 greet[style=terse,temperature=0]
@@ -349,14 +241,7 @@ greet[style=warm,temperature=0]
 greet[style=warm,temperature=1]
 ```
 
-For a friendlier id shape, set `matrix_id` to a minijinja template rendered against the axis values of each combination:
-
-```yaml
-  - id: locale
-    matrix_id: "sweep-{{ lang }}"        # → sweep-en, sweep-fr, sweep-de
-    matrix:
-      lang: [en, fr, de]
-```
+The `locale` case shows the friendlier id shape: `matrix_id` is a minijinja template rendered against each combination's axis values, so it expands to `sweep-en`, `sweep-fr`, `sweep-de` instead of the default `locale[lang=en]` form.
 
 Notes:
 
@@ -397,7 +282,7 @@ A glob string must start with `file://`; the remainder is a glob resolved relati
 | `description` | The test description. |
 | `tags` | Comma-separated tag list. |
 | `threshold` | Parsed as a float (ignored if it doesn't parse). |
-| `cache_salt` | The case's [cache salt](./caching.md#per-case-salts) — reserved so a digest column keys the cache instead of becoming a var. |
+| `cache_salt` | The case's [cache salt](../caching.md#per-case-salts) — reserved so a digest column keys the cache instead of becoming a var. |
 | `__assert` | A JSON array of assertions. |
 
 ```yaml
@@ -437,7 +322,7 @@ The `!file "path"` YAML tag and the format-agnostic `{$file: "path"}` object for
 
 **Sandboxed.** The path is resolved relative to the suite directory and must stay inside it: `!file "../../etc/passwd"` (or a symlink pointing outside the suite) is **refused**, not read. The same guard covers `file://` prompt/message content and `file://` test-file globs.
 
-**Cache note.** A file var's content is rendered into the request — into the prompt for a vendor provider, into the `vars` an `exec` child receives, into the url/headers/body of an `http` call — and [the request is the cache key](./caching.md#the-rule). So **editing a fixture busts the cache** for the cases that read it, exactly as editing an inline value would.
+**Cache note.** A file var's content is rendered into the request — into the prompt for a vendor provider, into the `vars` an `exec` child receives, into the url/headers/body of an `http` call — and [the request is the cache key](../caching.md#the-rule). So **editing a fixture busts the cache** for the cases that read it, exactly as editing an inline value would.
 
 ### Generators
 
@@ -470,14 +355,7 @@ Tools every provider in this suite may offer the model, graded by [`tool-call`](
 | `input_schema` | JSON Schema | no | The arguments' shape. Passed to the provider verbatim and never templated. |
 
 ```yaml
-tools:
-  - name: get_weather
-    description: Look up the current weather for a city
-    input_schema:
-      type: object
-      required: [city]
-      properties:
-        city: { type: string }
+--8<-- "examples/15-tool-call-asserts/domarinn.yaml:tools"
 ```
 
 Declaring a tool does **not** make domarinn run one — it never executes a tool and never feeds a result back. What it wants is the model's *decision*, which is fully observable in a single turn. See [protocol.md](./protocol.md#tools).
@@ -498,7 +376,7 @@ Values merged into **every** resolved test case, so you don't repeat yourself.
 | `assert` | list | **Prepended** to each test's own asserts (defaults run first). |
 | `tags` | list | **Unioned** — added if not already present. |
 | `threshold` | float | **Fills** the test's threshold only if the test hasn't set one. |
-| `cache_salt` | string | **Fills** the test's [cache salt](./caching.md#per-case-salts) only if the test hasn't set one — generator-produced cases included. |
+| `cache_salt` | string | **Fills** the test's [cache salt](../caching.md#per-case-salts) only if the test hasn't set one — generator-produced cases included. |
 
 ```yaml
 defaults:
@@ -520,7 +398,7 @@ Defaults are merged into generator-produced cases too. Those cases do **not** ge
 
 ## `grader`
 
-The default LLM grader for [`llm-rubric`](./grading.md) assertions. A per- assertion `grader` overrides this one.
+The default LLM grader for [`llm-rubric`](../grading.md) assertions. A per- assertion `grader` overrides this one.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -538,7 +416,7 @@ grader:
   verdict_mode: forced
 ```
 
-See [`grading.md`](./grading.md) for how rubrics are scored and what `forced` vs `auto` do.
+See [`grading.md`](../grading.md) for how rubrics are scored and what `forced` vs `auto` do.
 
 ---
 
@@ -564,23 +442,14 @@ Execution controls for the whole run.
 | `jitter` | bool | no (default `false`) | Randomize backoff to avoid thundering herds. |
 
 ```yaml
-runner:
-  concurrency: 8
-  timeout_ms: 60000
-  short_circuit: true
-  rate_limit: { rps: 2 }
-  retries:
-    max: 3
-    initial_ms: 500
-    max_ms: 8000
-    jitter: true
+--8<-- "examples/20-runner-tuning/domarinn.yaml:runner"
 ```
 
 ---
 
 ## `cache`
 
-Selects the cache **backend**. Every outgoing request is cached so re-runs are cheap; the backend decides where entries live. What goes into a key is one rule, documented once in [caching.md](./caching.md#the-rule).
+Selects the cache **backend**. Every outgoing request is cached so re-runs are cheap; the backend decides where entries live. What goes into a key is one rule, documented once in [caching.md](../caching.md#the-rule).
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
@@ -609,7 +478,7 @@ cache:
     force_path_style: true
 ```
 
-The suite only chooses the backend **type**. The server URL and any credentials are supplied by CLI flags and environment variables, not the config file — which is what keeps a suite safe to commit. A remote whose URL or credentials are missing degrades to local disk with a warning rather than failing the run. See [`caching.md`](./caching.md#backends).
+The suite only chooses the backend **type**. The server URL and any credentials are supplied by CLI flags and environment variables, not the config file — which is what keeps a suite safe to commit. A remote whose URL or credentials are missing degrades to local disk with a warning rather than failing the run. See [`caching.md`](../caching.md#backends).
 
 ---
 
@@ -728,28 +597,14 @@ Later layers win. The layers are combined by a **deep merge**:
 **Cycles are detected and error** — if `a.yaml` extends `b.yaml` which extends `a.yaml`, the load fails rather than looping.
 
 ```yaml
-# base.yaml
-version: 1
-project: base
-providers:
-  - { id: p, type: exec, command: ["base"] }
-defaults:
-  assert: [{ type: is-json }]
-  tags: [inherited]
+--8<-- "examples/17-defaults-and-composition/base.yaml"
 ```
 
 ```yaml
-# domarinn.yaml
-version: 1
-extends: "file://base.yaml"
-suite: child
-defaults:
-  assert: [{ type: contains, value: "x" }]   # appended after is-json
-tests:
-  - { vars: { a: "1" } }
+--8<-- "examples/17-defaults-and-composition/domarinn.yaml:extends"
 ```
 
-The composed suite keeps `project: base` (inherited) and `suite: child` (overridden), and its `defaults.assert` is `[is-json, contains]` — base first, child appended.
+The composed suite keeps `runner.concurrency: 4` (inherited — the child declares no `runner` of its own), overrides `defaults.vars.product` to `"Aurora Notes Pro"` (a map merge, child wins), and its `defaults.assert` is `[not-icontains "as an AI", length max 2000]` — base first, child appended.
 
 > Two different append/prepend rules coexist, so keep them straight:
 > composition appends a shared `assert` sequence (**base then child**), while
@@ -772,7 +627,7 @@ A suite is validated structurally before any provider is contacted — both by `
 ## See also
 
 - [`assertions.md`](./assertions.md) — every assertion `type` and its options.
-- [`grading.md`](./grading.md) — the `llm-rubric` grader, rubrics, verdict modes.
+- [`grading.md`](../grading.md) — the `llm-rubric` grader, rubrics, verdict modes.
 - [`providers.md`](./providers.md) — provider behavior and the exec protocol.
-- [`caching.md`](./caching.md) — cache backends, keys, and invalidation.
+- [`caching.md`](../caching.md) — cache backends, keys, and invalidation.
 - [`cli.md`](./cli.md) — `run`, `validate`, `schema`, `list`, and exit codes.

@@ -65,9 +65,9 @@ The examples below are grouped into six pages, roughly in the order you would re
 ## See also
 
 - [Getting started](../getting-started.md) — install, then write and run your first suite.
-- [Suite configuration](../configuration.md) — the complete `domarinn.yaml` reference.
-- [Assertions](../assertions.md) — every assertion type, weights, thresholds, and short-circuiting.
-- [Providers](../providers.md) — `exec`, `http`, `anthropic`, `openai`, and `embeddings`.
+- [domarinn.yaml](../reference/domarinn-yaml.md) — the complete `domarinn.yaml` reference.
+- [Assertions](../reference/assertions.md) — every assertion type, weights, thresholds, and short-circuiting.
+- [Providers](../reference/providers.md) — `exec`, `http`, `anthropic`, `openai`, and `embeddings`.
 
 <!-- The monolithic examples page lived at this URL, so links published before
      the split carry fragments of the form "#example-13" plus the heading slug.

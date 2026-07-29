@@ -4,7 +4,7 @@ The `llm-rubric` assertion grades a provider's output against a natural-language
 
 > Source of truth: `crates/domarinn-core/src/grader.rs` and the `Grader` /
 > `AssertKind::LlmRubric` types in `config.rs`. This assertion is introduced in
-> [assertions.md](./assertions.md#llm-rubric).
+> [assertions.md](./reference/assertions.md#llm-rubric).
 
 ---
 
@@ -59,7 +59,7 @@ An `llm-rubric` assertion needs a grader. It is resolved in this order:
 2. Otherwise the **suite-level** `grader:` block.
 3. If **neither** exists, the assertion is an **error** (fail-closed): `llm-rubric assertion has no grader configured (set suite grader or per-assert grader)`.
 
-An errored assertion promotes the case to `error` and drives exit code `3`, not `1`. It is never a silent pass. See [assertions.md](./assertions.md#statuses-fail-closed-and-exit-codes).
+An errored assertion promotes the case to `error` and drives exit code `3`, not `1`. It is never a silent pass. See [assertions.md](./reference/assertions.md#statuses-fail-closed-and-exit-codes).
 
 ---
 
@@ -73,7 +73,7 @@ The `grader:` block wraps a provider plus grading options:
 | `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template, relative to the suite directory. It renders into the prompt the judge reads, and [the request is the key](./caching.md#the-rule) — so editing it re-grades. (An `exec` assertion's *program* is named by `command` and pinned by `cache_salt`, for the opposite reason: it receives the question rather than being part of it.) |
 | `verdict_mode` | string        | `forced`   | How the structured verdict is obtained: `forced` (default) or `auto` (rejected at load — not implemented). |
 
-The `provider` is a standard [`ProviderKind`](./providers.md) — but only the `anthropic` and `openai` shapes are valid graders. Any other provider type errors with `grader provider type … is not supported for llm-rubric`.
+The `provider` is a standard [`ProviderKind`](./reference/providers.md) — but only the `anthropic` and `openai` shapes are valid graders. Any other provider type errors with `grader provider type … is not supported for llm-rubric`.
 
 > `verdict_mode` and `template` are part of the grader schema. The implemented
 > grading path always uses the **forced** structured-verdict mechanism
@@ -169,7 +169,7 @@ Given the verdict `{ pass, score }`, the assertion's pass/fail is:
 - **With a `threshold`** on the assertion — pass when `score >= threshold`.
 - **Without a `threshold`** — pass on the verdict's boolean `pass`.
 
-The reported assertion score is always the verdict's `score` (clamped to `[0, 1]`); the verdict's `reasoning` becomes the assertion's reason. The case's weighted-mean score and pass/fail then follow the normal [scoring rules](./assertions.md#scoring).
+The reported assertion score is always the verdict's `score` (clamped to `[0, 1]`); the verdict's `reasoning` becomes the assertion's reason. The case's weighted-mean score and pass/fail then follow the normal [scoring rules](./reference/assertions.md#scoring).
 
 ```yaml
 # Binary: pass on the model's boolean judgment.
@@ -200,7 +200,7 @@ Non-2xx responses, transport errors, missing `tool_use`/content, and truncated v
 
 ## What grading costs
 
-Judge calls are priced from the same built-in rate table as the systems under test, and a `grader.provider` accepts the same [`pricing:` override](./providers.md#pricing). The same applies to the embeddings provider behind `similar`, which spends two calls per assertion (the output and the reference).
+Judge calls are priced from the same built-in rate table as the systems under test, and a `grader.provider` accepts the same [`pricing:` override](./reference/providers.md#pricing). The same applies to the embeddings provider behind `similar`, which spends two calls per assertion (the output and the reference).
 
 The figure is reported **separately** from the run's cost:
 
@@ -224,7 +224,7 @@ An `exec` grader reports nothing: the child spends against whatever endpoint it 
 - **Prefer binary or clearly-anchored rubrics.** A crisp yes/no question ("Does the answer cite at least one source?") is far more reliable than a vague "rate the quality." When you do use a `score`, anchor the endpoints in the rubric ("1.0 = every claim is supported; 0.0 = a fabricated claim appears").
 - **Write discriminative rubrics.** A good rubric separates good outputs from bad ones — if every plausible answer would pass, the assertion isn't testing anything. State what a failure looks like.
 - **Keep `max_tokens` comfortable.** Because `reasoning` comes first, the model spends tokens before emitting `pass`/`score`. If you see truncation errors, raise `max_tokens` rather than shrinking the rubric.
-- **Let deterministic checks gate the grader.** Put cheap [deterministic assertions](./assertions.md#deterministic-assertions) alongside the rubric so obvious failures short-circuit the paid grader call.
+- **Let deterministic checks gate the grader.** Put cheap [deterministic assertions](./reference/assertions.md#deterministic-assertions) alongside the rubric so obvious failures short-circuit the paid grader call.
 
 ---
 

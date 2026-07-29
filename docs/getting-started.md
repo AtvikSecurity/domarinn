@@ -113,7 +113,7 @@ tests:
         max: 100
 ```
 
-`exec` providers speak a tiny [JSON protocol](./protocol.md): domarinn writes a request to the program's stdin and reads its output from stdout. Here `sh` ignores the input and prints a fixed result.
+`exec` providers speak a tiny [JSON protocol](./reference/protocol.md): domarinn writes a request to the program's stdin and reads its output from stdout. Here `sh` ignores the input and prints a fixed result.
 
 Validate, then run:
 
@@ -144,7 +144,7 @@ tests:
         value: "49"
 ```
 
-Everything else renders through real Jinja (minijinja) with strict undefined — a typo'd variable is an error, not an empty string. See [configuration.md](./configuration.md#templating-and-the-raw-escape-hatch).
+Everything else renders through real Jinja (minijinja) with strict undefined — a typo'd variable is an error, not an empty string. See [domarinn.yaml](./reference/domarinn-yaml.md#templating-and-the-raw-escape-hatch).
 
 ## Add a real model and an LLM grader
 
@@ -208,12 +208,12 @@ Open `http://localhost:8321` for the per-suite overview, `/runs` for the run lis
 
 ## Where to go next
 
-- [configuration.md](./configuration.md) — the complete suite YAML reference.
-- [assertions.md](./assertions.md) — every assertion type.
-- [providers.md](./providers.md) — exec / http / anthropic / openai / embeddings.
+- [domarinn.yaml](./reference/domarinn-yaml.md) — the complete suite YAML reference.
+- [assertions.md](./reference/assertions.md) — every assertion type.
+- [providers.md](./reference/providers.md) — exec / http / anthropic / openai / embeddings.
 - [grading.md](./grading.md) — the LLM-rubric grader.
 - [caching.md](./caching.md) — sharing cache between teammates.
 - [statistics.md](./statistics.md) — confidence intervals, significance, baselines.
-- [cli.md](./cli.md) — the full command reference.
+- [cli.md](./reference/cli.md) — the full command reference.
 - [server.md](./server.md) / [deploy.md](./deploy.md) — hosting and accounts.
 - [ci.md](./ci.md) — gating pull requests.
