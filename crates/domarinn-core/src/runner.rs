@@ -780,6 +780,33 @@ async fn run_cell(
 
     // Latency assertions must not observe a cached (near-zero) latency.
     let bypass_cache = has_latency_assert(&test.assert);
+    // ...but under `--cache-only` that bypass is a live call in the one mode
+    // documented as offline — and the mode the credential preflight above is
+    // skipped for. Refuse the case instead of quietly reaching the provider.
+    // Per case, like a strict-mode miss: the rest of the suite still replays.
+    if bypass_cache && cache_mode == CacheMode::ReadOnlyStrict {
+        return error_case(
+            cell,
+            case_key,
+            name,
+            test,
+            CallFailure::before_any_attempt(
+                ErrorClass::CACHE_MISS,
+                format!(
+                    "cache-only: test '{test_id}' has a latency assert, which always \
+                     measures a live call; there is nothing honest to replay"
+                ),
+            ),
+            0,
+            CaseInputs {
+                prompt: rendered_prompt,
+                vars: case_vars,
+                request,
+                prompt_digest,
+                provider_digest,
+            },
+        );
+    }
     let effective_mode = if bypass_cache {
         CacheMode::Disabled
     } else {
