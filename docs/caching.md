@@ -14,9 +14,9 @@ That is what makes a cache shareable. A key that varies by machine cannot be reu
 
 | Ingredient | HTTP-shaped requests | `exec`-shaped requests | A change busts |
 |---|---|---|---|
-| **the request** | the resolved URL and the body — call-time `{{ env.* }}` rendered to a `${env:NAME}` placeholder, headers reduced to a digest, `anthropic`'s API-version header carried along | the command and its args, the stdin document minus its `test` block, and a digest of the declared `env` | every call that request appears in |
+| **the request** | the resolved URL and the body — call-time `{{ env.* }}` rendered to a `${env:NAME}` placeholder, headers reduced to a digest, `anthropic`'s API-version header carried along, an `http` provider's `output_expr` too | the command and its args, the stdin document minus its `test` block, and a digest of the declared `env` | every call that request appears in |
 | **the trial index** | the `--repeat` number | same | one trial |
-| **a salt in scope** | the provider's or the case's `cache_salt`, when set | the same two, plus an `exec` **assertion's** `cache_salt` on the gradings it makes | exactly what that salt scopes |
+| **a salt in scope** | the provider's or the case's `cache_salt`, when set | the same two on a provider call; on an `exec` **assertion's** gradings, that assertion's own `cache_salt` and nothing else | exactly what that salt scopes |
 
 A salt joins the hash **only when it is set**, which is what keeps every key written before salts existed valid.
 
@@ -49,7 +49,7 @@ That is the complete list. Every other page links here rather than re-deriving i
 - **The model a provider *reports* having used is not in the key.** It cannot be: the key is derived from a request, and a reported model only exists on a response. The *requested* model is already in the body. Hashing the reported one would silently discard every cached entry the day a vendor rolls a snapshot; `CaseResult.model` makes that drift visible and diffable instead, which is the useful lever.
 - **Test ids and tags are not in the key.** Identity is not what makes two calls interchangeable — the request is. Two cases with identical vars and no prompt therefore share an entry by design; a per-case [`cache_salt`](#per-case-salts) is the supported way to separate them.
 - **A prompt template's source text is not in the key.** The *rendered* prompt is already inside the request, so hashing the template as well would only bust on edits that render identically — a change with no effect on the provider.
-- **An `http` provider's `output_expr` is not in the key**, because it projects the *response* rather than joining the request. The entry stores the already-projected output, so editing the expression on a warm suite replays the old projection — re-run that suite with `--no-cache` after changing it.
+- **An `http` provider's `output_expr` *is* in the key**, even though it never goes on the wire. The entry stores the already-projected output, so the expression decides what the stored answer means: two providers reading different fields out of one endpoint's response are not asking the same question. Editing it busts that provider's entries like any other change to the request — no `--no-cache` needed.
 - **`latency` assertions bypass the cache**, since a cached latency is meaningless. `cost` and `tokens` come from the stored response, so those are honored on a hit. Under `--cache-only` that bypass would be a live call in the one mode documented as offline, so the case is [refused instead](#cache-modes).
 
 ## Salts

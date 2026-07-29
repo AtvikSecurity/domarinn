@@ -407,8 +407,9 @@ impl Provider for HttpProvider {
 
     /// The same placeholder-rendered request, keyed rather than displayed.
     ///
-    /// Two members are inserted only when the provider declares them, so the
-    /// envelope says nothing about a body or headers that do not exist:
+    /// Three members are inserted only when the provider declares them, so the
+    /// envelope says nothing about a body, headers, or a projection that do not
+    /// exist:
     ///
     /// - `body`, when a body template is configured.
     /// - `headers_digest`, when any header is. A digest rather than the values
@@ -418,6 +419,23 @@ impl Provider for HttpProvider {
     ///   a header reading a case var separates two cases while one reading
     ///   `{{ env.TOKEN }}` does not — see [`headers_digest`] for the same
     ///   argument applied to the unrendered templates in the fingerprint.
+    /// - `output_expr`, when one is declared.
+    ///
+    /// `output_expr` is the deliberate asymmetry between this document and
+    /// [`Self::request_preview`]: it **keys** but does not **preview**. It keys
+    /// because an entry stores the already-projected output, so the expression
+    /// decides what the stored answer *means* — two providers reading different
+    /// fields out of one endpoint's response are not asking the same question,
+    /// and editing one must throw its own answers away. That is the same
+    /// argument the `anthropic` API-version header is keyed on: suite-authored,
+    /// non-secret configuration that changes the meaning of a response. It does
+    /// not preview because a preview is what goes on the wire, and response
+    /// processing never does.
+    ///
+    /// Keyed as configured rather than rendered, matching the shape the ≤0.4.x
+    /// fingerprint published: it is a minijinja *expression* evaluated against
+    /// the response (see [`Provider::call`]), not a template rendered against
+    /// the case — there is nothing to render it with at request time.
     ///
     /// A render failure yields `None`: an unrenderable request has no identity
     /// to key on, and the live call surfaces the `RENDER_FAILED` itself.
@@ -436,6 +454,9 @@ impl Provider for HttpProvider {
         }
         if let Some(digest) = headers_digest(&built.headers) {
             members.insert("headers_digest".to_string(), Json::String(digest));
+        }
+        if let Some(expr) = &self.output_expr {
+            members.insert("output_expr".to_string(), Json::String(expr.clone()));
         }
         Some(canonical)
     }
@@ -625,6 +646,81 @@ mod tests {
             ),
             r#"{"method":"GET","transport":"http","url":"https://sut.example/v1"}"#
         );
+    }
+
+    /// `output_expr` keys, even though it is never sent.
+    ///
+    /// The entry stores the *projected* output, so two providers reading one
+    /// endpoint's response differently are not asking the same question — and
+    /// the second must not be served the first's answer.
+    #[test]
+    fn output_expr_separates_providers_that_send_the_same_request() {
+        let projecting = |expr: &str| {
+            HttpProvider::new(
+                "h",
+                "https://sut.example/v1",
+                None,
+                BTreeMap::new(),
+                Some(json!({"q": "{{ doc }}"})),
+                Some(expr.to_string()),
+            )
+            .canonical_request(&request_with_var("doc", "hi"))
+            .unwrap()
+        };
+        let (a, b) = (
+            projecting("response.json.reply"),
+            projecting("response.json.answer"),
+        );
+        assert_eq!(a["body"], b["body"], "the same request goes on the wire");
+        assert_ne!(a, b, "…but the projections are different questions");
+        assert_eq!(a["output_expr"], json!("response.json.reply"));
+    }
+
+    /// …under the same conditional-insert discipline as `body` and
+    /// `headers_digest`: a provider that declares no expression keys exactly as
+    /// it did before the member existed. An unconditional `null` would re-key
+    /// every `http` provider that projects nothing.
+    #[test]
+    fn a_provider_that_declares_no_output_expr_keys_as_it_did_before() {
+        let p = HttpProvider::new(
+            "h",
+            "https://sut.example/v1",
+            None,
+            BTreeMap::new(),
+            Some(json!({"q": "{{ doc }}"})),
+            None,
+        );
+        assert_eq!(
+            crate::cache::canonical_json(
+                &p.canonical_request(&request_with_var("doc", "hi")).unwrap()
+            ),
+            r#"{"body":{"q":"hi"},"method":"POST","transport":"http","url":"https://sut.example/v1"}"#
+        );
+    }
+
+    /// The preview is what goes on the wire, and `output_expr` never does — so
+    /// the keyed document carries it and the previewed one must not.
+    #[test]
+    fn output_expr_is_keyed_but_never_previewed() {
+        let p = HttpProvider::new(
+            "h",
+            "https://sut.example/v1",
+            None,
+            BTreeMap::new(),
+            None,
+            Some("response.json.reply".into()),
+        );
+        let req = request_with_var("doc", "hi");
+        assert!(p
+            .canonical_request(&req)
+            .unwrap()
+            .get("output_expr")
+            .is_some());
+        assert!(p
+            .request_preview(&req)
+            .unwrap()
+            .get("output_expr")
+            .is_none());
     }
 
     /// A request that cannot be rendered has no identity to key on. The live

@@ -206,7 +206,7 @@ A generic provider for black-box HTTP systems. The URL, headers, and body are **
 | `method`      | string              | `POST`  | HTTP method. |
 | `headers`     | `{string: string}` (values templated) | `{}` | Request headers. **In the cache key**, as a digest rather than the values, so two providers differing only in `X-Model` do not share entries while an `Authorization` holding two teammates' tokens still does. |
 | `body`        | JSON (templated)    | *(none)*| Request body, sent as JSON. |
-| `output_expr` | string              | *(none)*| minijinja expression selecting the output from the response. |
+| `output_expr` | string              | *(none)*| minijinja expression selecting the output from the response. **In the cache key**: an entry stores the projected output, so changing the expression re-asks. |
 
 Templating context for `url` / `headers` / `body`: every test var by name, plus `prompt` (the rendered prompt as a string).
 
@@ -221,10 +221,11 @@ response.headers  # response headers as an object
 
 `output_expr` result handling: a string becomes a text output; any other value becomes a structured JSON output. **Without** `output_expr`, the raw response text is the output. This provider reports no token usage, cost, or stop reason.
 
-**Caching.** The key is the request this provider would send: the **rendered** `method`, `url` and `body`, plus a digest of the rendered `headers`. Test vars are therefore in the key by way of the templates they render into. Two inputs can change what happens without changing the key, and both are worth knowing:
+**Caching.** The key is the request this provider would send: the **rendered** `method`, `url` and `body`, plus a digest of the rendered `headers` — and the configured `output_expr`, which never goes on the wire but decides what a stored answer *means*, so editing it busts that provider's entries. Test vars are in the key by way of the templates they render into.
+
+One input can still change what happens without changing the key, and it is worth knowing:
 
 - **The environment**, depending on which syntax you use. `${env:VAR}` resolves at **load time**, so the substituted value is keyed — use it for anything that changes the answer. `{{ env.VAR }}` renders **per request** and is keyed as a literal `${env:NAME}` placeholder — use it for credentials, where keying the value would give every API key its own private cache. A provider whose url, headers or body reference `{{ env.X }}` warns at startup naming the variable, because domarinn cannot tell a model selector from a token. See [caching.md](./caching.md#which-env-syntax).
-- **`output_expr`**, which projects the *response* and is therefore not part of the request. A cache entry stores the already-projected output, so editing the expression on a warm suite replays the old projection. An `http` provider has no version pin of its own, so re-run with `--no-cache` after changing it.
 
 ```yaml
 providers:

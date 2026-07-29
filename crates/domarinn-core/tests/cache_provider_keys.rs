@@ -381,6 +381,57 @@ async fn http_url_method_and_body_each_bust() {
     );
 }
 
+/// Editing an `output_expr` busts exactly that provider's entries.
+///
+/// It never goes on the wire, so the two runs below send byte-identical
+/// requests — but an entry stores the *projected* output, so the expression
+/// decides what the stored answer means. Without it in the key the second run
+/// is a hit that replays the first projection and labels it as the second's:
+/// the run succeeds, the numbers are plausible, and the field being asserted on
+/// is not the one the suite now names.
+#[tokio::test]
+async fn editing_an_output_expr_busts_the_entries_it_projected() {
+    let server = always_answers().await;
+    let projecting = |expr: &str| {
+        format!(
+            r#"
+version: 1
+project: test
+suite: keys
+providers:
+  - id: p
+    type: http
+    url: "{uri}/generate"
+    method: post
+    body: {{prompt: "{{{{ x }}}}"}}
+    output_expr: "{expr}"
+tests:
+  - id: case-a
+    vars: {{x: "a"}}
+"#,
+            uri = server.uri()
+        )
+    };
+
+    let cache = MemCache::default();
+    let first = run_suite(&projecting("response.json.id"), &cache).await;
+    assert_eq!(first.cases[0].output.as_ref().unwrap().as_text(), "resp_1");
+
+    let before = calls(&server).await;
+    let second = run_suite(&projecting("response.json.model"), &cache).await;
+    assert_eq!(
+        calls(&server).await - before,
+        1,
+        "a re-projected response is a fresh call, not a replay"
+    );
+    assert_eq!(
+        second.cases[0].output.as_ref().unwrap().as_text(),
+        "m",
+        "the new expression's projection, not the old one's"
+    );
+    assert_eq!(cache.entries(), 2);
+}
+
 // ── `anthropic` / `openai` ───────────────────────────────────────────────────
 
 /// `key_env` is a parameter, not a constant, because these tests run in

@@ -364,12 +364,12 @@ fn recost(usage: Option<&crate::types::TokenUsage>, provider: &dyn Provider) -> 
 /// part a reader can least act on.
 ///
 /// Everything outside that address is dropped when it trims — for `http` that
-/// is `body` and `headers_digest`, for `anthropic` also the `headers` member
-/// carrying `anthropic-version`, for `exec` the `stdin` and `env_digest`. A slim
-/// entry therefore no longer re-hashes to its own key. That is the trade: the
-/// key is already stored (it is where the entry lives), so what is lost is
-/// offline re-derivation for the rare huge request, and what is kept is every
-/// entry staying under the cap.
+/// is `body`, `headers_digest` and `output_expr`, for `anthropic` the `headers`
+/// member carrying `anthropic-version`, for `exec` the `stdin` and
+/// `env_digest`. A slim entry therefore no longer re-hashes to its own key. That
+/// is the trade: the key is already stored (it is where the entry lives), so
+/// what is lost is offline re-derivation for the rare huge request, and what is
+/// kept is every entry staying under the cap.
 ///
 /// `--no-raw` deliberately has no say here: it governs what a *run document*
 /// publishes, and a cache entry is not a run document — a later run without the

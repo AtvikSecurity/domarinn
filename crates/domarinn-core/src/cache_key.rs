@@ -144,6 +144,22 @@ mod tests {
             None,
         )
     }
+
+    /// The same `http` provider, projecting the response.
+    ///
+    /// A second `http` golden because the first declares no `output_expr`, and
+    /// the member is inserted only when one is — so the first constant alone
+    /// would keep passing if the member were dropped from the envelope again.
+    fn http_projecting() -> crate::http_provider::HttpProvider {
+        crate::http_provider::HttpProvider::new(
+            "p",
+            "https://sut.test/generate",
+            None,
+            BTreeMap::new(),
+            Some(serde_json::json!({"prompt": "{{ x }}"})),
+            Some("response.json.reply".into()),
+        )
+    }
     fn exec(cache_salt: Option<&str>) -> crate::exec_provider::ExecProvider {
         crate::exec_provider::ExecProvider::new(
             "p",
@@ -163,6 +179,7 @@ mod tests {
     #[test]
     fn golden_live_key_per_provider_kind() {
         let (openai, anthropic, http, exec) = (openai(), anthropic(), http(), exec(None));
+        let http_projecting = http_projecting();
         for (kind, provider, expected) in [
             (
                 "openai",
@@ -178,6 +195,11 @@ mod tests {
                 "http",
                 &http,
                 "sha256:894c2d308a88738d6aed73e74b4ab6262419f9b7f50bfb42f94d3628a90cf5c3",
+            ),
+            (
+                "http+output_expr",
+                &http_projecting,
+                "sha256:020d134be4d80a518e56d8f222a8138868da402447d95b56fe20e6e011a7aac8",
             ),
             (
                 "exec",

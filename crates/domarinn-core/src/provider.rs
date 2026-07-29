@@ -330,14 +330,16 @@ pub trait Provider: Send + Sync {
     /// identity half of every cache key and is persisted verbatim into cache
     /// entries.
     ///
-    /// Distinct from [`Provider::request_preview`], which exists to be read.
-    /// Where a request carries no call-time secret — `openai`, `anthropic`,
-    /// `exec` — the preview is byte-faithful to what goes on the wire and this
-    /// document is the one that withholds, because two calls differing only in a
-    /// credential must share an entry. The `http` provider is the exception: its
-    /// url/headers/body are templates rendered against `env` at call time, so its
-    /// preview shows the same placeholder-rendered form this method keys on —
-    /// there is no byte-faithful preview of it that could be persisted safely.
+    /// Distinct from [`Provider::request_preview`], which exists to be read, and
+    /// the two documents diverge for a different reason per provider. `openai`
+    /// publishes the same envelope twice. `anthropic` *adds* a member here — its
+    /// `anthropic-version` header, which selects a response shape and so must
+    /// key, while a preview shows no headers at all. `exec` withholds: the
+    /// `test` block is sent but stripped here, because a test's identity is not
+    /// what makes two calls interchangeable. `http` renders both documents
+    /// against placeholder `env` — its url/headers/body are templates resolved
+    /// at call time, so there is no byte-faithful preview of it that could be
+    /// persisted safely — and keys the `output_expr` it does not preview.
     ///
     /// `None` = this call is uncacheable.
     fn canonical_request(&self, _req: &ProviderRequest) -> Option<Json> {

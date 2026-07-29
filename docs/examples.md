@@ -598,7 +598,7 @@ If your assistant is already behind an HTTP API, `type: http` is the shortest pa
 
 Note it is `response.json.result.reply`, not `response.result.reply` — `response` is the envelope, not the body. Without `output_expr` at all, the raw response *text* is the output, which is rarely what you want to assert on.
 
-The cache key is the request this provider would send: the rendered `method`, `url` and `body`, plus a digest of the rendered `headers`. A `${…}` placeholder your own backend interprets is left untouched — only the `${env:…}` sigil is claimed. `output_expr` projects the *response*, so it is not in the key: change it and re-run with `--no-cache`.
+The cache key is the request this provider would send: the rendered `method`, `url` and `body`, plus a digest of the rendered `headers`. A `${…}` placeholder your own backend interprets is left untouched — only the `${env:…}` sigil is claimed. `output_expr` is in the key too: it never goes on the wire, but the entry stores the *projected* output, so editing it re-asks rather than replaying the old projection.
 
 ---
 
