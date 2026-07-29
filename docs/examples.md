@@ -640,7 +640,7 @@ So `threshold: 0.85` means a cosine of 0.85, not a score of 0.85. And the defaul
 
 ///
 
-It needs a `type: embeddings` provider in the suite; without one the assertion **errors** rather than passing. Verdicts are cached against the embedding model, so changing the model re-embeds everything — as it must, since cosines are not comparable across models.
+It needs a `type: embeddings` provider in the suite; without one the assertion **errors** rather than passing. What gets cached is the two embeddings, not the similarity: each side is keyed on its own embedding request, which names the model. So changing the model re-embeds everything — as it must, since cosines are not comparable across models — while measuring the same output against a new reference re-embeds only the reference.
 
 ---
 

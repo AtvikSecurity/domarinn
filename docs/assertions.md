@@ -33,7 +33,7 @@ The `type` field selects the assertion. Names are kebab-case.
 | `cost`           | deterministic | `max: number`                          | reported cost in USD `<= max` (passes with a note if unreported) |
 | `latency`        | deterministic | `max: int` (ms)                        | measured latency `<= max` (bypasses the cache; refused under `--cache-only`) |
 | `tokens`         | deterministic | `max: int`, `count?: total\|billable`   | token count `<= max` (passes with a note if unreported) |
-| `exec`           | graded        | `command: [string]`, `config?`         | the subprocess returns `pass: true` |
+| `exec`           | graded        | `command: [string]`, `config?`, `cache_salt?` | the subprocess returns `pass: true` |
 | `llm-rubric`     | graded        | `value: string`, `grader?`, `threshold?`, `params?` | the LLM grader's verdict passes (see [grading.md](./grading.md)) |
 | `similar`        | graded        | `value: any`, `threshold?` (default 0.8) | embedding cosine similarity `>= threshold` |
 

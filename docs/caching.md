@@ -16,7 +16,7 @@ That is what makes a cache shareable. A key that varies by machine cannot be reu
 |---|---|---|---|
 | **the request** | the resolved URL and the body — call-time `{{ env.* }}` rendered to a `${env:NAME}` placeholder, headers reduced to a digest, `anthropic`'s API-version header carried along | the command and its args, the stdin document minus its `test` block, and a digest of the declared `env` | every call that request appears in |
 | **the trial index** | the `--repeat` number | same | one trial |
-| **a salt in scope** | the provider's, the case's, or an `exec` assertion's `cache_salt`, when set | same | exactly what that salt scopes |
+| **a salt in scope** | the provider's or the case's `cache_salt`, when set | the same two, plus an `exec` **assertion's** `cache_salt` on the gradings it makes | exactly what that salt scopes |
 
 A salt joins the hash **only when it is set**, which is what keeps every key written before salts existed valid.
 
@@ -192,7 +192,7 @@ cache:
 | `disk` (default) | A local content-addressed store at `.domarinn/cache` beside the suite, one file per entry (written to a temp file then atomically renamed, so it is safe under concurrent runs and `rsync`/`s3 sync`). |
 | `layered` | A read-through pairing of the fast local disk cache and a shared remote — S3 when `cache.s3` is set, else the domarinn server (`--server-url` / `DOMARINN_SERVER_URL`, plus `DOMARINN_TOKEN` if it requires auth). Reads try local, then remote (populating local on a hit); writes go to local synchronously and to the remote best-effort, first-write-wins. |
 
-`http` and `s3` are **deprecated aliases** for `layered`. They behave identically — `http` names the server tier outright, `s3` names the S3 tier outright — and both warn at startup. Write `layered` and let `cache.s3` decide which remote you meant.
+`http` and `s3` are **deprecated aliases** for `layered`, and both warn at startup. They name one tier outright rather than letting `cache.s3` choose, which is the same thing as `layered` only when the two agree: `backend: s3` with no `cache.s3` block degrades to local disk *alone* where `layered` would have used the server, and `backend: http` ignores a `cache.s3` block that `layered` would have used. Write `layered` and let the config decide which remote you meant.
 
 Every remote backend keeps the local disk tier in front of it, so a warm rerun is served locally and never reaches the network. To exercise or measure the remote path, point `--cache-dir` at an empty directory or run `domarinn cache clear` first.
 

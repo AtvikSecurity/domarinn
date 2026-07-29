@@ -19,7 +19,7 @@ A key is the SHA-256 of the request and nothing else — [one rule, documented o
 | `disk` | none | Solo work. The default. |
 | `layered` | S3 when `cache.s3` is set, else the results server's `/api/v1/cache` | Anything shared. |
 
-Those are the two. `http` and `s3` still parse as **deprecated aliases** for `layered` — they name one tier outright, behave identically, and warn at startup.
+Those are the two. `http` and `s3` still parse as **deprecated aliases** for `layered` and warn at startup, but they name one tier outright instead of letting `cache.s3` choose — so `backend: s3` with no `cache.s3` block degrades to local disk alone rather than falling back to the server. See [caching.md](../caching.md#backends).
 
 A remote always keeps the **local tier in front**, so a warm local hit never touches the network.
 

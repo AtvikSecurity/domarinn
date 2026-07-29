@@ -14,8 +14,9 @@ The request carries `prompt` (rendered, when the suite defines prompts), `vars`,
 report them if you can.
 
 Note the model arrives as an argv flag rather than being read from the
-environment. That is deliberate: argv is part of domarinn's cache fingerprint,
-so two models can never share a cache entry.
+environment. That is deliberate: the cache key hashes the request, and argv is
+part of it, so two models can never share a cache entry. A variable this
+program read for itself would be invisible to the key.
 """
 
 import argparse

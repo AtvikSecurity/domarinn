@@ -498,7 +498,7 @@ Values merged into **every** resolved test case, so you don't repeat yourself.
 | `assert` | list | **Prepended** to each test's own asserts (defaults run first). |
 | `tags` | list | **Unioned** — added if not already present. |
 | `threshold` | float | **Fills** the test's threshold only if the test hasn't set one. |
-| `cache_salt` | string | **Fills** the test's cache salt only if the test hasn't set one. |
+| `cache_salt` | string | **Fills** the test's [cache salt](./caching.md#per-case-salts) only if the test hasn't set one — generator-produced cases included. |
 
 ```yaml
 defaults:
@@ -584,7 +584,7 @@ Selects the cache **backend**. Every outgoing request is cached so re-runs are c
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `backend` | enum | `disk` | `disk` (local only) or `layered` (local disk in front of a shared remote). `http` and `s3` are **deprecated aliases** for `layered` that name one tier outright; they behave identically and warn at startup. |
+| `backend` | enum | `disk` | `disk` (local only) or `layered` (local disk in front of a shared remote). `http` and `s3` are **deprecated aliases** that warn at startup and name one tier outright instead of letting `cache.s3` choose — so they match `layered` only when the two agree (`s3` without a `cache.s3` block degrades to local disk alone). |
 | `s3` | object | none | S3 settings, which are also what makes `layered` pick the S3 remote over the server (below). |
 | `grader` | bool | *(unset)* | **Deprecated.** `false` disables grader-request caching for every run of this suite; accepted with a warning. Prefer the `--no-grader-cache` run flag — whether to re-grade is a property of one run, not of the suite. |
 
