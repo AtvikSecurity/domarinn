@@ -15,9 +15,9 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use super::proto::{CacheHint, Era, Rejection};
+use super::proto::{CacheHint, Rejection};
 use super::ratelimit::RateLimiter;
-use super::{budget, catalog, jsonrpc, prompts, text, tools};
+use super::{budget, catalog, jsonrpc, prompts, tools};
 use crate::auth::{Access, Identity, Scope};
 use crate::AppState;
 
@@ -45,11 +45,14 @@ impl Outcome {
 }
 
 /// Route one request to its handler.
+///
+/// Era-blind by design: every payload here is shaped once by
+/// [`super::proto::decorate`] on the way out, so nothing in this module or
+/// below it needs to know which revision the caller speaks.
 pub async fn dispatch(
     state: &AppState,
     limiter: &RateLimiter,
     identity: &Identity,
-    era: Era,
     incoming: &jsonrpc::Incoming,
 ) -> Result<Outcome, Rejection> {
     match incoming.method.as_str() {
@@ -104,7 +107,7 @@ pub async fn dispatch(
                 )
                 .with_data(json!({ "retryAfterSeconds": retry_after.as_secs() })));
             }
-            call_tool(state, era, incoming).await
+            call_tool(state, incoming).await
         }
 
         _ => Err(Rejection::new(
@@ -115,11 +118,11 @@ pub async fn dispatch(
     }
 }
 
-async fn call_tool(
-    state: &AppState,
-    era: Era,
-    incoming: &jsonrpc::Incoming,
-) -> Result<Outcome, Rejection> {
+/// Run a tool and wrap it in a `CallToolResult`.
+///
+/// Takes no era: the payload is built era-blind and shaped once by
+/// [`super::proto::decorate`] on the way out.
+async fn call_tool(state: &AppState, incoming: &jsonrpc::Incoming) -> Result<Outcome, Rejection> {
     let name = incoming.name_field().unwrap_or_default().to_string();
     if name.is_empty() {
         return Err(Rejection::new(
@@ -160,7 +163,6 @@ async fn call_tool(
         });
     }
 
-    let _ = era; // Era shaping happens once, in `proto::decorate`.
     Ok(Outcome::plain(payload))
 }
 
@@ -198,11 +200,6 @@ fn authorize(identity: &Identity, required: Scope) -> Result<(), Rejection> {
         )),
     }
 }
-
-/// Text rendering lives in [`text`]; re-exported here so the module graph
-/// shows the dependency explicitly rather than through a tool submodule.
-#[allow(unused_imports)]
-use text as _text;
 
 #[cfg(test)]
 mod tests {

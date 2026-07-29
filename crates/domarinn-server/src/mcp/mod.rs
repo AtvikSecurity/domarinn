@@ -228,7 +228,7 @@ async fn endpoint(
     }
 
     let id = incoming.id.clone().unwrap_or(Value::Null);
-    match dispatch::dispatch(&state, &mcp.limiter, &identity, era, &incoming).await {
+    match dispatch::dispatch(&state, &mcp.limiter, &identity, &incoming).await {
         Ok(outcome) => {
             let mut payload = outcome.payload;
             proto::decorate(era, &mut payload, outcome.cache);
