@@ -14,7 +14,7 @@ $ domarinn run examples/01-hello-eval
 
 /// tip | New to domarinn?
 
-Read [How a run works](concepts/how-a-run-works.md) first — four ideas that explain most of the behaviour — then work down the [Examples](examples/index.md) ladder. Every example on that page is a real directory in this repository, executed end to end in CI.
+Read [How a run works](concepts/how-a-run-works.md) first — four ideas that explain most of the behaviour — then work down the [Examples](examples/index.md) ladder. Every example is a real directory in this repository, executed end to end in CI; the index maps each one to the group page that shows it.
 
 ///
 

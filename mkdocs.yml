@@ -153,9 +153,11 @@ plugins:
   # Old -> new page moves get an entry here so a published URL never 404s once
   # the page is gone. mkdocs-redirects writes a static HTML stub at the old
   # path whose JS carries over any URL fragment (#anchor) to the new page, so
-  # deep links keep working too. Empty for now — this lands ahead of the docs
-  # restructure that will populate it; scripts/build-docs.sh verifies every
-  # entry against the built site.
+  # deep links keep working too; scripts/build-docs.sh verifies every entry
+  # against the built site. Still empty: the examples split kept /examples/
+  # itself alive (its index reoccupies the old URL, so there is no old path to
+  # stub), and the old per-example anchors are forwarded by a script on
+  # docs/examples/index.md instead.
   - redirects:
       redirect_maps: {}
 
@@ -177,14 +179,17 @@ nav:
       - Self-hosting: deploy.md
       - Migrating from promptfoo: migrate-promptfoo.md
       - Troubleshooting: troubleshooting.md
+  # No example-number ranges in these labels: nothing would keep them true
+  # when the ladder grows, and the guarded index table already maps every
+  # number to its page (crates/domarinn-cli/tests/examples.rs).
   - Examples:
       - examples/index.md
-      - First steps (01–05): examples/first-steps.md
-      - Templates & test data (06–11): examples/templates-and-test-data.md
-      - Your own system (12–15): examples/your-own-system.md
-      - Running & reporting (16–20, 25): examples/running-and-reporting.md
-      - Caching & statistics (21–24): examples/caching-and-statistics.md
-      - Models, grading & budgets (26–32): examples/models-grading-and-budgets.md
+      - First steps: examples/first-steps.md
+      - Templates & test data: examples/templates-and-test-data.md
+      - Your own system: examples/your-own-system.md
+      - Running & reporting: examples/running-and-reporting.md
+      - Caching & statistics: examples/caching-and-statistics.md
+      - Models, grading & budgets: examples/models-grading-and-budgets.md
   # Scenarios = end-to-end, problem-driven walkthroughs, as opposed to the
   # per-capability ladder grouped under examples/. navigation.indexes makes
   # scenarios/index.md the section landing page, so it must be the first child.

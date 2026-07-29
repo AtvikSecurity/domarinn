@@ -2,9 +2,9 @@
 
 A ladder of complete, runnable suites, each one demonstrating a single capability. Copy any of them, point the provider at your own system, and `domarinn run`.
 
-/// info | Every suite on this page is executed in CI
+/// info | Every suite in these pages is executed in CI
 
-The YAML below is not a transcription. It is pulled at build time from the real directories under [`examples/`](https://github.com/AtvikSecurity/domarinn/tree/main/examples), and every one of those directories is run end to end by `crates/domarinn-cli/tests/examples.rs` — which asserts the exit code, the pass/fail tally, and the exact case ids each suite produces. A page here cannot document a suite that no longer works, because the page and the test read the same bytes.
+The YAML on the example pages is not a transcription. It is pulled at build time from the real directories under [`examples/`](https://github.com/AtvikSecurity/domarinn/tree/main/examples), and every one of those directories is run end to end by `crates/domarinn-cli/tests/examples.rs` — which asserts the exit code, the pass/fail tally, and the exact case ids each suite produces. A page cannot document a suite that no longer works, because the page and the test read the same bytes.
 
 ///
 
@@ -16,7 +16,7 @@ Deterministic assertions run first and can short-circuit the expensive ones, so 
 
 ///
 
-The 32 examples below are grouped into six pages, roughly in the order you would reach for them:
+The examples below are grouped into six pages, roughly in the order you would reach for them:
 
 | Group | Covers |
 | --- | --- |
@@ -68,3 +68,26 @@ The 32 examples below are grouped into six pages, roughly in the order you would
 - [Suite configuration](../configuration.md) — the complete `domarinn.yaml` reference.
 - [Assertions](../assertions.md) — every assertion type, weights, thresholds, and short-circuiting.
 - [Providers](../providers.md) — `exec`, `http`, `anthropic`, `openai`, and `embeddings`.
+
+<!-- The monolithic examples page lived at this URL, so links published before
+     the split carry fragments of the form "#example-13" plus the heading slug.
+     The split moved every such heading onto a group page, and this page
+     reoccupies the old URL, so mkdocs-redirects cannot forward them (there is
+     no old path to stub). Forward the fragment instead: the table above has exactly one
+     row link per example anchor, kept complete and pointing at the page that
+     really transcludes each example by a guard in
+     crates/domarinn-cli/tests/examples.rs. -->
+<script>
+  (function () {
+    var hash = location.hash;
+    if (!/^#example-\d\d(-|$)/.test(hash)) {
+      return;
+    }
+    var row =
+      document.querySelector('a[href*="' + hash + '"]') ||
+      document.querySelector('a[href*="' + hash.slice(0, 11) + '-"]');
+    if (row) {
+      location.replace(row.href);
+    }
+  })();
+</script>
