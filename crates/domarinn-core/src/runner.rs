@@ -35,8 +35,12 @@ use crate::types::Output;
 
 #[path = "runner_asserts.rs"]
 mod runner_asserts;
+/// `pub(crate)` for one item: [`crate::request_cache`] writes entries too, and
+/// `request_to_persist` is the single size guard for an entry's `request`
+/// member. Reused rather than reimplemented — two copies of a truncation rule
+/// is how one of them starts storing something the other would have trimmed.
 #[path = "runner_cache.rs"]
-mod runner_cache;
+pub(crate) mod runner_cache;
 #[path = "runner_result.rs"]
 mod runner_result;
 
@@ -214,6 +218,15 @@ pub struct GradeCtx<'a> {
     pub provider_id: &'a str,
     pub test_id: &'a str,
     pub test_tags: &'a [String],
+    /// The cache this grader's own requests go through, or `None` to bypass it
+    /// entirely — no read, no write.
+    ///
+    /// `pub(crate)` because the type is: caching a grader's requests is
+    /// domarinn's job, not an implementor's, and an external [`AssertGrader`]
+    /// that wanted a cache of its own would be keying a request domarinn cannot
+    /// see. The other fields stay public because a child grader is *told* things
+    /// with them.
+    pub(crate) cache: Option<crate::request_cache::RequestCache<'a>>,
 }
 
 /// A grader for the non-local assert kinds (`exec`, `llm-rubric`, `similar`).
@@ -234,17 +247,24 @@ pub struct GradeCtx<'a> {
 /// one, so editing a `threshold:` re-scores every case from cache instead of
 /// re-paying the judge for an answer it already gave.
 ///
-/// [`Self::grading_fingerprint`] is the cacheability lever, mirroring
-/// [`crate::provider::Provider::cacheable`]: `None` means "do not cache this
-/// grading". Like a provider fingerprint it must exclude secrets, and it must
-/// include everything that can move a verdict — the grader's model and
-/// endpoint, the rendered rubric, the system prompt.
+/// **Caching is the implementation's own to do, and 0.5.0 moved it here.**
+/// Through 0.4.x this trait carried a `grading_fingerprint` method: the runner
+/// hashed it alongside the graded document and cached the *verdict*. That key
+/// space is gone. A grader now caches the requests it makes, under the one rule
+/// every other cached call follows ([`crate::cache_key::request_cache_key`] over
+/// the canonical request), because a fingerprint could only ever describe the
+/// judge — never the embedding call whose text is the whole question. An
+/// external implementor that relied on the method should delete it; the built-in
+/// grader's requests are cached without it, and a `--cache-only` run reaches a
+/// third-party grader with [`GradeCtx::working_dir`] and nothing else to replay
+/// from, exactly as before when it declined to publish a fingerprint.
 ///
 /// The returned [`crate::cache::Graded`] carries what the judge cost alongside
-/// its verdict. Reporting it is optional — [`crate::cache::Graded::unpriced`]
-/// is the honest answer when an implementation cannot see what it spent — but
-/// an implementation that *can* should, because a run whose judges cost more
-/// than its systems under test currently reports only the smaller half.
+/// its verdict, and whether it was replayed. Reporting cost is optional —
+/// [`crate::cache::Graded::unpriced`] is the honest answer when an
+/// implementation cannot see what it spent — but an implementation that *can*
+/// should, because a run whose judges cost more than its systems under test
+/// currently reports only the smaller half.
 #[async_trait]
 pub trait AssertGrader: Send + Sync {
     async fn grade(
@@ -253,24 +273,6 @@ pub trait AssertGrader: Send + Sync {
         output: &Output,
         ctx: &GradeCtx<'_>,
     ) -> Result<crate::cache::Graded, crate::errors::GraderError>;
-
-    /// A stable identity for the grading this assertion will perform, or `None`
-    /// to opt out of caching it.
-    ///
-    /// Must exclude secrets, exactly like `Provider::fingerprint`.
-    ///
-    /// `base_dir` is the suite's directory: the cwd an `exec` grader's child is
-    /// spawned in, and what a `grader.template` path resolves against. An
-    /// implementation reaching the filesystem must resolve against *it* rather
-    /// than the process cwd — the identity has to describe the thing that will
-    /// actually run, not a same-named file somewhere else.
-    fn grading_fingerprint(
-        &self,
-        _assert: &Assert,
-        _base_dir: Option<&std::path::Path>,
-    ) -> Option<Json> {
-        None
-    }
 }
 
 /// Run a suite and produce a [`RunResult`].
@@ -310,7 +312,14 @@ pub async fn run_with_progress(
     let schemas = &crate::jsonschema_cache::SchemaCache::new();
     // Precedence: `--no-cache` kills everything (via `cache_mode`), then
     // `--no-grader-cache`, then the suite's `cache.grader`, which defaults on.
-    let grader_cache = opts.grader_cache && suite.cache.as_ref().is_none_or(|c| c.grader);
+    // Both levers are ANDed: either can disable, neither can force-enable.
+    let suite_grader_cache = suite.cache.as_ref().and_then(|c| c.grader);
+    let grader_cache = opts.grader_cache && suite_grader_cache.unwrap_or(true);
+    // Once per run, and here rather than in the CLI so that an embedder — the
+    // server runs suites too — tells its users the same thing.
+    if suite_grader_cache.is_some() {
+        tracing::warn!("cache.grader is deprecated; use --no-grader-cache");
+    }
     // One per run: the legacy-key probe spends a shared budget, and the
     // rebuilt-program warning fires once per provider rather than once per cell.
     let cache_state = &runner_cache::CacheRunState::new(if opts.cache_migration {
@@ -761,10 +770,45 @@ async fn run_cell(
     // the same code path as the call. Captured *before* the call so a failed
     // case still carries it — which is where it earns its keep: an HTTP 404
     // explains itself the moment the model id in the request is visible.
-    let request = json_to_persist(include_raw, provider.request_preview(&req), "request");
+    //
+    // Built only when it will be persisted. For `http` a preview is a full
+    // template render — engine, env snapshot, url/headers/body — per case, and
+    // under `--no-raw` every byte of it was being discarded. The cache no longer
+    // depends on this call: it keys on `canonical_request`, which the provider
+    // builds for itself inside `call_with_cache`.
+    let request = include_raw
+        .then(|| json_to_persist(true, provider.request_preview(&req), "request"))
+        .flatten();
 
     // Latency assertions must not observe a cached (near-zero) latency.
     let bypass_cache = has_latency_assert(&test.assert);
+    // ...but under `--cache-only` that bypass is a live call in the one mode
+    // documented as offline — and the mode the credential preflight above is
+    // skipped for. Refuse the case instead of quietly reaching the provider.
+    // Per case, like a strict-mode miss: the rest of the suite still replays.
+    if bypass_cache && cache_mode == CacheMode::ReadOnlyStrict {
+        return error_case(
+            cell,
+            case_key,
+            name,
+            test,
+            CallFailure::before_any_attempt(
+                ErrorClass::CACHE_MISS,
+                format!(
+                    "cache-only: test '{test_id}' has a latency assert, which always \
+                     measures a live call; there is nothing honest to replay"
+                ),
+            ),
+            0,
+            CaseInputs {
+                prompt: rendered_prompt,
+                vars: case_vars,
+                request,
+                prompt_digest,
+                provider_digest,
+            },
+        );
+    }
     let effective_mode = if bypass_cache {
         CacheMode::Disabled
     } else {
@@ -843,6 +887,7 @@ async fn run_cell(
             cache,
             cache_mode,
             grader_cache,
+            migration: &cache_state.migration,
             repeat,
             aborted,
             tool_calls: &response.tool_calls,

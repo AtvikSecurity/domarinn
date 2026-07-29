@@ -12,7 +12,7 @@
 //! for in real money.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -527,7 +527,117 @@ tests:
     );
 }
 
-// ── The grader-verdict cache ─────────────────────────────────────────────────
+/// A child that records one byte per call beside itself (`$0`), so a test can
+/// count the live calls a run actually made. Same `$0`-sidecar trick as
+/// [`write_flaky_child`], which needs no plumbing through the suite.
+fn write_counting_child(dir: &Path) -> (String, PathBuf) {
+    let path = dir.join("counting.sh");
+    std::fs::write(
+        &path,
+        r#"cat >/dev/null
+printf 'x' >> "$0.calls"
+printf '{"output":"ok"}'
+"#,
+    )
+    .unwrap();
+    let calls = dir.join("counting.sh.calls");
+    (path.to_string_lossy().into_owned(), calls)
+}
+
+/// How many times [`write_counting_child`] has been invoked. Absent file = zero,
+/// so this reads correctly before the first call as well as after a reset.
+fn live_calls(calls: &Path) -> usize {
+    std::fs::read_to_string(calls).map(|s| s.len()).unwrap_or(0)
+}
+
+#[tokio::test]
+async fn cache_only_errors_a_latency_case_instead_of_calling_live() {
+    // `--cache-only` promises offline replay, and the credential preflight is
+    // skipped on the strength of that promise. A latency assert forces a live
+    // call — so under strict mode the honest answer is a per-case infra error,
+    // not a silent trip to the provider. Per case, not per run: the refusal
+    // must not take the rest of the suite with it.
+    let dir = tempfile::tempdir().unwrap();
+    let (script, calls) = write_counting_child(dir.path());
+    let yaml = format!(
+        r#"
+version: 1
+project: test
+suite: cache
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "{script}"]
+    cache_salt: "v1"
+tests:
+  - id: replayable
+    vars: {{x: "a"}}
+  - id: timed
+    vars: {{x: "b"}}
+    assert:
+      - {{type: latency, max: 60000}}
+"#
+    );
+    let cache = MemCache::default();
+
+    // Warm what can be warmed: a latency case bypasses the cache by design, so
+    // only its sibling ever has an entry to replay.
+    run_default(&yaml, &cache).await;
+    assert_eq!(cache.entries(), 1, "a latency-asserted case is not stored");
+    // Reset, so the count below is this run's live calls and no earlier one's.
+    std::fs::write(&calls, "").unwrap();
+
+    let strict = run_suite(
+        &yaml,
+        RunOptions {
+            cache_mode: CacheMode::ReadOnlyStrict,
+            ..Default::default()
+        },
+        &cache,
+    )
+    .await;
+
+    let timed = strict
+        .cases
+        .iter()
+        .find(|c| c.cell.test_id == "timed")
+        .unwrap();
+    assert_eq!(timed.status, CaseStatus::Error);
+    assert_eq!(
+        timed.error_class.as_ref().map(|c| c.as_str()),
+        Some("cache_miss"),
+        "reuses the cache-only class so CI needs no new vocabulary"
+    );
+    // Pinned whole: the class is shared with an ordinary strict-mode miss, so
+    // the message is the only thing telling the two apart.
+    assert_eq!(
+        timed.error.as_deref(),
+        Some(
+            "cache-only: test 'timed' has a latency assert, which always \
+             measures a live call; there is nothing honest to replay"
+        )
+    );
+
+    let replayable = strict
+        .cases
+        .iter()
+        .find(|c| c.cell.test_id == "replayable")
+        .unwrap();
+    assert_ne!(
+        replayable.status,
+        CaseStatus::Error,
+        "one refused case must not fail its siblings"
+    );
+    assert_eq!(strict.summary.cache_hits, 1, "the sibling still replays");
+
+    assert_eq!(
+        live_calls(&calls),
+        0,
+        "--cache-only must reach the provider zero times"
+    );
+}
+
+// ── Grading, through the cache ───────────────────────────────────────────────
 
 /// Grader verdicts are reused across runs.
 ///
@@ -536,6 +646,12 @@ tests:
 /// provider response was a cache hit, which is the dominant recurring cost of
 /// running one. Renamed rather than replaced so `git log -S` and `git blame`
 /// point at the commit that closed the gap.
+///
+/// The mechanism underneath changed again in 0.5.0 — what is stored is the
+/// judge's *exchange* rather than a bespoke verdict entry, keyed by the same
+/// rule as every other cached call — and the invariant is deliberately written
+/// so it did not have to: exactly one judge call across two runs, however that
+/// is achieved. `grader_request_cache.rs` covers the how.
 #[tokio::test]
 async fn grader_verdicts_are_reused_across_runs() {
     let server = MockServer::start().await;
@@ -607,6 +723,10 @@ tests:
         server.received_requests().await.unwrap().len(),
         1,
         "the second run must reuse the verdict rather than re-pay the judge"
+    );
+    assert!(
+        second.cases[0].asserts[0].cached,
+        "…and must report that it did"
     );
 }
 
@@ -750,6 +870,7 @@ fn an_entry_written_by_a_newer_domarinn_still_deserializes() {
     let from_the_future = json!({
         "created_at": "2026-01-01T00:00:00Z",
         "provider_fingerprint": {"type": "exec"},
+        "request": {"transport": "exec", "command": "./sut", "args": []},
         "output": "hi",
         "domarinn_version": "99.0.0",
         "empty_reason": "thinking_only",
@@ -760,6 +881,7 @@ fn an_entry_written_by_a_newer_domarinn_still_deserializes() {
     let entry: CacheEntry = serde_json::from_value(from_the_future).unwrap();
     assert_eq!(entry.output.as_text(), "hi");
     assert_eq!(entry.domarinn_version, "99.0.0");
+    assert_eq!(entry.request.unwrap()["command"], json!("./sut"));
 }
 
 #[tokio::test]

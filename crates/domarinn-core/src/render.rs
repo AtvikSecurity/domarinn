@@ -76,6 +76,37 @@ pub fn env_object() -> Json {
     Json::Object(map)
 }
 
+/// The environment with every value replaced by the literal `${env:NAME}`.
+///
+/// The keys are [`env_object`]'s, so a template renders against exactly the same
+/// definedness — `{{ env.X }}`, `env['X']`, and `env` iteration all see what
+/// they would see on the real call — and only the values are withheld.
+///
+/// Used to render an `http` provider's url/headers/body for cache keying and for
+/// persistence into a cache entry, so an environment value read by *those
+/// templates* never enters a key or a stored entry. The consequence is
+/// deliberate and documented: two runs differing only in a `{{ env.X }}` value
+/// share one key (see `http_provider::warn_on_runtime_env`). `${env:X}`
+/// interpolation ([`crate::interp`]) resolves at load time, before the provider
+/// is built, and remains the supported way to make an environment value part of
+/// the key.
+///
+/// It withholds that one hop and no more. A case var that reads the environment
+/// — `vars: {token: "{{ env.SUT_TOKEN }}"}` — is resolved long before a provider
+/// renders anything, so its value reaches the request in the clear. That is by
+/// design: vars are case data, have always been cache-key members, and are
+/// published in `CaseResult.vars`. A credential therefore belongs in a
+/// provider's own templates as `{{ env.X }}`, never routed through a case var.
+pub fn env_placeholder_object() -> Json {
+    let map: serde_json::Map<String, Json> = std::env::vars()
+        .map(|(k, _)| {
+            let placeholder = format!("${{env:{k}}}");
+            (k, Json::String(placeholder))
+        })
+        .collect();
+    Json::Object(map)
+}
+
 /// Render a prompt against a context, loading `file://` content relative to
 /// `base_dir`.
 pub fn render_prompt(
@@ -144,6 +175,30 @@ mod tests {
         assert_eq!(ctx["payload"], Json::String("{{7*7}}".into()));
         assert_eq!(ctx["greeting"], Json::String("hi sam".into()));
         std::env::remove_var("DOMARINN_TEST_NAME");
+    }
+
+    /// Every value names its own variable, and a variable that exists is
+    /// present — the definedness a template sees, including `env['NAME']`
+    /// lookups, must match [`env_object`]'s.
+    ///
+    /// Asserted over a single snapshot plus one variable this test sets, rather
+    /// than by comparing two snapshots: sibling tests in this binary mutate the
+    /// process environment in parallel, so two consecutive reads of it are not
+    /// guaranteed to agree.
+    #[test]
+    fn every_placeholder_env_value_names_its_own_variable() {
+        std::env::set_var("DOMARINN_PLACEHOLDER_PROBE", "a real value");
+        let placeholders = env_placeholder_object();
+        let map = placeholders.as_object().unwrap();
+        assert_eq!(
+            map.get("DOMARINN_PLACEHOLDER_PROBE"),
+            Some(&Json::String("${env:DOMARINN_PLACEHOLDER_PROBE}".into())),
+            "a variable that is set must be present, and withheld"
+        );
+        for (name, value) in map {
+            assert_eq!(value, &Json::String(format!("${{env:{name}}}")));
+        }
+        std::env::remove_var("DOMARINN_PLACEHOLDER_PROBE");
     }
 
     #[test]

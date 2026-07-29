@@ -201,6 +201,14 @@ pub struct Graded {
     /// The judge model that produced this verdict, as the API reported it —
     /// which is not necessarily the one configured, when an alias repoints.
     pub model: Option<String>,
+    /// Whether the request behind this verdict was replayed from cache.
+    ///
+    /// Reported by the grader rather than decided around it, because since
+    /// 0.5.0 the grader is what consults the cache: a `similar` verdict comes
+    /// from *two* embedding requests, and only the code that made them knows
+    /// whether both were replays. The runner reads this straight into
+    /// [`crate::result::AssertResult::cached`].
+    pub cached: bool,
 }
 
 impl Graded {
@@ -212,6 +220,7 @@ impl Graded {
             usage: None,
             cost_usd: None,
             model: None,
+            cached: false,
         }
     }
 }
@@ -220,7 +229,19 @@ impl Graded {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub created_at: DateTime<Utc>,
-    pub provider_fingerprint: Json,
+    /// What *selected* the provider that answered.
+    ///
+    /// Optional in both directions: entries in the wild carry it, so it must
+    /// keep deserializing, and it stops being written once the request itself is
+    /// what the entry records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_fingerprint: Option<Json>,
+    /// The redacted canonical request this entry answers. Together with the
+    /// key's repeat/salt members it re-hashes to exactly this entry's key — the
+    /// offline-migration and debugging contract. Stores the resolved URL /
+    /// command. `None` on entries written before 0.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<Json>,
     pub output: Output,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
@@ -269,11 +290,21 @@ pub struct CacheEntry {
     /// network-backed provider, where no such artifact exists to digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_digest: Option<String>,
-    /// Present only on grader-verdict entries.
+    /// Present only on a ≤0.4.x grader-verdict entry, adopted forward.
     ///
-    /// Its absence is exactly what "this is a provider response" means, so the
-    /// two never need a discriminator beyond this field. A grader lookup that
-    /// returns an entry without one is treated as a miss, never an error.
+    /// It marks an era rather than a kind, and the distinction changed in
+    /// 0.5.0. Through 0.4.x a grading was cached *as its verdict*, so this
+    /// field's presence meant "grading result" and its absence meant "provider
+    /// response". Since 0.5.0 a grader caches the request it made and re-derives
+    /// the verdict from the stored `raw`, so `None` now covers both a provider
+    /// response and a grader exchange, and `Some` means only one thing: an entry
+    /// old enough to have no payload to re-parse. Those are served as-is and
+    /// re-filed under the request key unchanged — see the `request_cache`
+    /// module (private) for the read contract, and [`crate::cache_migrate`] for
+    /// when this field stops being read at all.
+    ///
+    /// A grader lookup that finds an entry with neither a verdict nor a
+    /// re-parseable payload treats it as a miss, never an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<GradedVerdict>,
     /// Reasoning/thinking text from the original call. Without this a cache hit
@@ -366,6 +397,41 @@ mod tests {
         assert!(!CacheKey::is_valid("sha256:XYZ"));
         assert!(!CacheKey::is_valid("md5:abc"));
         assert!(!CacheKey::is_valid("sha256:AABB")); // too short + uppercase
+    }
+
+    /// Both members are optional in both directions: an entry written before
+    /// `request` existed still reads, an entry written after
+    /// `provider_fingerprint` stops being written still reads, and neither is
+    /// serialized when absent.
+    #[test]
+    fn an_entry_carries_a_request_or_a_fingerprint_or_neither() {
+        let legacy: CacheEntry = serde_json::from_value(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "provider_fingerprint": {"type": "exec"},
+            "output": "hi",
+            "domarinn_version": "0.4.0",
+        }))
+        .unwrap();
+        assert_eq!(legacy.provider_fingerprint, Some(json!({"type": "exec"})));
+        assert!(legacy.request.is_none());
+
+        let keyed: CacheEntry = serde_json::from_value(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "domarinn_version": "0.5.0",
+            "request": {"transport": "exec", "command": "./sut"},
+        }))
+        .unwrap();
+        assert_eq!(keyed.request.as_ref().unwrap()["command"], json!("./sut"));
+        assert!(keyed.provider_fingerprint.is_none());
+
+        let written = serde_json::to_value(&keyed).unwrap();
+        assert!(written.get("provider_fingerprint").is_none(), "{written}");
+        assert_eq!(written["request"]["command"], json!("./sut"));
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("request")
+            .is_none());
     }
 
     #[test]

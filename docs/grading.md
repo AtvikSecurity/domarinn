@@ -70,7 +70,7 @@ The `grader:` block wraps a provider plus grading options:
 | Field          | Type          | Default    | Meaning |
 |----------------|---------------|------------|---------|
 | `provider`     | provider spec | –          | The judge model. Only `anthropic` and `openai` are supported for grading. |
-| `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template, relative to the suite directory. Its contents are in the verdict cache key, so editing it re-grades — those bytes are pasted into the prompt the judge reads, which makes them part of the question. (An `exec` assertion's *program* is keyed by `command` and `cache_salt` only, for the opposite reason: it receives the question rather than being part of it. See [caching.md](./caching.md#the-rule).) |
+| `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template, relative to the suite directory. It renders into the prompt the judge reads, and [the request is the key](./caching.md#the-rule) — so editing it re-grades. (An `exec` assertion's *program* is named by `command` and pinned by `cache_salt`, for the opposite reason: it receives the question rather than being part of it.) |
 | `verdict_mode` | string        | `forced`   | How the structured verdict is obtained: `forced` (default) or `auto` (rejected at load — not implemented). |
 
 The `provider` is a standard [`ProviderKind`](./providers.md) — but only the `anthropic` and `openai` shapes are valid graders. Any other provider type errors with `grader provider type … is not supported for llm-rubric`.
@@ -212,7 +212,7 @@ The figure is reported **separately** from the run's cost:
 
 They are not added together on purpose. `cost_usd` is what a `cost:` assertion budgets, and a judge's price must not move a budget gate on the model being judged. It also stays honest about the common case where the judge is the more expensive model: a merged number would bury that.
 
-Verdicts are cached, and the cost is cached with them — so a fully-cached run still reports what its grading is worth rather than dropping to zero. Which calls were actually paid for this time is visible per assertion, via `cached`.
+A judge call is cached like any other request, and its cost is recorded with it — so a fully-cached run still reports what its grading is worth rather than dropping to zero, re-priced at today's rate. Which calls were actually paid for this time is visible per assertion, via `cached`. `--no-grader-cache` re-asks the judge while still replaying provider responses; see [caching.md](./caching.md#cache-modes).
 
 An `exec` grader reports nothing: the child spends against whatever endpoint it chose, and the protocol gives it no way to say so. A zero would claim custom grading is free.
 

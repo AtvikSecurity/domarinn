@@ -58,16 +58,13 @@ The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus you
 
 ### Caching, and when you need `cache_salt`
 
-`exec` providers are **cached by default**. The key names what will answer — `command`, `env`, and any `cache_salt` — and hashes what is asked. It says nothing about the program's *bytes*, so an entry written on one machine is reusable on every other: a fresh clone, a different checkout path, a rebuilt binary and a different working directory all key identically.
+`exec` providers are **cached by default**, under the same one rule as every other call: the key is a hash of the request — the command, its args, the protocol document on the child's stdin, and a digest of the declared `env`. It says nothing about the program's *bytes*, so an entry written on one machine is reusable on every other: a fresh clone, a different checkout path, a rebuilt binary and a different working directory all key identically.
 
-The price of that is that domarinn cannot tell one build of your program from the next, so **set `cache_salt` when a rebuild should discard the old answers**:
+The price is that domarinn cannot tell one build of your program from the next, so **set `cache_salt` when a rebuild should discard the old answers** — a commit SHA, a release tag, or `"$digest: src/**/*.rs"`. Forget, and a hit whose stored program digest disagrees with what is on disk *warns*; nothing is invalidated, because whether a rebuild matters is the suite's call.
 
-- **A program you rebuild** — a compiled binary, or a script you are actively editing between runs. Use a commit SHA, a release tag, or `"$digest: src/**/*.rs"`. In CI this matters most, and a SHA is more honest than hashing the artifact, since two runners compiling identical source produce different bytes.
-- **Behavior that depends on something off-disk** — a model pulled at startup, a remote config, a container image behind a wrapper script.
+Anything else that steers the program belongs in argv or `env` rather than in a salt, where the key can see it. [`${env:VAR}`](#environment-driven-config) drives those from the ambient environment while keeping them keyed; a variable the child reads *without* the suite declaring it is invisible to the cache.
 
-You are told when you forget. domarinn stores a digest of the program *on the cache entry* — never in the key — and a hit whose digest disagrees with what is on disk warns that it is replaying answers from a different build. Nothing is invalidated: whether a rebuild matters is the suite's call.
-
-Anything else that steers the program should be an argument or an `env` entry rather than a salt: both are in the fingerprint, and [`${env:VAR}`](#environment-driven-config) lets you drive them from the ambient environment while keeping them keyed. A variable the child reads *without* the suite declaring it is invisible to the cache — see [caching.md](./caching.md#the-childs-environment-is-only-keyed-when-you-declare-it).
+Full details — the two salt levels, `$digest:`, and what the child's environment does and does not key — are in [caching.md](./caching.md#exec-providers-and-the-provider-salt).
 
 ### Error and retry classification
 
@@ -180,7 +177,7 @@ providers:
 
 An `exec` provider that reports its own `cost_usd` always wins: it is the only party that knows whether it hit a proxy, a batch endpoint, or a different model entirely.
 
-`pricing` never reaches a provider's fingerprint, so setting it does not invalidate a single cache entry. Cost is not request identity.
+`pricing` is not part of any request, so setting it does not invalidate a single cache entry — cost is re-derived on every hit at the current rate. Cost is not request identity.
 
 ### Graders are priced too, and reported separately
 
@@ -207,9 +204,9 @@ A generic provider for black-box HTTP systems. The URL, headers, and body are **
 |---------------|---------------------|---------|---------|
 | `url`         | string (templated)  | –       | Endpoint URL. |
 | `method`      | string              | `POST`  | HTTP method. |
-| `headers`     | `{string: string}` (values templated) | `{}` | Request headers. **In the cache key** (as a digest of the unrendered templates), so two providers differing only in `X-Model` do not share entries. |
+| `headers`     | `{string: string}` (values templated) | `{}` | Request headers. **In the cache key**, as a digest rather than the values, so two providers differing only in `X-Model` do not share entries while an `Authorization` holding two teammates' tokens still does. |
 | `body`        | JSON (templated)    | *(none)*| Request body, sent as JSON. |
-| `output_expr` | string              | *(none)*| minijinja expression selecting the output from the response. |
+| `output_expr` | string              | *(none)*| minijinja expression selecting the output from the response. **In the cache key**: an entry stores the projected output, so changing the expression re-asks. |
 
 Templating context for `url` / `headers` / `body`: every test var by name, plus `prompt` (the rendered prompt as a string).
 
@@ -224,12 +221,11 @@ response.headers  # response headers as an object
 
 `output_expr` result handling: a string becomes a text output; any other value becomes a structured JSON output. **Without** `output_expr`, the raw response text is the output. This provider reports no token usage, cost, or stop reason.
 
-**Caching.** `url`, `method`, `body`, `output_expr` and a digest of `headers` are all in the fingerprint, as written — unrendered. Test vars are already in the key separately, so the one input that can change the request without changing the key is the environment, and which syntax you use decides that:
+**Caching.** The key is the request this provider would send: the **rendered** `method`, `url` and `body`, plus a digest of the rendered `headers` — and the configured `output_expr`, which never goes on the wire but decides what a stored answer *means*, so editing it busts that provider's entries. Test vars are in the key by way of the templates they render into.
 
-- `${env:VAR}` resolves at **load time**, so the substituted value is in the fingerprint. Use it for anything that changes the answer — a model, an endpoint, a mode.
-- `{{ env.VAR }}` renders **per request**, so only the template text is keyed. Use it for credentials, where keying the value would give every API key its own private cache.
+One input can still change what happens without changing the key, and it is worth knowing:
 
-A provider whose url, headers or body reference `{{ env.X }}` warns at startup naming the variable, because domarinn cannot tell a model selector from a token. See [caching.md](./caching.md#which-env-syntax).
+- **The environment**, depending on which syntax you use. `${env:VAR}` resolves at **load time**, so the substituted value is keyed — use it for anything that changes the answer. `{{ env.VAR }}` renders **per request** and is keyed as a literal `${env:NAME}` placeholder — use it for credentials, where keying the value would give every API key its own private cache. A provider whose url, headers or body reference `{{ env.X }}` warns at startup naming the variable, because domarinn cannot tell a model selector from a token. See [caching.md](./caching.md#which-env-syntax).
 
 ```yaml
 providers:
@@ -304,7 +300,7 @@ Details:
 - **`Retry-After` is honored.** On a `429`/`5xx` carrying a `Retry-After` header (delta-seconds form), that delay is used before the next attempt; otherwise the runner's exponential backoff applies.
 - **Retries are opt-in.** The default is no retries (`runner.retries.max = 0`). Configure `runner.retries` to enable backoff (default initial 500 ms, max 8000 ms). A retriable error that exhausts attempts becomes a case `error` (exit code `3`); a fatal error becomes a case `error` immediately.
 - **Default request timeout** for `anthropic`, `openai`, and `http` is **120 s**; the embeddings client uses **60 s**. The `exec` provider uses its own `timeout_ms` (default 60000 ms).
-- **API keys never appear in cache keys.** A provider's cache identity (`fingerprint`) covers its type, model/command/url, params, and any `cache_salt`, but excludes secrets. For `exec` it also covers the program's identity and a digest of the declared `env` — a digest precisely because `env` is a credential channel, so the values never reach the stored entry.
+- **API keys never appear in cache keys.** The key hashes the *redacted* request: credentials live in headers, which the keyed envelope excludes structurally, and an `exec` provider's declared `env` enters as a digest — precisely because `env` is a credential channel, so the values never reach the stored entry. What the key does cover for `exec` is the command and its args plus the document sent to the child.
 
 The two failure classes map to `ProviderError::Retriable { retry_after }` and `ProviderError::Fatal` internally, which is what the runner's retry loop keys off.
 
@@ -313,7 +309,7 @@ The two failure classes map to `ProviderError::Retriable { retry_after }` and `P
 ## See also
 
 - **[protocol.md](./protocol.md)** — the exec JSON protocol wire format for `exec` providers, asserts, and generators.
-- **[caching.md](./caching.md)** — content-addressed caching, how an `exec` provider's program identity keys it, and when `cache_salt` is needed.
+- **[caching.md](./caching.md)** — the one key rule, every cache knob in one table, and when `cache_salt` is needed.
 - **[assertions.md](./assertions.md)** — how provider outputs are graded, and the budget assertions that read `usage` / `cost_usd`.
 - **[grading.md](./grading.md)** — using `anthropic` / `openai` providers as the LLM-rubric grader.
 - **[configuration.md](./configuration.md)** — the full suite schema (`prompts`, `tests`, `defaults`, `runner`, `cache`).

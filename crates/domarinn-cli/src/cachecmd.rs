@@ -1,11 +1,18 @@
 //! The `cache` subcommands: stats, path, gc, clear.
+//!
+//! All four operate on the local disk tier only — see the `cache` help in
+//! `main.rs`. Each accounts for the read-only legacy tier a run would layer
+//! underneath ([`crate::cachecfg::LocalRoot`]), because a `clear` that leaves
+//! it behind is a `clear` the next run undoes. Reporting that tier and deleting
+//! it are separate questions, though: see [`cwd_contains`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use domarinn_cache::LocalDiskCache;
 use domarinn_core::cache::{CacheBackend, PurgeFilter};
 
+use crate::cachecfg::LocalRoot;
 use crate::exit;
 
 #[derive(Subcommand)]
@@ -16,7 +23,12 @@ pub enum CacheCmd {
     Path(Where),
     /// Remove cache entries older than a duration (e.g. 30d, 12h).
     Gc {
-        #[arg(long)]
+        /// Required: `gc` is an age-bounded purge. To remove everything, use
+        /// `domarinn cache clear`.
+        // Not `required = true`: clap's own message would say only that the
+        // argument is missing, and the whole hazard here is that the obvious
+        // reading of a bare `gc` is "tidy up a bit", not "delete everything".
+        #[arg(long, value_name = "DURATION")]
         older_than: Option<String>,
         #[command(flatten)]
         which: Where,
@@ -44,87 +56,181 @@ pub struct Where {
 }
 
 impl Where {
-    /// Resolve to a concrete cache directory, using the same precedence as
-    /// `domarinn run`: `--cache-dir`, then `DOMARINN_CACHE_DIR`, then
-    /// `.domarinn/cache` beside the suite.
-    fn root(&self) -> PathBuf {
-        let base = self
-            .path
+    /// The suite directory this command names, which every other path resolves
+    /// against. Defaults to the process cwd.
+    fn suite_base(&self) -> PathBuf {
+        self.path
             .clone()
             .map(|p| {
                 let file = domarinn_core::loader::resolve_suite_path(&p);
                 domarinn_core::loader::suite_base_dir(&file)
             })
-            .unwrap_or_else(|| PathBuf::from("."));
-        crate::cachecfg::local_root(self.cache_dir.as_deref(), &base).root
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Resolve to the tiers a run would use, by the same precedence as
+    /// `domarinn run`: `--cache-dir`, then `DOMARINN_CACHE_DIR`, then
+    /// `.domarinn/cache` beside the suite — plus any legacy tier underneath.
+    /// Returns the suite directory too, since whether that legacy tier is this
+    /// project's leftover or another project's live cache depends on it.
+    fn resolve(&self) -> (PathBuf, LocalRoot) {
+        let base = self.suite_base();
+        let root = crate::cachecfg::local_root(self.cache_dir.as_deref(), &base);
+        (base, root)
     }
 }
 
+/// Whether a `clear`/`gc` may purge the legacy tier as well as the primary one.
+///
+/// The legacy tier is `.domarinn/cache` under the *process cwd*, so for a suite
+/// somewhere else entirely it is not a leftover at all — it is whatever project
+/// the operator happens to be standing in, and its cache is live. `cd ~/projB
+/// && domarinn cache clear ~/projA/evals` must not take projB's cache with it.
+///
+/// A genuine pre-0.4 leftover was written cwd-relative by invocations like
+/// `domarinn run ./evals` from a project root, so it only ever pairs with a
+/// suite at or under that root — which is exactly the test. Reporting is not
+/// gated this way: `stats` and `path` name the directory without touching it,
+/// and seeing it is how an operator finds out it is there.
+fn cwd_contains(suite_base: &Path) -> bool {
+    let (Ok(cwd), Ok(base)) = (
+        std::env::current_dir().and_then(|d| d.canonicalize()),
+        suite_base.canonicalize(),
+    ) else {
+        // Unreadable either way: decline to delete rather than guess.
+        return false;
+    };
+    base.starts_with(cwd)
+}
+
 pub fn execute(cmd: CacheCmd) -> u8 {
-    let cache = LocalDiskCache::new(match &cmd {
-        CacheCmd::Stats(w) | CacheCmd::Path(w) | CacheCmd::Clear(w) => w.root(),
-        CacheCmd::Gc { which, .. } => which.root(),
-    });
+    let (base, root) = match &cmd {
+        CacheCmd::Stats(w) | CacheCmd::Path(w) | CacheCmd::Clear(w) => w.resolve(),
+        CacheCmd::Gc { which, .. } => which.resolve(),
+    };
+    // The same two tiers `cachecfg::build_cache` gives a run, minus the
+    // read-through wrapper: these commands address each tier, so a purge has to
+    // reach the one a run only ever reads.
+    let primary = LocalDiskCache::new(&root.root);
+    let legacy = root.legacy.as_ref().map(LocalDiskCache::new);
+    // Destructive subcommands see a narrower legacy tier than reporting ones.
+    let legacy_is_ours = root.legacy.is_some() && cwd_contains(&base);
+
     match cmd {
         CacheCmd::Path(_) => {
-            println!("{}", cache.root().display());
+            println!("{}", root.root.display());
+            if let Some(legacy) = &legacy {
+                println!("legacy tier: {}", legacy.root().display());
+            }
             exit::OK
         }
-        CacheCmd::Stats(_) => block_on(async {
-            match cache.stats().await {
-                Ok(s) => {
-                    println!(
-                        "{} entries, {:.2} MiB",
+        CacheCmd::Stats(_) => block_on(async move {
+            let stats = match primary.stats().await {
+                Ok(s) => s,
+                Err(e) => return infra(&e),
+            };
+            println!("{} entries, {}", stats.entries, mib(stats.total_bytes));
+            if let Some(legacy) = &legacy {
+                // What `clear` would actually do with it, not what it does in
+                // the common case — the guard makes those differ.
+                let fate = if legacy_is_ours {
+                    "`cache clear` removes it"
+                } else {
+                    "owned by the current directory, so `cache clear` leaves it"
+                };
+                match legacy.stats().await {
+                    Ok(s) => println!(
+                        "legacy tier {}: {} entries, {} (read-only during runs; {fate})",
+                        legacy.root().display(),
                         s.entries,
-                        s.total_bytes as f64 / (1024.0 * 1024.0)
-                    );
-                    exit::OK
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    exit::INFRA
+                        mib(s.total_bytes)
+                    ),
+                    Err(e) => return infra(&e),
                 }
             }
+            exit::OK
         }),
         CacheCmd::Gc { older_than, .. } => {
-            let filter = match older_than {
-                Some(spec) => match parse_duration(&spec) {
-                    Ok(d) => PurgeFilter {
-                        older_than: Some(d),
-                    },
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        return exit::USAGE;
-                    }
-                },
-                None => PurgeFilter::default(),
+            let Some(spec) = older_than else {
+                eprintln!(
+                    "error: cache gc needs --older-than (e.g. --older-than 30d); \
+                     to remove every entry, use `domarinn cache clear`"
+                );
+                return exit::USAGE;
             };
-            block_on(async {
-                match cache.purge(&filter).await {
-                    Ok(n) => {
-                        println!("removed {n} cache entr{}", if n == 1 { "y" } else { "ies" });
-                        exit::OK
-                    }
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        exit::INFRA
-                    }
-                }
-            })
-        }
-        CacheCmd::Clear(_) => block_on(async {
-            match cache.purge(&PurgeFilter::default()).await {
-                Ok(n) => {
-                    println!("cleared {n} cache entr{}", if n == 1 { "y" } else { "ies" });
-                    exit::OK
-                }
+            let older_than = match parse_duration(&spec) {
+                Ok(d) => Some(d),
                 Err(e) => {
                     eprintln!("error: {e}");
-                    exit::INFRA
+                    return exit::USAGE;
                 }
-            }
-        }),
+            };
+            let legacy = legacy.filter(|_| legacy_is_ours);
+            block_on(async move {
+                purge_tiers(
+                    &primary,
+                    legacy.as_ref(),
+                    &PurgeFilter { older_than },
+                    "removed",
+                )
+                .await
+            })
+        }
+        CacheCmd::Clear(_) => {
+            let legacy = legacy.filter(|_| legacy_is_ours);
+            block_on(async move {
+                purge_tiers(
+                    &primary,
+                    legacy.as_ref(),
+                    &PurgeFilter::default(),
+                    "cleared",
+                )
+                .await
+            })
+        }
     }
+}
+
+/// Purge both tiers, reporting each. `verb` leads each line ("removed" for a
+/// `gc`, "cleared" for a `clear`).
+async fn purge_tiers(
+    primary: &LocalDiskCache,
+    legacy: Option<&LocalDiskCache>,
+    filter: &PurgeFilter,
+    verb: &str,
+) -> u8 {
+    match primary.purge(filter).await {
+        Ok(n) => println!("{verb} {n} cache entr{}", plural(n)),
+        Err(e) => return infra(&e),
+    }
+    if let Some(legacy) = legacy {
+        match legacy.purge(filter).await {
+            Ok(n) => println!(
+                "{verb} {n} legacy cache entr{} from {}",
+                plural(n),
+                legacy.root().display()
+            ),
+            Err(e) => return infra(&e),
+        }
+    }
+    exit::OK
+}
+
+fn infra(e: &domarinn_core::cache::CacheError) -> u8 {
+    eprintln!("error: {e}");
+    exit::INFRA
+}
+
+fn plural(n: u64) -> &'static str {
+    if n == 1 {
+        "y"
+    } else {
+        "ies"
+    }
+}
+
+fn mib(bytes: u64) -> String {
+    format!("{:.2} MiB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 fn block_on<F: std::future::Future<Output = u8>>(fut: F) -> u8 {

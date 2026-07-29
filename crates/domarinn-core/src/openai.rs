@@ -163,6 +163,26 @@ impl Provider for OpenAiProvider {
             self.build_body(prompt, &req.tools),
         ))
     }
+
+    /// The preview verbatim: this provider renders nothing at call time and
+    /// carries no correlation metadata, so there is nothing to withhold that
+    /// the envelope does not already exclude. The credential is a header, and
+    /// headers are not in the envelope.
+    ///
+    /// `None` without a prompt, matching [`Provider::call`], which fails
+    /// fatally on one.
+    ///
+    /// Built here rather than delegated to `request_preview` so that the day the
+    /// preview grows something for the UI alone, `the_canonical_request_is_the_
+    /// preview` fails instead of every cache entry silently re-keying.
+    fn canonical_request(&self, req: &ProviderRequest) -> Option<Json> {
+        let prompt = req.prompt.as_ref()?;
+        Some(http_request_preview(
+            "POST",
+            &self.endpoint(),
+            self.build_body(prompt, &req.tools),
+        ))
+    }
 }
 
 fn to_messages(prompt: &RenderedPrompt) -> Vec<Json> {
@@ -364,9 +384,6 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// See the matching test in `anthropic.rs` for why this is load-bearing:
-    /// the fingerprint feeds every cache key, so an unconditional change here
-    /// invalidates every cached entry in every store.
     /// The vendor trap: OpenAI's `prompt_tokens` *includes* `cached_tokens`,
     /// where Anthropic's `input_tokens` excludes its cache counters. Without
     /// the subtraction the cached span is billed at the full input rate on top
@@ -428,6 +445,10 @@ mod tests {
         assert_eq!(warm.cache_read_tokens, Some(6000));
     }
 
+    /// See the matching test in `anthropic.rs` for why this is load-bearing: the
+    /// fingerprint is frozen history now, read only by legacy-key probing and by
+    /// `provider_digest`, and a change here strands a store rather than
+    /// invalidating one.
     #[test]
     fn fingerprint_is_stable_for_default_config() {
         let p = OpenAiProvider::new("p", "gpt-x", None, None, None, None);
@@ -575,6 +596,34 @@ mod tests {
         let p = OpenAiProvider::new("g", "m", None, None, None, None);
         let req = ProviderRequest::default();
         assert!(p.request_preview(&req).is_none());
+    }
+
+    /// Nothing in an OpenAI request is rendered at call time and nothing in it
+    /// is correlation metadata, so the keyed request and the previewed one are
+    /// the same document.
+    #[test]
+    fn the_canonical_request_is_the_preview() {
+        let p = OpenAiProvider::new("g", "gpt-x", None, None, None, None);
+        let req = text_request();
+        assert_eq!(p.canonical_request(&req), p.request_preview(&req));
+        assert!(p.canonical_request(&ProviderRequest::default()).is_none());
+    }
+
+    /// A cache split that used to be real: `base_url: https://gw/v1` and
+    /// `https://gw/v1/` name one endpoint, and `endpoint()` already trims — so
+    /// the keyed request must too, or two spellings of one gateway pay twice.
+    #[test]
+    fn a_trailing_slash_on_base_url_does_not_change_the_canonical_request() {
+        let of = |base: &str| {
+            OpenAiProvider::new("g", "gpt-x", Some(base.into()), None, None, None)
+                .canonical_request(&text_request())
+                .unwrap()
+        };
+        assert_eq!(of("https://gw.example/v1"), of("https://gw.example/v1/"));
+        assert_eq!(
+            of("https://gw.example/v1")["url"],
+            json!("https://gw.example/v1/chat/completions")
+        );
     }
 
     #[tokio::test]

@@ -115,11 +115,12 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_progress: bool,
 
-    /// Re-grade every assertion instead of reusing cached verdicts.
+    /// Grader-originated requests (LLM judge, exec graders, embeddings) bypass
+    /// the cache; responses of the systems under test are still replayed.
     ///
-    /// Provider responses are still cached. Use this to measure judge variance
-    /// deliberately — with `--repeat N`, each trial is keyed separately, so
-    /// cached verdicts already preserve variance across runs.
+    /// Use this to measure judge variance deliberately — with `--repeat N`,
+    /// each trial is keyed separately, so cached verdicts already preserve
+    /// variance across runs.
     #[arg(long)]
     pub no_grader_cache: bool,
 

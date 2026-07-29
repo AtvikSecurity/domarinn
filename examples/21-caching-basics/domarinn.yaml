@@ -2,35 +2,38 @@
 #
 # Not paying twice for the same answer.
 #
-# Every provider response is cached, content-addressed, on by default. Run this
-# suite twice and the second run does no work at all — it prints the same report
+# Every outgoing request is cached, content-addressed, on by default — a
+# provider call, the LLM judge, an embedding, an exec grader alike. Run this
+# suite twice and the second run does no work at all: it prints the same report
 # from the cache, instantly and for free.
 #
 # The rule the key follows is one sentence:
 #
-#     Hash what is sent. Name what receives it.
+#     Hash what is sent.
 #
-# The rendered prompt, the vars and the tools ARE the request, so they are
-# hashed. `command`, `model`, `url` and `headers` SELECT a provider, so they go
-# in verbatim. Nothing else — and in particular nothing about your filesystem:
-# no path, no mtime, no digest of the program's own bytes.
+# The key is the SHA-256 of the redacted request itself, plus the trial index
+# (`--repeat`), plus any `cache_salt` in scope. Nothing about your machine, your
+# binary, or your credentials is in it — no path, no mtime, no digest of the
+# program's own bytes.
 #
-# That last clause is what makes a cache shareable. A key that varies by machine
-# cannot be reused by anyone else, which quietly turns a shared cache into an
-# expensive local disk.
+# That is what makes a cache shareable. A key that varied by machine could not
+# be reused by anyone else, which quietly turns a shared cache into an expensive
+# local disk.
 #
 # Three consequences worth knowing:
 #   * one entry per key, immutable — first write wins, on every backend
 #   * errors are NEVER cached; only successful responses are
 #   * `latency` assertions bypass the cache entirely, because a replayed
-#     response has no honest latency to report
+#     response has no honest latency to report — and under `--cache-only` such
+#     a case is refused outright rather than called live
 #
 # Run it twice and watch the second run:
 #   domarinn run examples/21-caching-basics
 #   domarinn run examples/21-caching-basics     # every cell a cache hit
 #
-# To force real work:  --no-cache
-# To require the cache: --cache-only   (a miss becomes an infra error, exit 3)
+# To force real work:      --no-cache
+# To re-ask only the judge: --no-grader-cache
+# To require the cache:    --cache-only   (a miss becomes an infra error, exit 3)
 version: 1
 project: examples
 suite: caching-basics
@@ -39,20 +42,20 @@ providers:
   - id: assistant
     type: exec
     command: ["python3", "../echo-provider.py"]
-    # An exec provider's fingerprint is its command, which says nothing about
-    # the program's bytes — so a rebuild does NOT invalidate anything on its
-    # own. See example 22 for what to do about that.
+    # An exec provider's key hashes what it SENDS — the command, the args, the
+    # document on the child's stdin — and says nothing about the program's
+    # bytes, so a rebuild does NOT invalidate anything on its own. This salt is
+    # the version pin that does. See example 22.
     cache_salt: "dev"
 
 cache:
   # `disk` (the default) stores under `.domarinn/cache` beside this suite.
-  # `http` and `s3` put a shared tier behind that local one; `layered` combines
-  # them. Note the config names only the KIND — the URL and credentials come
-  # from the environment, so a suite is safe to commit.
+  # `layered` puts a shared tier behind that local one — S3 when a `cache.s3`
+  # block is set, else the results server. Those two are the whole list;
+  # `http` and `s3` still parse as deprecated aliases for `layered`. Note the
+  # config names only the KIND — the URL and credentials come from the
+  # environment, so a suite is safe to commit.
   backend: disk
-  # Grader verdicts are cached too, on by default. Turn it off while iterating
-  # on a rubric, when you want the judge re-consulted every time.
-  grader: true
 
 tests:
   - id: summary/short

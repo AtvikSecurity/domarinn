@@ -31,9 +31,9 @@ The `type` field selects the assertion. Names are kebab-case.
 | `jinja`          | deterministic | `value: string`                        | a minijinja boolean expression is true |
 | `tool-call`      | deterministic | `name: string`, `args?`, `schema?`     | the model called that tool (see [`tool-call`](#tool-call)) |
 | `cost`           | deterministic | `max: number`                          | reported cost in USD `<= max` (passes with a note if unreported) |
-| `latency`        | deterministic | `max: int` (ms)                        | measured latency `<= max` (this assert bypasses the cache) |
+| `latency`        | deterministic | `max: int` (ms)                        | measured latency `<= max` (bypasses the cache; refused under `--cache-only`) |
 | `tokens`         | deterministic | `max: int`, `count?: total\|billable`   | token count `<= max` (passes with a note if unreported) |
-| `exec`           | graded        | `command: [string]`, `config?`         | the subprocess returns `pass: true` |
+| `exec`           | graded        | `command: [string]`, `config?`, `cache_salt?` | the subprocess returns `pass: true` |
 | `llm-rubric`     | graded        | `value: string`, `grader?`, `threshold?`, `params?` | the LLM grader's verdict passes (see [grading.md](./grading.md)) |
 | `similar`        | graded        | `value: any`, `threshold?` (default 0.8) | embedding cosine similarity `>= threshold` |
 
@@ -350,7 +350,7 @@ These read the call's **run metrics** rather than the output text:
 
 Behavior details:
 
-- **`latency` bypasses the cache.** A cached response has a near-zero replay latency, which would make the assertion meaningless. When a case contains a `latency` assertion the runner disables the cache for that cell so the latency reflects a real call.
+- **`latency` bypasses the cache.** A cached response has a near-zero replay latency, which would make the assertion meaningless. When a case contains a `latency` assertion the runner disables the cache for that cell so the latency reflects a real call. Under `--cache-only` there is no live call to fall back on, so that case is **refused** — `there is nothing honest to replay` — while the rest of the suite still replays. See [caching.md](./caching.md#cache-modes).
 - **Unknown metrics pass with a note.** If the provider does not report cost or token usage, `cost` and `tokens` **pass** with `cost not reported; budget not enforced` / `tokens not reported; budget not enforced` — they never fail a case for missing data. (The native `anthropic` and `openai` providers report token usage but not cost, so `tokens` is enforced while `cost` is a no-op unless your provider fills in `cost_usd`.)
 - **A warm prompt cache does not shrink a `tokens` budget.** Both vendors report the cached span of a prompt in its own field rather than in `input_tokens`, so a total over `input + output` alone would measure only the *uncached* fraction — and a 6,000-token prompt would fail the budget cold and pass it a few minutes later at 200, with no config change. `count: total` therefore counts the prompt that was sent. `count: billable` adds the cache *write*, which is spend rather than prompt.
 
@@ -373,6 +373,7 @@ Runs an external command as a custom grader over the **exec assert protocol**. T
 
 - `pass` (boolean) is required. `score` defaults to `1.0` when `pass` is true, `0.0` otherwise. `reason` and `details` are surfaced in results.
 - A failing assert (`pass: false`) is a normal `fail`, not an `error` — the command should still exit `0`. A **non-zero exit**, a timeout, or unparseable stdout is an infrastructure `error`.
+- The round-trip is cached like any other request, keyed on the command and what it is sent. An optional `cache_salt` on the assertion is a version pin for the grader program, scoped to that assertion's gradings; see [caching.md](./caching.md#every-knob-once).
 
 See [protocol.md](./protocol.md) for the full `assert` request/response wire format.
 
@@ -504,7 +505,7 @@ tests:
         value: "output_json.city == 'Tokyo'"
       - type: tokens
         max: 200
-      - type: latency               # bypasses the cache for this case
+      - type: latency               # bypasses the cache; refused under --cache-only
         max: 3000
       - type: similar
         value: "The capital of Japan is Tokyo."
@@ -515,7 +516,7 @@ tests:
 
 ## Notes
 
-- **Cache is exact content-addressing only.** There is no semantic / embedding-similarity dedupe on the cache: two prompts that mean the same thing but differ by a byte are distinct cache entries. `similar` measures output similarity for *grading*, not for cache lookup. See [caching.md](./caching.md).
+- **Cache is exact content-addressing only.** Two requests that mean the same thing but differ by a byte are distinct entries; `similar` measures output similarity for *grading*, never for cache lookup. See [caching.md](./caching.md#the-rule).
 - **Deterministic assertions never spend money or hit the network** — they are the cheap gate in front of the graded ones. Order and weight them so the most decisive checks run first.
 - **`equals`, `similar`, and `jinja` see the template engine; the other substring assertions do not.** Use `!raw` on an `equals`/`similar` value when it contains template syntax that must stay literal.
 </content>

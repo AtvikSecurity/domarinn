@@ -4,13 +4,13 @@ A single run's pass rate is a point estimate. With LLM-graded evals that vary ru
 
 ## Repeat trials for variance
 
-`--repeat N` runs every matrix cell N times. Each trial is a distinct result (the repeat index is part of the cache key and the case identity), so you get a distribution, not a coin flip.
+`--repeat N` runs every matrix cell N times. Each trial is a distinct result — the [trial index is part of the cache key](./caching.md#what-is-in-the-key) and of the case identity — so you get a distribution, not a coin flip. That applies to the judge too: N repeats produce N independent verdicts rather than collapsing into one.
 
 ```sh
 domarinn run --repeat 5
 ```
 
-Because responses are cached, repeats of a deterministic provider are cheap; for sampling variance, disable caching or vary sampling params. The run summary then counts all trials, and the pass rate is measured over them.
+Because responses are cached, repeats of a deterministic provider are cheap; for sampling variance, disable caching or vary sampling params. The run summary then counts all trials, and the pass rate is measured over them. To measure *judge* variance specifically, keep provider responses warm and pass `--no-grader-cache`.
 
 ## Confidence intervals on the pass rate
 

@@ -53,35 +53,39 @@ impl EmbeddingsProvider {
         }
     }
 
-    /// What this client *is*, for a verdict cache key.
+    /// The url and body one embedding call would post.
     ///
-    /// The api key env var is excluded, same rule as `Provider::fingerprint`;
-    /// so is `pricing`, which cannot move a cosine value.
-    pub fn identity(&self) -> Json {
-        json!({
-            "type": "embeddings",
-            "model": self.model,
-            "base_url": self.base_url,
-            "params": self.params,
-        })
-    }
-
-    /// Embed a single string, returning its vector.
-    pub async fn embed(&self, text: &str) -> Result<Embedded, String> {
-        let key = api_key(&self.api_key_env).map_err(|e| e.to_string())?;
+    /// Pure: no credential, no clock. This is what the cache keys on (through
+    /// [`crate::provider::http_request_preview`]), and it absorbs everything the
+    /// deleted `identity` enumerated by hand — the model, the endpoint, the
+    /// params — plus the one thing that fingerprint could never carry, the text
+    /// being embedded. That is why a `similar` assertion now caches the *two
+    /// embeddings* rather than only the cosine of them: a vector is reusable by
+    /// any later comparison, a cosine is not.
+    pub fn request(&self, text: &str) -> (String, Json) {
         let mut body = serde_json::Map::new();
         for (k, v) in &self.params {
             body.insert(k.clone(), v.clone());
         }
         body.insert("model".into(), json!(self.model));
         body.insert("input".into(), json!(text));
-        let url = format!("{}/embeddings", self.base_url.trim_end_matches('/'));
+        (
+            format!("{}/embeddings", self.base_url.trim_end_matches('/')),
+            Json::Object(body),
+        )
+    }
 
+    /// Post a built embedding request and return the raw payload.
+    ///
+    /// The only step that reads the credential, so a warm `similar` assertion
+    /// never asks for one.
+    pub async fn post(&self, url: &str, body: &Json) -> Result<Json, String> {
+        let key = api_key(&self.api_key_env).map_err(|e| e.to_string())?;
         let resp = self
             .client
-            .post(&url)
+            .post(url)
             .bearer_auth(key)
-            .json(&Json::Object(body))
+            .json(body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -92,7 +96,15 @@ impl EmbeddingsProvider {
                 resp.text().await.unwrap_or_default()
             ));
         }
-        let payload: Json = resp.json().await.map_err(|e| e.to_string())?;
+        resp.json().await.map_err(|e| e.to_string())
+    }
+
+    /// Read a vector and its bill out of an embeddings payload.
+    ///
+    /// Runs on a cache hit as well as a live call, so the cost is re-derived at
+    /// today's rate rather than replayed from whatever was current when the
+    /// vector was fetched.
+    pub fn parse(&self, payload: &Json) -> Result<Embedded, String> {
         let vector = payload
             .get("data")
             .and_then(|d| d.as_array())
@@ -102,7 +114,7 @@ impl EmbeddingsProvider {
             .map(|arr| arr.iter().filter_map(|v| v.as_f64()).collect::<Vec<f64>>())
             .filter(|v| !v.is_empty())
             .ok_or_else(|| "embeddings response missing data[0].embedding".to_string())?;
-        let usage = usage_from_payload(&payload);
+        let usage = usage_from_payload(payload);
         let cost = self
             .rate
             .as_ref()
@@ -192,14 +204,18 @@ mod tests {
         assert!(usage_from_payload(&json!({"data": []})).is_none());
     }
 
-    /// The identity feeds the verdict cache key, so swapping the embedding model
-    /// must change it — otherwise a `similar` assertion replays cosine values
-    /// computed by a different model.
+    /// The request is what the cache keys on, so swapping the embedding model
+    /// must change it — otherwise a `similar` assertion replays vectors
+    /// computed by a different model. The credential is not in it (it is a
+    /// header), so naming a different env var must change nothing.
+    ///
+    /// This replaces the deleted `identity()`: the same claim, about the thing
+    /// that is now actually keyed.
     #[test]
-    fn identity_moves_with_the_model_and_never_carries_the_key_env() {
+    fn the_request_moves_with_the_model_and_never_carries_the_key_env() {
         let one = EmbeddingsProvider::new("e", "text-embedding-3-small", None, None, None, None);
         let two = EmbeddingsProvider::new("e", "text-embedding-3-large", None, None, None, None);
-        assert_ne!(one.identity(), two.identity());
+        assert_ne!(one.request("hi"), two.request("hi"));
 
         let named = EmbeddingsProvider::new(
             "e",
@@ -209,6 +225,10 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(named.identity(), one.identity());
+        assert_eq!(named.request("hi"), one.request("hi"));
+
+        // …and the text is in it, which the old fingerprint could not express:
+        // that is what makes a *vector* cacheable rather than only a cosine.
+        assert_ne!(one.request("hi"), one.request("there"));
     }
 }

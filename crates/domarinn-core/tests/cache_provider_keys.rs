@@ -279,6 +279,86 @@ async fn runtime_env_templating_shares_a_key_and_is_warned_about() {
     assert_eq!(cache.entries(), 1);
 }
 
+/// A request nobody can render the same way twice is not cached at all.
+///
+/// `uuid()` without a seed is a template error here by design — a persisted
+/// render must be reproducible. What this pins is the *cache's* response to
+/// that: no canonical request means no key, so the call goes live and unstored.
+/// The alternative, keying on a value that changes per call, is the worst of
+/// both: it never hits, and it grows the store by one dead entry per run
+/// forever.
+#[tokio::test]
+async fn a_request_that_cannot_be_rendered_deterministically_is_never_keyed() {
+    use domarinn_core::provider::ProviderRequest;
+
+    let server = always_answers().await;
+    let yaml = http_suite(&server.uri(), "{}", r#"{prompt: "{{ uuid() }}"}"#);
+    let suite = domarinn_core::load_str(&yaml).unwrap();
+    let provider =
+        domarinn_core::provider_factory::build_provider(&suite.providers[0], None).unwrap();
+    assert!(
+        provider
+            .canonical_request(&ProviderRequest::default())
+            .is_none(),
+        "an unrenderable request has no identity to key on"
+    );
+
+    let cache = MemCache::default();
+    let result = run_suite(&yaml, &cache).await;
+    assert_eq!(cache.entries(), 0, "no key, so nothing to store under one");
+    // The live call renders the same templates and fails the same way, so this
+    // surfaces as a case error rather than a silent uncached success. Recorded
+    // because it is the behaviour, not because the cache depends on it.
+    assert_eq!(
+        result.cases[0].error_class.as_ref().map(|c| c.0.as_str()),
+        Some("render_failed"),
+        "the live call reports the render failure: {:?}",
+        result.cases[0].error
+    );
+}
+
+/// A `{{ env.X | default(…) }}` template keys differently on a machine where
+/// `X` is unset — documented, because the direction it fails in is the safe one.
+///
+/// The canonical request renders against placeholder `env`, which enumerates the
+/// *names* this process has: with `X` set the template resolves to the
+/// `${env:X}` placeholder, and with it unset the filter's default wins. Two
+/// keys, so two entries. That is a duplicate, never a false share — the failure
+/// mode this whole file exists to prevent is one machine replaying another's
+/// answers, and this cannot produce it. Worth a test rather than a note because
+/// the *reverse* would be a silent stale replay, and a future change to how
+/// placeholders are built could turn one into the other.
+#[tokio::test]
+async fn a_defaulted_env_template_partitions_rather_than_shares() {
+    const VAR: &str = "DOMARINN_KEYS_DEFAULTED";
+    let server = always_answers().await;
+    let yaml = http_suite(
+        &server.uri(),
+        &format!(r#"{{X-Model: "{{{{ env.{VAR} | default('fallback') }}}}"}}"#),
+        r#"{prompt: "{{ x }}"}"#,
+    );
+
+    let cache = MemCache::default();
+    std::env::remove_var(VAR);
+    run_suite(&yaml, &cache).await;
+    let before = calls(&server).await;
+    std::env::set_var(VAR, "anything at all");
+    run_suite(&yaml, &cache).await;
+    let after = calls(&server).await;
+    std::env::remove_var(VAR);
+
+    assert_eq!(
+        after - before,
+        1,
+        "the two renders are different requests, so they are different entries"
+    );
+    assert_eq!(
+        cache.entries(),
+        2,
+        "a duplicate entry is the cost; replaying the wrong answer is not"
+    );
+}
+
 /// Everything else about an `http` provider that must separate.
 #[tokio::test]
 async fn http_url_method_and_body_each_bust() {
@@ -299,6 +379,57 @@ async fn http_url_method_and_body_each_bust() {
         1,
         "a different endpoint is a different provider"
     );
+}
+
+/// Editing an `output_expr` busts exactly that provider's entries.
+///
+/// It never goes on the wire, so the two runs below send byte-identical
+/// requests — but an entry stores the *projected* output, so the expression
+/// decides what the stored answer means. Without it in the key the second run
+/// is a hit that replays the first projection and labels it as the second's:
+/// the run succeeds, the numbers are plausible, and the field being asserted on
+/// is not the one the suite now names.
+#[tokio::test]
+async fn editing_an_output_expr_busts_the_entries_it_projected() {
+    let server = always_answers().await;
+    let projecting = |expr: &str| {
+        format!(
+            r#"
+version: 1
+project: test
+suite: keys
+providers:
+  - id: p
+    type: http
+    url: "{uri}/generate"
+    method: post
+    body: {{prompt: "{{{{ x }}}}"}}
+    output_expr: "{expr}"
+tests:
+  - id: case-a
+    vars: {{x: "a"}}
+"#,
+            uri = server.uri()
+        )
+    };
+
+    let cache = MemCache::default();
+    let first = run_suite(&projecting("response.json.id"), &cache).await;
+    assert_eq!(first.cases[0].output.as_ref().unwrap().as_text(), "resp_1");
+
+    let before = calls(&server).await;
+    let second = run_suite(&projecting("response.json.model"), &cache).await;
+    assert_eq!(
+        calls(&server).await - before,
+        1,
+        "a re-projected response is a fresh call, not a replay"
+    );
+    assert_eq!(
+        second.cases[0].output.as_ref().unwrap().as_text(),
+        "m",
+        "the new expression's projection, not the old one's"
+    );
+    assert_eq!(cache.entries(), 2);
 }
 
 // ── `anthropic` / `openai` ───────────────────────────────────────────────────
@@ -376,6 +507,31 @@ async fn a_vendor_provider_is_separated_by_model_base_url_and_params() {
             calls(&other).await - before,
             1,
             "{kind}: a different gateway is a different provider"
+        );
+    }
+}
+
+/// Two spellings of one gateway must not partition the cache.
+///
+/// `base_url` is a caller-authored string and both spellings resolve to the same
+/// endpoint, so a trailing slash used to hand two teammates private halves of a
+/// shared store — the fingerprint carried the string verbatim. Keying the
+/// *resolved request* closes it: the url each provider would send is what the
+/// hash sees, and `endpoint()` trims before it builds one. Covered as a unit in
+/// Task 4; this is the same property through the live key path.
+#[tokio::test]
+async fn a_trailing_slash_on_base_url_shares_the_entry() {
+    const KEY: &str = "DOMARINN_KEYS_SLASH_KEY";
+    std::env::set_var(KEY, "sk-test");
+    let server = always_answers().await;
+
+    for kind in ["anthropic", "openai"] {
+        let plain = vendor_suite(kind, &server.uri(), "model-a", "{}", KEY);
+        let slashed = vendor_suite(kind, &format!("{}/", server.uri()), "model-a", "{}", KEY);
+        assert_eq!(
+            live_calls_for_second(&server, &plain, &slashed).await,
+            0,
+            "{kind}: one gateway spelled two ways is one question"
         );
     }
 }

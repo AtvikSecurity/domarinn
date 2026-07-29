@@ -51,15 +51,11 @@ The distinction matters because the alternative is worse than it looks: a judge 
 
 ## The cache key is the request, not the machine
 
-One sentence: **hash what is sent, name what receives it.**
+Every outgoing call — a provider, the judge, an embedding, an `exec` grader — is keyed by one rule: **hash what is sent.** The SHA-256 of the redacted request, plus the trial index, plus any `cache_salt` in scope. Nothing about your machine, your binary, or your credentials.
 
-- The rendered prompt, the vars, the tools and a grader template's bytes **are** the request. They are hashed.
-- `command`, `env`, `model`, `base_url`, `url` and `headers` **select** a provider. They enter the key verbatim, exactly as written in the suite.
-- Nothing else — and in particular no property of the local filesystem. No path, no mtime, no size, no digest of the program's own bytes.
+That is what makes a cache shareable, and it has a consequence you must know about: **a rebuild of your own binary does not invalidate anything**, because the key hashes what the program *sends*, not its bytes. [`cache_salt`](../examples.md#example-22--cache-salts) is the lever for that, and it exists at two granularities for good reason.
 
-That last clause is what makes a cache shareable. A key that varies by machine cannot be reused by anyone else, which quietly turns the S3 and results-server backends into an expensive local disk.
-
-It also has a consequence you must know about: **a rebuild of your own binary does not invalidate anything**, because the key names the command, not its bytes. [`cache_salt`](../examples.md#example-22--cache-salts) is the lever for that, and it exists at two granularities for good reason.
+The full rule, every knob, and what a 0.5 upgrade does to a warm store are in [caching.md](../caching.md#the-rule).
 
 ## See also
 

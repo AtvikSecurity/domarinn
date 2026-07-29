@@ -86,6 +86,10 @@ enum Command {
     /// Render a stored run in the terminal.
     View(diffcmd::ViewArgs),
     /// Manage the local response cache.
+    ///
+    /// These commands operate on the local disk tier only, whichever backend a
+    /// suite configures. A shared remote is pruned server-side (`POST
+    /// /api/v1/cache/prune`) or by the bucket's own lifecycle rules.
     Cache {
         #[command(subcommand)]
         cmd: cachecmd::CacheCmd,

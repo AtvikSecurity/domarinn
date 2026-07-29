@@ -13,7 +13,7 @@ domarinn inverts that:
 - **Deterministic assertions run first** and can short-circuit the LLM grader.
 - **The grader is structured** (tool-use / JSON-schema verdicts, never regex-from-prose) and **fails closed** — a missing or truncated verdict is an error, never a silent pass.
 - **Statistics built in** — Wilson confidence intervals, McNemar significance, and pass@k, not bare pass rates.
-- **Content-addressed caching** that is safe to share between teammates over a server URL or an S3-compatible bucket.
+- **Content-addressed caching** of every outgoing request — provider calls, judge verdicts, embeddings — under one rule, so it is safe to share between teammates over a server URL or an S3-compatible bucket.
 - **A self-hostable server + web UI** with real accounts — local logins, an admin role, and per-user API keys — plus run comparison and a shared cache.
 - **Structured logging** — human-readable on a terminal, JSON one-object-per-line in a container (or when requested), with per-request ids on the server.
 

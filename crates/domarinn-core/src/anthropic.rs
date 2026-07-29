@@ -172,6 +172,39 @@ impl Provider for AnthropicProvider {
             self.build_body(prompt, &req.tools),
         ))
     }
+
+    /// The preview plus the one header that is part of the question rather than
+    /// of the caller: `anthropic-version` selects the response semantics, so
+    /// bumping it must bust every entry keyed under the old one. The credential
+    /// header stays out — two teammates holding different keys are asking the
+    /// same question and must share an entry.
+    ///
+    /// `headers` is unconditional here, unlike the "only when set" members of
+    /// the legacy fingerprint: this key space is new, so it has no entries to
+    /// keep valid.
+    ///
+    /// `None` without a prompt, matching [`Provider::call`], which fails
+    /// fatally on one.
+    ///
+    /// Built here rather than derived from `request_preview` so that the day the
+    /// preview grows something for the UI alone, the test comparing the two
+    /// fails instead of every cache entry silently re-keying.
+    fn canonical_request(&self, req: &ProviderRequest) -> Option<Json> {
+        let prompt = req.prompt.as_ref()?;
+        let mut canonical = http_request_preview(
+            "POST",
+            &self.endpoint(),
+            self.build_body(prompt, &req.tools),
+        );
+        canonical
+            .as_object_mut()
+            .expect("json! object literal")
+            .insert(
+                "headers".to_string(),
+                json!({"anthropic-version": ANTHROPIC_VERSION}),
+            );
+        Some(canonical)
+    }
 }
 
 /// Convert a rendered prompt into (system, messages) for the Messages API.
@@ -353,15 +386,6 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// The fingerprint is a member of every cache key (`cache_key.rs:42`), so
-    /// changing it invalidates **every** entry in every disk, S3, and server
-    /// store at once — the failure `cache_key.rs:10-12` warns about, one level
-    /// up. A test that pins only `provider_cache_key` cannot catch this,
-    /// because it holds the fingerprint fixed.
-    ///
-    /// If this fails, you have a cache migration to plan. New members belong
-    /// here **conditionally**, only when configured, mirroring the `case_salt`
-    /// discipline at `cache_key.rs:48-55`.
     /// The regression this whole subsystem exists for: `cost_usd` was
     /// hardcoded `None`, so `AssertKind::Cost` took its "not reported" branch
     /// and every budget assertion passed no matter what the call cost.
@@ -444,6 +468,16 @@ mod tests {
         );
     }
 
+    /// The fingerprint is frozen, and this is what freezes it.
+    ///
+    /// It was a member of every cache key through 0.4.x. Since 0.5.0 the key
+    /// hashes the canonical request instead, so a change here no longer
+    /// invalidates a store — it *strands* one, by making
+    /// `cache_migrate::legacy_provider_key` probe for entries nobody ever wrote.
+    /// It also feeds `digests::provider_digest`, which `--against` run diffing
+    /// compares, so moving it invents a config drift that never happened.
+    ///
+    /// If this fails, you have a migration to plan, not a constant to update.
     #[test]
     fn fingerprint_is_stable_for_default_config() {
         let p = AnthropicProvider::new("p", "claude-x", None, None, None, None);
@@ -537,6 +571,43 @@ mod tests {
         assert_eq!(
             preview["body"],
             p.build_body(req.prompt.as_ref().unwrap(), &req.tools)
+        );
+    }
+
+    /// The keyed request is the previewed one plus the single header that
+    /// changes what comes back. Credentials stay out of both.
+    #[test]
+    fn the_canonical_request_is_the_preview_plus_the_api_version() {
+        let p = AnthropicProvider::new("c", "claude-x", None, None, None, None);
+        let req = text_request();
+        let canonical = p.canonical_request(&req).unwrap();
+        let preview = p.request_preview(&req).unwrap();
+
+        assert_eq!(canonical["body"], preview["body"]);
+        assert_eq!(canonical["url"], preview["url"]);
+        assert_eq!(canonical["method"], preview["method"]);
+        assert_eq!(
+            canonical["headers"],
+            json!({"anthropic-version": ANTHROPIC_VERSION})
+        );
+        assert!(!canonical.to_string().contains("x-api-key"));
+        assert!(p.canonical_request(&ProviderRequest::default()).is_none());
+    }
+
+    /// A cache split that used to be real: `base_url: https://gw` and
+    /// `https://gw/` name one endpoint, and `endpoint()` already trims — so the
+    /// keyed request must too, or two spellings of one gateway pay twice.
+    #[test]
+    fn a_trailing_slash_on_base_url_does_not_change_the_canonical_request() {
+        let of = |base: &str| {
+            AnthropicProvider::new("c", "claude-x", Some(base.into()), None, None, None)
+                .canonical_request(&text_request())
+                .unwrap()
+        };
+        assert_eq!(of("https://gw.example"), of("https://gw.example/"));
+        assert_eq!(
+            of("https://gw.example")["url"],
+            json!("https://gw.example/v1/messages")
         );
     }
 

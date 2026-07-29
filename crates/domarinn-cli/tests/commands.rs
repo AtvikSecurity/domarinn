@@ -1,4 +1,8 @@
-//! E2E tests for the diff, view, cache, import, and gen-types commands.
+//! E2E tests for the diff, view, import, and gen-types commands.
+//!
+//! The `cache` subcommands live in `cache_cmd.rs`: they carry their own
+//! two-tier fixtures, and this file was within a few lines of the repo's
+//! per-file ratchet (`domarinn-core/tests/file_length.rs`).
 
 mod common;
 
@@ -746,21 +750,6 @@ fn runs_remote_without_server_exits_usage() {
         .current_dir(dir.path())
         .assert()
         .code(2);
-}
-
-#[test]
-fn cache_path_and_stats() {
-    let dir = tempfile::tempdir().unwrap();
-    bin()
-        .args(["cache", "path"])
-        .current_dir(dir.path())
-        .assert()
-        .success();
-    bin()
-        .args(["cache", "stats"])
-        .current_dir(dir.path())
-        .assert()
-        .success();
 }
 
 #[test]

@@ -81,15 +81,17 @@ store.
 
 ## The caching model, which explains most surprises
 
-Provider responses **and** grader verdicts are cached, separately, keyed by content. Consequences
+One rule: every outgoing request — the provider call, the LLM judge, an embedding, an `exec` grader
+— is keyed on the request itself, plus the trial index, plus any `cache_salt` in scope. Consequences
 worth internalizing before you debug a "wrong" result:
 
-- A fully replayed run can still fail, because the _stored verdict_ is what failed.
-- Editing a prompt changes the cache key and forces fresh calls. Editing an assertion does not
-  change the provider key — only the grader key.
-- `--no-cache` bypasses both; `--no-grader-cache` re-grades against cached responses, which is what
-  you want after changing a rubric.
-- `cache_salt` on a provider is the deliberate escape hatch when you need to force a miss.
+- A fully replayed run can still fail, because the _stored grading_ is what failed.
+- Editing a prompt changes the provider request, so it forces fresh calls. Editing an **assertion**
+  changes only the grading request: provider responses stay cached, and just the judge is re-asked.
+- `--no-cache` bypasses everything; `--no-grader-cache` re-grades against cached responses, which is
+  what you want after changing a rubric.
+- `cache_salt` on a provider is the deliberate escape hatch when you need to force a miss — a
+  version pin for a program whose bytes the key does not see.
 
 ## Debugging a failing case
 

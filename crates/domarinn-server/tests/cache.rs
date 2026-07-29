@@ -81,6 +81,34 @@ async fn cache_get_head_and_miss() {
     assert_eq!(head_hit.status, StatusCode::OK);
 }
 
+/// The domarinn CLI only ever `GET`s the cache; `HEAD` is an existence probe
+/// from something external. The hits/misses counters back the server's headline
+/// hit rate, so probes must leave them where they were.
+#[tokio::test]
+async fn head_probes_do_not_move_the_hit_and_miss_counters() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let key = key_for(6);
+    let uri = format!("/api/v1/cache/{key}");
+
+    // Probe a missing key, store it, probe it again: one 404, one 200.
+    let head_miss = send(&app, "HEAD", &uri, None, None, Vec::new()).await;
+    assert_eq!(head_miss.status, StatusCode::NOT_FOUND);
+    put_bytes(&app, &uri, None, b"bytes".to_vec()).await;
+    let head_hit = send(&app, "HEAD", &uri, None, None, Vec::new()).await;
+    assert_eq!(head_hit.status, StatusCode::OK);
+
+    let after_probes = get(&app, "/api/v1/cache/stats").await.json();
+    assert_eq!(after_probes["hits"], 0, "stats: {after_probes:?}");
+    assert_eq!(after_probes["misses"], 0, "stats: {after_probes:?}");
+
+    // GET accounting is unchanged.
+    get(&app, &uri).await;
+    get(&app, &format!("/api/v1/cache/{}", key_for(998))).await;
+    let after_gets = get(&app, "/api/v1/cache/stats").await.json();
+    assert_eq!(after_gets["hits"], 1, "stats: {after_gets:?}");
+    assert_eq!(after_gets["misses"], 1, "stats: {after_gets:?}");
+}
+
 #[tokio::test]
 async fn cache_rejects_invalid_key() {
     let (app, _dir) = test_app(Settings::default()).await;

@@ -7,11 +7,15 @@ use crate::config::Grader;
 use crate::config::ParamMap;
 use crate::error_class::ErrorClass;
 use crate::errors::Classify;
+use crate::template::TemplateEngine;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Identity for a cell under test. The values are arbitrary; what matters
 /// is that they are no longer empty strings on the wire.
+///
+/// `cache: None` — these exercise the grading itself, so every call goes live.
+/// What the cache does with those calls is `tests/grader_request_cache.rs`.
 fn grade_ctx<'a>(vars: &'a Json, engine: &'a TemplateEngine) -> GradeCtx<'a> {
     GradeCtx {
         vars,
@@ -20,6 +24,7 @@ fn grade_ctx<'a>(vars: &'a Json, engine: &'a TemplateEngine) -> GradeCtx<'a> {
         provider_id: "p",
         test_id: "t",
         test_tags: &[],
+        cache: None,
     }
 }
 
@@ -135,12 +140,14 @@ async fn a_judge_call_is_priced_by_the_graders_own_pricing_block() {
     assert_eq!(graded.model.as_deref(), Some("claude-x-20260101"));
 }
 
-/// A cosine value belongs to the model that produced the vectors, so the
-/// verdict key must move when the embedder does. It did not: the key was the
-/// constant `{"assert": "similar"}`, so switching embedding models replayed
-/// the previous one's answers.
-#[test]
-fn a_similar_verdict_key_moves_with_the_embedding_model() {
+/// A `similar` assertion with no embeddings provider fails closed rather than
+/// grading against nothing.
+///
+/// The claim this replaces — "the verdict key moves with the embedding model" —
+/// is now a property of the *request*, pinned by
+/// `embeddings::tests::the_request_moves_with_the_model_and_never_carries_the_key_env`.
+#[tokio::test]
+async fn similar_without_an_embeddings_provider_fails_closed() {
     let assert = Assert {
         weight: 1.0,
         negate: false,
@@ -149,22 +156,15 @@ fn a_similar_verdict_key_moves_with_the_embedding_model() {
             threshold: None,
         },
     };
-    let with = |model: &str| {
-        DefaultGrader::new(None)
-            .with_embeddings(crate::embeddings::EmbeddingsProvider::new(
-                "e", model, None, None, None, None,
-            ))
-            .grading_fingerprint(&assert, None)
-    };
-    assert_ne!(
-        with("text-embedding-3-small"),
-        with("text-embedding-3-large")
-    );
-    // And with no embeddings provider there is nothing to key on, so the
-    // assertion opts out of caching entirely rather than caching an error.
-    assert!(DefaultGrader::new(None)
-        .grading_fingerprint(&assert, None)
-        .is_none());
+    let err = DefaultGrader::new(None)
+        .grade(
+            &assert,
+            &Output::Text("hello".into()),
+            &grade_ctx(&json!({}), &TemplateEngine::new()),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, GraderError::Unconfigured { kind: "similar" }));
 }
 
 #[tokio::test]
@@ -377,43 +377,66 @@ fn a_traversing_grader_template_is_rejected() {
     assert!(err.to_string().contains("refuses to read outside"), "{err}");
 }
 
-/// That file *is* the grading prompt on this branch, so editing it has to
-/// bust the verdict cache. Keying on the path alone replayed scores produced
-/// by the previous judging prompt, with no cache miss and no warning.
+/// That file *is* the grading prompt, so editing it has to bust the cache —
+/// and since 0.5.0 it does so by being *in the request* rather than through a
+/// side-channel digest. This is the unit-level half of that claim: the same
+/// rubric and output, two template files, two different judge bodies.
+///
+/// The deleted `template_digest` existed because the key hashed a fingerprint
+/// that could not see the prompt. It can now, so the digest is gone and the
+/// guarantee is structural. `tests/grader_request_cache.rs` pins the end of it:
+/// editing the file makes the run call the judge again.
 #[test]
-fn editing_a_grader_template_moves_the_verdict_key() {
+fn editing_a_grader_template_moves_the_judge_request() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("judge.md");
-    let assert = Assert {
-        weight: 1.0,
-        negate: false,
-        kind: AssertKind::LlmRubric {
-            value: "good".into(),
-            grader: None,
-            threshold: None,
-            params: None,
-        },
-    };
-    let grader = |_: ()| Grader {
-        provider: ProviderKind::Anthropic {
-            model: "judge".into(),
-            base_url: None,
-            api_key_env: None,
-            params: None,
-            pricing: None,
-        },
-        template: Some("file://judge.md".into()),
-        verdict_mode: None,
-        timeout_ms: None,
-    };
-    let fingerprint = || {
-        DefaultGrader::new(Some(grader(())))
-            .grading_fingerprint(&assert, Some(dir.path()))
-            .unwrap()
+    let body = || {
+        let user =
+            render_grader_template("file://judge.md", Some(dir.path()), "be good", "an answer")
+                .unwrap();
+        Judge::Anthropic.request("judge", None, None, &user).1
     };
 
     std::fs::write(&path, "Be lenient. {{rubric}} {{output}}").unwrap();
-    let before = fingerprint();
+    let before = body();
     std::fs::write(&path, "Be strict. {{rubric}} {{output}}").unwrap();
-    assert_ne!(before, fingerprint());
+    assert_ne!(before, body(), "the template's bytes are in the body");
+}
+
+/// The judge request carries everything the deleted `grading_fingerprint`
+/// enumerated by hand, so each of those inputs still separates two gradings —
+/// and the credential still does not appear, because it is a header.
+#[test]
+fn the_judge_request_separates_what_the_fingerprint_used_to() {
+    let base = |model: &str, url: Option<&str>, params: Option<&ParamMap>, user: &str| {
+        Judge::Anthropic.request(model, url, params, user)
+    };
+    let reference = base("judge", None, None, "RUBRIC:\nbe good");
+    for other in [
+        base("judge-2", None, None, "RUBRIC:\nbe good"),
+        base(
+            "judge",
+            Some("https://elsewhere.test"),
+            None,
+            "RUBRIC:\nbe good",
+        ),
+        base(
+            "judge",
+            None,
+            Some(&params(&[("temperature", json!(0.5))])),
+            "RUBRIC:\nbe good",
+        ),
+        // The rendered rubric and the graded output both live in `user`.
+        base("judge", None, None, "RUBRIC:\nbe concise"),
+    ] {
+        assert_ne!(reference, other, "these gradings must not share an entry");
+    }
+    // The system prompt is in the body, so an edit to it would move every key.
+    assert_eq!(reference.1["system"], json!(SYSTEM_PROMPT));
+    // …and no credential is anywhere in it.
+    assert!(
+        !serde_json::to_string(&reference.1).unwrap().contains("key"),
+        "{:?}",
+        reference.1
+    );
 }

@@ -13,12 +13,13 @@
 #      working directory. `domarinn run examples/13-exec-provider` from the repo
 #      root and `domarinn run .` from inside it behave identically.
 #
-#   2. The cache fingerprint is the COMMAND, not the program's bytes. Rebuild
-#      your binary and the cache still answers with the old results — which is
+#   2. The cache key hashes what the program is SENT — the command, its args,
+#      the document on stdin — never the program's own bytes. Rebuild your
+#      binary and the cache still answers with the old results, which is
 #      usually what you want during a refactor and never what you want after a
 #      behaviour change. `cache_salt` is the lever; see example 22.
 #
-#   3. Because the model is part of argv, it is part of the fingerprint. Two
+#   3. Because the model is part of argv, it is part of that request. Two
 #      models cannot collide in the cache, and there is deliberately no flag
 #      that swaps a provider's model — you write a second provider.
 #

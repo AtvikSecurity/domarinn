@@ -14,6 +14,7 @@
 #       server-url: https://domarinn.example.com   # optional (enables --share)
 #       token: ${{ secrets.DOMARINN_TOKEN }}        # optional bearer token
 #       against: server:baseline                      # optional baseline to diff
+#       cache-dir: .domarinn-cache                 # optional; actions/cache path
 #       fail-on-regression: "true"
 #
 # Exit-code contract (from the CLI): 0 = all pass; 1 = assertion failure or
@@ -89,6 +90,14 @@ inputs:
       legitimately has no work.
     required: false
     default: "false"
+  cache-dir:
+    description: >-
+      Directory for the local response cache, e.g. a path restored by
+      actions/cache. Passed to domarinn as --cache-dir. Empty uses the
+      default (.domarinn/cache beside the suite), which a cache action
+      may not save.
+    required: false
+    default: ""
 
 outputs:
   exit-code:
@@ -231,6 +240,7 @@ runs:
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_AGAINST: ${{ inputs.against }}
         INPUT_ALLOW_EMPTY: ${{ inputs.allow-empty }}
+        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
       run: |
         # No `set -e`: we must capture the CLI exit code and keep going so the
         # summary, artifact upload, PR comment, and gate step still run.
@@ -240,6 +250,7 @@ runs:
 
         args=(run "${INPUT_CONFIG}" --format junit --out "${results}")
         [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
+        [ -n "${INPUT_CACHE_DIR}" ] && args+=(--cache-dir "${INPUT_CACHE_DIR}")
         [ "${INPUT_ALLOW_EMPTY}" = "true" ] && args+=(--allow-empty)
         # Upload the run when a server is configured (token via DOMARINN_TOKEN).
         # `--share` also records the run's URL on the stored run, which is where

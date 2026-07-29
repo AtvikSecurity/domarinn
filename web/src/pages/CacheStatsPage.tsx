@@ -25,14 +25,16 @@ export function CacheStatsPage() {
       <div>
         <h1 className="text-lg font-semibold tracking-tight">Cache</h1>
         <p className="text-sm text-muted">
-          Content-addressed cache shared between runs and teammates.
+          Content-addressed cache shared between runs and teammates. Lookup hit rate
+          counts lookups this cache served, not a run's own cached-cases rate (that
+          one is on the run page and in the CI summary).
         </p>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Tile label="Entries" value={formatInt(s.entries)} />
         <Tile label="Total size" value={formatBytes(s.total_bytes)} />
-        <Tile label="Hit rate" value={formatPercent(hitRate)} accent />
+        <Tile label="Lookup hit rate" value={formatPercent(hitRate)} accent />
         <Tile label="Hits" value={formatInt(s.hits)} />
         <Tile label="Misses" value={formatInt(s.misses)} />
       </div>

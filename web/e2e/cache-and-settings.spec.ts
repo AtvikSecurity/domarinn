@@ -11,7 +11,7 @@ test.describe("Cache stats page", () => {
     await expect(page.getByText("Entries", { exact: true })).toBeVisible();
     await expect(page.getByText("Total size", { exact: true })).toBeVisible();
     await expect(page.getByText("256.0 MB")).toBeVisible();
-    await expect(page.getByText("Hit rate", { exact: true })).toBeVisible();
+    await expect(page.getByText("Lookup hit rate", { exact: true })).toBeVisible();
     await expect(page.getByText("80.0%")).toBeVisible();
     await expect(page.getByText("Hits", { exact: true })).toBeVisible();
     await expect(page.getByText("19,233")).toBeVisible();

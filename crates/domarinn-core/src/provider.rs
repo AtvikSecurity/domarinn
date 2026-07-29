@@ -210,12 +210,17 @@ pub trait Provider: Send + Sync {
     /// Stable id from the config.
     fn id(&self) -> &str;
 
-    /// What *selects* this provider — the identity half of every cache key.
+    /// What *selects* this provider: canonical JSON naming the thing that will
+    /// answer — type, plus `model`/`base_url`/`command`/`url` and any
+    /// `cache_salt`.
     ///
-    /// Canonical JSON naming the thing that will answer: type, plus
-    /// `model`/`base_url`/`command`/`url` and any `cache_salt`. The question
-    /// being asked is hashed separately, by
-    /// [`crate::cache_key::provider_cache_key`].
+    /// **Frozen.** It was the identity half of every cache key through 0.4.x;
+    /// since 0.5.0 the key hashes the canonical request instead
+    /// ([`Provider::canonical_request`]). Two things still read it, and both
+    /// break if it moves: `digests::provider_digest`, which `--against` run
+    /// diffing compares, and [`Provider::legacy_fingerprints`], which
+    /// reconstructs ≤0.4.x keys to adopt entries under them. So a change here no
+    /// longer invalidates a cache — it strands one.
     ///
     /// Two rules, both load-bearing:
     ///
@@ -275,12 +280,24 @@ pub trait Provider: Send + Sync {
 
     /// Fingerprints this provider published in earlier versions, newest first.
     ///
-    /// Consulted only on a miss, so entries written before a fingerprint changed
-    /// shape can be adopted instead of re-paid for. Empty for a provider whose
-    /// shape has never changed. See [`crate::cache_migrate`], which owns the
-    /// literals and is meant to be deleted once they stop appearing.
-    fn legacy_fingerprints(&self) -> &[Json] {
-        &[]
+    /// Consulted only on a miss, so entries keyed the ≤0.4.x way — a hash of the
+    /// fingerprint plus the request pieces — can be adopted instead of re-paid
+    /// for. See [`crate::cache_migrate`], which owns the historical literals,
+    /// the key function that consumes these, and the deletion timeline.
+    ///
+    /// The default is no longer empty: 0.5.0 moved the live key off the
+    /// fingerprint entirely, so *every* provider has exactly one shape to
+    /// migrate from even if its fingerprint never changed — its own current one.
+    /// Overriding this means prepending, never replacing: a provider whose
+    /// fingerprint has older generations returns
+    /// `[self.fingerprint(), …older…]`.
+    ///
+    /// Returned by value rather than as a slice because the ≤0.4.x shape is
+    /// computed rather than stored. The cost is one clone per probing miss,
+    /// which [`crate::cache_migrate::MigrationProbe`] caps at a handful of cases
+    /// per run.
+    fn legacy_fingerprints(&self) -> Vec<Json> {
+        vec![self.fingerprint()]
     }
 
     /// The request this provider *would* send for `req` — the payload the model
@@ -298,9 +315,40 @@ pub trait Provider: Send + Sync {
     /// still reports the request the cached entry stands for. Must exclude
     /// secrets: bodies only, never headers.
     ///
+    /// For what the *cache* keys on, see [`Provider::canonical_request`]: the
+    /// same request, with whatever must not separate two callers withheld.
+    ///
     /// `None` means "this provider does not describe its request", and the UI
     /// falls back to showing the rendered prompt alone.
     fn request_preview(&self, _req: &ProviderRequest) -> Option<Json> {
+        None
+    }
+
+    /// The redacted canonical outgoing request: what [`Provider::call`] would
+    /// send, with call-time env values replaced by stable placeholders and
+    /// correlation metadata (the exec `test` block) stripped. This is the
+    /// identity half of every cache key and is persisted verbatim into cache
+    /// entries.
+    ///
+    /// Distinct from [`Provider::request_preview`], which exists to be read, and
+    /// the two documents diverge for a different reason per provider. `openai`
+    /// publishes the same envelope twice. `anthropic` *adds* a member here — its
+    /// `anthropic-version` header, which selects a response shape and so must
+    /// key, while a preview shows no headers at all. `exec` withholds: the
+    /// `test` block is sent but stripped here, because a test's identity is not
+    /// what makes two calls interchangeable. `http` renders both documents
+    /// against placeholder `env` — its url/headers/body are templates resolved
+    /// at call time, so there is no byte-faithful preview of it that could be
+    /// persisted safely — and keys the `output_expr` it does not preview.
+    ///
+    /// `None` = this call is uncacheable.
+    fn canonical_request(&self, _req: &ProviderRequest) -> Option<Json> {
+        None
+    }
+
+    /// The provider-level cache salt, when configured. Joins the cache key as
+    /// its own member; never sent to the provider.
+    fn cache_salt(&self) -> Option<&str> {
         None
     }
 
