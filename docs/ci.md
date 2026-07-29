@@ -238,7 +238,7 @@ Keys are written even when empty, so a workflow referencing one always gets a de
 
 ## Uploading CI runs to a shared server
 
-Point CI at a shared [server](./server.md) so every eval is browsable and each PR gets a durable link, and so runs can share a cache of every request they make — provider calls, judge verdicts, embeddings.
+Point CI at a shared [server](./reference/server.md) so every eval is browsable and each PR gets a durable link, and so runs can share a cache of every request they make — provider calls, judge verdicts, embeddings.
 
 - **`server-url` / `DOMARINN_SERVER_URL`** — the server base URL. Setting it makes the run upload with **`--share`**.
 - **`DOMARINN_TOKEN`** (the action's `token` input) — a bearer token sent on upload. Unless the server is explicitly in `open` mode, this needs **`write`** scope (a static `write:` token or an `domarinn_` API key). Always pass it from a secret.
@@ -400,7 +400,7 @@ $ docker buildx imagetools inspect ghcr.io/atviksecurity/domarinn:rolling
 
 [`docker-bake.hcl`](https://github.com/AtvikSecurity/domarinn/blob/main/docker-bake.hcl) is **not** used by CI — it exists so `docker buildx bake` reproduces the image locally.
 
-Consume the image as described in [`./deploy.md`](./deploy.md):
+Consume the image as described in [`./guides/self-host.md`](./guides/self-host.md):
 
 ```
 ghcr.io/atviksecurity/domarinn:rolling

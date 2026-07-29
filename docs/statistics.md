@@ -52,7 +52,7 @@ For repeated trials, domarinn computes the unbiased **pass@k** estimator — the
 
 ## Baselines on the server
 
-The server can mark a run as the **baseline** for a project/suite, and the compare view defaults to it. This gives a stable reference to gate against across CI runs without threading run ids by hand. See [server.md](./server.md).
+The server can mark a run as the **baseline** for a project/suite, and the compare view defaults to it. This gives a stable reference to gate against across CI runs without threading run ids by hand. See [server.md](./reference/server.md).
 
 ## A CI-ready pattern
 

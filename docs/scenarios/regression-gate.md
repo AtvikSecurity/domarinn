@@ -6,7 +6,7 @@
 
 ## 1. Store runs somewhere CI can reach
 
-Regression gating needs a baseline that survives a fresh checkout. Run the [results server](../server.md) and point runs at it:
+Regression gating needs a baseline that survives a fresh checkout. Run the [results server](../reference/server.md) and point runs at it:
 
 ```console
 $ export DOMARINN_SERVER_URL=https://evals.example.com

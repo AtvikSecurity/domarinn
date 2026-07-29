@@ -47,8 +47,8 @@ Read [How a run works](concepts/how-a-run-works.md) first — four ideas that ex
 | Doc | What it covers |
 | --- | -------------- |
 | [CI integration](ci.md) | Gating pull requests, the reusable GitHub Action, PR comments, and a shared cache in CI. |
-| [Server](server.md) | The results server, the web UI, and accounts: local logins, roles, API keys, admin, auth modes. |
-| [Deploy](deploy.md) | Docker, docker-compose, Kubernetes, backups, and reverse-proxy notes. |
+| [Server](reference/server.md) | The results server, the web UI, and accounts: local logins, roles, API keys, admin, auth modes. |
+| [Self-hosting](guides/self-host.md) | Docker, docker-compose, Kubernetes, backups, and reverse-proxy notes. |
 
 ## Why domarinn
 

@@ -95,8 +95,8 @@ Full documentation is published at **<https://docs.domarinn.com/>** (source in [
 
 - [Getting started](docs/getting-started.md) · [domarinn.yaml](docs/reference/domarinn-yaml.md) · [Assertions](docs/reference/assertions.md) · [Providers](docs/reference/providers.md)
 - [Grading](docs/grading.md) · [Caching](docs/caching.md) · [Statistics](docs/statistics.md) · [CLI reference](docs/reference/cli.md)
-- [Server & accounts](docs/server.md) · [Deploy](docs/deploy.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/reference/protocol.md)
-- [MCP endpoint](docs/server.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
+- [Server & accounts](docs/reference/server.md) · [Self-hosting](docs/guides/self-host.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/reference/protocol.md)
+- [MCP endpoint](docs/reference/mcp.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
 - **[Examples](docs/examples/index.md)** — 32 runnable suites, one capability each, every one executed in CI
 - **[Scenarios](docs/scenarios/index.md)** · [How a run works](docs/concepts/how-a-run-works.md) · [Troubleshooting](docs/troubleshooting.md) · [Migrating from promptfoo](docs/migrate-promptfoo.md)
 
@@ -113,7 +113,7 @@ claude mcp add --transport http domarinn http://localhost:8321/api/v1/mcp \
 ```
 
 Eight read-only tools, three prompts, dual-era MCP (`2026-07-28` plus the handshake revisions), in
-the same binary — no sidecar process. See [MCP endpoint](docs/server.md#mcp-endpoint), or install
+the same binary — no sidecar process. See [MCP endpoint](docs/reference/mcp.md#mcp-endpoint), or install
 the [Claude Code plugin](plugin/README.md) which bundles it with eval-authoring and triage skills.
 
 ## Workspace layout

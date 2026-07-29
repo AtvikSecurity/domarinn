@@ -82,4 +82,4 @@ $ domarinn cache gc --older-than 30d eval/
 
 - [Caching](../caching.md) — the full key semantics and backend details.
 - [Example 21](../examples/caching-and-statistics.md#example-21--caching) and [22](../examples/caching-and-statistics.md#example-22--cache-salts).
-- [Server](../server.md) — running the shared tier.
+- [Server](../reference/server.md) — running the shared tier.

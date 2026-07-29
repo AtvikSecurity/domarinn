@@ -237,7 +237,7 @@ domarinn cache clear                 # remove everything
 Durations accept `d`, `h`, `m`, `s` (e.g. `12h`, `90s`).
 
 - **`gc` requires `--older-than`.** A bare `domarinn cache gc` is a usage error, not a full purge: the obvious reading of `gc` is "tidy up a bit", and the command that removes everything should be the one that says so. Use `cache clear`.
-- **These commands address the local tier only.** They do not reach an S3 bucket or the server — remote retention is the bucket's lifecycle rules and the server's [prune endpoint and hourly retention task](./server.md#cache-shared-provider-cache).
+- **These commands address the local tier only.** They do not reach an S3 bucket or the server — remote retention is the bucket's lifecycle rules and the server's [prune endpoint and hourly retention task](./reference/rest-api.md#cache-shared-provider-cache).
 - **The legacy tier is reported by `stats` and `path` always, but only purged when it is yours.** `clear` and `gc` touch it only when the suite sits at or under the process working directory, because a cwd-relative `.domarinn/cache` belongs to whatever project you happen to be standing in — `cd ~/projB && domarinn cache clear ~/projA/evals` must not take projB's cache with it. `stats` says which of the two it is.
 
 ## Upgrading to 0.5
@@ -255,4 +255,4 @@ So domarinn migrates instead of re-paying. Things worth knowing before the first
 
 ## The server as the shared tier
 
-When the domarinn server backs a `layered` cache, it serves the entries over `/api/v1/cache/*` and prunes them on a schedule. The wire contract, the size and age limits, and the auth scopes are in [server.md](./server.md#cache-shared-provider-cache).
+When the domarinn server backs a `layered` cache, it serves the entries over `/api/v1/cache/*` and prunes them on a schedule. The wire contract, the size and age limits, and the auth scopes are in [rest-api.md](./reference/rest-api.md#cache-shared-provider-cache).

@@ -204,7 +204,7 @@ domarinn server --data-dir ./data &        # UI + API on :8321
 DOMARINN_SERVER_URL=http://localhost:8321 domarinn run --share
 ```
 
-Open `http://localhost:8321` for the per-suite overview, `/runs` for the run list, plus the run-detail grid and side-by-side comparison. To add logins, admin users, and API keys, see [server.md](./server.md).
+Open `http://localhost:8321` for the per-suite overview, `/runs` for the run list, plus the run-detail grid and side-by-side comparison. To add logins, admin users, and API keys, see [server.md](./reference/server.md).
 
 ## Where to go next
 
@@ -215,5 +215,5 @@ Open `http://localhost:8321` for the per-suite overview, `/runs` for the run lis
 - [caching.md](./caching.md) — sharing cache between teammates.
 - [statistics.md](./statistics.md) — confidence intervals, significance, baselines.
 - [cli.md](./reference/cli.md) — the full command reference.
-- [server.md](./server.md) / [deploy.md](./deploy.md) — hosting and accounts.
+- [server.md](./reference/server.md) / [self-host.md](./guides/self-host.md) — hosting and accounts.
 - [ci.md](./ci.md) — gating pull requests.

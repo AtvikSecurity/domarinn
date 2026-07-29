@@ -218,7 +218,7 @@ Manage the **local** content-addressed cache. All four take a suite path (defaul
 
 Two scope rules worth knowing:
 
-- **Local tier only.** These never reach an S3 bucket or the server. Remote retention is the bucket's lifecycle rules and the server's [prune endpoint plus hourly retention task](../server.md#cache-shared-provider-cache).
+- **Local tier only.** These never reach an S3 bucket or the server. Remote retention is the bucket's lifecycle rules and the server's [prune endpoint plus hourly retention task](rest-api.md#cache-shared-provider-cache).
 - **The pre-0.4 legacy tier is reported always, purged only when it is yours.** A cwd-relative `.domarinn/cache` left by an older domarinn is shown by `stats` and `path`, but `clear`/`gc` touch it only when the suite sits at or under the current directory — `cd ~/projB && domarinn cache clear ~/projA/evals` must not take projB's cache with it. `stats` says which of the two applies.
 
 See [caching.md](../caching.md) for the key rule, backends, and team sharing.
@@ -258,7 +258,7 @@ domarinn list tests . --generators
 
 ## `domarinn server [--port N] [--data-dir DIR]`
 
-Run the self-hostable results server + embedded web UI (default port `8321`, binds `0.0.0.0`; default data dir `/data`, env `DOMARINN_DATA_DIR`). See [server.md](../server.md) and [deploy.md](../deploy.md).
+Run the self-hostable results server + embedded web UI (default port `8321`, binds `0.0.0.0`; default data dir `/data`, env `DOMARINN_DATA_DIR`). See [server.md](server.md) and [self-host.md](../guides/self-host.md).
 
 ```sh
 domarinn server --port 8321 --data-dir ./data
