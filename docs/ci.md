@@ -258,7 +258,22 @@ A cache key holds nothing machine-specific, so a fresh checkout on a fresh runne
       cache_salt: "${env:GITHUB_SHA}"
   ```
 
-- **If the job restores a cache directory**, point `--cache-dir` at it (or set `DOMARINN_CACHE_DIR`). Otherwise the default lands beside the suite, which a cache action may not be saving.
+- **If the job restores a cache directory**, hand it to the action as `cache-dir`; it becomes `--cache-dir` on the run. Leave it out and the cache lands at `.domarinn/cache` beside the suite, which is rarely the path the cache step saves.
+
+  ```yaml
+  - uses: actions/cache@v4
+    with:
+      path: .domarinn-cache
+      key: domarinn-cache-${{ github.run_id }}
+      restore-keys: domarinn-cache-
+
+  - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@0.1.0
+    with:
+      config: eval/domarinn.yaml
+      cache-dir: .domarinn-cache
+  ```
+
+  The path resolves against the workspace — the same base `actions/cache` uses. A run-unique `key` with a shared `restore-keys` prefix is what lets the cache grow: a key that hits exactly is never saved again, so every case added after the first run would miss forever. Driving the CLI yourself rather than through the action, `--cache-dir` and `DOMARINN_CACHE_DIR` set the same thing.
 
 ---
 
