@@ -49,3 +49,7 @@ tempfile = "3"
 # The JSON diff golden (tests/commands.rs) recomputes `diff_runs` directly to
 # assert `diff --format json` is byte-identical to the raw serialization.
 domarinn-core = { workspace = true }
+# A cache backend that degrades reports it in a log line and nowhere else, so
+# `cachecfg`'s tests capture the diagnostic with a scoped subscriber. No new
+# crate: `domarinn-logging` already depends on this exact workspace version.
+tracing-subscriber = { workspace = true }

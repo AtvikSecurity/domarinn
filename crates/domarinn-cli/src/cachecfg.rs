@@ -251,9 +251,9 @@ mod tests {
             assert_eq!(
                 remote_tier(&CacheBackendKind::S3, has_s3_cfg),
                 RemoteTier::S3,
-                "`s3` names the S3 tier outright — a missing `cache.s3` block \
-                 degrades to disk with an s3-specific warning rather than \
-                 falling back to HTTP"
+                "`s3` names the S3 tier outright, `cache.s3` or not — what a \
+                 missing block then does is `layer_s3`'s business, pinned by \
+                 `s3_without_a_cache_s3_block_degrades_to_local_disk_alone`"
             );
         }
         // ...and `layered` is exactly those two, chosen by the config.
@@ -275,6 +275,126 @@ mod tests {
             remote_tier(&CacheBackendKind::Disk, true),
             RemoteTier::None,
             "`disk` ignores a `cache.s3` block rather than being upgraded by it"
+        );
+    }
+
+    /// A `MakeWriter` that appends every line into a shared buffer.
+    #[derive(Clone)]
+    struct BufWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for BufWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufWriter {
+        type Writer = BufWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Run `f` with a capture subscriber scoped to this thread, and return what
+    /// it logged. Inert for every other test.
+    fn log_of<T>(f: impl FnOnce() -> T) -> (T, String) {
+        let buf = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(BufWriter(buf.clone()))
+            .finish();
+        let out = tracing::subscriber::with_default(subscriber, f);
+        let bytes = buf.lock().unwrap().clone();
+        (out, String::from_utf8(bytes).unwrap())
+    }
+
+    fn suite_with_backend(backend: &str) -> Suite {
+        domarinn_core::load_str(&format!(
+            r#"
+version: 1
+providers:
+  - id: p
+    type: exec
+    command: ["true"]
+tests: []
+cache:
+  backend: {backend}
+"#
+        ))
+        .expect("fixture suite must load")
+    }
+
+    /// The degrade the `s3` alias must keep: no bucket to talk to means local
+    /// disk *alone* — not the HTTP tier, which is what a "these are all just
+    /// `layered`" simplification would quietly substitute.
+    ///
+    /// Identity is the observable. `build_cache` hands back an
+    /// `Arc<dyn CacheBackend>` that says nothing about its own shape, so the
+    /// test asks whether the local tier came back untouched: a remote of any
+    /// kind means a `LayeredCache` wrapper, and a wrapper is a different
+    /// allocation.
+    #[test]
+    fn s3_without_a_cache_s3_block_degrades_to_local_disk_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let local: Arc<dyn CacheBackend> = Arc::new(LocalDiskCache::new(dir.path()));
+        let suite = suite_with_backend("s3");
+
+        let (built, logged) = log_of(|| layer_s3(local.clone(), &suite));
+
+        assert!(
+            Arc::ptr_eq(&local, &built),
+            "a missing `cache.s3` block must return the local tier itself, unwrapped"
+        );
+        assert!(
+            logged.contains("cache backend needs a cache.s3 config"),
+            "the degrade must say which config is missing; got: {logged}"
+        );
+        assert!(
+            logged.contains("backend=\"s3\"") || logged.contains("backend=s3"),
+            "...and must name s3 as the backend that degraded; got: {logged}"
+        );
+        assert!(
+            !logged.contains("server URL"),
+            "degrading to disk is not falling back to the HTTP tier; got: {logged}"
+        );
+
+        // The control for the identity assertion above: wrapping a tier around
+        // the same local backend is what a *non*-degraded build returns, and it
+        // is a different `Arc`. Without this, `ptr_eq` passing would prove
+        // nothing about whether wrapping is detectable.
+        let wrapped: Arc<dyn CacheBackend> =
+            Arc::new(LayeredCache::new(local.clone(), local.clone()));
+        assert!(!Arc::ptr_eq(&local, &wrapped));
+    }
+
+    /// ...and the same degrade through the real entry point, so the dispatch and
+    /// the fallback are pinned together rather than each in isolation.
+    #[test]
+    fn build_cache_routes_a_bare_s3_backend_into_that_degrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = LocalRoot {
+            root: dir.path().join("cache"),
+            legacy: None,
+        };
+        let suite = suite_with_backend("s3");
+
+        // `Some("")` is an explicitly empty server URL: it keeps the HTTP tier's
+        // environment fallback out of the test without touching the process
+        // environment, so a stray `DOMARINN_SERVER_URL` cannot change the answer.
+        let (_, logged) = log_of(|| build_cache(&suite, Some(""), &root));
+
+        assert!(
+            logged.contains("cache backend needs a cache.s3 config"),
+            "`backend: s3` must reach the s3 degrade, not the HTTP one; got: {logged}"
+        );
+        assert!(
+            logged.contains("is a deprecated alias for `layered`"),
+            "and must still warn that the alias is deprecated; got: {logged}"
         );
     }
 }
