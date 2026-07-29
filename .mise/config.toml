@@ -215,6 +215,10 @@ run = "zizmor --offline .github/workflows/*.yml .github/actions/*/action.yml"
 description = "Build the full docs site (MkDocs user docs + the protocol crate's rustdoc) into site/. Fails on a broken link, a missing nav file, or a `--8<--` include pointing at a file that is not there."
 run = "scripts/build-docs.sh"
 
+[tasks.screenshots]
+description = "Capture the docs' reference screenshots into docs/assets/screenshots/ from a real, seeded server: builds the UI if needed, brings up a local Ollama, seeds runs of the shipped examples, then drives Playwright. SKIP_LLM=1 skips Ollama and seeds only the offline examples; KEEP_SERVER=1 leaves the seeded server running afterwards."
+run = "scripts/docs-screenshots.sh"
+
 [tasks.docs-serve]
 description = "Serve the docs locally with live reload on http://127.0.0.1:8000 (no rustdoc nesting, so the `Protocol API` link 404s here — build with `mise run docs` to see it)."
 run = "uv run mkdocs serve"
