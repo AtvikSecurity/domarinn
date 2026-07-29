@@ -129,6 +129,7 @@ fi
 # --- 5. Seed real runs ---------------------------------------------------------
 DOMARINN_SERVER_URL="$SERVER_URL" \
   DOMARINN_TOKEN=docs-seed-token \
+  DOMARINN_READ_TOKEN=docs-read-token \
   OLLAMA_URL="$OLLAMA_URL" \
   OLLAMA_MODEL="$OLLAMA_MODEL" \
   OLLAMA_EMBED_MODEL="$OLLAMA_EMBED_MODEL" \

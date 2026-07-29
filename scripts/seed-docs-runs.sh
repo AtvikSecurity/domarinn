@@ -15,7 +15,11 @@
 #   OLLAMA_EMBED_MODEL   embedding model to use (default nomic-embed-text)
 #   DOMARINN_SERVER_URL  the running server to seed (default http://localhost:8322)
 #   DOMARINN_TOKEN       a write-scoped bearer token for that server (default
-#                        docs-seed-token)
+#                        docs-seed-token); used only for the `--share`d runs.
+#   DOMARINN_READ_TOKEN  a read-scoped bearer token for the same server (default
+#                        docs-read-token); used for the data-at-rest assertion's
+#                        GETs, so that check runs least-privilege rather than
+#                        reusing the write token it doesn't need.
 #   SEED_OFFLINE_ONLY=1  skip the Ollama-backed block entirely (no Ollama needed)
 #   SEED_EMBEDDINGS=1    also seed example 30 (needs $OLLAMA_EMBED_MODEL pulled)
 set -euo pipefail
@@ -69,6 +73,7 @@ OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:4b}"
 OLLAMA_EMBED_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
 export DOMARINN_SERVER_URL="${DOMARINN_SERVER_URL:-http://localhost:8322}"
 export DOMARINN_TOKEN="${DOMARINN_TOKEN:-docs-seed-token}"
+export DOMARINN_READ_TOKEN="${DOMARINN_READ_TOKEN:-docs-read-token}"
 export DOMARINN_RUNS_DIR
 DOMARINN_RUNS_DIR="$(mktemp -d)" # trap-cleaned below; isolates the local run store
 trap 'rm -rf "$DOMARINN_RUNS_DIR"' EXIT
@@ -144,13 +149,18 @@ fi
 # Every run just shared carries a config_snapshot the server returns verbatim
 # and the UI renders on the compare page. Prove none of them named anything
 # other than loopback before this script hands off to the capture pipeline.
+#
+# Read-only, so this authenticates with $DOMARINN_READ_TOKEN rather than the
+# write-scoped $DOMARINN_TOKEN used above for `--share`: the write token would
+# work too (write subsumes read), but the assertion needs no write access, and
+# reusing it here would leave the read token dead configuration.
 echo "==> checking every seeded run's config_snapshot for non-localhost base_url values"
 if ! command -v jq >/dev/null 2>&1; then
   echo "seed-docs-runs: jq is required for the data-at-rest check (pinned in .mise/config.toml)" >&2
   exit 1
 fi
 
-auth_header="Authorization: Bearer $DOMARINN_TOKEN"
+auth_header="Authorization: Bearer $DOMARINN_READ_TOKEN"
 runs_json="$(curl -fsS -H "$auth_header" "$DOMARINN_SERVER_URL/api/v1/runs?limit=100")"
 run_ids="$(printf '%s' "$runs_json" | jq -r '.runs[].id')"
 
