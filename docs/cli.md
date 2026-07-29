@@ -84,7 +84,7 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--no-provenance` | Do not record the OS username or hostname. Git, CI and version metadata are still recorded, and the run is marked redacted. |
 
 ```sh
-domarinn run examples/render-health                 # run, print a table
+domarinn run examples/12-render-health                 # run, print a table
 domarinn run --tag safety -j 8 --format junit --out results.xml
 domarinn run --against server:baseline --summary-md summary.md
 domarinn run --note "retry backoff, 3rd attempt"    # label this run
@@ -123,7 +123,7 @@ See [configuration.md](./configuration.md) for the suite file and [statistics.md
 Parse and structurally validate a suite. **No provider calls.** Use it in pre-commit and CI to catch config errors fast. Exit `0` when valid (prints a one-line summary); exit `2` and lists issues otherwise.
 
 ```sh
-domarinn validate examples/render-health
+domarinn validate examples/12-render-health
 ```
 
 ## `domarinn diff <BASE> <HEAD> [flags]`
@@ -245,7 +245,7 @@ List what a suite resolves to. `--json` emits a JSON array.
 `list tests` resolves inline cases, `file://` globs, and matrix expansion. It does **not** run the suite's `generator:` commands unless you pass `--generators`: a generator only produces cases by being executed, and `list` is otherwise a read-only command. Without the flag, a suite with generators gets a note on stderr saying how many were skipped; with it, the produced ids appear in the listing exactly as they will at run time, which is what makes them usable as `--filter` targets.
 
 ```sh
-domarinn list providers examples/render-health
+domarinn list providers examples/12-render-health
 domarinn list tests . --json
 domarinn list tests . --generators
 ```

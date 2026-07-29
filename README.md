@@ -57,7 +57,7 @@ git clone https://github.com/AtvikSecurity/domarinn && cd domarinn
 
 # Run a suite offline - no API key, no model, no network. Needs python3,
 # which is all the example's system under test (examples/echo-provider.py) is.
-domarinn run examples/render-health
+domarinn run examples/12-render-health
 
 # Print the config JSON Schema for editor completion
 domarinn schema config > domarinn.schema.json
@@ -91,12 +91,14 @@ See **[docs/getting-started.md](docs/getting-started.md)** for a full walkthroug
 
 ## Documentation
 
-Full docs live in **[`docs/`](docs/README.md)**:
+Full documentation is published at **<https://docs.domarinn.com/>** (source in [`docs/`](docs/)):
 
 - [Getting started](docs/getting-started.md) · [Configuration](docs/configuration.md) · [Assertions](docs/assertions.md) · [Providers](docs/providers.md)
 - [Grading](docs/grading.md) · [Caching](docs/caching.md) · [Statistics](docs/statistics.md) · [CLI reference](docs/cli.md)
 - [Server & accounts](docs/server.md) · [Deploy](docs/deploy.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/protocol.md)
 - [MCP endpoint](docs/server.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
+- **[Examples](docs/examples.md)** — 32 runnable suites, one capability each, every one executed in CI
+- **[Scenarios](docs/scenarios/index.md)** · [How a run works](docs/concepts/how-a-run-works.md) · [Troubleshooting](docs/troubleshooting.md) · [Migrating from promptfoo](docs/migrate-promptfoo.md)
 
 ## For agents
 

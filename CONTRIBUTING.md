@@ -40,15 +40,17 @@ mise install     # installs the pinned toolchain and the git hooks
 
 Useful tasks (`mise tasks` lists them all):
 
-| Task                 | What it does                                                   |
-| -------------------- | -------------------------------------------------------------- |
-| `mise run build`     | Build the web UI, then the release binary with the UI embedded |
-| `mise run dev`       | Run the server + API on `:8321`                                |
-| `mise run test`      | `cargo test --workspace`                                       |
-| `mise run lint`      | clippy (as errors) + a formatting check                        |
-| `mise run fmt`       | Auto-format                                                    |
-| `mise run schema`    | Regenerate `domarinn.schema.json`                              |
-| `mise run gen-types` | Regenerate the TypeScript DTOs from the Rust types             |
+| Task                  | What it does                                                   |
+| --------------------- | -------------------------------------------------------------- |
+| `mise run build`      | Build the web UI, then the release binary with the UI embedded |
+| `mise run dev`        | Run the server + API on `:8321`                                |
+| `mise run test`       | `cargo test --workspace`                                       |
+| `mise run lint`       | clippy (as errors) + a formatting check                        |
+| `mise run fmt`        | Auto-format                                                    |
+| `mise run schema`     | Regenerate `domarinn.schema.json`                              |
+| `mise run gen-types`  | Regenerate the TypeScript DTOs from the Rust types             |
+| `mise run docs`       | Build the documentation site into `site/`                      |
+| `mise run docs-serve` | Serve the docs locally with live reload                        |
 
 ## The one command that matters
 
@@ -64,6 +66,18 @@ Two of the gates catch _generated_ files drifting from their sources, which is t
 
 - **`schema-check`** — you changed a config type but didn't regenerate the JSON Schema. Fix: `mise run schema`, then commit `domarinn.schema.json`.
 - **`gen-types-check`** — you changed a DTO but didn't regenerate the TypeScript types. Fix: `mise run gen-types`, then commit `web/src/api/generated/`. Untracked new files count as drift too.
+
+A third gate catches documentation drifting from the examples it shows:
+
+- **the examples harness** (`crates/domarinn-cli/tests/examples.rs`) — every directory under `examples/` is run end to end against the real binary, and must both appear in `crates/domarinn-cli/tests/examples/table.rs` _and_ be transcluded by some page under `docs/`.
+
+**Adding an example is three steps, and CI names whichever one you missed:**
+
+1. Create `examples/NN-kebab-name/domarinn.yaml`.
+2. Add a row to `crates/domarinn-cli/tests/examples/table.rs` stating its exit code, cell tallies and case ids.
+3. Transclude it from a page: `--8<-- "examples/NN-kebab-name/domarinn.yaml"`.
+
+The point is that a documentation page and its test read the _same bytes_, so a page cannot describe a suite that no longer works. Docs never contain a copy of a full example — only the transclusion.
 
 Also: `clippy` runs with `-D warnings`, and the web lint runs with `--max-warnings=0`. There is no warning budget.
 

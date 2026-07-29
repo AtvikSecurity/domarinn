@@ -447,7 +447,7 @@ allowed, since no CLI client sends one. CORS is layered on this route alone, wit
 `Access-Control-Allow-Credentials` off — so a cross-origin call can never be cookie-authenticated,
 and the endpoint cannot become a CSRF vector.
 
-There is also a [Claude Code plugin](../plugin/README.md) that bundles this endpoint's
+There is also a [Claude Code plugin](https://github.com/AtvikSecurity/domarinn/blob/main/plugin/README.md) that bundles this endpoint's
 configuration along with skills for authoring and triaging suites.
 
 ---
