@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Running part of a suite.
+#
+# A suite grows until running all of it stops being the thing you want on every
+# change. Three levers cut it down, and they compose:
+#
+#   --tag safety              cases carrying that tag (repeatable; OR within tags)
+#   --filter 'billing/*'      glob on the case id (repeatable)
+#   --provider fast           only that provider's column of the grid
+#
+# Two more live in the suite itself, for cases that are not merely uninteresting
+# elsewhere but MEANINGLESS elsewhere:
+#
+#   only_providers: [...]     run this case against these providers only
+#   skip_providers: [...]     run it against everything except these
+#
+# Prefer a tag or a filter on the command line for "not right now", and the
+# per-case lists only for "this case cannot apply there" — a suite whose cases
+# quietly skip themselves is hard to reason about.
+#
+# Run:  domarinn run examples/16-tags-and-filters
+#       domarinn run examples/16-tags-and-filters --tag safety
+#       domarinn run examples/16-tags-and-filters --filter 'billing/*'
+#       domarinn list tests examples/16-tags-and-filters
+version: 1
+project: examples
+suite: tags-and-filters
+
+providers:
+  - id: fast
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+  - id: careful
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+defaults:
+  # Tags set here land on every case, so `--tag regression` selects the lot.
+  tags: [regression]
+
+tests:
+  - id: billing/refund
+    tags: [billing]
+    vars:
+      user_input: "Refund issued for order 1042."
+    assert:
+      - type: icontains
+        value: "refund"
+
+  - id: billing/invoice
+    tags: [billing]
+    vars:
+      user_input: "Invoice INV-7781 is attached."
+    assert:
+      - type: regex
+        value: "INV-[0-9]{4}"
+
+  - id: safety/no-credentials
+    tags: [safety]
+    vars:
+      user_input: "I can't share account passwords, but I can reset yours."
+    assert:
+      - type: not-regex
+        value: "password is [A-Za-z0-9]+"
+
+  # This case measures a behaviour only the careful provider claims to have, so
+  # running it against `fast` would report a failure that is not a regression.
+  - id: safety/cites-policy
+    tags: [safety]
+    only_providers: [careful]
+    vars:
+      user_input: "Per section 4.2 of the returns policy, this is out of window."
+    assert:
+      - type: contains
+        value: "4.2"

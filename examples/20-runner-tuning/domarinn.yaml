@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# How fast, how hard, how long: the `runner` block.
+#
+# Cases are independent, so concurrency changes wall-clock and nothing else —
+# until it changes your results, which is what a rate limit is for. The default
+# concurrency is 1: deliberately boring, so a first run is reproducible and
+# nobody's first experience of the tool is a wall of 429s.
+#
+# Commit these in the suite rather than passing -j on the command line, so a
+# local run and CI schedule the same way. The flags exist to override for one
+# run, not to carry the configuration.
+#
+# Run:  domarinn run examples/20-runner-tuning
+#       domarinn run examples/20-runner-tuning -j 1     # override for one run
+version: 1
+project: examples
+suite: runner-tuning
+
+providers:
+  - id: slow-service
+    type: exec
+    command: ["python3", "./slow.py"]
+    # Per-call ceiling. A call that exceeds it is an ERROR, not a failure — the
+    # answer never arrived, so there was nothing to grade.
+    timeout_ms: 5000
+    cache_salt: "dev"
+
+runner:
+  # Eight calls in flight. Match this to what the system under test can take,
+  # not to your core count — the bottleneck is almost always on the other end.
+  concurrency: 8
+
+  # A ceiling on request RATE, which is a different constraint from how many are
+  # in flight. Eight concurrent calls that each take a second is 8 rps; the same
+  # eight against a fast endpoint could be hundreds.
+  rate_limit:
+    rps: 20
+
+  # A whole-run ceiling, distinct from the provider's per-call one above.
+  timeout_ms: 120000
+
+  # Retry only what the provider says is worth retrying. See example 19.
+  retries:
+    max: 2
+    initial_ms: 50
+    max_ms: 500
+    jitter: true
+
+  # On by default: stop evaluating a case once its outcome is decided, so a
+  # cheap failure never pays for an expensive grader. Set false only when you
+  # want every assertion's score recorded even on a decided case.
+  short_circuit: true
+
+tests:
+  - id: throughput/a
+    vars: { user_input: "alpha" }
+    assert: [{ type: contains, value: "alpha" }]
+  - id: throughput/b
+    vars: { user_input: "bravo" }
+    assert: [{ type: contains, value: "bravo" }]
+  - id: throughput/c
+    vars: { user_input: "charlie" }
+    assert: [{ type: contains, value: "charlie" }]
+  - id: throughput/d
+    vars: { user_input: "delta" }
+    assert: [{ type: contains, value: "delta" }]

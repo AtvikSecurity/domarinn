@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# How sure are you?
+#
+# A pass rate off one run of twenty cases is a number with no error bar. Models
+# are stochastic; so is anything built on them. "17/20 passed" and "17/20 passed,
+# 95% CI [0.62, 0.96]" are the same measurement, but only one of them tells you
+# whether yesterday's 15/20 was a regression or noise.
+#
+# `--repeat N` runs every cell N times. domarinn then reports:
+#
+#   * WILSON confidence intervals on the pass rate — well-behaved at small N and
+#     at rates near 0 or 1, where the normal approximation is simply wrong
+#   * PASS@K — did at least one of k attempts succeed, which is the right
+#     question for anything with a retry loop in front of it
+#   * MCNEMAR significance when diffing two runs — a PAIRED test, because the
+#     two runs saw the same cases and treating them as independent samples
+#     throws away exactly the information that makes the comparison sharp
+#
+# The trial index is part of the cache key, so repeats genuinely re-sample
+# instead of replaying one cached answer N times.
+#
+# Run:  domarinn run examples/23-repeat-and-confidence --repeat 5
+version: 1
+project: examples
+suite: repeat-and-confidence
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  - id: stability/greeting
+    vars:
+      user_input: "Happy to help — what can I do for you?"
+    assert:
+      - type: icontains
+        value: "help"
+  - id: stability/refusal
+    vars:
+      user_input: "That's outside what I can access."
+    assert:
+      - type: icontains
+        value: "outside"

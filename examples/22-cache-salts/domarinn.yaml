@@ -1,0 +1,72 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Busting the cache on purpose, at the right granularity.
+#
+# The cache key hashes what domarinn can SEE. When the system under test loads
+# its own content across a process boundary — prompts from a registry, rules
+# from a database, a model baked into a binary — domarinn never sees that
+# content, so editing it changes nothing about the request and the cache keeps
+# answering with yesterday's results.
+#
+# `cache_salt` is the lever, and it exists at two levels because it is really
+# two different problems.
+#
+# PROVIDER-LEVEL: a coarse "same build?" pin. Bump it when the program itself
+# changes behaviour. Do NOT make it a content digest of everything the program
+# reads — that throws the whole cache away on any edit, which is the outcome the
+# per-case salt exists to avoid.
+#
+# PER-CASE: a content digest of just the thing THIS case exercises. Edit one
+# prompt and only the cases that use it re-run. This is what keeps a large suite
+# affordable while staying honest.
+#
+# `$digest:` computes that digest for you. The glob is rendered against the
+# case's own vars, matched files are hashed in sorted order WITH their relative
+# paths, and a glob matching nothing is an error rather than an empty digest —
+# because an empty digest would silently mean "never bust".
+#
+# Run:  domarinn run examples/22-cache-salts
+version: 1
+project: examples
+suite: cache-salts
+
+providers:
+  - id: prompt-runner
+    type: exec
+    # The request carries only a prompt_id; the program reads the prompt file
+    # itself. domarinn therefore cannot see a prompt edit — hence the salts.
+    command: ["python3", "./run-prompt.py"]
+    # Coarse version pin. A commit SHA or a release tag is the usual value.
+    # Bump when the program's own logic changes.
+    cache_salt: "runner-v3"
+
+tests:
+  - id: prompts/greeting
+    vars:
+      prompt_id: greeting
+      user_message: "hello there"
+    # Digest of just this case's prompt. Editing prompts/greeting.md busts this
+    # case and nothing else.
+    cache_salt: "$digest: prompts/{{ prompt_id }}.md"
+    assert:
+      - type: icontains
+        value: "welcome"
+
+  - id: prompts/escalation
+    vars:
+      prompt_id: escalation
+      user_message: "this is unacceptable"
+    cache_salt: "$digest: prompts/{{ prompt_id }}.md"
+    assert:
+      - type: icontains
+        value: "specialist"
+
+  # A case may digest more than one file — every prompt the flow touches.
+  - id: prompts/whole-flow
+    vars:
+      prompt_id: greeting
+      user_message: "hi"
+    cache_salt: "$digest: prompts/*.md"
+    assert:
+      - type: length
+        min: 1

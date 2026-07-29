@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Calling an OpenAI-compatible endpoint.
+#
+# `type: openai` speaks the chat-completions API, which is the lingua franca:
+# OpenAI itself, Ollama, vLLM, LiteLLM, OpenRouter, Together, and most gateways
+# all accept it. Point `base_url` at whichever one you have.
+#
+# TWO RULES ABOUT SECRETS, both load-bearing:
+#
+#   * `api_key_env` names the VARIABLE, never the key. The value is read at call
+#     time and never enters the suite, the cache key, or a shared run.
+#   * `${env:VAR:-default}` resolves at LOAD time and DOES enter the cache key.
+#     Use it for things that change the answer — endpoint, model, mode — and
+#     never for credentials.
+#
+# Run:  domarinn run examples/26-openai-provider
+#       OPENAI_BASE_URL=http://localhost:11434/v1 domarinn run examples/26-openai-provider
+version: 1
+project: examples
+suite: openai-provider
+
+providers:
+  - id: gpt
+    label: "gpt-4o-mini"
+    type: openai
+    model: "gpt-4o-mini"
+    # Defaults to the real API, and redirects with one variable — the same one
+    # the vendor's own SDK honours, so a gateway, a proxy or a local Ollama
+    # needs no edit to this file.
+    base_url: "${env:OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    api_key_env: OPENAI_API_KEY
+    # Passed through to the API verbatim. temperature 0 is not a guarantee of
+    # determinism, but it removes the largest source of run-to-run noise.
+    params:
+      temperature: 0
+      max_tokens: 256
+
+prompts:
+  - id: geography
+    messages:
+      - role: system
+        content: "Answer with a single sentence."
+      - role: user
+        content: "What is the capital of {{ country }}?"
+
+tests:
+  - id: capital/france
+    vars:
+      country: "France"
+    assert:
+      - type: icontains
+        value: "Paris"
+  - id: capital/norway
+    vars:
+      country: "Norway"
+    assert:
+      - type: icontains
+        value: "Oslo"

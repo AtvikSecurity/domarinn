@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Cases produced by a program.
+#
+# A glob reads cases someone wrote. A GENERATOR computes them — so coverage
+# tracks the thing being covered instead of drifting from it. If your prompts,
+# tools, or policies live in a registry, enumerate the registry and every new
+# entry gets a test for free, on the day it is added.
+#
+# A generator is an exec-protocol program like any other: it reads one JSON
+# request on stdin and writes {"tests": [...]} on stdout. Whatever `config` you
+# put here is handed to it verbatim, so one script can serve several suites.
+#
+# Note generators are NOT run by `domarinn list tests` unless you pass
+# `--generators` — listing is meant to be free of side effects.
+#
+# Run:  domarinn run examples/11-test-generators
+version: 1
+project: examples
+suite: test-generators
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  - generator:
+      command: ["python3", "generate-cases.py"]
+      # Arbitrary JSON, passed straight through to the generator. Keeping the
+      # policy here rather than in the script means the suite still describes
+      # what it covers.
+      config:
+        banned_phrases: ["as an AI", "I cannot help"]
+        locales: ["en", "de"]
+      timeout_ms: 30000

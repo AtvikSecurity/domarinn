@@ -28,7 +28,17 @@ import sys
 
 
 def respond(request):
-    """Echo the `user_input` var, or the whole vars map when it is absent."""
+    """Echo the most specific thing the suite gave us.
+
+    In order: the rendered prompt if the suite defined one (that is the thing
+    under test when prompts are in play), then the `user_input` var, then the
+    whole vars map. The fallbacks are what let a suite with no prompts at all -
+    a matrix sweep, a file-backed fixture - still produce an output whose
+    content the assertions can talk about.
+    """
+    prompt = request.get("prompt")
+    if prompt is not None:
+        return prompt
     variables = request.get("vars")
     if isinstance(variables, dict) and "user_input" in variables:
         return variables["user_input"]

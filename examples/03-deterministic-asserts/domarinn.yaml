@@ -1,0 +1,79 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Every deterministic assertion, on one page.
+#
+# These run locally, cost nothing, and need no model. They are also the ones
+# that run FIRST — a case whose `contains` fails never pays for an LLM grader.
+# Reach for a rubric only for what these cannot express.
+#
+# Run:  domarinn run examples/03-deterministic-asserts
+version: 1
+project: examples
+suite: deterministic-asserts
+
+providers:
+  - id: echo
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  # --- substring matching -------------------------------------------------
+  - id: substring/exact-case
+    vars:
+      user_input: "Your order #1042 shipped on Tuesday."
+    assert:
+      # `contains` is case-SENSITIVE.
+      - type: contains
+        value: "shipped"
+      # `icontains` is not.
+      - type: icontains
+        value: "TUESDAY"
+      # `icontains-any` passes when at least one candidate appears — useful when
+      # several phrasings are equally acceptable.
+      - type: icontains-any
+        values: ["shipped", "dispatched", "on its way"]
+
+  # --- shape ---------------------------------------------------------------
+  - id: shape/prefix-and-pattern
+    vars:
+      user_input: "ERROR: disk quota exceeded (code 507)"
+    assert:
+      - type: starts-with
+        value: "ERROR:"
+      # A Rust regex (no backtracking). Anchors and character classes work as
+      # you expect; look-around does not exist.
+      - type: regex
+        value: "code [0-9]{3}"
+
+  # --- exact equality ------------------------------------------------------
+  - id: equality/verbatim
+    vars:
+      user_input: "OK"
+    assert:
+      - type: equals
+        value: "OK"
+
+  # --- size ----------------------------------------------------------------
+  - id: size/within-budget
+    vars:
+      user_input: "A short, well-scoped answer."
+    assert:
+      # Either bound may be omitted. This one catches both an empty answer and
+      # a runaway one.
+      - type: length
+        min: 10
+        max: 500
+
+  # --- a computed condition ------------------------------------------------
+  - id: expression/jinja
+    vars:
+      user_input: "score=88"
+      threshold: 80
+    assert:
+      # `jinja` evaluates a boolean expression. `output` is the provider's
+      # answer; the case's vars are in scope too. Note this is minijinja, not
+      # Python: strings have no `.startswith()`, so use the `in` operator or a
+      # filter (`output | trim`, `output | length`).
+      - type: jinja
+        value: "'score=' in output and threshold >= 80"

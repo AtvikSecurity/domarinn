@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# The smallest suite that runs.
+#
+# One provider, one test, one assertion. The "system under test" here is a shell
+# one-liner that prints a fixed answer — no model, no API key, and deliberately
+# no Python either, so this suite runs anywhere a POSIX shell does.
+#
+# Read it as three answers:
+#   providers: WHAT is being tested
+#   tests:     WHICH inputs it gets
+#   assert:    WHAT must be true of the answer
+#
+# Run:  domarinn run examples/01-hello-eval
+version: 1
+project: examples
+suite: hello
+
+providers:
+  # An `exec` provider is any program that reads one JSON request on stdin and
+  # writes one JSON response on stdout. That is the whole contract — see
+  # docs/protocol.md. This one ignores the request (`cat >/dev/null`) and always
+  # answers the same thing.
+  - id: assistant
+    type: exec
+    command:
+      - "sh"
+      - "-c"
+      - 'cat >/dev/null; printf ''{"output":"Hello! How can I help you today?"}'''
+
+tests:
+  - id: greeting/basic
+    assert:
+      - type: contains
+        value: "Hello"

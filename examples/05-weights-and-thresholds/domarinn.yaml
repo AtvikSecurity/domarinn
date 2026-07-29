@@ -1,0 +1,85 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Weights, thresholds, and negation — how a case decides pass or fail.
+#
+# Each assertion scores 1.0 (pass) or 0.0 (fail); a graded assertion may score
+# in between. The CASE score is the weighted mean:
+#
+#     score = sum(score_i * weight_i) / sum(weight_i)
+#
+# What that score means depends on whether the case sets a `threshold`:
+#
+#   * no threshold  -> ALL-MUST-PASS. One failed assertion fails the case.
+#   * a threshold   -> the case passes when score >= threshold.
+#
+# Use a threshold when an answer can be partly right and you want to say how
+# right is right enough. Use the default when every assertion is a hard
+# requirement.
+#
+# Run:  domarinn run examples/05-weights-and-thresholds
+version: 1
+project: examples
+suite: weights-and-thresholds
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  # --- the default: every assertion is a hard requirement -------------------
+  - id: gate/all-must-pass
+    vars:
+      user_input: "Your refund of $42.00 has been approved and will arrive in 3-5 days."
+    assert:
+      - type: icontains
+        value: "refund"
+      - type: icontains
+        value: "approved"
+
+  # --- partial credit -------------------------------------------------------
+  # Three assertions, one of which fails: the answer never mentions a timeframe.
+  # score = (1 + 1 + 0) / 3 = 0.667, which clears the 0.6 threshold, so the case
+  # PASSES while still recording that something was missing.
+  - id: gate/partial-credit
+    threshold: 0.6
+    vars:
+      user_input: "Your refund of $42.00 has been approved."
+    assert:
+      - type: icontains
+        value: "refund"
+      - type: icontains
+        value: "approved"
+      - type: icontains
+        value: "days"
+
+  # --- weights: not every requirement matters equally ------------------------
+  # Naming the amount is what makes the answer correct; the polite closing is
+  # nice to have. Weighting the first 3x means missing the pleasantry costs
+  # 1/4 of the score instead of half of it.
+  #   score = (1*3 + 0*1) / 4 = 0.75  ->  passes at threshold 0.7
+  - id: gate/weighted
+    threshold: 0.7
+    vars:
+      user_input: "Refund issued: $42.00."
+    assert:
+      - type: contains
+        value: "$42.00"
+        weight: 3
+      - type: icontains
+        value: "let me know"
+        weight: 1
+
+  # --- negation -------------------------------------------------------------
+  # Any assertion type can be negated by prefixing `not-`. This is the readable
+  # form of "the answer must NOT do X", and it works in every test source —
+  # inline YAML, a file:// dataset, a CSV column, or a generator's output.
+  - id: gate/must-not-leak
+    vars:
+      user_input: "I can help with your order. Please confirm your email address."
+    assert:
+      - type: not-icontains
+        value: "password"
+      - type: not-regex
+        value: "[0-9]{16}"

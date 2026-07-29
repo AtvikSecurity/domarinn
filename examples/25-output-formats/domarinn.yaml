@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Getting the results out.
+#
+# `--format` is repeatable, so one run can feed a human and a machine at once:
+#
+#   table   the default; a terminal report with colour
+#   json    the full result document — every cell, assertion, token count
+#   jsonl   one JSON object per line, for streaming into a log pipeline
+#   junit   an XML report every CI system already knows how to render
+#   md      Markdown, for a PR comment or a job summary
+#
+# Two more flags produce side files rather than replacing stdout:
+#
+#   --out FILE          write the machine format here instead of stdout
+#   --summary-md FILE   a short Markdown summary, for $GITHUB_STEP_SUMMARY
+#
+# Colour follows NO_COLOR and CLICOLOR_FORCE, and the machine formats are never
+# coloured regardless — so piping json into jq never surprises you with escape
+# codes. Logs always go to stderr, so stdout stays parseable.
+#
+# Run:  domarinn run examples/25-output-formats --format table
+#       domarinn run examples/25-output-formats --format junit --out results.xml
+#       domarinn run examples/25-output-formats --format json | jq '.summary'
+version: 1
+project: examples
+suite: output-formats
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  - id: report/passing-case
+    vars:
+      user_input: "All systems nominal."
+    assert:
+      - type: icontains
+        value: "nominal"
+  - id: report/second-case
+    vars:
+      user_input: "Queue depth is 4."
+    assert:
+      - type: regex
+        value: "depth is [0-9]+"

@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Evaluating a service you already run.
+#
+# `type: http` posts to an endpoint and pulls the answer out of whatever JSON it
+# returns. No SDK, no wrapper process — if your assistant is already behind an
+# HTTP API, this is the shortest path from "it exists" to "it is measured".
+#
+# `output_expr` is a minijinja expression over the response, so the provider
+# adapts to YOUR response shape rather than the other way round. Four things are
+# in scope:
+#
+#   response.status    the HTTP status, as an integer
+#   response.text      the raw body string
+#   response.json      the parsed body, or null if it did not parse
+#   response.headers   the response headers, as an object
+#
+# Without `output_expr`, the raw response TEXT is the output — usually not what
+# you want to assert on.
+#
+# The `body` is rendered as a template, so `{{ }}` interpolations reach it. Note
+# that a `${...}` placeholder your own backend uses is left alone: only the
+# `${env:...}` sigil is claimed.
+#
+# Run:  domarinn run examples/28-http-provider
+version: 1
+project: examples
+suite: http-provider
+
+providers:
+  - id: support-api
+    type: http
+    url: "${env:SUPPORT_API_URL:-https://api.example.com/v1/assist}"
+    method: POST
+    headers:
+      content-type: "application/json"
+      # Credentials come from the environment at call time, exactly as with the
+      # model providers. Never write a secret into a suite.
+      authorization: "Bearer {{ env.SUPPORT_API_TOKEN }}"
+    body:
+      message: "{{ user_message }}"
+      locale: "{{ locale }}"
+    # Reach into the parsed body for the field that is actually the answer.
+    # Note `response.json`, not `response` — the latter is the envelope.
+    output_expr: "response.json.result.reply"
+
+defaults:
+  vars:
+    locale: "en"
+
+tests:
+  - id: orders/status
+    vars:
+      user_message: "Where is order 1042?"
+    assert:
+      - type: icontains
+        value: "shipped"
+      - type: icontains-any
+        values: ["Tuesday", "Thursday"]

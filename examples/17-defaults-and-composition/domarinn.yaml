@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Sharing configuration between suites.
+#
+# `extends` names ONE base suite that this file is merged on top of.
+# `imports` names fragments merged in order before the local file wins.
+#
+# The merge is a deep merge with one important exception:
+#
+#   * MAPS merge key by key, and the child wins on a conflict.
+#   * SEQUENCES are REPLACED wholesale... except `assert`, which is APPENDED.
+#
+# That exception is deliberate. Restating `providers` in a child should mean
+# "these providers, not those"; restating `defaults.assert` should not silently
+# discard the safety rules the base layer exists to enforce.
+#
+# Note the difference between the two kinds of "defaults" here. WITHIN one file,
+# `defaults` is merged into each test. ACROSS files, a shared `assert` sequence
+# is appended, base first.
+#
+# Run:  domarinn run examples/17-defaults-and-composition
+version: 1
+project: examples
+suite: composition
+
+# Resolved relative to this file, and sandboxed like every other file:// path.
+extends: "file://base.yaml"
+
+defaults:
+  vars:
+    # Overrides the base's value: a map merge, child wins.
+    product: "Aurora Notes Pro"
+  assert:
+    # APPENDED to the base's assert list, not replacing it. Both run.
+    - type: length
+      max: 2000
+
+tests:
+  - id: support/mentions-product
+    vars:
+      user_input: "Aurora Notes Pro syncs across all your devices."
+    assert:
+      - type: contains
+        value: "Aurora Notes Pro"
+
+  - id: support/stays-in-character
+    vars:
+      user_input: "Happy to help with that — here's how syncing works."
+    assert:
+      - type: icontains
+        value: "help"
