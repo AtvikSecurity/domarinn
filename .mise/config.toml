@@ -54,7 +54,13 @@ shellcheck = "0.11.0"
 # uv itself — it creates the locked venv on first `uv run`. Material bundles
 # mermaid.js, so there are no committed site assets to regenerate. Run
 # `uv lock` after bumping a docs dependency in pyproject.toml.
-"aqua:astral-sh/uv" = "0.11.32"
+#
+# Declared by its SHORT name, like every other tool here, and not as
+# `aqua:astral-sh/uv`. Both resolve to the same aqua backend, but the lockfile
+# is keyed by whichever spelling this file uses — so with the long form,
+# `mise install --locked … uv` (what the docs workflow asks for) looks up `uv`,
+# misses, and fails with "No lockfile URL found for uv@0.11.32".
+uv = "0.11.32"
 
 # --- Tasks (ported 1:1 from the former justfile) ---------------------------
 
