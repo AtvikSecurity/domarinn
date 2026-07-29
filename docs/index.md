@@ -31,7 +31,7 @@ Read [How a run works](concepts/how-a-run-works.md) first — four ideas that ex
 | [Assertions](assertions.md) | Every assertion type, weights and thresholds, short-circuiting, and fail-closed semantics. |
 | [Providers](providers.md) | `exec`, `http`, `anthropic`, `openai`, and `embeddings`, plus the exec protocol. |
 | [Grading](grading.md) | The LLM-rubric grader: structured tool-use / JSON-schema verdicts, fail-closed, grader selection. |
-| [Caching](caching.md) | Content-addressed caching and sharing it between teammates (disk / server / S3 / layered). |
+| [Caching](caching.md) | The one key rule, every cache knob, salts, backends, and sharing a cache between teammates. |
 | [Statistics](statistics.md) | `--repeat`, Wilson confidence intervals, McNemar significance, pass@k, and baselines. |
 | [Troubleshooting](troubleshooting.md) | Symptom, cause, fix — including the several ways a gate can be green and check nothing. |
 
@@ -53,7 +53,7 @@ Read [How a run works](concepts/how-a-run-works.md) first — four ideas that ex
 - **The grader is structured and fails closed** — no verdicts parsed out of prose, no silent passes.
 - **Errors are not failures.** Separate status, separate tally, separate exit code, so "the harness broke" never reads as "the model got worse".
 - **Statistics built in** — confidence intervals and paired significance, not bare pass rates.
-- **Caching you can share** over a server URL or an S3 bucket, because the key contains nothing about your machine.
+- **Caching you can share** over a server URL or an S3 bucket, because every request — provider, judge, embedding — is keyed on the request itself and nothing about your machine.
 - **One binary** — CLI, engine, and server, with the web UI embedded.
 
 The reasoning behind each of these is in [Why domarinn is built this way](concepts/why-domarinn.md).

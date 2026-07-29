@@ -65,7 +65,7 @@ The schema is regenerated from the config structs, so it never drifts from what 
 | `defaults` | object | no | Values merged into every test. |
 | `grader` | object | no | Default LLM grader for `llm-rubric` assertions. |
 | `runner` | object | no | Concurrency, retries, rate limiting, timeouts. |
-| `cache` | object | no | Response-cache backend selection. |
+| `cache` | object | no | Cache backend selection. |
 
 ```yaml
 version: 1
@@ -124,15 +124,16 @@ Spawns an external command that speaks the exec JSON protocol on stdio — the e
 | `command` | list of strings | **yes** | argv; the program plus its arguments. |
 | `env` | map string→string | no | Extra environment variables for the child process. |
 | `timeout_ms` | int | no | Per-call timeout in milliseconds. |
-| `cache_salt` | string | no | **Provider-level** version pin for the program behind the command. Exec providers are cached by default on `command` + `env`, which says nothing about the program's bytes — that is what makes an entry reusable on another machine, and also why domarinn cannot spot a rebuild by itself. Set this (a commit SHA, a tag, `"$digest: src/**"`) when a rebuild should discard the old answers. Distinct from a test case's own [`cache_salt`](#inline-and-loaded-test-fields), which keys a single case; see [caching.md](./caching.md). |
+| `cache_salt` | string | no | **Provider-level** version pin for the program behind the command. Exec providers are cached by default; the key hashes the request they send, which says nothing about the program's bytes — that is what makes an entry reusable on another machine, and also why domarinn cannot spot a rebuild by itself. Set this (a commit SHA, a tag, `"$digest: src/**"`) when a rebuild should discard the old answers. Distinct from a test case's own [`cache_salt`](#inline-and-loaded-test-fields), which keys a single case; see [caching.md](./caching.md#the-rule). |
 
 ```yaml
 providers:
   - id: local-agent
     type: exec
-    # The cache key names the command, not the program's bytes — that is what
-    # makes an entry reusable on another machine, and also why a rebuild does
-    # not invalidate anything on its own. Set `cache_salt` when it should.
+    # The cache key hashes what this provider sends, not the bytes of the
+    # program that sends it — that is what makes an entry reusable on another
+    # machine, and also why a rebuild does not invalidate anything on its own.
+    # Set `cache_salt` when it should.
     command: ["./target/release/agent", "--mode", "eval"]
     env:
       AGENT_PROFILE: strict
@@ -305,7 +306,7 @@ Inline tests, and every test loaded from a file, share the same shape:
 | `matrix_id` | string | no | minijinja template for a matrix cell's id, rendered against the axis values. See [Matrix / parameter sweeps](#matrix--parameter-sweeps). |
 | `assert` | list | no | Assertions to run against the output. See [`assertions.md`](./assertions.md). |
 | `threshold` | float | no | If set, the case **passes when its weighted-mean assertion score ≥ `threshold`**. If unset, the case passes only when **every** assertion passes. |
-| `cache_salt` | string | no | Opaque per-case cache-busting token, folded into **this case's** cache key only. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. It does not by itself make a provider cacheable. See [caching.md](./caching.md#per-case-salts). |
+| `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of **this case's** provider requests only. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](./caching.md#per-case-salts). |
 | `only_providers` | list of provider ids | no | Restrict this case to these providers. |
 | `skip_providers` | list of provider ids | no | Exclude these providers from this case. |
 
@@ -396,7 +397,7 @@ A glob string must start with `file://`; the remainder is a glob resolved relati
 | `description` | The test description. |
 | `tags` | Comma-separated tag list. |
 | `threshold` | Parsed as a float (ignored if it doesn't parse). |
-| `cache_salt` | The case's cache salt — reserved so a digest column keys the cache instead of becoming a var. |
+| `cache_salt` | The case's [cache salt](./caching.md#per-case-salts) — reserved so a digest column keys the cache instead of becoming a var. |
 | `__assert` | A JSON array of assertions. |
 
 ```yaml
@@ -436,7 +437,7 @@ The `!file "path"` YAML tag and the format-agnostic `{$file: "path"}` object for
 
 **Sandboxed.** The path is resolved relative to the suite directory and must stay inside it: `!file "../../etc/passwd"` (or a symlink pointing outside the suite) is **refused**, not read. The same guard covers `file://` prompt/message content and `file://` test-file globs.
 
-**Cache note.** A file var's content becomes part of the rendered vars, which are the provider request identity (cache key) — so **editing a fixture busts the cache** for the cases that read it, exactly as editing an inline value would.
+**Cache note.** A file var's content is rendered into the request — into the prompt for a vendor provider, into the `vars` an `exec` child receives, into the url/headers/body of an `http` call — and [the request is the cache key](./caching.md#the-rule). So **editing a fixture busts the cache** for the cases that read it, exactly as editing an inline value would.
 
 ### Generators
 
@@ -524,7 +525,7 @@ The default LLM grader for [`llm-rubric`](./grading.md) assertions. A per- asser
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `provider` | provider-kind object | **yes** | The grading model. A provider **kind** (`{type, model, ...}`) with **no `id`** — not an entry from the `providers:` list. Prefer a different model family than the systems under test. |
-| `template` | string (`file://`) | no | Override the built-in grading-prompt template. Resolved relative to the suite directory and sandboxed to it, like every other `file://`. The file's contents are part of the verdict cache key, so editing the judging prompt re-grades rather than replaying the old one. |
+| `template` | string (`file://`) | no | Override the built-in grading-prompt template. Resolved relative to the suite directory and sandboxed to it, like every other `file://`. It renders into the prompt the judge reads, and the judge's request is its cache key — so editing the judging prompt re-grades rather than replaying the old verdict. |
 | `verdict_mode` | string | no | How the structured verdict is obtained: `forced` (default) or `auto`. |
 
 ```yaml
@@ -579,12 +580,13 @@ runner:
 
 ## `cache`
 
-Selects the response-cache **backend**. Provider responses are cached so re-runs are cheap; the backend decides where cached entries live.
+Selects the cache **backend**. Every outgoing request is cached so re-runs are cheap; the backend decides where entries live. What goes into a key is one rule, documented once in [caching.md](./caching.md#the-rule).
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `backend` | enum | `disk` | One of `disk`, `layered`, `http`, `s3`. |
-| `s3` | object | none | S3 settings when `backend: s3` (below). |
+| `backend` | enum | `disk` | `disk` (local only) or `layered` (local disk in front of a shared remote). `http` and `s3` are **deprecated aliases** for `layered` that name one tier outright; they behave identically and warn at startup. |
+| `s3` | object | none | S3 settings, which are also what makes `layered` pick the S3 remote over the server (below). |
+| `grader` | bool | *(unset)* | **Deprecated.** `false` disables grader-request caching for every run of this suite; accepted with a warning. Prefer the `--no-grader-cache` run flag — whether to re-grade is a property of one run, not of the suite. |
 
 **`s3`** sub-fields (non-secret only — credentials come from the environment / AWS credential chain):
 
@@ -598,7 +600,7 @@ Selects the response-cache **backend**. Provider responses are cached so re-runs
 
 ```yaml
 cache:
-  backend: s3
+  backend: layered
   s3:
     bucket: domarinn-cache
     endpoint: https://s3.example.com
@@ -607,7 +609,7 @@ cache:
     force_path_style: true
 ```
 
-The suite only chooses the backend **type**. The server URL (for `http`) and any credentials are supplied by CLI flags and environment variables, not the config file. See [`caching.md`](./caching.md).
+The suite only chooses the backend **type**. The server URL and any credentials are supplied by CLI flags and environment variables, not the config file — which is what keeps a suite safe to commit. A remote whose URL or credentials are missing degrades to local disk with a warning rather than failing the run. See [`caching.md`](./caching.md#backends).
 
 ---
 
@@ -763,7 +765,7 @@ A suite is validated structurally before any provider is contacted — both by `
 - **Unknown or misspelled keys are a hard error that names the file, the dotted path, and the key.** A stray `maxx:` under `runner.retries`, for instance, fails with a message like ``examples/x/domarinn.yaml: runner.retries: unknown field `maxx` `` — so you can jump straight to the offending line.
 - **The check reaches inside provider, assertion, and grader mappings.** A typo'd provider field (`basurl:` for `base_url:`) or assertion option is flagged, **including the `provider:` block nested inside a grader** — both the top-level `grader.provider` and the inner grader on any `llm-rubric` assertion (in `defaults.assert` or an inline test's `assert`). Free-form bags — a provider's `params`, an `http` provider's `body`, an `exec` assertion's `config` — are opaque values, not schema, so their inner keys are intentionally left unchecked.
 - **A message `role` must be `system`, `user`, or `assistant`.** Any other value is rejected at load time.
-- **An `http` provider's `method` is normalized to upper case.** You may write `method: get` or `method: GET`; the method sent on the wire — and the value recorded in the cache fingerprint — is always the upper-case form. If a suite previously used a lower-case method, its cached responses were fingerprinted under the lower-case spelling, so it will take a **one-time cache miss** the first time it runs after upgrading, then reuse the cache normally.
+- **An `http` provider's `method` is normalized to upper case.** You may write `method: get` or `method: GET`; the method sent on the wire — and the one the cache keys on — is always the upper-case form, so two spellings of one method share entries rather than paying twice.
 
 ---
 

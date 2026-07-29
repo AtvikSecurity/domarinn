@@ -77,7 +77,7 @@ Runs the system under test. Prompts are **optional** — when a suite has no pro
 | `prompt` | any JSON        | **Optional.** The rendered prompt. Absent when the suite has no prompts. |
 | `vars`   | any JSON object | Template variables for this test case. Defaults to `{}`. |
 | `params` | any JSON object | Provider parameters from the suite (model, temperature, ...). Defaults to `{}`. |
-| `test`   | object          | `{ "id": string, "tags": string[] }`. `tags` defaults to `[]`. |
+| `test`   | object          | `{ "id": string, "tags": string[] }`. `tags` defaults to `[]`. Correlation metadata: it is sent, but [stripped out of the keyed request](./caching.md#what-is-in-the-key), so renaming a test does not re-run it. |
 | `tools`  | array           | Optional. Tools the suite declared. **Absent when it declared none**, so a tool-free request is exactly what it always was. See [Tools](#tools). |
 
 ### Response (your stdout -> domarinn)
@@ -163,7 +163,7 @@ domarinn can hand your provider a set of tool declarations and grade what the mo
 
 `tools` arrives on the request when the suite declared any, in Anthropic's shape (`input_schema` is a JSON Schema). Offer them to your model however your upstream expects; an OpenAI-compatible endpoint wants each one wrapped as `{"type": "function", "function": {name, description, parameters}}`.
 
-The key is absent, not empty, when the suite declared no tools — so a provider that ignores this field is unaffected, and so is every cache entry written before tools existed.
+The key is absent, not empty, when the suite declared no tools — so a provider that ignores this field is unaffected, and so is every cache entry keyed on a tool-free request.
 
 ### Reporting the decision
 
@@ -344,3 +344,4 @@ A test case may also set its own `cache_salt`. That one is purely a cache-keying
 
 - `protocol: 1` is the current, stable wire version.
 - New versions bump the integer and are negotiated via the `DOMARINN_PROTOCOL` env var and the envelope field. Programs should read the version rather than assume it, and ignore unknown fields for forward compatibility.
+- **The envelope is deliberately part of the cache key.** It is genuinely sent, and a child may answer a v2 request differently, so it stays in the keyed request. That makes a version bump a **cache flag day**: every `exec` entry in every store is re-keyed at once. A test in `cache_key.rs` asserts the current version so the decision is made on purpose, with the protocol-1 shape frozen as a legacy generation first. See [Upgrading to 0.5](./caching.md#upgrading-to-05).

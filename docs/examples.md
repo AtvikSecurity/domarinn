@@ -273,8 +273,8 @@ This is the provider domarinn is built around. An `exec` provider runs **your** 
 /// warning | Three things that surprise people
 
 1. **`command` paths resolve relative to the suite file's directory**, not the shell's working directory. `domarinn run examples/13-exec-provider` from the repo root and `domarinn run .` from inside it behave identically.
-2. **The cache fingerprint is the command, not the program's bytes.** Rebuild your binary and the cache still answers with the old results. That is what makes an entry reusable on another machine, and it is why [example 22](#example-22--cache-salts) exists.
-3. **There is deliberately no flag that swaps a provider's model.** The model is part of argv, therefore part of the fingerprint. To compare two models you write two providers — which is what the example above does, and why the report has two columns.
+2. **The cache key hashes what the program is sent, not the program's bytes.** Rebuild your binary and the cache still answers with the old results. That is what makes an entry reusable on another machine, and it is why [example 22](#example-22--cache-salts) exists.
+3. **There is deliberately no flag that swaps a provider's model.** The model is part of argv, therefore part of the request. To compare two models you write two providers — which is what the example above does, and why the report has two columns.
 
 ///
 
@@ -436,29 +436,29 @@ Commit these in the suite rather than passing `-j` on the command line, so a loc
 
 ## Example 21 — Caching
 
-Every provider response is cached, content-addressed, on by default. Run this suite twice and the second run does no work at all.
+Every outgoing request is cached, content-addressed, on by default. Run this suite twice and the second run does no work at all.
 
 ```yaml
 --8<-- "examples/21-caching-basics/domarinn.yaml"
 ```
 
-The rule the key follows is one sentence: **hash what is sent, name what receives it.** The rendered prompt, the vars and the tools *are* the request, so they are hashed. `command`, `model`, `url` and `headers` *select* a provider, so they enter verbatim. Nothing else — and in particular nothing about your filesystem: no path, no mtime, no digest of the program's own bytes.
+The rule the key follows is one sentence: **hash what is sent.** A provider call, the LLM judge, an embedding and an `exec` grader are all keyed the same way — the SHA-256 of the redacted request, plus the trial index, plus any `cache_salt` in scope. Nothing about your machine, your binary, or your credentials.
 
-That last clause is what makes a cache shareable. A key that varies by machine cannot be reused by anyone else, which quietly turns a shared cache into an expensive local disk.
+That is what makes a cache shareable. A key that varied by machine could not be reused by anyone else, which quietly turns a shared cache into an expensive local disk.
 
 Three consequences worth knowing:
 
 - **One entry per key, immutable.** The first write wins, on every backend.
 - **Errors are never cached.** Only successful responses are stored.
-- **`latency` assertions bypass the cache entirely**, because a replayed response has no honest latency to report. `cost` and `tokens` come from the stored response.
+- **`latency` assertions bypass the cache entirely**, because a replayed response has no honest latency to report — and under `--cache-only` such a case is refused rather than called live. `cost` and `tokens` come from the stored response.
 
-Note the `cache:` block names only the *kind* of backend. The URL and credentials come from the environment, so a suite stays safe to commit. See [Caching](caching.md) for the shared backends.
+Note the `cache:` block names only the *kind* of backend. The URL and credentials come from the environment, so a suite stays safe to commit. See [Caching](caching.md#the-rule) for the full rule and the shared backends.
 
 ---
 
 ## Example 22 — Cache salts
 
-The cache key hashes what domarinn can **see**. When the system under test loads its own content across a process boundary — prompts from a registry, rules from a database — domarinn never sees that content, so editing it changes nothing about the request and the cache keeps answering with yesterday's results.
+The key is the request, and a request only carries what domarinn can **see**. When the system under test loads its own content across a process boundary — prompts from a registry, rules from a database — domarinn never sees that content, so editing it changes nothing about the request and the cache keeps answering with yesterday's results.
 
 ```yaml
 --8<-- "examples/22-cache-salts/domarinn.yaml"
@@ -551,7 +551,7 @@ Colour follows `NO_COLOR` and `CLICOLOR_FORCE`, and the machine formats are neve
 
 **`${env:VAR:-default}` resolves at load time and *does* enter the cache key.** Use it for things that change the answer — endpoint, model, mode. Never for credentials: keying the value would give every API key its own private cache.
 
-The counterpart is `{{ env.VAR }}`, which renders per request and is *not* keyed. That is right for a credential and wrong for anything that changes the answer, because two values would share one cache entry and the second would replay the first's responses. domarinn warns when it sees `{{ env.X }}` in a URL, header or body, because it cannot tell a model selector from a token.
+The counterpart is `{{ env.VAR }}`, which renders per request and is keyed as a literal `${env:NAME}` placeholder instead of its value. That is right for a credential and wrong for anything that changes the answer, because two values would share one cache entry and the second would replay the first's responses. domarinn warns when it sees `{{ env.X }}` in a URL, header or body, because it cannot tell a model selector from a token. It withholds that one hop only — a *case var* defined as `{{ env.SECRET }}` is resolved earlier and reaches the request in the clear.
 
 ///
 
@@ -598,7 +598,7 @@ If your assistant is already behind an HTTP API, `type: http` is the shortest pa
 
 Note it is `response.json.result.reply`, not `response.result.reply` — `response` is the envelope, not the body. Without `output_expr` at all, the raw response *text* is the output, which is rarely what you want to assert on.
 
-The `url`, `method`, `body`, `output_expr` and a digest of `headers` are all in the cache fingerprint **as written**, unrendered. A `${…}` placeholder your own backend interprets is left untouched — only the `${env:…}` sigil is claimed.
+The cache key is the request this provider would send: the rendered `method`, `url` and `body`, plus a digest of the rendered `headers`. A `${…}` placeholder your own backend interprets is left untouched — only the `${env:…}` sigil is claimed. `output_expr` projects the *response*, so it is not in the key: change it and re-run with `--no-cache`.
 
 ---
 
@@ -656,7 +656,7 @@ Three assertions answer "is this answer affordable" rather than "is it right".
 
 - **`cost:`** passes when nothing priced the call — literally *"cost not reported; budget not enforced"*. That happens when the provider reports no usage, or the model is not in the rate sheet and the suite sets no `pricing:` block.
 - **`tokens:`** needs the provider to report `usage`.
-- **`latency:`** bypasses the cache entirely, because a replayed response has no honest latency. It measures a real call or nothing.
+- **`latency:`** bypasses the cache entirely, because a replayed response has no honest latency. It measures a real call or nothing — which is why `--cache-only` refuses such a case outright instead of reaching the network.
 
 A green cost budget is only evidence if you know the run priced itself.
 

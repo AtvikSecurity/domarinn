@@ -111,6 +111,8 @@ jobs:
 | `fail-on-regression` | `"true"`            | If `true`, exit 1 (assertion/regression) fails the check. If `false`, exit 1 is a warning only. Exit 2 and 3 **always** fail. |
 | `comment`            | `"true"`            | Post/update the summary comment on the PR. |
 | `artifact-name`      | `"domarinn-results"` | Name of the uploaded artifact holding `results.xml` + `summary.md`. |
+| `allow-empty`        | `"false"`           | If `true`, succeed when the run resolves to zero test cases (becomes `--allow-empty`). Off by default: a green result over no cells is indistinguishable from a green result over every cell. Turn it on for a sharded matrix where a shard legitimately has no work. |
+| `cache-dir`          | `""`                | Directory for the local cache — typically the path `actions/cache` restored (becomes `--cache-dir`). Empty uses `.domarinn/cache` beside the suite, which a cache step rarely saves. See [Shared cache for CI](#uploading-ci-runs-to-a-shared-server). |
 
 ### Outputs
 
@@ -140,7 +142,7 @@ Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command), w
 ### What it does, step by step
 
 1. **Resolve the binary.** Provided `binary-path` → download `domarinn-<target>` from the repo's GitHub Releases (`version` or `latest`, arch auto-detected) → **fallback** to building from source with `cargo` (`cargo install --path crates/domarinn-cli` if this repo is checked out, else `cargo install --git …`). The cargo fallback requires a Rust toolchain on the runner — add `dtolnay/rust-toolchain` before this action if you rely on it.
-2. **Run the suite:** `domarinn run <config> --format junit --out results.xml`, appending `--against <against>` and `--share` when those inputs are set. It captures the exit code without aborting so the later steps still run.
+2. **Run the suite:** `domarinn run <config> --format junit --out results.xml`, appending `--against <against>`, `--cache-dir <cache-dir>`, `--allow-empty` and `--share` when those inputs are set. It captures the exit code without aborting so the later steps still run.
 3. **Summarize** — `domarinn ci-summary latest --out summary.md` writes the Markdown and appends the headline numbers to `$GITHUB_OUTPUT` itself. If the suite never produced a run (a config error, say), the step warns and writes a placeholder summary rather than leaving the PR comment blank.
 4. **Upload** `results.xml` + `summary.md` as an artifact (**always**, even on failure), and append the summary to the job's step summary.
 5. **Comment on the PR** — creates or updates one comment (matched by a hidden `<!-- domarinn-eval -->` marker) so repeated pushes don't spam the thread. Skipped unless `comment: true` and the event is a `pull_request`.
@@ -244,11 +246,11 @@ Point CI at a shared [server](./server.md) so every eval is browsable and each P
 
 On GitHub Actions the CLI automatically enriches the uploaded run with git (branch, commit, dirty flag) and CI (provider + run URL) metadata, so shared runs are traceable back to the workflow.
 
-**Shared cache for CI.** Multiple CI jobs can share provider outputs through the server's content-addressed cache (`/api/v1/cache/*`), which cuts cost and time on reruns. The client side — the `http` cache backend, `DOMARINN_SERVER_URL`, and `cache_salt` — is documented in [`./caching.md`](./caching.md).
+**Shared cache for CI.** Multiple CI jobs can share every request domarinn makes — provider responses, judge verdicts, embeddings — through the server's content-addressed cache (`/api/v1/cache/*`), which cuts cost and time on reruns. The client side is `cache.backend: layered` plus `DOMARINN_SERVER_URL`, documented in [`./caching.md`](./caching.md#backends).
 
-A cache key holds nothing machine-specific, so a fresh checkout on a fresh runner reuses whatever another job wrote. Two things are worth setting up deliberately:
+A key is a hash of the request and nothing else, so a fresh checkout on a fresh runner reuses whatever another job wrote. Two things are worth setting up deliberately:
 
-- **If the job builds its `exec` provider from source**, pin `cache_salt` to the commit SHA. The key names `command`, not the compiled bytes — which is exactly why two runners can share entries at all, since Rust builds are not byte-reproducible — so nothing else tells domarinn that a rebuild happened. A run warns when it replays answers from a different build.
+- **If the job builds its `exec` provider from source**, pin `cache_salt` to the commit SHA. The key hashes what the provider *sends*, not the compiled bytes — which is exactly why two runners can share entries at all, since Rust builds are not byte-reproducible — so nothing else tells domarinn that a rebuild happened. A run warns when it replays answers from a different build.
 
   ```yaml
   providers:
@@ -274,6 +276,8 @@ A cache key holds nothing machine-specific, so a fresh checkout on a fresh runne
   ```
 
   The path resolves against the workspace — the same base `actions/cache` uses. A run-unique `key` with a shared `restore-keys` prefix is what lets the cache grow: a key that hits exactly is never saved again, so every case added after the first run would miss forever. Driving the CLI yourself rather than through the action, `--cache-dir` and `DOMARINN_CACHE_DIR` set the same thing.
+
+The first CI run after upgrading to 0.5 re-files what a 0.4-era cache holds under the new keys, automatically and once — see [Upgrading to 0.5](./caching.md#upgrading-to-05). A job that pins `--cache-only` should run once in the default read-write mode first, or `similar` assertions will hard-error: their 0.4 entries are the one shape that cannot be adopted.
 
 ---
 

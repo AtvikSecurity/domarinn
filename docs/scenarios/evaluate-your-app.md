@@ -24,9 +24,9 @@ Reuse your real code path. The value of this scenario comes entirely from the ev
 
 **`command` paths resolve relative to the suite file's directory**, not the shell's working directory. That is what lets `domarinn run eval/` from the repo root and `domarinn run .` from inside `eval/` behave identically.
 
-**The cache fingerprint is the command, not the program's bytes.** Rebuild your binary and the cache still replays the old answers. Set a provider `cache_salt` when a rebuild should invalidate — see [scenario 05](shared-cache.md#2-salt-at-the-right-granularity).
+**The cache key hashes what your program is sent, not the program's bytes.** Rebuild your binary and the cache still replays the old answers. Set a provider `cache_salt` when a rebuild should invalidate — see [scenario 05](shared-cache.md#2-salt-at-the-right-granularity).
 
-**There is no flag that swaps the model.** The model is part of argv, therefore part of the fingerprint — which is *why* two models can never collide in the cache. To compare two, declare two providers and scope a run with `--provider`.
+**There is no flag that swaps the model.** The model is part of argv, therefore part of the request — which is *why* two models can never collide in the cache. To compare two, declare two providers and scope a run with `--provider`.
 
 ///
 

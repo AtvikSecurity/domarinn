@@ -66,15 +66,27 @@ The assertion still passes. Nothing warns you. The test simply stops testing wha
 
 **Symptom.** You edit a prompt your system loads by id, re-run, and get byte-identical results instantly.
 
-**Cause.** The cache key hashes what domarinn can *see*. When your program resolves its own prompts across a process boundary, domarinn never sees that content — the request carries only an id, so nothing in the key changed.
+**Cause.** [The key is the request](caching.md#the-rule), and the request carries only an id. When your program resolves its own prompts across a process boundary, domarinn never sees that content, so nothing in the key changed.
 
 **Fix.** The [two-level salt pattern](examples.md#example-22--cache-salts). A coarse `cache_salt` on the provider as a build pin, and a per-case `cache_salt: "$digest: prompts/{{ prompt_id }}.md"` so editing one prompt busts only the cases that use it. Do **not** make the provider-level salt a content digest of everything the program reads — that discards the whole cache on any edit, which is what the per-case salt exists to avoid.
 
 ### A rebuild did not re-run anything
 
-**Cause.** An `exec` provider's fingerprint is its `command`, not the program's bytes. That is deliberate: it is what makes a cache entry reusable on another machine.
+**Cause.** The key hashes what an `exec` provider *sends*, not the bytes of the program that sends it. That is deliberate: it is what makes a cache entry reusable on another machine. See [`exec` providers and the provider salt](caching.md#exec-providers-and-the-provider-salt).
 
 **Fix.** Bump the provider's `cache_salt` when a rebuild should discard old answers. domarinn warns when it replays cached answers for a provider whose program may have changed.
+
+### `--cache-only` fails a case with "there is nothing honest to replay"
+
+**Cause.** That case has a `latency` assertion. `latency` always measures a live call, and `--cache-only` promises not to make one — so the case is refused instead of quietly reaching the provider. Only that case fails; the rest of the suite replays.
+
+**Fix.** Drop `--cache-only` for that suite, or filter the latency cases out of the offline run (`--filter`, `--tag`). See [cache modes](caching.md#cache-modes).
+
+### `--cache-only` fails every `similar` assertion after upgrading
+
+**Cause.** 0.4.x stored one cosine value per `similar` assertion; 0.5.0 caches the two embedding vectors instead, and a cosine decomposes into neither — so those entries are the one shape that is deliberately **not** adopted forward.
+
+**Fix.** Run the suite once in the default read-write mode to lay the vectors down. It costs a fraction of a cent and is warm from then on. See [Upgrading to 0.5](caching.md#upgrading-to-05).
 
 ### The examples in this repo write into the repo
 
@@ -94,7 +106,7 @@ The assertion still passes. Nothing warns you. The test simply stops testing wha
 
 ### There is no flag to swap a provider's model
 
-This is deliberate, not an omission. The model is part of the provider fingerprint — and for an `exec` provider, part of `command`. A flag that changed it would silently change the cache identity of every entry.
+This is deliberate, not an omission. The model is part of the request — for an `exec` provider, part of `command` — so a flag that changed it would silently re-key every entry.
 
 **Do this instead:** declare a second provider and scope a run with `--provider`. Note that baselines are keyed per provider id, so changing a provider's model *does* start its history over.
 

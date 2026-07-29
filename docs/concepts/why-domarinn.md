@@ -36,9 +36,9 @@ McNemar in particular is a *paired* test: both runs saw the same cases, and trea
 
 ## Cache keys are portable by construction
 
-**Hash what is sent. Name what receives it.** No path, no mtime, no digest of the program's own bytes — nothing about the local filesystem enters a key.
+**Hash what is sent.** One rule for every outgoing call, provider and grader alike: the key is the request itself. Nothing about the local filesystem, the binary, or a credential enters it.
 
-This is the decision that makes a shared cache actually work. A key that varies by machine cannot be reused by anyone else, which turns a team cache or an S3 backend into an expensive local disk while appearing to function. The cost is that domarinn cannot detect a rebuild on its own; `cache_salt` is the deliberate, explicit lever for that, rather than a heuristic that would be wrong in both directions.
+This is the decision that makes a shared cache actually work. A key that varies by machine cannot be reused by anyone else, which turns a team cache or an S3 backend into an expensive local disk while appearing to function. The cost is that domarinn cannot detect a rebuild on its own; `cache_salt` is the deliberate, explicit lever for that, rather than a heuristic that would be wrong in both directions. See [caching.md](../caching.md#the-rule).
 
 ## Real Jinja, with an escape hatch
 

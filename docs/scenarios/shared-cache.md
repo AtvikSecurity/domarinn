@@ -6,9 +6,7 @@
 
 ## Why this works at all
 
-domarinn's cache key contains **nothing about your machine** — no path, no mtime, no digest of the program's own bytes. Just the request, and a verbatim name for whatever receives it.
-
-That is the whole reason a shared cache is possible. A key that varied by machine would produce a per-developer keyspace with a shared bucket behind it: all the operational cost of a distributed cache, none of the hits.
+A key is the SHA-256 of the request and nothing else — [one rule, documented once](../caching.md#the-rule). That is the whole reason a shared cache is possible.
 
 ```yaml
 --8<-- "examples/21-caching-basics/domarinn.yaml"
@@ -19,11 +17,11 @@ That is the whole reason a shared cache is possible. A key that varied by machin
 | `backend` | Shared tier | Use when |
 | --------- | ----------- | -------- |
 | `disk` | none | Solo work. The default. |
-| `http` | the results server's `/api/v1/cache` | You already run the server. Simplest. |
-| `s3` | any S3-compatible bucket (MinIO, Garage, SeaweedFS) | You have object storage and no server. |
-| `layered` | local disk in front of a remote | Almost always what you want in practice. |
+| `layered` | S3 when `cache.s3` is set, else the results server's `/api/v1/cache` | Anything shared. |
 
-Every remote keeps the **local tier in front**, so a warm local hit never touches the network.
+Those are the two. `http` and `s3` still parse as **deprecated aliases** for `layered` — they name one tier outright, behave identically, and warn at startup.
+
+A remote always keeps the **local tier in front**, so a warm local hit never touches the network.
 
 /// tip | The config names only the kind
 
@@ -53,14 +51,18 @@ Two levels, two different jobs:
 
 Do **not** make the provider-level salt a content digest of everything your program reads. It works, and it discards the entire cache on any edit — which is exactly the outcome the per-case salt exists to prevent. With both in place, editing one prompt re-runs the handful of cases that use it and replays the rest.
 
+The theory — why a salt is a version pin rather than an entry ticket, and how `$digest:` resolves — is in [caching.md](../caching.md#salts).
+
 ## 3. Know what is and is not cached
 
 - **One entry per key, immutable.** First write wins, on every backend — so concurrent writers are race-free by construction.
 - **Errors are never cached.** Only successful responses.
-- **Grader verdicts are cached too**, keyed on the graded output, so busting a response busts its verdict in lockstep. Disable with `cache.grader: false` while iterating on a rubric.
-- **A `threshold` is not in the verdict key.** The cached value is the raw verdict and the threshold is applied on read — so editing a threshold re-scores instantly instead of re-paying the judge.
+- **Grader calls are cached too**, as requests like any other: the judge's HTTP call, an embedding, an `exec` grader's round-trip. A warm run re-pays neither the provider nor the judge. `--no-grader-cache` re-grades while still replaying provider responses, which is what you want while iterating on a rubric.
+- **A `threshold` is not in the key.** It is applied on read, so editing a threshold re-scores instantly instead of re-paying the judge.
 - **Pricing is not in the key either.** `cost_usd` is recomputed on every hit, so correcting a rate re-prices history rather than discarding it.
-- **`latency` assertions bypass the cache entirely.** A replayed response has no honest latency.
+- **`latency` assertions bypass the cache entirely** — a replayed response has no honest latency — and under `--cache-only` the case is refused rather than called live.
+
+The full list is in [caching.md](../caching.md#what-is-and-is-not-cached).
 
 ## 4. Verify it is actually shared
 

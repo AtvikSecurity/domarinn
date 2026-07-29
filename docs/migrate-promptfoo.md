@@ -50,7 +50,7 @@ $ domarinn list tests .
 
 **Output format is a flag, not config.** `--format json|jsonl|junit|md|table`, `--out`, `--summary-md`. There is no `outputPath` key.
 
-**`--no-cache` is rarely what you want.** promptfoo's cache keyed on things that made sharing impractical, so `--no-cache` became habit. domarinn's key is [portable by construction](concepts/how-a-run-works.md#the-cache-key-is-the-request-not-the-machine) — it deliberately contains nothing about your filesystem — so the cache is shareable across a team and CI. Reach for `cache_salt` instead of disabling caching.
+**`--no-cache` is rarely what you want.** promptfoo's cache keyed on things that made sharing impractical, so `--no-cache` became habit. domarinn's key is [portable by construction](concepts/how-a-run-works.md#the-cache-key-is-the-request-not-the-machine) — it is a hash of the request and nothing else — so the cache is shareable across a team and CI. Reach for `cache_salt` instead of disabling caching, or `--no-grader-cache` when it is only the judge you want re-asked.
 
 ## What you gain
 

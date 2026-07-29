@@ -187,7 +187,7 @@ export ANTHROPIC_API_KEY=sk-...
 domarinn run --repeat 5            # 5 trials per cell for variance
 ```
 
-Responses and grader verdicts are cached, so re-running is free and deterministic. See [caching.md](./caching.md) and [statistics.md](./statistics.md).
+Every request domarinn makes is cached — the provider call and the judge alike — so re-running is free and deterministic. See [caching.md](./caching.md) and [statistics.md](./statistics.md).
 
 ## View, compare, and share
 

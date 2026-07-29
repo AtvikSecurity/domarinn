@@ -50,7 +50,7 @@ The exit code is a **contract for CI** — it distinguishes "the model got worse
 | `0` | OK | Everything passed. |
 | `1` | assertion | An assertion failed, or a run regressed against a `--against` baseline. |
 | `2` | config/usage | Bad config or flags, a suite that fails to load or validate, a run that resolved to **zero test cases**, or a missing / wrong-shaped provider credential. |
-| `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, a `--cache-only` miss, the server was unreachable. |
+| `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, the server was unreachable, or a `--cache-only` run could not answer honestly (a miss, or a case whose `latency` assertion always needs a live call). |
 
 ---
 
@@ -67,7 +67,8 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--provider <ID>` | Only run this provider (repeatable). |
 | `--prompt <ID>` | Only run this prompt (repeatable). |
 | `--no-cache` | Never read or write the cache. |
-| `--cache-only` | Read cache only; a miss is an infrastructure error (offline CI). |
+| `--cache-only` | Read cache only; a miss is an infrastructure error (offline CI). The credential preflight is skipped, and a case carrying a `latency` assertion is refused rather than called live — see [caching.md](./caching.md#cache-modes). |
+| `--no-grader-cache` | Grader-originated requests (the LLM judge, `exec` graders, embeddings) bypass the cache; responses of the systems under test are still replayed. Use it to measure judge variance deliberately. Replaces the deprecated suite key `cache.grader: false`. |
 | `--cache-dir DIR` | Where the local cache lives. Defaults to `.domarinn/cache` beside the suite, so the same suite hits the same cache from any directory. `DOMARINN_CACHE_DIR` sets the same thing; the flag wins. |
 | `--no-cache-migration` | Skip looking for entries written under an older cache-key shape. domarinn probes for those on a miss so an upgrade does not discard a warm cache, and stops once it is clear there is nothing to find. |
 | `--repeat <N>` | Run each cell N times (variance / pass@k). |
@@ -208,14 +209,19 @@ domarinn ci-summary --against server:baseline --out summary.md
 
 ## `domarinn cache <stats|path|gc|clear>`
 
-Manage the local content-addressed response cache.
+Manage the **local** content-addressed cache. All four take a suite path (default `.`) and the same `--cache-dir` a run does, so they inspect the directory that run would actually use.
 
 - `cache stats` — entry count and total size.
-- `cache path` — print the cache directory (`.domarinn/cache`).
-- `cache gc --older-than <30d|12h|45m|90s>` — remove entries older than a duration.
+- `cache path` — print the cache directory (`.domarinn/cache` beside the suite).
+- `cache gc --older-than <30d|12h|45m|90s>` — remove entries older than a duration. `--older-than` is **required**: a bare `gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so.
 - `cache clear` — remove all entries.
 
-See [caching.md](./caching.md) for backends and team sharing.
+Two scope rules worth knowing:
+
+- **Local tier only.** These never reach an S3 bucket or the server. Remote retention is the bucket's lifecycle rules and the server's [prune endpoint plus hourly retention task](./server.md#cache-shared-provider-cache).
+- **The pre-0.4 legacy tier is reported always, purged only when it is yours.** A cwd-relative `.domarinn/cache` left by an older domarinn is shown by `stats` and `path`, but `clear`/`gc` touch it only when the suite sits at or under the current directory — `cd ~/projB && domarinn cache clear ~/projA/evals` must not take projB's cache with it. `stats` says which of the two applies.
+
+See [caching.md](./caching.md) for the key rule, backends, and team sharing.
 
 ## `domarinn import promptfoo <PATH>`
 

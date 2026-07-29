@@ -324,14 +324,14 @@ The `url` in the response is a browser link to the run. It is built from `DOMARI
 
 ### Cache (shared provider cache)
 
-The content-addressed cache lets many CI runs share provider outputs. Keys are `sha256:<64 hex>`; anything else is a `400`. See [`./caching.md`](./caching.md) for the client side.
+The content-addressed cache lets many CI runs share every request domarinn makes — provider responses, judge verdicts, embeddings. Keys are `sha256:<64 hex>`; anything else is a `400`. See [`./caching.md`](./caching.md) for the client side.
 
 | Method | Path                       | Scope   | Notes |
 |--------|----------------------------|---------|-------|
-| GET    | `/api/v1/cache/{key}`      | `read`  | Fetch an entry (`application/octet-stream`). `404` on miss. |
-| HEAD   | `/api/v1/cache/{key}`      | `read`  | Existence probe: `200` hit / `404` miss. |
+| GET    | `/api/v1/cache/{key}`      | `read`  | Fetch an entry (`application/octet-stream`). `404` on miss. The only method that moves the hit/miss counters. |
+| HEAD   | `/api/v1/cache/{key}`      | `read`  | Existence probe: `200` hit / `404` miss. Deliberately **excluded from the hit/miss counters** — the domarinn client only ever `GET`s, so counting probes would inflate the lookup hit rate the server reports. A found entry still refreshes its last-access time so a probed entry is not evicted next. |
 | PUT    | `/api/v1/cache/{key}`      | `write` | Store an entry (first-write-wins: `201` created / `200` already present). `413` if larger than `max_entry_bytes`. |
-| GET    | `/api/v1/cache/stats`      | `read`  | `{ entries, total_bytes, hits, misses, oldest_entry_at }`. |
+| GET    | `/api/v1/cache/stats`      | `read`  | `{ entries, total_bytes, hits, misses, oldest_entry_at }`. `hits`/`misses` are `GET` lookups, which is what the web UI's **Lookup hit rate** tile is computed from. |
 | POST   | `/api/v1/cache/prune`      | `admin` | Prune by `older_than_days` and/or `target_bytes` (LRU eviction). Returns `{ "pruned": N }`. |
 
 > The server also runs an **hourly retention** task that prunes the cache to
@@ -475,7 +475,7 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 | `DOMARINN_ADMIN_PASSWORD`     | (unset)        | Bootstrap admin password. The account is (re)ensured on every startup. |
 | `DOMARINN_PUBLIC_URL`         | (unset)        | Public base URL for share links / absolute URLs. No trailing slash, no path prefix. **Required when any SSO provider is configured** (redirect URIs / SAML endpoints). |
 | `DOMARINN_COOKIE_SECURE`      | (from URL)     | Force the session cookie's `Secure` flag `true`\|`false`. Defaults to on when `DOMARINN_PUBLIC_URL` is `https://`. |
-| `DOMARINN_CACHE_MAX_ENTRY_BYTES` | `4194304` (4 MiB)   | Max size of a single cache entry. |
+| `DOMARINN_CACHE_MAX_ENTRY_BYTES` | `4194304` (4 MiB)   | Max size of a single cache entry; a larger `PUT` gets a `413`. Since 0.5.0 an entry carries the request it answers and, for a grading, the judge's whole response, so entries are bigger than they were — an oversized one is logged by the client and re-paid on every run rather than failing it. Raise this before lowering what a suite sends. |
 | `DOMARINN_CACHE_MAX_BYTES`    | `1073741824` (1 GiB) | Total cache size target for retention. |
 | `DOMARINN_CACHE_MAX_AGE_DAYS` | `30`           | Cache entry max age for retention. |
 | `DOMARINN_RUN_MAX_AGE_DAYS`   | *(unset)*      | Delete runs older than this many days. **Unset means never delete** — eval history is expensive to produce and impossible to recreate, so retention is opt-in. Two runs are exempt at any age: a pinned baseline (deleting it breaks `--against server:baseline`) and the newest run of each `(project, suite, branch)` (a suite that has not run in a while must go stale, not vanish). Swept hourly, alongside cache retention. |
@@ -529,7 +529,7 @@ State lives in the data directory as **two SQLite files** (WAL mode):
 | File            | Contents | Back up? |
 |-----------------|----------|----------|
 | `domarinn.db` | Durable run history. Each run is stored both as a compressed lossless blob (for export) and as normalized rows for indexed filtering. Also holds users, sessions, API keys, and baselines. | **Yes — this is the backup target.** |
-| `cache.db`      | The content-addressed provider cache. Regenerable. | No — disposable. |
+| `cache.db`      | The content-addressed request cache. Regenerable. | No — disposable. |
 
 SQLite is a **single writer**: run exactly one instance against a given data directory. This is what makes backups a file copy and self-hosting a one-liner — and why the deployment guidance is single-replica. Migrations run automatically at startup. See [`./deploy.md`](./deploy.md) for backup and Kubernetes details.
 
