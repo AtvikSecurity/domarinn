@@ -19,6 +19,18 @@ import { resolveChromeExecutable } from "./playwright.shared";
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:8322";
 const AUTH_STATE = "screenshots/.auth/session.json";
 
+/**
+ * `SHOTS=<regex>` captures only the matching shots, leaving every other
+ * committed PNG untouched — what you want when one page changed and a full
+ * re-capture would only churn run ids and dates in the other twenty.
+ *
+ * Applied to the `capture` project alone, deliberately. The command line's
+ * `--grep` filters *every* project including dependencies, so using it here
+ * would drop the `setup` project's login and leave this project with no
+ * storageState to reuse.
+ */
+const shots = process.env.SHOTS ? new RegExp(process.env.SHOTS) : undefined;
+
 const chromeExecutable = resolveChromeExecutable();
 
 export default defineConfig({
@@ -68,6 +80,7 @@ export default defineConfig({
       name: "capture",
       testMatch: /capture\.spec\.ts/,
       dependencies: ["setup"],
+      ...(shots ? { grep: shots } : {}),
       use: {
         browserName: "chromium",
         storageState: AUTH_STATE,
