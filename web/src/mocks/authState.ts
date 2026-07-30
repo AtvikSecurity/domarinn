@@ -22,7 +22,7 @@ import type {
   UserIdentityView,
   UserView,
 } from "@/api";
-import { scopeAtLeast } from "@/lib/authz";
+import { ALL_ROLES, scopeAtLeast } from "@/lib/authz";
 
 interface IdentityRecord {
   provider: string;
@@ -174,8 +174,15 @@ function randomToken(prefix: string): string {
   return `${prefix}_${rand()}${rand()}`;
 }
 
+/** Mirrors the server's `Scope::for_role`. */
 function scopeForRole(role: Role): AuthScope {
-  return role === "admin" ? "admin" : "write";
+  if (role === "admin") return "admin";
+  return role === "viewer" ? "read" : "write";
+}
+
+/** Fall back to the least surprising role for an unrecognized request body. */
+function normalizeRole(role: Role | undefined): Role {
+  return role !== undefined && ALL_ROLES.includes(role) ? role : "member";
 }
 
 function pubIdentities(u: UserRecord): UserIdentityView[] {
@@ -445,7 +452,7 @@ export function createUser(
     id,
     username,
     password: password ?? "",
-    role: role === "admin" ? "admin" : "member",
+    role: normalizeRole(role),
     disabled: false,
     created_at: Date.now(),
     identities: [],
@@ -472,7 +479,7 @@ export function updateUser(id: string, patch: UserPatch): UserMutationResult {
   const losesAdmin = wasActiveAdmin && (!willBeAdmin || willBeDisabled);
   if (losesAdmin && countActiveAdmins(id) === 0) return "last_admin";
 
-  if (patch.role !== undefined) u.role = patch.role === "admin" ? "admin" : "member";
+  if (patch.role !== undefined) u.role = normalizeRole(patch.role);
   if (patch.disabled !== undefined) u.disabled = !!patch.disabled;
   if (patch.password) u.password = patch.password;
   return pubUserView(u);
