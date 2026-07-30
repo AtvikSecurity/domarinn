@@ -1,6 +1,6 @@
 # Your own system
 
-Four suites about testing what you actually ship, not a model that merely resembles it. They cover the `exec` provider that runs your own program end to end, writing an assertion for a correctness rule only you can express, and grading a tool call instead of a sentence of prose. Read these once you are ready to point domarinn at your own code.
+Five suites about testing what you actually ship, not a model that merely resembles it. They cover the `exec` provider that runs your own program end to end, writing an assertion for a correctness rule only you can express, grading a tool call instead of a sentence of prose, and the exec protocol itself in a language other than Python. Read these once you are ready to point domarinn at your own code.
 
 ---
 
@@ -79,3 +79,19 @@ A model offered tools stops writing "I'll look that up for you" and starts emitt
 ///
 
 The case most often missing is the one where **no** tool should be called. `agent/no-tool-needed` is that case, and it is what catches tool-eagerness.
+
+---
+
+## Example 37 — The exec protocol, in bash
+
+Every other provider in this ladder is Python, because it ships with the fewest assumptions about your machine. The protocol itself does not care: anything that can read one JSON document from stdin and write one to stdout qualifies. Here it's bash and `jq`.
+
+```yaml
+--8<-- "examples/37-exec-provider-bash/domarinn.yaml"
+```
+
+```bash
+--8<-- "examples/37-exec-provider-bash/provider.sh"
+```
+
+Three things worth reading in that script. It reads `DOMARINN_PROTOCOL` before doing anything else — the version domarinn is speaking, so a program that supports more than one can branch on it. `jq -r '.vars.user_input // ""'` unwraps the JSON string and supplies a fallback, because an exec provider is never guaranteed any particular var. And the reply is built with `jq -cn` rather than piping `request` back through a filter, so nothing already consumed can leak into the response by accident.

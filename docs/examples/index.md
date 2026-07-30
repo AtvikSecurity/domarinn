@@ -21,11 +21,11 @@ The examples below are grouped into six pages, roughly in the order you would re
 | Group | Covers |
 | --- | --- |
 | [First steps](first-steps.md) | The smallest suite that runs, up through weights and thresholds. |
-| [Templates & test data](templates-and-test-data.md) | The `!raw` escape hatch, file vars, matrix sweeps, datasets, and generators. |
-| [Your own system](your-own-system.md) | The `exec` provider, a custom assertion, and tool-call grading. |
+| [Templates & test data](templates-and-test-data.md) | The `!raw` escape hatch, file vars, matrix sweeps, datasets, generators, and multi-turn prompts. |
+| [Your own system](your-own-system.md) | The `exec` provider, a custom assertion, tool-call grading, and the protocol itself in bash. |
 | [Running & reporting](running-and-reporting.md) | Tags and filters, composition, exit codes, errors and retries, runner tuning, output formats. |
 | [Caching & statistics](caching-and-statistics.md) | The one cache-key rule, salts, repeat and confidence, baselines and diff. |
-| [Models, grading & budgets](models-grading-and-budgets.md) | OpenAI-compatible and Anthropic providers, HTTP, LLM-rubric grading, similarity, and budgets. |
+| [Models, grading & budgets](models-grading-and-budgets.md) | OpenAI-compatible and Anthropic providers (native tool calls included), HTTP and `output_expr`, LLM-rubric grading judged by either vendor, similarity, and budgets. |
 
 | #   | Example | Demonstrates |
 | --- | ------- | ------------ |
@@ -61,6 +61,11 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 30  | [Similarity](models-grading-and-budgets.md#example-30--similarity) | Cosine distance, for when many wordings are right. |
 | 31  | [Budgets](models-grading-and-budgets.md#example-31--budgets) | Cost, tokens, latency — and how each can enforce nothing. |
 | 32  | [A live endpoint](models-grading-and-budgets.md#example-32--a-live-endpoint) | Point a suite at your own OpenAI-compatible endpoint. |
+| 33  | [An OpenAI-shaped judge](models-grading-and-budgets.md#example-33--an-openai-shaped-judge) | An `llm-rubric` grader that is `type: openai` — any compatible endpoint, including a local Ollama. |
+| 34  | [A multi-turn conversation](templates-and-test-data.md#example-34--a-multi-turn-conversation) | A `messages:` prompt carrying real history, not just the newest line. |
+| 35  | [Anthropic tools, natively](models-grading-and-budgets.md#example-35--anthropic-tools-natively) | Tool-call grading over the native API — the sibling of example 15's `exec` version. |
+| 36  | [`output_expr`, sliced two ways](models-grading-and-budgets.md#example-36--output_expr-sliced-two-ways) | Pulling more than one shape — including a non-string one — out of the same response. |
+| 37  | [The exec protocol, in bash](your-own-system.md#example-37--the-exec-protocol-in-bash) | The same provider contract, spoken in bash and `jq` instead of Python. |
 
 ## See also
 

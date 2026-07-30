@@ -153,13 +153,15 @@ prompts:
   # A single-string prompt, loaded from a file.
   - id: from-file
     template: "file://prompts/summarize.j2"
-
-  # A chat transcript; system content loaded from a file, user content inline.
-  - id: chat
-    messages:
-      - { role: system, content: "file://prompts/system.md" }
-      - { role: user, content: "{{ request }}" }
 ```
+
+A `messages:` prompt is a full transcript, not one string — system, a prior user turn, a prior assistant turn, then the newest one. Every turn is a template; a fixed turn simply has nothing in it to substitute. Real history, from a shipped, tested example (see [example 34](../examples/templates-and-test-data.md#example-34--a-multi-turn-conversation)):
+
+```yaml
+--8<-- "examples/34-multi-turn-conversation/domarinn.yaml:messages"
+```
+
+The provider sees the same array on every call; it is domarinn that fans a case out over `vars`, one rendering per case, not the shape of the messages.
 
 Omit `prompts` entirely when a provider builds its own input from the test `vars` — an `exec` provider, for instance, receives the vars directly over its protocol.
 

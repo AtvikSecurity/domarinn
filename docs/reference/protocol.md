@@ -305,13 +305,10 @@ Each emitted test object follows the suite's test-case schema (see `domarinn sch
 
 ### Bash
 
+A full, runnable version — [example 37](../examples/your-own-system.md#example-37--the-exec-protocol-in-bash) — reads `DOMARINN_PROTOCOL`, extracts both `vars.user_input` and `test.id` with `jq`, and reports `usage`:
+
 ```bash
-#!/usr/bin/env bash
-# Echo the rendered user_input back as the output. Exit 0 == "I ran".
-set -euo pipefail
-req="$(cat)"                                  # read the whole request
-input="$(printf '%s' "$req" | jq -r '.vars.user_input // ""')"
-jq -cn --arg out "$input" '{ output: $out }'  # one JSON line to stdout
+--8<-- "examples/37-exec-provider-bash/provider.sh"
 ```
 
 ### Python

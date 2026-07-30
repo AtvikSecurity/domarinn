@@ -154,6 +154,12 @@ The grader calls chat completions (`POST {base_url}/chat/completions`) with a **
 - The verdict is parsed from `choices[0].message.content` (guaranteed to match the schema by strict mode).
 - The API key comes from `api_key_env` (default `OPENAI_API_KEY`); the base URL defaults to `https://api.openai.com/v1`, so any OpenAI-compatible gateway works as a judge via `base_url`.
 
+A suite-level grader in this shape, from a shipped example — any OpenAI-compatible endpoint can be the judge, a local Ollama included (see [example 33](../examples/models-grading-and-budgets.md#example-33--an-openai-shaped-judge)):
+
+```yaml
+--8<-- "examples/33-openai-grader-rubric/domarinn.yaml:grader"
+```
+
 **Truncation is a loud error.** If `choices[0].finish_reason` is `length`:
 
 > verdict truncated (finish_reason=length); raise grader max_tokens

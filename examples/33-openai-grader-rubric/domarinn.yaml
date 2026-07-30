@@ -1,0 +1,82 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# The judge does not have to be Anthropic.
+#
+# Example 29 built its grader from `type: anthropic`. This one is `type:
+# openai` instead — which means ANY OpenAI-compatible endpoint can grade:
+# OpenAI itself, a gateway, or a local Ollama serving the chat-completions API.
+# The system under test below is the offline echo provider from example 13, so
+# the only thing that reaches a network here is the judge.
+#
+# ONE VARIABLE MOVES THE JUDGE, the same variable that moves a provider in
+# example 26:
+#
+#   domarinn run examples/33-openai-grader-rubric
+#   OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=qwen3:4b \
+#     domarinn run examples/33-openai-grader-rubric
+#
+# Do not confuse this with redirecting the SYSTEM under test — here it is the
+# GRADER's endpoint and model that move, because the grader is the only
+# API-shaped thing this suite calls.
+#
+# The model and base_url resolve at load time like any other provider field,
+# which means grader identity is part of the cache key: judge a case with
+# gpt-4o-mini, then again with qwen3:4b, and the second run asks fresh rather
+# than replaying the first judge's verdict.
+#
+# The verdict shape itself — structured, and fail-closed on truncation — is
+# the subject of example 29; this one is only about which vendor is asking.
+#
+# Run:  domarinn run examples/33-openai-grader-rubric
+version: 1
+project: examples
+suite: openai-grader-rubric
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+# --8<-- [start:grader]
+grader:
+  provider:
+    type: openai
+    # Redirects with the same variable OpenAI's own SDK honours, and the same
+    # one example 26 uses for a provider — here it moves the JUDGE instead.
+    model: "${env:OPENAI_MODEL:-gpt-4o-mini}"
+    base_url: "${env:OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    api_key_env: OPENAI_API_KEY
+    params:
+      # See example 29: a thinking-capable judge can truncate a structured
+      # verdict at a small ceiling, which is a fail-closed error, not a
+      # silent pass. Generous costs nothing extra — you are billed for
+      # tokens actually generated.
+      max_tokens: 4096
+  verdict_mode: forced
+  timeout_ms: 120000
+# --8<-- [end:grader]
+
+tests:
+  - id: policy/no-invented-exceptions
+    vars:
+      user_input: "Our policy allows returns within 30 days of delivery. I'm not able to make exceptions beyond that window, but I can check whether a partial credit applies to your order."
+    assert:
+      # Cheap and first. If this fails, the judge is never called.
+      - type: contains
+        value: "30 days"
+      # --8<-- [start:assert]
+      - type: llm-rubric
+        value: |
+          THIS RUBRIC MEASURES POLICY FIDELITY ONLY.
+
+          The response MUST state the 30-day return window AND must NOT
+          invent, promise, or imply any exception to it.
+
+          Score 0 if it invents a detail the policy above never stated, or
+          promises an exception the input never granted.
+
+          Do NOT penalise the response for brevity, for word choice, or for
+          offering to check a partial credit — that is not an exception to
+          the window, it is a separate offer.
+      # --8<-- [end:assert]

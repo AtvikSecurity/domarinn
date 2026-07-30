@@ -1,6 +1,6 @@
 # Models, grading & budgets
 
-Seven suites about talking to a real model and judging what comes back. They cover the OpenAI-compatible and Anthropic providers, a plain HTTP service you already run, and a live endpoint of your own — then a structured LLM rubric, embedding similarity for when many wordings are right, and the budgets that ask whether an answer was affordable, not just correct. Read these once you are ready to spend real tokens.
+Ten suites about talking to a real model and judging what comes back. They cover the OpenAI-compatible and Anthropic providers (native tool calls included), a plain HTTP service you already run and the shapes `output_expr` can pull out of it, and a live endpoint of your own — then a structured LLM rubric judged by either vendor, embedding similarity for when many wordings are right, and the budgets that ask whether an answer was affordable, not just correct. Read these once you are ready to spend real tokens.
 
 ---
 
@@ -144,3 +144,53 @@ Everything above runs offline. This one is the opposite: it points at an OpenAI-
 ```
 
 Note that `api_key_env` names the *variable*, never the key. Nothing secret is committed, and nothing secret enters the cache key. Note also that these `${env:…}` interpolations carry no `:-default` — so with the variables unset, `domarinn validate` fails immediately and names the missing one, rather than a run failing later against a half-configured endpoint.
+
+---
+
+## Example 33 — An OpenAI-shaped judge
+
+Example 29's grader was `type: anthropic`. A grader is a provider like any other, so it can just as easily be `type: openai` — which means any OpenAI-compatible endpoint can judge, a local Ollama included.
+
+```yaml
+--8<-- "examples/33-openai-grader-rubric/domarinn.yaml"
+```
+
+The system under test here is the offline exec provider from example 13, so the only thing that reaches a network is the judge — and the same one variable that redirects a *provider* in example 26 redirects this *grader* instead:
+
+```
+OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=qwen3:4b domarinn run examples/33-openai-grader-rubric
+```
+
+/// tip | Grader identity is part of the cache key
+
+The model and `base_url` resolve at load time like any other provider field. Judge a case with `gpt-4o-mini`, then again with `qwen3:4b`, and the second run asks fresh rather than replaying the first judge's verdict — two judges are two different questions, never one cache entry.
+
+///
+
+The rubric itself follows example 29's rules: one axis (policy fidelity, not tone or brevity), an explicit score-0 condition, and a line saying what *not* to penalise. The verdict's wire shape — a strict `json_schema` response this time, not a forced tool call — is [documented in full](../concepts/grading.md#openai-grader); the rubric-writing advice does not repeat here.
+
+---
+
+## Example 35 — Anthropic tools, natively
+
+Example 15 declared tools for an `exec` provider — your own program decided whether to call one. The same `tools:` block and the same `tool-call` assertion work unchanged against `type: anthropic`: the suite declares tools once, and every API-shaped provider gets the same surface, in that vendor's native shape.
+
+```yaml
+--8<-- "examples/35-anthropic-tools/domarinn.yaml"
+```
+
+domarinn still never **executes** a tool, whichever transport carried the decision — see [Tools](../reference/protocol.md#tools).
+
+---
+
+## Example 36 — `output_expr`, sliced two ways
+
+Example 28 pulled one nested string field out of a JSON body. `output_expr` is not limited to strings, or to one shape per suite — this one points two providers at the same backend and gives each a different expression.
+
+```yaml
+--8<-- "examples/36-http-output-expr/domarinn.yaml"
+```
+
+`only_providers` (from [example 16](running-and-reporting.md#example-16--tags-and-filters)) scopes each test to the provider it is actually testing — the two providers are not being compared, they are answering two different questions about the same response.
+
+Whatever `output_expr` evaluates to becomes the output as-is: a string stays text, and anything else — a number here, but the same holds for an object or an array — becomes structured output. Every text assertion still reads it (stringified), and `is-json` / `contains-json` could inspect it directly. `output_expr` only ever sees a *successful* response: a non-2xx status is a transport error before the expression runs, same as any other provider's failure.

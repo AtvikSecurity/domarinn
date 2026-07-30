@@ -958,4 +958,108 @@ pub const EXAMPLES: &[Example] = &[
             cache_hits: 0,
         }],
     },
+    Example {
+        dir: "33-openai-grader-rubric",
+        shows: "an llm-rubric judge that is OpenAI-shaped instead of Anthropic — any \
+                OpenAI-compatible endpoint, local or hosted, can grade",
+        env: &[
+            ("OPENAI_BASE_URL", Env::StubBaseV1),
+            ("OPENAI_API_KEY", Env::Literal("sk-stub-not-a-real-key")),
+        ],
+        stub: &[Route {
+            fragment: "/chat/completions",
+            bodies: &[stubs::OPENAI_VERDICT_PASS],
+        }],
+        // One grader call: the system under test is an offline exec provider,
+        // so the only thing reaching the network is the judge.
+        stub_calls: 1,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(1),
+            case_ids: &["policy/no-invented-exceptions"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "34-multi-turn-conversation",
+        shows: "a `messages:` prompt carrying real history, not just the newest line",
+        env: &[],
+        stub: &[],
+        stub_calls: 0,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(2),
+            case_ids: &["turns/asks-about-electronics", "turns/asks-about-receipts"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "35-anthropic-tools",
+        shows: "tool-call grading over the native Anthropic API, not just an exec provider",
+        env: &[
+            ("ANTHROPIC_BASE_URL", Env::StubBase),
+            (
+                "ANTHROPIC_API_KEY",
+                Env::Literal("sk-ant-stub-not-a-real-key"),
+            ),
+        ],
+        stub: &[Route {
+            fragment: "/v1/messages",
+            bodies: &[stubs::ANTHROPIC_TOOL_USE],
+        }],
+        stub_calls: 1,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(1),
+            case_ids: &["agent/looks-up-order"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "36-http-output-expr",
+        shows: "`output_expr` reaching more than one shape out of the same JSON body",
+        env: &[("ORDERS_API_URL", Env::StubBase)],
+        stub: &[Route {
+            // Both providers post to the stub root, same as example 28.
+            fragment: "POST /",
+            bodies: &[stubs::SERVICE_REPLY],
+        }],
+        // One call per provider: each test is scoped to a single provider via
+        // `only_providers`, so the pair of tests makes exactly two calls.
+        stub_calls: 2,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(2),
+            case_ids: &["orders/reply-text", "orders/confidence-score"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "37-exec-provider-bash",
+        shows: "the exec protocol read and answered in bash + jq, not just python",
+        env: &[],
+        stub: &[],
+        stub_calls: 0,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(1),
+            case_ids: &["greeting/echoes-input"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
 ];

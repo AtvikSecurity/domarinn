@@ -1,6 +1,6 @@
 # Templates & test data
 
-Six suites about getting the input side of a suite right before you worry about grading. They cover the one sharp edge in Jinja templating, pulling a var's value from a file instead of writing it inline, fanning one case out across every combination of a matrix, and reading — or generating — cases from something other than hand-written YAML. Reach for these once a suite has outgrown a handful of inline cases.
+Seven suites about getting the input side of a suite right before you worry about grading. They cover the one sharp edge in Jinja templating, pulling a var's value from a file instead of writing it inline, fanning one case out across every combination of a matrix, reading — or generating — cases from something other than hand-written YAML, and giving a provider a whole conversation instead of one string. Reach for these once a suite has outgrown a handful of inline cases.
 
 ---
 
@@ -109,3 +109,17 @@ A generator is an exec-protocol program like any other: it reads one JSON reques
 `domarinn list tests` deliberately does not execute generators — listing is meant to be free of side effects. Pass `--generators` when you want their cases enumerated too.
 
 ///
+
+---
+
+## Example 34 — A multi-turn conversation
+
+Every example above uses a `template:` prompt — one string. `messages:` renders a whole transcript instead: system, a prior user turn, a prior assistant turn, then the newest one. That is what a real follow-up question looks like — the model needs to see what it already said, not just the newest line.
+
+```yaml
+--8<-- "examples/34-multi-turn-conversation/domarinn.yaml"
+```
+
+Every turn is a template, so a fixed turn simply has nothing in it to substitute — only the last one varies per case. Both cases below share the first three turns byte for byte and differ only in the follow-up, which is the thing under test.
+
+The echo provider makes this observable: an exec provider receives a `messages:` prompt as `{"messages": [...]}` (see [the protocol](../reference/protocol.md)), and echoing it back is what lets a `contains` assertion prove the whole rendered history — not just the last var — actually reached the provider.

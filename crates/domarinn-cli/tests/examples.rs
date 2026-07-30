@@ -264,6 +264,7 @@ const HOST_ENV: &[&str] = &[
     "DOMARINN_SMOKE_BASE_URL",
     "DOMARINN_SMOKE_MODEL",
     "DOMARINN_SMOKE_API_KEY",
+    "ORDERS_API_URL",
 ];
 
 fn repo_root() -> PathBuf {
@@ -311,6 +312,39 @@ fn python3_is_available_for_the_examples_that_need_it() {
         ok,
         "python3 is not on PATH, but {} shipped example(s) use it as their \
          system under test: {users:?}",
+        users.len()
+    );
+}
+
+/// A missing `jq` is not an example failure, and must not read like one.
+///
+/// Mirrors [`python3_is_available_for_the_examples_that_need_it`]: without
+/// this, `jq` absent turns the bash-backed row red with "provider error" and
+/// nothing anywhere naming the cause. `jq` is pinned in `.mise/config.toml`,
+/// so a `mise`-run shell always has it — this only catches a bare
+/// `cargo test` run outside one.
+#[test]
+fn jq_is_available_for_the_examples_that_need_it() {
+    let users: Vec<&str> = EXAMPLES
+        .iter()
+        .filter(|e| {
+            std::fs::read_to_string(examples_root().join(e.dir).join("domarinn.yaml"))
+                .map(|s| s.contains("jq"))
+                .unwrap_or(false)
+        })
+        .map(|e| e.dir)
+        .collect();
+    if users.is_empty() {
+        return;
+    }
+    let ok = Command::new("jq")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    assert!(
+        ok,
+        "jq is not on PATH, but {} shipped example(s) use it as their system \
+         under test: {users:?}",
         users.len()
     );
 }

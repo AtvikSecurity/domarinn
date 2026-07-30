@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# `output_expr` does not have to return a string.
+#
+# Example 28 pulled one nested string field out of a JSON body. This suite
+# points TWO providers at the same backend and gives each a different
+# `output_expr`, to show more of what the expression can reach:
+#
+#   * a nested field, same as example 28 — response.json.result.reply
+#   * a field that is NOT a string at all — response.json.result.confidence,
+#     a bare number
+#
+# Whichever `output_expr` returns becomes the output as-is: a string stays
+# text, anything else — a number, an object, an array — becomes structured
+# output that every text assertion still reads (stringified), and that
+# `is-json` / `contains-json` could inspect directly.
+#
+# `output_expr` only ever sees a SUCCESSFUL response: a non-2xx status is a
+# transport error before the expression runs, same as any other provider's
+# failure.
+#
+# Run:  domarinn run examples/36-http-output-expr
+version: 1
+project: examples
+suite: http-output-expr
+
+providers:
+  # --8<-- [start:provider]
+  - id: orders-reply
+    type: http
+    url: "${env:ORDERS_API_URL:-https://api.example.com/v1/orders/assist}"
+    body:
+      message: "{{ user_input }}"
+    output_expr: "response.json.result.reply"
+  # --8<-- [end:provider]
+
+  # Same backend, sliced differently: this one reaches past the reply text
+  # into a numeric field the first provider never touches.
+  - id: orders-confidence
+    type: http
+    url: "${env:ORDERS_API_URL:-https://api.example.com/v1/orders/assist}"
+    body:
+      message: "{{ user_input }}"
+    output_expr: "response.json.result.confidence"
+
+tests:
+  - id: orders/reply-text
+    only_providers: [orders-reply]
+    vars:
+      user_input: "Where is order 1042?"
+    assert:
+      - type: icontains
+        value: "shipped"
+
+  - id: orders/confidence-score
+    only_providers: [orders-confidence]
+    vars:
+      user_input: "Where is order 1042?"
+    assert:
+      - type: contains
+        value: "0.93"
