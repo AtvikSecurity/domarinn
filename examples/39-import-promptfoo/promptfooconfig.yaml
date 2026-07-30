@@ -1,0 +1,57 @@
+# The BEFORE half of a migration, in promptfoo's own format.
+#
+# `domarinn import promptfoo` converts this file into the domarinn.yaml beside
+# it. Anything with a faithful equivalent is translated; anything without one
+# becomes a `# NOTE:` line in the output, and two of the assertions below are
+# there precisely to produce those notes — a migration's real work is the parts
+# that need a decision rather than a translation.
+#
+# The provider is the ladder's shared echo program rather than a model, so both
+# halves of the pair run offline. Everything else is shaped like a small, real
+# promptfoo config.
+#
+# Convert:  domarinn import promptfoo examples/39-import-promptfoo/promptfooconfig.yaml
+description: Refund-policy replies from the support assistant
+
+providers:
+  # promptfoo's `exec:` provider form: one program, invoked per case. The
+  # converter maps it to a domarinn `type: exec` provider whose `command` is
+  # that program.
+  - "exec:../echo-provider.py"
+
+prompts:
+  - |
+    You are a support agent for {{ product }}. Answer in one sentence.
+
+    Customer: {{ question }}
+
+defaultTest:
+  vars:
+    product: Aurora Notes
+  assert:
+    - type: icontains
+      value: Aurora
+    # NOT recognised by the converter, which matches on the bare type name: this
+    # one is reported as unmapped and left out. domarinn does support the
+    # spelling (see examples/03-deterministic-asserts) — it has to be re-added
+    # by hand, which is exactly why the notes are worth reading.
+    - type: not-icontains
+      value: as an AI
+
+tests:
+  - vars:
+      question: How long do I have to return something?
+    assert:
+      - type: contains
+        value: "return something"
+      # No equivalent, and deliberately so: the replacement is an `exec`
+      # assertion (examples/14-custom-exec-assert), a program of your own over a
+      # small JSON protocol rather than an embedded interpreter.
+      - type: javascript
+        value: output.length < 400
+
+  - vars:
+      question: Can I get a refund on a gift card?
+    assert:
+      - type: icontains
+        value: gift card

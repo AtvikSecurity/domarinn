@@ -20,6 +20,26 @@ $ domarinn list tests .
 
 ///
 
+## A worked conversion
+
+Both halves of one conversion ship in the repository as [example 39](../examples/running-and-reporting.md#example-39--a-promptfoo-config-converted), and both are run in CI. The promptfoo config going in:
+
+```yaml
+--8<-- "examples/39-import-promptfoo/promptfooconfig.yaml"
+```
+
+And the suite coming out, committed as the converter printed it apart from its header:
+
+```yaml
+--8<-- "examples/39-import-promptfoo/domarinn.yaml"
+```
+
+Read the two `# NOTE:` lines first, because they are the whole reason to look at a conversion before running it. One assertion was a `javascript` check, which has no equivalent — the replacement is [an `exec` assertion](../examples/your-own-system.md#example-14--a-custom-assertion). The other was `not-icontains`, a spelling domarinn accepts everywhere but the converter does not recognise, so a house safety rule left the suite. Both have to be re-added by hand; neither was dropped in silence.
+
+What did convert is worth reading for what it does *not* decide for you. `exec:../echo-provider.py` became a provider block with the id `p0`, the two promptfoo cases became `case-0` and `case-1`, and the suite carries no `project:` or `suite:` name at all — the converter cannot invent names, and those are the strings that group runs on a results server and that `--provider`, `only_providers` and a baseline diff refer to. Rename them before the ids reach a stored baseline.
+
+CI re-runs the converter on that config, compares the output against the committed suite, then runs both, so the pair above can only fall out of step if the converter itself changes.
+
 ## What maps cleanly
 
 | promptfoo | domarinn |

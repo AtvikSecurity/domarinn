@@ -1096,4 +1096,41 @@ pub const EXAMPLES: &[Example] = &[
             cache_hits: 0,
         }],
     },
+    Example {
+        dir: "39-import-promptfoo",
+        shows: "a promptfoo config and the suite `domarinn import promptfoo` turns \
+                it into, both shipped and both exercised",
+        env: &[],
+        stub: &[],
+        stub_calls: 0,
+        steps: &[
+            // The converter prints to stdout and takes no output path, so this
+            // step can only prove it converts the shipped config without
+            // erroring. That the printed suite matches the committed one — and
+            // runs — is
+            // `example_39_the_committed_conversion_is_the_converters_output_and_runs`,
+            // which needs the stdout this table cannot capture.
+            Step {
+                argv: &["import", "promptfoo", "{dir}/promptfooconfig.yaml"],
+                exit: 0,
+                cells: Cells::NONE,
+                case_ids: &[],
+                priced: false,
+                writes: &[],
+                cache_hits: 0,
+            },
+            // The committed conversion, run in place like every other example:
+            // `case-0` / `case-1` are the ids the converter generates for
+            // promptfoo cases that carry no description of their own.
+            Step {
+                argv: RUN,
+                exit: 0,
+                cells: Cells::pass(2),
+                case_ids: &["case-0", "case-1"],
+                priced: false,
+                writes: &[],
+                cache_hits: 0,
+            },
+        ],
+    },
 ];

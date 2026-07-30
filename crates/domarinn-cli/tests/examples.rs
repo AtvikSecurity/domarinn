@@ -290,13 +290,19 @@ fn scrubbed_bin() -> Command {
 ///
 /// Without this, `python3` absent turns every python-backed row red at once
 /// with "provider error" and nothing anywhere naming the cause.
+///
+/// A `.py` path counts as much as the word `python3`: a suite whose `command` is
+/// the script itself relies on its `#!/usr/bin/env python3` shebang, so it needs
+/// the interpreter just as much while never spelling it out. The converted suite
+/// in `39-import-promptfoo` is that shape — and it is the converter's output, so
+/// it cannot be reworded to say `python3`.
 #[test]
 fn python3_is_available_for_the_examples_that_need_it() {
     let users: Vec<&str> = EXAMPLES
         .iter()
         .filter(|e| {
             std::fs::read_to_string(examples_root().join(e.dir).join("domarinn.yaml"))
-                .map(|s| s.contains("python3"))
+                .map(|s| s.contains("python3") || s.contains(".py"))
                 .unwrap_or(false)
         })
         .map(|e| e.dir)
@@ -527,6 +533,123 @@ fn example_30_env_overridden_embed_model_reaches_the_wire() {
             "the overridden embeddings model never reached the request body: {request:?}"
         );
     }
+}
+
+/// Example 39 ships both halves of a promptfoo migration, and the second half is
+/// a claim about a program: `examples/39-import-promptfoo/domarinn.yaml` says it
+/// is what `domarinn import promptfoo` prints for the config beside it. So it is
+/// checked against the converter — and then run, because "it converted" is not
+/// "it works".
+///
+/// Neither half fits the example table. The converter writes to stdout and takes
+/// no output path, so a table row can only assert its exit code; the row does
+/// that, and this test does the two things that need the stdout itself.
+#[test]
+fn example_39_the_committed_conversion_is_the_converters_output_and_runs() {
+    let dir = examples_root().join("39-import-promptfoo");
+    let out = scrubbed_bin()
+        .args(["import", "promptfoo"])
+        .arg(dir.join("promptfooconfig.yaml"))
+        .output()
+        .expect("the domarinn binary runs");
+    assert!(
+        out.status.success(),
+        "`domarinn import promptfoo` failed on the shipped config:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8(out.stdout).expect("the converter prints utf-8");
+    let committed =
+        std::fs::read_to_string(dir.join("domarinn.yaml")).expect("the committed conversion ships");
+
+    // The `# NOTE:` lines are the point of the pair: two assertions in that
+    // promptfoo config have no faithful equivalent, and the guide tells readers
+    // to read the notes before running anything. A conversion that silently
+    // stopped emitting them would still parse, still run, and still be green.
+    let notes: Vec<&str> = printed
+        .lines()
+        .filter(|l| l.starts_with("# NOTE:"))
+        .collect();
+    assert_eq!(
+        notes.len(),
+        2,
+        "the shipped promptfoo config carries two deliberately unmappable \
+         assertions (`not-icontains` and `javascript`), so the converter must \
+         emit two notes; it emitted: {notes:?}"
+    );
+    for note in &notes {
+        assert!(
+            committed.contains(note),
+            "the committed conversion dropped a converter note: {note:?}"
+        );
+    }
+
+    // Compared as YAML rather than as bytes: the committed file carries a header
+    // saying where it came from, and this repository's formatter indents its
+    // sequences. Neither changes the suite, and a byte comparison would reject
+    // the file for saying what it is.
+    let parse = |what: &str, text: &str| {
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text)
+            .unwrap_or_else(|e| panic!("{what} is not valid YAML: {e}"))
+    };
+    assert_eq!(
+        parse("the converter's output", &printed),
+        parse("the committed conversion", &committed),
+        "examples/39-import-promptfoo/domarinn.yaml is no longer what \
+         `domarinn import promptfoo promptfooconfig.yaml` prints.\n\
+         If crates/domarinn-cli/src/import.rs changed on purpose, regenerate the \
+         file (keeping its header) and commit it — the example's whole claim is \
+         that it is the tool's output, not a hand-written suite."
+    );
+
+    // And the printed suite runs, not just the committed one. Written into a
+    // scratch tree with the shared echo provider beside it, because the
+    // converted `command` is `../echo-provider.py` — resolved relative to the
+    // suite file, exactly as it is in the example directory.
+    let tmp = tempfile::tempdir().expect("scratch directory");
+    std::fs::copy(
+        examples_root().join("echo-provider.py"),
+        tmp.path().join("echo-provider.py"),
+    )
+    .expect("the shared echo provider copies, mode included");
+    let suite_dir = tmp.path().join("converted");
+    std::fs::create_dir(&suite_dir).expect("scratch suite directory");
+    std::fs::write(suite_dir.join("domarinn.yaml"), &printed).expect("the conversion writes");
+
+    let result = tmp.path().join("result.json");
+    let run = scrubbed_bin()
+        .args(["run"])
+        .arg(&suite_dir)
+        .args(["--format", "json", "--no-progress", "--out"])
+        .arg(&result)
+        .arg("--cache-dir")
+        .arg(tmp.path().join("cache"))
+        .current_dir(tmp.path())
+        .output()
+        .expect("the domarinn binary runs");
+    assert!(
+        run.status.success(),
+        "the converter's own output did not run:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let doc: domarinn_core::result::RunResult = serde_json::from_str(
+        &std::fs::read_to_string(&result).expect("the run wrote a result document"),
+    )
+    .expect("the result document parses");
+    let ids: BTreeSet<&str> = doc.cases.iter().map(|c| c.cell.test_id.as_str()).collect();
+    assert_eq!(
+        (doc.summary.passed, doc.summary.total),
+        (2, 2),
+        "the converted suite ran {} of {} cells green",
+        doc.summary.passed,
+        doc.summary.total
+    );
+    assert_eq!(
+        ids,
+        BTreeSet::from(["case-0", "case-1"]),
+        "the converted suite's case ids are the converter's, and the table row \
+         for the committed copy claims the same two"
+    );
 }
 
 /// Run one shipped example offline and hand back its result document.

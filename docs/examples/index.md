@@ -23,7 +23,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | [First steps](first-steps.md) | The smallest suite that runs, up through weights and thresholds. |
 | [Templates & test data](templates-and-test-data.md) | The `!raw` escape hatch, file vars, matrix sweeps, datasets, generators, and multi-turn prompts. |
 | [Your own system](your-own-system.md) | The `exec` provider, a custom assertion, tool-call grading, and the protocol itself in bash. |
-| [Running & reporting](running-and-reporting.md) | Tags and filters, composition, exit codes, errors and retries, runner tuning, output formats. |
+| [Running & reporting](running-and-reporting.md) | Tags and filters, composition, exit codes, errors and retries, runner tuning, output formats, and importing a promptfoo config. |
 | [Caching & statistics](caching-and-statistics.md) | The one cache-key rule, salts, repeat and confidence, baselines and diff. |
 | [Models, grading & budgets](models-grading-and-budgets.md) | OpenAI-compatible and Anthropic providers (native tool calls included), HTTP and `output_expr`, LLM-rubric grading judged by either vendor, similarity, budgets — and every top-level key at once, annotated. |
 
@@ -67,6 +67,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 36  | [`output_expr`, sliced two ways](models-grading-and-budgets.md#example-36--output_expr-sliced-two-ways) | Pulling more than one shape — including a non-string one — out of the same response. |
 | 37  | [The exec protocol, in bash](your-own-system.md#example-37--the-exec-protocol-in-bash) | The same provider contract, spoken in bash and `jq` instead of Python. |
 | 38  | [Every key, once](models-grading-and-budgets.md#example-38--every-key-once) | One runnable suite setting every top-level key, annotated as a map of the reference. |
+| 39  | [A promptfoo config, converted](running-and-reporting.md#example-39--a-promptfoo-config-converted) | A promptfoo config and the suite `domarinn import promptfoo` turns it into, both shipped. |
 
 ## See also
 

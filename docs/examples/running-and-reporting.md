@@ -1,6 +1,6 @@
 # Running & reporting
 
-Six suites about operating a suite once it exists: narrowing what runs with tags and filters, composing configuration across files, reading the exit-code contract a red build produces, telling an error apart from a failure, tuning concurrency against a real rate limit, and shaping the report for a human or a machine. Read these when you are wiring a suite into a script or a CI job.
+Seven suites about operating a suite once it exists: narrowing what runs with tags and filters, composing configuration across files, reading the exit-code contract a red build produces, telling an error apart from a failure, tuning concurrency against a real rate limit, shaping the report for a human or a machine — and arriving from promptfoo with a config you already have. Read these when you are wiring a suite into a script or a CI job.
 
 ---
 
@@ -129,3 +129,21 @@ Commit these in the suite rather than passing `-j` on the command line, so a loc
 `--out FILE` takes a **single** path, so one invocation writes one machine format to a file; producing both JSON and JUnit is two invocations. `--summary-md FILE` is separate and can accompany either — it is what you point at `$GITHUB_STEP_SUMMARY`.
 
 Colour follows `NO_COLOR` and `CLICOLOR_FORCE`, and the machine formats are never coloured regardless, so piping `json` into `jq` never surprises you with escape codes. Logs always go to stderr, so stdout stays parseable.
+
+---
+
+## Example 39 — A promptfoo config, converted
+
+If you already have a promptfoo suite, the first domarinn suite you run can be that one. `domarinn import promptfoo` translates what has a faithful equivalent and leaves a `# NOTE:` for what does not, so nothing disappears quietly.
+
+This example ships both halves of one migration. The promptfoo config going in, and a walk through the conversion, are in the [migration guide](../guides/migrate-promptfoo.md#a-worked-conversion); here is the suite that came out, committed as the converter printed it apart from its header:
+
+```yaml
+--8<-- "examples/39-import-promptfoo/domarinn.yaml"
+```
+
+Two of that config's assertions did not survive, and the notes name both: `not-icontains` is not a type the converter recognises — domarinn supports the spelling, the converter matches on the bare name — and `javascript` has no equivalent at all, its replacement being [an `exec` assertion](your-own-system.md#example-14--a-custom-assertion). Re-adding them is the part of a migration a converter cannot do for you.
+
+The ids are the converter's too: `p0` for the provider, and `case-0` / `case-1` for promptfoo cases that carried no description. They run as they are, and they are the first thing worth renaming — an id is what `--provider`, `only_providers` and a baseline diff refer to. A converted suite also has no `project:` or `suite:` name, which is what groups and compares runs on the results server.
+
+CI converts the shipped promptfoo config, compares the result against the committed file, and runs both, so this page cannot show a conversion that no longer happens.
