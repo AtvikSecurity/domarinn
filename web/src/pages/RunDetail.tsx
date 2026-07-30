@@ -25,6 +25,7 @@ import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { Modal, ModalActions } from "@/components/ui/Modal";
+import { Breadcrumb } from "@/components/ui/Breadcrumb";
 import { useAuthView } from "@/auth/AuthProvider";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -230,15 +231,13 @@ export function RunDetail() {
       <div className="shrink-0 rounded-xl border border-border bg-surface p-4">
         <div className="flex flex-wrap items-start gap-4">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <Link to="/runs" className="text-sm text-muted hover:text-fg">
-                Runs
-              </Link>
-              <span className="text-muted">/</span>
-              <span className="text-sm text-muted">{r.project}</span>
-              <span className="text-muted">/</span>
-              <span className="text-sm text-muted">{r.suite}</span>
-            </div>
+            <Breadcrumb
+              items={[
+                { label: "Runs", to: "/runs" },
+                { label: r.project ?? "—" },
+                { label: r.suite ?? "—" },
+              ]}
+            />
             <h1 className="mt-0.5 font-mono text-lg font-semibold tracking-tight">
               {r.id}
             </h1>
