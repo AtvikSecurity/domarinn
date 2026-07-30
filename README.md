@@ -91,14 +91,15 @@ See **[docs/start/first-eval.md](docs/start/first-eval.md)** for a full walkthro
 
 ## Documentation
 
-Full documentation is published at **<https://docs.domarinn.com/>** (source in [`docs/`](docs/)):
+Full documentation is published at **<https://docs.domarinn.com/>** (source in [`docs/`](docs/)). The tree, and a handful of curated links per section:
 
-- [Start here](docs/start/install.md) · [domarinn.yaml](docs/reference/domarinn-yaml.md) · [Assertions](docs/reference/assertions.md) · [Providers](docs/reference/providers.md)
-- [Grading](docs/concepts/grading.md) · [Caching](docs/concepts/caching.md) · [Statistics](docs/concepts/statistics.md) · [CLI reference](docs/reference/cli.md)
-- [Server & accounts](docs/reference/server.md) · [Self-hosting](docs/guides/self-host.md) · [Gate a PR in CI](docs/guides/gate-in-ci.md) · [Exec protocol](docs/reference/protocol.md)
-- [MCP endpoint](docs/reference/mcp.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
-- **[Examples](docs/examples/index.md)** — 32 runnable suites, one capability each, every one executed in CI
-- **[Guides](docs/guides/index.md)** · [How a run works](docs/concepts/how-a-run-works.md) · [Troubleshooting](docs/guides/troubleshooting.md) · [Migrating from promptfoo](docs/guides/migrate-promptfoo.md)
+- **Start here** — [Install](docs/start/install.md) · [Your first eval](docs/start/first-eval.md)
+- **Concepts** — [How a run works](docs/concepts/how-a-run-works.md) · [Providers & the exec boundary](docs/concepts/exec-boundary.md) · [Grading](docs/concepts/grading.md) · [Caching](docs/concepts/caching.md) · [Statistics](docs/concepts/statistics.md) · [Why domarinn is built this way](docs/concepts/why-domarinn.md)
+- **[Guides](https://docs.domarinn.com/guides/)** (twelve, end to end) — [Test a model API](docs/guides/test-a-model-api.md) · [Test your app via exec](docs/guides/evaluate-your-app.md) · [A zero-cost gate on every PR](docs/guides/render-gate.md) · [Gate a PR in CI](docs/guides/gate-in-ci.md) · [Self-hosting](docs/guides/self-host.md) · [Migrating from promptfoo](docs/guides/migrate-promptfoo.md) · [Troubleshooting](docs/guides/troubleshooting.md)
+- **Reference** — [domarinn.yaml](docs/reference/domarinn-yaml.md) · [Providers](docs/reference/providers.md) · [Assertions](docs/reference/assertions.md) · [CLI](docs/reference/cli.md) · [Server & accounts](docs/reference/server.md) · [REST API](docs/reference/rest-api.md) · [MCP endpoint](docs/reference/mcp.md) · [Exec protocol](docs/reference/protocol.md) · [The web UI](docs/reference/web-ui.md)
+- **[Examples](https://docs.domarinn.com/examples/)** — 39 runnable suites, one capability each, every one executed in CI: [first steps](docs/examples/first-steps.md) · [templates & test data](docs/examples/templates-and-test-data.md) · [your own system](docs/examples/your-own-system.md) · [running & reporting](docs/examples/running-and-reporting.md) · [caching & statistics](docs/examples/caching-and-statistics.md) · [models, grading & budgets](docs/examples/models-grading-and-budgets.md)
+
+Also the [Claude Code plugin](plugin/README.md), which bundles the MCP endpoint with eval-authoring and triage skills, and the [Rust API reference](https://docs.domarinn.com/rustdoc/) for `domarinn-protocol`.
 
 ## For agents
 
