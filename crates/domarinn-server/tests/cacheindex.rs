@@ -333,8 +333,10 @@ async fn pruning_an_entry_drops_its_search_row() {
         .await
         .unwrap();
 
-    // Everything is older than "0 days ago", so this evicts the lot.
-    storage.cache_prune(Some(0), None).await.unwrap();
+    // Evict by size target rather than by age. `older_than_days = 0` computes
+    // a cutoff of *now* and deletes strictly-older rows, so an entry written in
+    // the same millisecond survives — a real flake, not a hypothetical.
+    storage.cache_prune(None, Some(0)).await.unwrap();
 
     let conn = raw(dir.path());
     let rows: i64 = conn

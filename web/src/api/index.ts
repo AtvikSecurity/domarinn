@@ -126,4 +126,12 @@ export type { CaseHistoryResponse } from "./generated/CaseHistoryResponse";
 export type { CaseHistoryPoint } from "./generated/CaseHistoryPoint";
 
 export type { CacheStatsResponse } from "./generated/CacheStatsResponse";
+export type { CacheEntryListItem } from "./generated/CacheEntryListItem";
+export type { CacheEntryListResponse } from "./generated/CacheEntryListResponse";
+export type { CacheEntryDetail } from "./generated/CacheEntryDetail";
+export type { CacheFacet } from "./generated/CacheFacet";
+export type { CacheFacetsResponse } from "./generated/CacheFacetsResponse";
+export type { CacheTier } from "./generated/CacheTier";
+export type { CacheSort } from "./generated/CacheSort";
+export type { SortOrder } from "./generated/SortOrder";
 export type { PruneResponse } from "./generated/PruneResponse";

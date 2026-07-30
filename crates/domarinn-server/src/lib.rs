@@ -37,6 +37,7 @@ use crate::storage::Storage;
 
 pub mod accounts;
 pub mod auth;
+pub mod cachebrowse;
 pub mod domain;
 pub mod dto;
 pub mod extract;
@@ -617,12 +618,15 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     use ts_rs::Config;
 
     use crate::accounts::{CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody};
-    use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
+    use crate::domain::{
+        CacheSort, CacheTier, CachedFilter, OriginFilter, RunStatusFilter, SortOrder,
+    };
     use crate::dto::accounts::{
         ApiKeyCreatedResponse, ApiKeyListResponse, AuthSessionResponse, MeResponse, OkResponse,
         UserListResponse,
     };
     use crate::dto::cache::{CacheStatsResponse, PruneResponse};
+    use crate::dto::cacheentries::{CacheEntryDetail, CacheEntryListResponse, CacheFacetsResponse};
     use crate::dto::cases::CaseListResponse;
     use crate::dto::compare::CompareResponse;
     use crate::dto::config::RunConfigResponse;
@@ -648,6 +652,15 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     ProjectsResponse::export_all(&cfg)?;
     SuitesResponse::export_all(&cfg)?;
     CacheStatsResponse::export_all(&cfg)?;
+    CacheEntryListResponse::export_all(&cfg)?;
+    CacheEntryDetail::export_all(&cfg)?;
+    CacheFacetsResponse::export_all(&cfg)?;
+    // Query-string enums: `Deserialize`-only, so unreachable from any response
+    // graph, and listed as their own roots for the same reason
+    // `RunStatusFilter` is — the browse UI imports them to build its controls.
+    CacheTier::export_all(&cfg)?;
+    CacheSort::export_all(&cfg)?;
+    SortOrder::export_all(&cfg)?;
     PruneResponse::export_all(&cfg)?;
     MetaResponse::export_all(&cfg)?;
     SearchResponse::export_all(&cfg)?;

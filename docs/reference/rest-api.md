@@ -130,6 +130,46 @@ The content-addressed cache lets many CI runs share every request domarinn makes
 > `DOMARINN_CACHE_MAX_AGE_DAYS` and `DOMARINN_CACHE_MAX_BYTES` automatically;
 > `POST /cache/prune` is the manual equivalent.
 
+### Browsing the cache
+
+| Method | Path | Scope | Notes |
+|--------|------|-------|-------|
+| GET | `/api/v1/cache/entries` | `admin` | List entries. Filters: `kind`, `model`, `q`, `since`, `until`, `min_cost_microusd`, `max_cost_microusd`, `tier`. Sort: `sort=created\|last_access\|size\|cost` with `order=desc\|asc`. Paginates by opaque `cursor` (`limit` default `50`, max `200`). |
+| GET | `/api/v1/cache/entries/{key}` | `read` | One entry, parsed. `?raw=true` also returns the provider's raw metadata, which is withheld by default. |
+| GET | `/api/v1/cache/facets` | `admin` | Values the `kind` and `model` filters can take, with counts, plus `total` / `unindexed` / `unparseable`. |
+
+**Listing is `admin`; reading one entry is `read`.** That asymmetry is deliberate.
+A key is `sha256(canonical_json({request, repeat, salts}))` — the only way to
+compute one is to already possess the exact prompt, model and parameters — so
+`GET /cache/{key}` at `read` scope never revealed anything the caller did not
+already have. *Enumerating* is a different capability: it turns "you already
+know the prompt" into every prompt and every response, sorted by cost and
+searchable. Two facts decide where that belongs: `read` is the **anonymous**
+scope under `protect-writes`, and `write` is the CI-token scope. So listing sits
+with `POST /cache/prune` at `admin` — destroying the corpus and enumerating it
+are comparable powers.
+
+Note one genuinely new exposure: in a `layered` setup a developer's local
+iteration writes cache entries to the shared server even when the run itself is
+never `--share`d. Those prompts were already on the server; listing is what
+makes them reachable.
+
+**Browsing never moves the counters.** Neither listing nor inspecting touches
+`hits`/`misses` (which would make the lookup hit-rate tile lie) or
+`last_access_at` (which is what `POST /cache/prune` evicts on — a browse that
+refreshed it would let looking at the cache change what the cache evicts). Both
+read through a pooled read-only connection, so this is a property of the
+connection rather than of discipline.
+
+Two `kind=` pseudo-values exist because a real kind filter provably cannot match
+rows nothing is known about: `kind=unindexed` selects entries the backfill has
+not reached, and `kind=unparseable` selects entries whose body this server could
+not read. Without them those rows would be unreachable exactly while someone
+wants to look at them.
+
+`sort=cost` lists only entries whose cost is known. Ordering by an unknown value
+is meaningless, and the NULL tail would also stop keyset pagination dead.
+
 ### Indexed metadata
 
 An entry's `body` is opaque to the server: it is stored and served byte-for-byte,

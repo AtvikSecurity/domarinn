@@ -259,6 +259,49 @@ pub enum OriginFilter {
     Local,
 }
 
+/// Which cache a browse request is about.
+///
+/// `Server` is this instance's `cache.db` — the shared tier a `layered` run
+/// writes to. `Local` is a read-only disk cache directory mounted by the
+/// operator, which is what a single developer's runs actually fill, since
+/// `cache.backend` defaults to `disk`. A tier that is not mounted is a `404`
+/// rather than a `400`: the request is well-formed, the resource is simply not
+/// present on this instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheTier {
+    #[default]
+    Server,
+    Local,
+}
+
+/// Sort column for `GET /cache/entries?sort=`.
+///
+/// Deliberately only the columns SQL can order on directly. Everything else a
+/// row shows lives inside the entry body, and sorting a single page of a large
+/// cache by a field the database cannot see would be a lie dressed as an
+/// ordering — `CaseGrid`'s "sorted within loaded cases" apology is the shape to
+/// avoid, not to copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheSort {
+    #[default]
+    Created,
+    LastAccess,
+    Size,
+    Cost,
+}
+
+/// Newest / largest / most expensive first, which is what someone opening a
+/// cache browser is looking for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrder {
+    Asc,
+    #[default]
+    Desc,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

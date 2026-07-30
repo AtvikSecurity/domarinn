@@ -114,6 +114,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/cache/stats", get(cache_stats))
         .route("/api/v1/cache/prune", post(cache_prune))
+        // Static segments win over `{key}` in axum's router, and more strongly:
+        // `validate_cache_key` requires `sha256:<64 hex>`, so no legal key can
+        // ever be the literal `entries` or `facets`. `/cache/stats` already
+        // proves the pattern in production.
+        .route("/api/v1/cache/entries", get(crate::cachebrowse::list))
+        .route("/api/v1/cache/facets", get(crate::cachebrowse::facets))
+        .route(
+            "/api/v1/cache/entries/{key}",
+            get(crate::cachebrowse::detail),
+        )
         .route(
             "/api/v1/cache/{key}",
             get(cache_get).head(cache_head).put(cache_put),
@@ -722,7 +732,7 @@ async fn case_history(
 // Cache
 // ---------------------------------------------------------------------------
 
-fn validate_cache_key(key: &str) -> ApiResult<()> {
+pub(crate) fn validate_cache_key(key: &str) -> ApiResult<()> {
     if CacheKey::is_valid(key) {
         Ok(())
     } else {
@@ -820,7 +830,7 @@ async fn cache_prune(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn clamp_limit(limit: Option<i64>) -> i64 {
+pub(crate) fn clamp_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
