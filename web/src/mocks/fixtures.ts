@@ -39,3 +39,17 @@ export {
   projectSummaries,
   suiteSummaries,
 } from "./fixtures/summaries";
+export type { SetViewer } from "./fixtures/sets";
+export {
+  canManageSet,
+  deleteGrant,
+  listRunSets,
+  resetSets,
+  restrictSet,
+  runSetProject,
+  runSetSuite,
+  setAccess,
+  setRestrictedExactly,
+  unrestrictSet,
+  upsertGrant,
+} from "./fixtures/sets";
