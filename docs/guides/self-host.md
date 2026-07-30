@@ -237,4 +237,4 @@ Restoring is just putting the file back at `/data/domarinn.db` while the service
 
 Pull the new image tag and restart the single pod/container (`Recreate` on Kubernetes handles the ordering). Because the schema migrations run at startup and there is only ever one writer, upgrades are a stop-start with a backup taken first.
 
-Published tags are `rolling` (tracks `main`), plus `{{version}}`, `{{major}}.{{minor}}` and `{{major}}` for each release. There is deliberately **no `latest`** — pin a version, or track `rolling` if you want the tip of main. See [`../ci.md`](../ci.md#container-image-dockeryml).
+Published tags are `rolling` (tracks `main`), plus `{{version}}`, `{{major}}.{{minor}}` and `{{major}}` for each release. There is deliberately **no `latest`** — pin a version, or track `rolling` if you want the tip of main. See [`CONTRIBUTING.md`](https://github.com/AtvikSecurity/domarinn/blob/main/CONTRIBUTING.md#container-image-dockeryml).

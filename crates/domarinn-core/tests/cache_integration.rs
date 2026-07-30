@@ -864,7 +864,7 @@ async fn an_empty_output_is_cached_and_replayed_like_any_other() {
 #[test]
 fn an_entry_written_by_a_newer_domarinn_still_deserializes() {
     // A shared S3/server cache is read by whatever version each teammate or CI
-    // job happens to be running (docs/ci.md). An entry written by a newer
+    // job happens to be running (docs/guides/gate-in-ci.md). An entry written by a newer
     // binary carries fields this one has never heard of; skipping them must be
     // a no-op, not a hard error that fails the whole run.
     let from_the_future = json!({
