@@ -241,7 +241,7 @@ A custom grader. Receives the provider's output plus context and returns a `Grad
 | `prompt`   | any JSON        | **Optional.** The prompt that produced the output. |
 | `provider` | object          | `{ "id": string }` — which provider produced the output. |
 | `config`   | any JSON        | The assertion's own config block from the suite. Defaults to `{}`. |
-| `vars`     | any JSON object | The case's rendered variables — the inputs the output is being judged against, so a grader can check it against an expected value rather than in isolation. Defaults to `{}`. |
+| `vars`     | any JSON object | The case's rendered variables — for an assert request this is the full render context, including an `env` object snapshotting the parent's environment. The child receives `env` in this document even though its own spawned environment is empty; the cache key excludes it. Defaults to `{}`. |
 
 ### Response
 
