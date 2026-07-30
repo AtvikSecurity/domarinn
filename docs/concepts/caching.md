@@ -197,16 +197,7 @@ If a remote backend is selected but its server URL, bucket config or credentials
 
 ## Sharing a cache across a team
 
-Point everyone at the same shared backend and the whole team reuses each other's work:
-
-- **Via the server** — set `cache.backend: layered` in the suite and `DOMARINN_SERVER_URL` (+ `DOMARINN_TOKEN`) in each environment. The first person to run a case pays for it; everyone else gets a hit.
-- **Via S3** — set `cache.backend: layered` with a `cache.s3` block and provide bucket credentials through the AWS chain.
-
-For sharing to hold, keep whatever *changes the request* identical across environments: a different model, endpoint, params, header value or `cache_salt` is a different request, and therefore a different entry that nobody else hits. Cosmetic differences do not count — a `base_url` with and without a trailing slash names one endpoint and keys one way.
-
-Nothing about the *environment* has to match. Different checkout paths, different file timestamps, a binary rebuilt from the same commit, a different working directory, unrelated exported variables, two teammates holding different API keys — none of these move a key, by construction. That is what makes a shared backend worth having, and `crates/domarinn-core/tests/cache_portability.rs` pins each one so it stays true.
-
-Grader requests share the same key space, so a warm run re-pays neither the provider nor the judge. `--no-grader-cache` re-grades while still replaying provider responses, which is how you measure judge variance deliberately. See [grading.md](./grading.md).
+Pointing a team and CI at the same backend, what has to match for a hit, and the salt discipline that keeps it useful are covered end to end in [Share a cache and baselines](../guides/share-cache-and-baselines.md).
 
 ## Where the cache lives
 

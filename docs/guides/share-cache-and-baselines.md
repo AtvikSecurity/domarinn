@@ -36,6 +36,12 @@ If the credentials are missing, domarinn **falls back to local disk with a warni
 
 ///
 
+### What has to match across environments
+
+For sharing to hold, keep whatever *changes the request* identical everywhere: a different model, endpoint, params, header value or `cache_salt` is a different request, and therefore a different entry nobody else hits. Cosmetic differences do not count — a `base_url` with and without a trailing slash names one endpoint and keys one way.
+
+Nothing about the *environment* has to match. Different checkout paths, different file timestamps, a binary rebuilt from the same commit, a different working directory, unrelated exported variables, two teammates holding different API keys — none of these move a key, by construction. That is what makes a shared backend worth having, and `crates/domarinn-core/tests/cache_portability.rs` pins each one so it stays true.
+
 ## 2. Salt at the right granularity
 
 This is the part that decides whether a shared cache stays useful or gets thrown away weekly.

@@ -43,7 +43,7 @@ A model grading its own output is not an independent measurement. Use a differen
 
 Two configuration details that cause real outages:
 
-- The grader reads **only** what its own `api_key_env` names. It does not inherit the provider's credential resolution — and the failure is asymmetric: completions succeed while every grade dies on 401, so it reads as an infrastructure fault. See [Troubleshooting](../troubleshooting.md#every-grade-dies-on-401-but-completions-succeed).
+- The grader reads **only** what its own `api_key_env` names. It does not inherit the provider's credential resolution — and the failure is asymmetric: completions succeed while every grade dies on 401, so it reads as an infrastructure fault. See [Troubleshooting](troubleshooting.md#every-grade-dies-on-401-but-completions-succeed).
 - Raise `max_tokens`. A thinking model can truncate a verdict at the default, and a truncated verdict is a fail-closed **error**. A generous ceiling costs nothing, because you are billed for tokens generated.
 
 ## 4. Expect refusals, and decide what they mean
@@ -73,4 +73,4 @@ $ domarinn run eval/behavioral.yaml --repeat 5
 
 - [Example 29](../examples/models-grading-and-budgets.md#example-29--llm-rubric-grading) — the suite above.
 - [LLM-rubric grading](../concepts/grading.md) — verdict mechanics in full.
-- [Scenario 03](structured-output.md) — when the answer is an object, not prose.
+- [Guide 03](structured-output.md) — when the answer is an object, not prose.

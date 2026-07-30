@@ -73,4 +73,4 @@ If that prints `0`, your assertions are not asserting. [Example 18](../examples/
 
 - [Example 12](../examples/your-own-system.md#example-12--render-health) — the suite above, runnable.
 - [Example 11](../examples/templates-and-test-data.md#example-11--test-generators) — generators in detail.
-- [Scenario 04](regression-gate.md) — the graded layer that runs beside this one.
+- [Guide 04](gate-in-ci.md) — the graded layer that runs beside this one.
