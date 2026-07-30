@@ -27,6 +27,7 @@ use crate::dto::meta::{CacheTierMeta, MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
 use crate::dto::search::SearchResponse;
 use crate::extract::{ApiJson, ApiQuery};
+use crate::runsets::RunVisibility;
 use crate::storage::{
     self, CachePutOutcome, CaseListFilter, IngestOutcome, MatrixFilter, RunListFilter,
 };
@@ -480,11 +481,12 @@ struct RunQuery {
 }
 
 async fn list_runs(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     ApiQuery(q): ApiQuery<RunQuery>,
 ) -> ApiResult<Response> {
     let filter = RunListFilter {
+        visibility: RunVisibility::of(&scope.identity),
         project: q.project,
         suite: q.suite,
         tag: q.tag,
@@ -508,11 +510,17 @@ async fn list_runs(
 }
 
 async fn get_run(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
 ) -> ApiResult<Response> {
-    match state.storage.get_run(id).await? {
+    // An invisible run is `None` here, so it 404s through exactly the same path
+    // as one that never existed — no 403, no existence leak.
+    match state
+        .storage
+        .get_run(id, RunVisibility::of(&scope.identity))
+        .await?
+    {
         Some(detail) => Ok(Json(detail).into_response()),
         None => Err(not_found("run")),
     }
@@ -536,16 +544,22 @@ struct CaseQuery {
 }
 
 async fn list_cases(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
     ApiQuery(q): ApiQuery<CaseQuery>,
 ) -> ApiResult<Response> {
-    if !state.storage.run_exists(id.clone()).await? {
+    let visibility = RunVisibility::of(&scope.identity);
+    if !state
+        .storage
+        .run_exists(id.clone(), visibility.clone())
+        .await?
+    {
         return Err(not_found("run"));
     }
     let filter = CaseListFilter {
         run_id: id,
+        visibility,
         status: q.status,
         tag: q.tag,
         q: q.q,
@@ -563,22 +577,27 @@ async fn list_cases(
 }
 
 async fn get_case(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path((id, case_key)): Path<(RunId, CaseKey)>,
 ) -> ApiResult<Response> {
-    match state.storage.get_case(id, case_key).await? {
+    let visibility = RunVisibility::of(&scope.identity);
+    match state.storage.get_case(id, case_key, visibility).await? {
         Some(detail) => Ok(Json(detail).into_response()),
         None => Err(not_found("case")),
     }
 }
 
 async fn export_run(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
 ) -> ApiResult<Response> {
-    match state.storage.export_run(id).await? {
+    match state
+        .storage
+        .export_run(id, RunVisibility::of(&scope.identity))
+        .await?
+    {
         Some(doc) => Ok(Json(doc).into_response()),
         None => Err(not_found("run")),
     }
@@ -594,18 +613,24 @@ struct MatrixQuery {
 }
 
 async fn run_matrix(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
     ApiQuery(q): ApiQuery<MatrixQuery>,
 ) -> ApiResult<Response> {
-    // An unknown run is a 404; a known run whose cases all lack cell columns
-    // returns an empty matrix (handled by the aggregation), not an error.
-    if !state.storage.run_exists(id.clone()).await? {
+    // An unknown (or invisible) run is a 404; a known run whose cases all lack
+    // cell columns returns an empty matrix (handled by the aggregation).
+    let visibility = RunVisibility::of(&scope.identity);
+    if !state
+        .storage
+        .run_exists(id.clone(), visibility.clone())
+        .await?
+    {
         return Err(not_found("run"));
     }
     let filter = MatrixFilter {
         run_id: id,
+        visibility,
         limit: q
             .limit
             .unwrap_or(MATRIX_DEFAULT_LIMIT)
@@ -617,22 +642,30 @@ async fn run_matrix(
 }
 
 async fn get_run_config(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
 ) -> ApiResult<Response> {
-    match state.storage.get_run_config(id).await? {
+    match state
+        .storage
+        .get_run_config(id, RunVisibility::of(&scope.identity))
+        .await?
+    {
         Some(config) => Ok(Json(config).into_response()),
         None => Err(not_found("run")),
     }
 }
 
 async fn compare_runs(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path((id, other)): Path<(RunId, RunId)>,
 ) -> ApiResult<Response> {
-    match state.storage.compare_runs(id, other).await? {
+    match state
+        .storage
+        .compare_runs(id, other, RunVisibility::of(&scope.identity))
+        .await?
+    {
         Some(cmp) => Ok(Json(cmp).into_response()),
         None => Err(not_found("run")),
     }
@@ -646,12 +679,15 @@ struct SearchQuery {
 }
 
 async fn search(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     ApiQuery(q): ApiQuery<SearchQuery>,
 ) -> ApiResult<Response> {
     let limit = clamp_limit(q.limit);
-    let res: SearchResponse = state.storage.search(q.q, limit).await?;
+    let res: SearchResponse = state
+        .storage
+        .search(q.q, limit, RunVisibility::of(&scope.identity))
+        .await?;
     Ok(Json(res).into_response())
 }
 
@@ -671,16 +707,24 @@ async fn delete_run(
 // Projects, suites, baselines
 // ---------------------------------------------------------------------------
 
-async fn list_projects(_scope: Scoped<Read>, State(state): State<AppState>) -> ApiResult<Response> {
-    Ok(Json(state.storage.list_projects().await?).into_response())
+async fn list_projects(scope: Scoped<Read>, State(state): State<AppState>) -> ApiResult<Response> {
+    let projects = state
+        .storage
+        .list_projects(RunVisibility::of(&scope.identity))
+        .await?;
+    Ok(Json(projects).into_response())
 }
 
 async fn list_suites(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(project): Path<String>,
 ) -> ApiResult<Response> {
-    Ok(Json(state.storage.list_suites(project).await?).into_response())
+    let suites = state
+        .storage
+        .list_suites(project, RunVisibility::of(&scope.identity))
+        .await?;
+    Ok(Json(suites).into_response())
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -731,7 +775,7 @@ struct HistoryQuery {
 }
 
 async fn case_history(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path((project, suite, case_key)): Path<(String, String, CaseKey)>,
     ApiQuery(q): ApiQuery<HistoryQuery>,
@@ -742,7 +786,13 @@ async fn case_history(
         .clamp(1, HISTORY_MAX_LIMIT);
     match state
         .storage
-        .case_history(project, suite, case_key, limit)
+        .case_history(
+            project,
+            suite,
+            case_key,
+            limit,
+            RunVisibility::of(&scope.identity),
+        )
         .await?
     {
         Some(history) => Ok(Json(history).into_response()),

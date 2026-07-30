@@ -14,6 +14,7 @@ use domarinn_core::result::CaseStatus;
 
 use super::{empty_to_none, from_microusd, ms_to_rfc3339, Storage};
 use crate::dto::history::{CaseHistoryPoint, CaseHistoryResponse};
+use crate::runsets::{visibility_predicate, RunVisibility};
 
 impl Storage {
     /// A case's history across the last `limit` runs of `(project, suite)`,
@@ -26,9 +27,10 @@ impl Storage {
         suite: String,
         case_key: CaseKey,
         limit: i64,
+        vis: RunVisibility,
     ) -> anyhow::Result<Option<CaseHistoryResponse>> {
         self.runs
-            .read(move |conn| case_history(conn, &project, &suite, &case_key, limit))
+            .read(move |conn| case_history(conn, &project, &suite, &case_key, limit, &vis))
             .await
     }
 }
@@ -39,17 +41,26 @@ fn case_history(
     suite: &str,
     case_key: &CaseKey,
     limit: i64,
+    vis: &RunVisibility,
 ) -> anyhow::Result<Option<CaseHistoryResponse>> {
-    let mut stmt = conn.prepare(
+    let mut args: Vec<rusqlite::types::Value> = vec![
+        case_key.as_str().to_string().into(),
+        project.to_string().into(),
+        suite.to_string().into(),
+        limit.into(),
+    ];
+    let visible = visibility_predicate("r", vis, &mut args);
+    let sql = format!(
         "SELECT r.id, r.created_at, r.git_commit, r.config_digest,
                 c.status, c.score, c.output_hash,
                 c.prompt_tokens, c.completion_tokens, c.cost_microusd, c.latency_ms
          FROM cases c JOIN runs r ON r.id = c.run_id
-         WHERE c.case_key = ?1 AND r.project = ?2 AND r.suite = ?3
+         WHERE c.case_key = ?1 AND r.project = ?2 AND r.suite = ?3 AND {visible}
          ORDER BY r.created_at DESC, r.id DESC
-         LIMIT ?4",
-    )?;
-    let rows = stmt.query_map(params![case_key.as_str(), project, suite, limit], |row| {
+         LIMIT ?4"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
         let status_raw: String = row.get(4)?;
         let status = CaseStatus::from_str(&status_raw).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, e.into())

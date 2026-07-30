@@ -157,6 +157,22 @@ pub fn visibility_predicate(alias: &str, vis: &RunVisibility, args: &mut Vec<Val
     }
 }
 
+/// SQL that is true when the run bound to parameter `?{run_param}` exists *and*
+/// is visible to this caller.
+///
+/// The `EXISTS` form is for the queries keyed on a run id whose own table has
+/// no `project`/`suite` columns to filter on — cases, matrix rows, stored
+/// blobs. `?{run_param}` must already be bound by the caller; the predicate's
+/// own parameter (if any) is appended after it.
+pub fn visible_run_predicate(
+    run_param: usize,
+    vis: &RunVisibility,
+    args: &mut Vec<Value>,
+) -> String {
+    let clause = visibility_predicate("vr", vis, args);
+    format!("EXISTS (SELECT 1 FROM runs vr WHERE vr.id = ?{run_param} AND {clause})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,15 +8,23 @@ use super::{ms_to_rfc3339, now_ms, Storage};
 use crate::dto::projects::{
     ProjectListItem, ProjectsResponse, SuitePoint, SuiteSummary, SuitesResponse,
 };
+use crate::runsets::{visibility_predicate, RunVisibility};
 
 impl Storage {
-    pub async fn list_projects(&self) -> anyhow::Result<ProjectsResponse> {
-        self.runs.read(list_projects).await
+    /// The catalog of projects, counted over the runs this caller may see. A
+    /// project whose every run is invisible disappears entirely rather than
+    /// listing with a zero count.
+    pub async fn list_projects(&self, vis: RunVisibility) -> anyhow::Result<ProjectsResponse> {
+        self.runs.read(move |conn| list_projects(conn, &vis)).await
     }
 
-    pub async fn list_suites(&self, project: String) -> anyhow::Result<SuitesResponse> {
+    pub async fn list_suites(
+        &self,
+        project: String,
+        vis: RunVisibility,
+    ) -> anyhow::Result<SuitesResponse> {
         self.runs
-            .read(move |conn| list_suites(conn, &project))
+            .read(move |conn| list_suites(conn, &project, &vis))
             .await
     }
 
@@ -64,18 +72,21 @@ impl Storage {
     }
 }
 
-fn list_projects(conn: &Connection) -> anyhow::Result<ProjectsResponse> {
-    let mut stmt = conn.prepare(
+fn list_projects(conn: &Connection, vis: &RunVisibility) -> anyhow::Result<ProjectsResponse> {
+    let mut args: Vec<rusqlite::types::Value> = Vec::new();
+    let visible = visibility_predicate("runs", vis, &mut args);
+    let sql = format!(
         "SELECT project,
                 COUNT(*) AS run_count,
                 COUNT(DISTINCT suite) AS suite_count,
                 MAX(created_at) AS last_run_at
          FROM runs
-         WHERE project IS NOT NULL
+         WHERE project IS NOT NULL AND {visible}
          GROUP BY project
-         ORDER BY last_run_at DESC",
-    )?;
-    let rows = stmt.query_map([], |row| {
+         ORDER BY last_run_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
         Ok(ProjectListItem {
             project: row.get::<_, String>(0)?,
             run_count: row.get::<_, i64>(1)?,
@@ -87,22 +98,37 @@ fn list_projects(conn: &Connection) -> anyhow::Result<ProjectsResponse> {
     Ok(ProjectsResponse { projects })
 }
 
-fn list_suites(conn: &Connection, project: &str) -> anyhow::Result<SuitesResponse> {
-    let mut stmt =
-        conn.prepare("SELECT DISTINCT suite FROM runs WHERE project = ?1 AND suite IS NOT NULL")?;
+fn list_suites(
+    conn: &Connection,
+    project: &str,
+    vis: &RunVisibility,
+) -> anyhow::Result<SuitesResponse> {
+    let mut names_args: Vec<rusqlite::types::Value> = vec![project.to_string().into()];
+    let visible = visibility_predicate("runs", vis, &mut names_args);
+    let names_sql = format!(
+        "SELECT DISTINCT suite FROM runs
+          WHERE project = ?1 AND suite IS NOT NULL AND {visible}"
+    );
+    let mut stmt = conn.prepare(&names_sql)?;
     let suite_names: Vec<String> = stmt
-        .query_map(params![project], |row| row.get::<_, String>(0))?
+        .query_map(rusqlite::params_from_iter(names_args.iter()), |row| {
+            row.get::<_, String>(0)
+        })?
         .collect::<Result<_, _>>()?;
 
     let mut suites = Vec::new();
     for suite in suite_names {
-        let mut series_stmt = conn.prepare(
+        let mut series_args: Vec<rusqlite::types::Value> =
+            vec![project.to_string().into(), suite.clone().into()];
+        let visible = visibility_predicate("runs", vis, &mut series_args);
+        let series_sql = format!(
             "SELECT id, created_at, case_count, pass_count
-             FROM runs WHERE project = ?1 AND suite = ?2
-             ORDER BY created_at DESC LIMIT 20",
-        )?;
+             FROM runs WHERE project = ?1 AND suite = ?2 AND {visible}
+             ORDER BY created_at DESC LIMIT 20"
+        );
+        let mut series_stmt = conn.prepare(&series_sql)?;
         let series: Vec<SuitePoint> = series_stmt
-            .query_map(params![project, suite], |row| {
+            .query_map(rusqlite::params_from_iter(series_args.iter()), |row| {
                 let case_count: i64 = row.get(2)?;
                 let pass_count: i64 = row.get(3)?;
                 let pass_rate = if case_count > 0 {

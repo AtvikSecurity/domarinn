@@ -7,6 +7,7 @@ use super::runs::{finish, internal, structured_with_budget};
 use super::{clamp_limit, parse_args, read_only_annotations, ToolResult};
 use crate::mcp::budget::{self, Budget};
 use crate::mcp::text;
+use crate::runsets::RunVisibility;
 use crate::storage::CaseListFilter;
 use crate::AppState;
 use domarinn_core::ids::{CaseKey, RunId};
@@ -151,14 +152,14 @@ pub(super) fn definitions() -> Vec<Value> {
     ]
 }
 
-pub(super) async fn list_cases(state: &AppState, args: Value) -> ToolResult {
+pub(super) async fn list_cases(state: &AppState, vis: &RunVisibility, args: Value) -> ToolResult {
     let args: ListCasesArgs = match parse_args(args) {
         Ok(a) => a,
         Err(e) => return e,
     };
     let run_id = RunId::new(args.run_id.clone());
 
-    match state.storage.run_exists(run_id.clone()).await {
+    match state.storage.run_exists(run_id.clone(), vis.clone()).await {
         Ok(false) => {
             return ToolResult::error(format!(
                 "no run '{}'. Use find_runs to list run ids.",
@@ -171,6 +172,7 @@ pub(super) async fn list_cases(state: &AppState, args: Value) -> ToolResult {
 
     let filter = CaseListFilter {
         run_id,
+        visibility: vis.clone(),
         status: args.status,
         tag: args.tag,
         q: args.q,
@@ -216,7 +218,7 @@ fn clamp_previews(structured: &mut Value) {
     }
 }
 
-pub(super) async fn get_case(state: &AppState, args: Value) -> ToolResult {
+pub(super) async fn get_case(state: &AppState, vis: &RunVisibility, args: Value) -> ToolResult {
     let args: GetCaseArgs = match parse_args(args) {
         Ok(a) => a,
         Err(e) => return e,
@@ -238,6 +240,7 @@ pub(super) async fn get_case(state: &AppState, args: Value) -> ToolResult {
         .get_case(
             RunId::new(args.run_id.clone()),
             CaseKey::new(args.case_key.clone()),
+            vis.clone(),
         )
         .await
     {
@@ -289,7 +292,7 @@ fn project_fields(case: &mut Value, requested: &[String]) {
     }
 }
 
-pub(super) async fn case_history(state: &AppState, args: Value) -> ToolResult {
+pub(super) async fn case_history(state: &AppState, vis: &RunVisibility, args: Value) -> ToolResult {
     let args: CaseHistoryArgs = match parse_args(args) {
         Ok(a) => a,
         Err(e) => return e,
@@ -302,6 +305,7 @@ pub(super) async fn case_history(state: &AppState, args: Value) -> ToolResult {
             args.suite.clone(),
             CaseKey::new(args.case_key.clone()),
             clamp_limit(args.limit, HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT),
+            vis.clone(),
         )
         .await
     {

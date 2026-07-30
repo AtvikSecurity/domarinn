@@ -7,6 +7,7 @@ use super::runs::{finish, internal, structured_with_budget};
 use super::{clamp_limit, parse_args, read_only_annotations, ToolResult};
 use crate::mcp::budget;
 use crate::mcp::text;
+use crate::runsets::RunVisibility;
 use crate::AppState;
 use domarinn_core::ids::RunId;
 
@@ -102,7 +103,7 @@ pub(super) fn definitions() -> Vec<Value> {
     ]
 }
 
-pub(super) async fn compare_runs(state: &AppState, args: Value) -> ToolResult {
+pub(super) async fn compare_runs(state: &AppState, vis: &RunVisibility, args: Value) -> ToolResult {
     let args: CompareRunsArgs = match parse_args(args) {
         Ok(a) => a,
         Err(e) => return e,
@@ -126,6 +127,7 @@ pub(super) async fn compare_runs(state: &AppState, args: Value) -> ToolResult {
         .compare_runs(
             RunId::new(args.base_run_id.clone()),
             RunId::new(args.head_run_id.clone()),
+            vis.clone(),
         )
         .await
     {
@@ -178,7 +180,7 @@ fn filter_case_rows(structured: &mut Value, wanted: &[String], limit: i64) -> us
     before - matched + (matched - cases.len())
 }
 
-pub(super) async fn search(state: &AppState, args: Value) -> ToolResult {
+pub(super) async fn search(state: &AppState, vis: &RunVisibility, args: Value) -> ToolResult {
     let args: SearchArgs = match parse_args(args) {
         Ok(a) => a,
         Err(e) => return e,
@@ -192,6 +194,7 @@ pub(super) async fn search(state: &AppState, args: Value) -> ToolResult {
         .search(
             args.q.clone(),
             clamp_limit(args.limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT),
+            vis.clone(),
         )
         .await
     {

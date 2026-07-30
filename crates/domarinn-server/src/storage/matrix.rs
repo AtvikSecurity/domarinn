@@ -13,13 +13,14 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 
 use super::{empty_to_none, from_microusd, Storage};
 use crate::dto::matrix::{MatrixCell, MatrixColumn, MatrixResponse, MatrixRow};
+use crate::runsets::{visible_run_predicate, RunVisibility};
 
 impl Storage {
     /// Aggregate a run's cases into the prompt × provider matrix, paginating the
@@ -35,6 +36,8 @@ impl Storage {
 #[derive(Debug, Clone)]
 pub struct MatrixFilter {
     pub run_id: RunId,
+    /// Required, with no default — see [`super::CaseListFilter::visibility`].
+    pub visibility: RunVisibility,
     /// Max test ROWS per page (columns never paginate).
     pub limit: i64,
     /// First-seen `idx` boundary: return rows first seen strictly after it.
@@ -92,14 +95,18 @@ impl MatrixFilter {
         // row/case-key ordering. Legacy/failed-backfill rows (NULL or `''`
         // provider_id) are excluded here, so a pre-backfill run scans to zero
         // rows and returns an empty matrix.
-        let mut stmt = conn.prepare(
+        let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
+        let visible = visible_run_predicate(1, &self.visibility, &mut args);
+        let sql = format!(
             "SELECT test_id, provider_id, prompt_id, name, status, score,
                     output_hash, latency_ms, cost_microusd, case_key, repeat_idx, idx
              FROM cases
              WHERE run_id = ?1 AND provider_id IS NOT NULL AND provider_id != ''
-             ORDER BY idx",
-        )?;
-        let rows = stmt.query_map(params![self.run_id.as_str()], |row| {
+               AND {visible}
+             ORDER BY idx"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
             let status_raw: String = row.get(4)?;
             let status = CaseStatus::from_str(&status_raw).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, e.into())

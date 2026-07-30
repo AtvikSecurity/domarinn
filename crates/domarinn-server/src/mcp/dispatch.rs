@@ -107,7 +107,7 @@ pub async fn dispatch(
                 )
                 .with_data(json!({ "retryAfterSeconds": retry_after.as_secs() })));
             }
-            call_tool(state, incoming).await
+            call_tool(state, identity, incoming).await
         }
 
         _ => Err(Rejection::new(
@@ -122,7 +122,11 @@ pub async fn dispatch(
 ///
 /// Takes no era: the payload is built era-blind and shaped once by
 /// [`super::proto::decorate`] on the way out.
-async fn call_tool(state: &AppState, incoming: &jsonrpc::Incoming) -> Result<Outcome, Rejection> {
+async fn call_tool(
+    state: &AppState,
+    identity: &Identity,
+    incoming: &jsonrpc::Incoming,
+) -> Result<Outcome, Rejection> {
     let name = incoming.name_field().unwrap_or_default().to_string();
     if name.is_empty() {
         return Err(Rejection::new(
@@ -132,7 +136,7 @@ async fn call_tool(state: &AppState, incoming: &jsonrpc::Incoming) -> Result<Out
         ));
     }
 
-    let result = tools::call(state, &name, incoming.arguments())
+    let result = tools::call(state, identity, &name, incoming.arguments())
         .await
         .map_err(|_| {
             // An unknown tool is a *protocol* error, not a tool execution

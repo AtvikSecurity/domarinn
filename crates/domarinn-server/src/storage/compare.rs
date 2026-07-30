@@ -24,15 +24,20 @@ use crate::dto::compare::{
     CompareSummary, CompareTotals, ComponentDrift, RunTotals,
 };
 use crate::dto::runs::CaseAssertLean;
+use crate::runsets::{visibility_predicate, RunVisibility};
 
 impl Storage {
+    /// Diff two runs, or `None` when either is absent **or** invisible to this
+    /// caller — a comparison against a restricted run must not confirm that it
+    /// exists.
     pub async fn compare_runs(
         &self,
         base: RunId,
         head: RunId,
+        vis: RunVisibility,
     ) -> anyhow::Result<Option<CompareResponse>> {
         self.runs
-            .read(move |conn| compare_runs(conn, &base, &head))
+            .read(move |conn| compare_runs(conn, &base, &head, &vis))
             .await
     }
 }
@@ -108,34 +113,39 @@ fn load_compare_cases(
 
 /// Load a run's aggregate columns. `None` means the run does not exist (drives
 /// the endpoint's 404).
-fn load_run_agg(conn: &Connection, run_id: &str) -> anyhow::Result<Option<RunAgg>> {
-    let agg = conn
-        .query_row(
-            "SELECT prompt_tokens, completion_tokens, cost_microusd, duration_ms,
+fn load_run_agg(
+    conn: &Connection,
+    run_id: &str,
+    vis: &RunVisibility,
+) -> anyhow::Result<Option<RunAgg>> {
+    let mut args: Vec<rusqlite::types::Value> = vec![run_id.to_string().into()];
+    let visible = visibility_predicate("runs", vis, &mut args);
+    let sql = format!(
+        "SELECT prompt_tokens, completion_tokens, cost_microusd, duration_ms,
                     case_count, pass_count, config_digest,
                     prompts_digest, providers_digest, tests_digest, asserts_digest,
                     grader_digest
-             FROM runs WHERE id = ?1",
-            params![run_id],
-            |row| {
-                Ok(RunAgg {
-                    prompt_tokens: row.get(0)?,
-                    completion_tokens: row.get(1)?,
-                    cost_microusd: row.get(2)?,
-                    duration_ms: row.get(3)?,
-                    case_count: row.get(4)?,
-                    pass_count: row.get(5)?,
-                    config_digest: row.get(6)?,
-                    components: [
-                        row.get(7)?,
-                        row.get(8)?,
-                        row.get(9)?,
-                        row.get(10)?,
-                        row.get(11)?,
-                    ],
-                })
-            },
-        )
+             FROM runs WHERE id = ?1 AND {visible}"
+    );
+    let agg = conn
+        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
+            Ok(RunAgg {
+                prompt_tokens: row.get(0)?,
+                completion_tokens: row.get(1)?,
+                cost_microusd: row.get(2)?,
+                duration_ms: row.get(3)?,
+                case_count: row.get(4)?,
+                pass_count: row.get(5)?,
+                config_digest: row.get(6)?,
+                components: [
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                ],
+            })
+        })
         .optional()?;
     Ok(agg)
 }
@@ -232,12 +242,14 @@ fn compare_runs(
     conn: &Connection,
     base: &RunId,
     head: &RunId,
+    vis: &RunVisibility,
 ) -> anyhow::Result<Option<CompareResponse>> {
-    // A missing aggregate row means the run does not exist → 404.
-    let Some(base_agg) = load_run_agg(conn, base.as_str())? else {
+    // A missing aggregate row means the run does not exist, or this caller may
+    // not see it → 404 either way.
+    let Some(base_agg) = load_run_agg(conn, base.as_str(), vis)? else {
         return Ok(None);
     };
-    let Some(head_agg) = load_run_agg(conn, head.as_str())? else {
+    let Some(head_agg) = load_run_agg(conn, head.as_str(), vis)? else {
         return Ok(None);
     };
 
