@@ -11,6 +11,23 @@ export function shortRunId(id: string): string {
   return id;
 }
 
+/**
+ * A cache key, short enough for a table cell.
+ *
+ * A key is `sha256:` plus 64 hex characters — 71 in total, which is wider than
+ * any column can afford and unreadable at full length anyway. Both ends are
+ * kept because that is what makes two keys distinguishable at a glance; the
+ * full value stays available via the row's title and copy button.
+ *
+ * Anything that is not a well-formed key is returned untouched rather than
+ * mangled: it is more useful to see the odd value than a tidy fiction.
+ */
+export function shortCacheKey(key: string): string {
+  const hex = key.startsWith("sha256:") ? key.slice("sha256:".length) : null;
+  if (!hex || hex.length < 12) return key;
+  return `${hex.slice(0, 6)}…${hex.slice(-4)}`;
+}
+
 export function formatInt(n: number | undefined | null): string {
   if (n === undefined || n === null) return "-";
   return numberFmt.format(Math.round(n));

@@ -19,6 +19,9 @@ test.describe("App shell scrolling", () => {
     // The status surface is a normal page — it does not claim the viewport —
     // so it has to obey the same one-scroller rule as everything else.
     ["overview", "/"],
+    // The cache browser is the second page whose grid claims the viewport, and
+    // this is the spec that caught the last regression of that kind.
+    ["cache entries", "/cache/entries"],
   ] as const) {
     test(`${label}: the header stays put and only one element scrolls`, async ({
       page,

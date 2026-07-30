@@ -1,5 +1,8 @@
 //! The `cache` subcommands: stats, path, gc, clear.
 //!
+//! `ls` and `show` live in [`crate::cachels`] — they only read, where these
+//! four also delete, and this file is already at its own size.
+//!
 //! All four operate on the local disk tier only — see the `cache` help in
 //! `main.rs`. Each accounts for the read-only legacy tier a run would layer
 //! underneath ([`crate::cachecfg::LocalRoot`]), because a `clear` that leaves
@@ -35,6 +38,37 @@ pub enum CacheCmd {
     },
     /// Remove all cache entries.
     Clear(Where),
+    /// List cache entries.
+    Ls {
+        /// Only entries of this kind (provider, judge, embedding, exec_assert).
+        #[arg(long, value_name = "KIND")]
+        kind: Option<String>,
+        /// Only entries answered by this model.
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+        /// Rows to print (default 40).
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+        /// One JSON object per line. What makes the local cache scriptable.
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        which: Where,
+    },
+    /// Show one cache entry: its request, its response, and what it cost.
+    Show {
+        /// The `sha256:<64 hex>` key.
+        #[arg(value_name = "KEY")]
+        key: String,
+        /// Include the provider's raw metadata.
+        #[arg(long)]
+        raw: bool,
+        /// Emit the entry as JSON.
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        which: Where,
+    },
 }
 
 /// Which cache directory a subcommand operates on.
@@ -73,6 +107,12 @@ impl Where {
     /// `.domarinn/cache` beside the suite — plus any legacy tier underneath.
     /// Returns the suite directory too, since whether that legacy tier is this
     /// project's leftover or another project's live cache depends on it.
+    /// Just the tiers, for the read-only subcommands that never need to know
+    /// whether a legacy tier is safe to delete.
+    pub fn resolve_root(&self) -> LocalRoot {
+        self.resolve().1
+    }
+
     fn resolve(&self) -> (PathBuf, LocalRoot) {
         let base = self.suite_base();
         let root = crate::cachecfg::local_root(self.cache_dir.as_deref(), &base);
@@ -104,9 +144,30 @@ fn cwd_contains(suite_base: &Path) -> bool {
 }
 
 pub fn execute(cmd: CacheCmd) -> u8 {
+    // The read-only subcommands resolve their own tiers and return early: they
+    // never ask whether a legacy tier is safe to delete, which is the only
+    // reason the rest of this function needs the suite base.
+    match cmd {
+        CacheCmd::Ls {
+            kind,
+            model,
+            limit,
+            json,
+            which,
+        } => return crate::cachels::ls(&which, kind, model, limit, json),
+        CacheCmd::Show {
+            key,
+            raw,
+            json,
+            which,
+        } => return crate::cachels::show(&which, key, json, raw),
+        _ => {}
+    }
+
     let (base, root) = match &cmd {
         CacheCmd::Stats(w) | CacheCmd::Path(w) | CacheCmd::Clear(w) => w.resolve(),
         CacheCmd::Gc { which, .. } => which.resolve(),
+        CacheCmd::Ls { .. } | CacheCmd::Show { .. } => unreachable!("handled above"),
     };
     // The same two tiers `cachecfg::build_cache` gives a run, minus the
     // read-through wrapper: these commands address each tier, so a purge has to
@@ -176,6 +237,7 @@ pub fn execute(cmd: CacheCmd) -> u8 {
                 .await
             })
         }
+        CacheCmd::Ls { .. } | CacheCmd::Show { .. } => unreachable!("handled above"),
         CacheCmd::Clear(_) => {
             let legacy = legacy.filter(|_| legacy_is_ours);
             block_on(async move {
@@ -233,7 +295,7 @@ fn mib(bytes: u64) -> String {
     format!("{:.2} MiB", bytes as f64 / (1024.0 * 1024.0))
 }
 
-fn block_on<F: std::future::Future<Output = u8>>(fut: F) -> u8 {
+pub(crate) fn block_on<F: std::future::Future<Output = u8>>(fut: F) -> u8 {
     match tokio::runtime::Runtime::new() {
         Ok(rt) => rt.block_on(fut),
         Err(e) => {

@@ -34,11 +34,18 @@ export function CopyButton({
   label = "Copy",
   iconOnly = false,
   className,
+  tabIndex,
 }: {
   value: string;
   label?: string;
   iconOnly?: boolean;
   className?: string;
+  /**
+   * Set to `-1` inside a virtualized row. A copy button per row would
+   * otherwise double the grid's tab stops, and the row itself is already
+   * focusable — the drawer's copy button is the keyboard path to the value.
+   */
+  tabIndex?: number;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -56,6 +63,7 @@ export function CopyButton({
     <button
       type="button"
       onClick={onClick}
+      tabIndex={tabIndex}
       aria-label={label}
       title={label}
       className={cn(

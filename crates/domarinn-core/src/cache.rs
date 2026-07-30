@@ -225,10 +225,69 @@ impl Graded {
     }
 }
 
+/// What kind of call an entry answers.
+///
+/// ## Open by construction
+///
+/// An open string newtype rather than an enum, for
+/// [`crate::error_class::ErrorClass`]'s general reason and one that is specific
+/// — and decisive — here:
+/// `LayeredCache` promotes a remote hit into the local tier by calling `put`
+/// with the *deserialized* entry, which re-serializes it. `#[serde(other)]`
+/// would collapse a kind written by a newer binary to a catch-all variant and
+/// then write that back, silently rewriting a 0.7 entry's kind to garbage in
+/// every local cache a 0.6 binary touched. A newtype round-trips an unknown
+/// value untouched.
+///
+/// ## Why the writer records it rather than the reader inferring it
+///
+/// The persisted request cannot tell you: an `llm-rubric` judge and an OpenAI
+/// provider call both serialize to
+/// [`crate::provider::http_request_preview`]`("POST", url, body)`, with nothing
+/// to tell them apart. Only the caller knows what it was calling, and there are
+/// exactly two places that build an entry — so recording it costs two lines and
+/// guessing it would cost correctness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EntryKind(pub String);
+
+impl EntryKind {
+    /// A response from the system under test.
+    pub const PROVIDER: &'static str = "provider";
+    /// An `llm-rubric` judge exchange.
+    pub const JUDGE: &'static str = "judge";
+    /// One half of a `similar` assertion's embedding pair.
+    pub const EMBEDDING: &'static str = "embedding";
+    /// An `exec` assertion's protocol round-trip.
+    pub const EXEC_ASSERT: &'static str = "exec_assert";
+
+    pub fn new(value: impl Into<String>) -> Self {
+        EntryKind(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for EntryKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A cached provider response, plus provenance for stats/debugging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub created_at: DateTime<Utc>,
+    /// What kind of call this entry answers. See [`EntryKind`].
+    ///
+    /// `None` on entries written before this field existed. Left as `None`
+    /// rather than defaulted to `provider`, because a reader that wants a kind
+    /// for those has to *infer* one, and inference must be able to tell "the
+    /// writer said nothing" from "the writer said provider".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<EntryKind>,
     /// What *selected* the provider that answered.
     ///
     /// Optional in both directions: entries in the wild carry it, so it must
@@ -325,6 +384,80 @@ pub struct CacheEntry {
     pub domarinn_version: String,
 }
 
+impl CacheEntry {
+    /// A `similar` assertion's ≤0.4.x cosine verdict.
+    ///
+    /// Not [`EntryKind::EMBEDDING`]: an embedding entry holds one vector, where
+    /// this holds the comparison of two. Different things that happen to come
+    /// from the same assertion, and collapsing them would make a kind filter
+    /// return entries that cannot answer the same question.
+    pub const SIMILAR_VERDICT: &'static str = "similar_verdict";
+
+    /// What kind of call this entry answers, first match wins.
+    ///
+    /// The rungs are ordered by how much they are *claiming*. An explicit kind is a
+    /// statement the writer made; everything below it is a reader's guess, and a
+    /// guess must never overrule a statement — including a kind string this build
+    /// has never heard of, which is exactly the case an open
+    /// [`EntryKind`] exists to carry.
+    pub fn inferred_kind(&self) -> Option<String> {
+        // 1. The writer said so.
+        if let Some(kind) = &self.kind {
+            return Some(kind.as_str().to_string());
+        }
+
+        // 2. A ≤0.4.x verdict entry self-identifies: `GradedVerdict` is
+        //    `#[serde(tag = "kind")]`, so the stored shape names its own grader.
+        if let Some(verdict) = &self.verdict {
+            return Some(
+                match verdict {
+                    GradedVerdict::Rubric { .. } => EntryKind::JUDGE,
+                    GradedVerdict::Exec { .. } => EntryKind::EXEC_ASSERT,
+                    GradedVerdict::Similarity { .. } => CacheEntry::SIMILAR_VERDICT,
+                }
+                .to_string(),
+            );
+        }
+
+        // 3. An `exec` request carries the protocol envelope it wrote to the
+        //    child's stdin, and that envelope names the call kind.
+        if let Some(request) = &self.request {
+            if request.get("transport").and_then(Json::as_str) == Some("exec") {
+                match request
+                    .pointer("/stdin/domarinn/kind")
+                    .and_then(Json::as_str)
+                {
+                    Some("provider") => return Some(EntryKind::PROVIDER.to_string()),
+                    Some("assert") => return Some(EntryKind::EXEC_ASSERT.to_string()),
+                    _ => {}
+                }
+            }
+        }
+
+        // 4. An embedding's output is a dimension count and nothing else — the
+        //    grader writes that shape deliberately so an entry is legible.
+        if let Output::Json(value) = &self.output {
+            if let Some(map) = value.as_object() {
+                if map.len() == 1 && map.contains_key("dims") {
+                    return Some(EntryKind::EMBEDDING.to_string());
+                }
+            }
+        }
+
+        // 5. Only the provider path goes through `with_retry`, so only it has an
+        //    attempt count or an in-flight measurement to record. The grader path
+        //    sets both to `None` and says why.
+        if self.attempts.is_some() || self.provider_latency_ms.is_some() {
+            return Some(EntryKind::PROVIDER.to_string());
+        }
+
+        // 6. Nothing distinguishes an old HTTP judge call from an old HTTP provider
+        //    call. No kind is the honest answer; a default would be a fabrication
+        //    that a filter would then treat as fact.
+        None
+    }
+}
+
 /// How the runner should interact with the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheMode {
@@ -365,6 +498,51 @@ pub trait CacheBackend: Send + Sync {
     async fn put(&self, key: &CacheKey, entry: &CacheEntry) -> Result<(), CacheError>;
     async fn stats(&self) -> Result<CacheStats, CacheError>;
     async fn purge(&self, filter: &PurgeFilter) -> Result<u64, CacheError>;
+}
+
+/// One entry as a walk found it, before anything reads its body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumeratedEntry {
+    pub key: CacheKey,
+    pub size: u64,
+    /// Last modification time.
+    ///
+    /// Deliberately *not* offered as a last-access time. Access times are
+    /// unreliable under `relatime`/`noatime`, and reporting mtime as one would
+    /// be a different measurement wearing the same name — the mistake
+    /// [`CacheEntry::provider_latency_ms`] exists to fix, in another place.
+    pub modified: Option<DateTime<Utc>>,
+}
+
+/// The result of walking a store.
+#[derive(Debug, Clone, Default)]
+pub struct Enumerated {
+    /// Newest first, so truncation drops the oldest rather than an arbitrary
+    /// slice — directory order is arbitrary, and a walk cut off mid-`read_dir`
+    /// would return whichever entries the filesystem happened to name first.
+    pub entries: Vec<EnumeratedEntry>,
+    /// True when the walk stopped at its limit with entries left unseen.
+    pub truncated: bool,
+    /// Files looked at, including any that were not entries.
+    pub scanned: usize,
+}
+
+/// A backend that can enumerate what it holds.
+///
+/// Deliberately **not** a method on [`CacheBackend`]. `S3Cache` can only
+/// enumerate through paginated `ListObjectsV2` — network round-trips,
+/// per-request charges, and no predicate beyond a key prefix — and
+/// `RemoteHttpCache` has no list verb at all. Putting `enumerate` on the core
+/// trait would force both to implement something they cannot do cheaply, and a
+/// backend whose enumeration is a lie is worse than one that does not offer it.
+///
+/// A separate trait is where "this store can be walked" gets stated, so a
+/// caller that needs walking asks for it in its bound instead of hoping.
+#[async_trait]
+pub trait CacheEnumerate: Send + Sync {
+    /// Metadata for up to `limit` entries, newest first. Cheap by contract:
+    /// this stats files, it does not read them.
+    async fn enumerate(&self, limit: usize) -> Result<Enumerated, CacheError>;
 }
 
 #[cfg(test)]
@@ -438,5 +616,68 @@ mod tests {
     fn canonical_json_sorts_nested_keys() {
         let s = canonical_json(&json!({"z": {"y": 1, "x": 2}, "a": [3, 2]}));
         assert_eq!(s, r#"{"a":[3,2],"z":{"x":2,"y":1}}"#);
+    }
+
+    /// Every entry in every store predates this field. Reading one must not
+    /// become an error, and absence must stay distinguishable from `provider`:
+    /// the server's backfill infers a kind for `None` and adopts a `Some`
+    /// verbatim, so collapsing the two would make it adopt a guess.
+    #[test]
+    fn an_entry_written_before_kind_existed_still_deserializes() {
+        let legacy: CacheEntry = serde_json::from_value(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "provider_fingerprint": {"type": "exec"},
+            "output": "hi",
+            "domarinn_version": "0.4.0",
+        }))
+        .unwrap();
+        assert!(legacy.kind.is_none());
+    }
+
+    /// The reason this is an open newtype and not an enum with
+    /// `#[serde(other)]`. `LayeredCache` promotes a remote hit into the local
+    /// tier by calling `put` with the *deserialized* entry, which re-serializes
+    /// it — so a lossy round trip would rewrite a newer binary's kind to a
+    /// catch-all in every local cache it touched.
+    #[test]
+    fn an_unknown_kind_survives_a_round_trip_byte_for_byte() {
+        let raw = json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "domarinn_version": "9.9.9",
+            "kind": "distillation",
+        });
+        let entry: CacheEntry = serde_json::from_value(raw).unwrap();
+        assert_eq!(entry.kind, Some(EntryKind::new("distillation")));
+        let written = serde_json::to_value(&entry).unwrap();
+        assert_eq!(written["kind"], json!("distillation"));
+    }
+
+    #[test]
+    fn kind_is_absent_from_the_wire_when_unset() {
+        let entry: CacheEntry = serde_json::from_value(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "domarinn_version": "0.5.0",
+        }))
+        .unwrap();
+        let written = serde_json::to_value(&entry).unwrap();
+        assert!(written.get("kind").is_none(), "{written}");
+    }
+
+    #[test]
+    fn entry_kind_constants_round_trip() {
+        for name in [
+            EntryKind::PROVIDER,
+            EntryKind::JUDGE,
+            EntryKind::EMBEDDING,
+            EntryKind::EXEC_ASSERT,
+        ] {
+            let kind = EntryKind::new(name);
+            let wire = serde_json::to_value(&kind).unwrap();
+            assert_eq!(wire, json!(name));
+            let back: EntryKind = serde_json::from_value(wire).unwrap();
+            assert_eq!(back.as_str(), name);
+        }
     }
 }

@@ -10,6 +10,9 @@ description = "Self-hostable results server and web UI for domarinn"
 
 [dependencies]
 domarinn-core = { workspace = true }
+# Local disk backend only, for the read-only browse tier. `default-features =
+# false` keeps `object_store` and the AWS stack out of this build.
+domarinn-cache = { workspace = true }
 axum = "0.8"
 tokio = { workspace = true }
 tower = "0.5"

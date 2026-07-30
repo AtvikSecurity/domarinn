@@ -1034,6 +1034,7 @@ dependencies = [
  "bytes",
  "chrono",
  "cookie",
+ "domarinn-cache",
  "domarinn-core",
  "flate2",
  "hex",

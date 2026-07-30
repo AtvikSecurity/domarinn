@@ -3,7 +3,7 @@
 use serde::Serialize;
 use ts_rs::TS;
 
-use crate::domain::SsoKind;
+use crate::domain::{CacheTier, SsoKind};
 use crate::AuthMode;
 
 /// The effective cache retention/size limits, as reported to clients (mirrors
@@ -14,6 +14,24 @@ pub struct MetaCacheLimits {
     pub max_entry_bytes: usize,
     pub max_bytes: u64,
     pub max_age_days: u64,
+}
+
+/// A browsable cache tier on this instance.
+///
+/// Deliberately carries no filesystem path. `/meta` is unauthenticated by
+/// design — the login page reads `setup_required` and `auth_mode` from it — and
+/// where an operator keeps a cache directory is their infrastructure, not a
+/// fact for anonymous callers. The tier's identity is all a client needs to
+/// render a switcher.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct CacheTierMeta {
+    pub id: CacheTier,
+    pub label: String,
+    /// What `?q=` means on this tier. The server tier answers with a full-text
+    /// index; a mounted directory can only substring-match previews. Advertised
+    /// rather than left implicit, because "search" quietly meaning two
+    /// different things is worse than a missing feature.
+    pub search: String,
 }
 
 /// A configured SSO provider, as advertised to the login page: enough to
@@ -41,6 +59,9 @@ pub struct MetaResponse {
     pub supported_schema_versions: Vec<u32>,
     pub result_schema_version: u32,
     pub cache: MetaCacheLimits,
+    /// Cache tiers this instance can browse. Always contains the server tier;
+    /// a second entry appears only when a local directory is mounted.
+    pub cache_tiers: Vec<CacheTierMeta>,
     /// Whether the MCP endpoint is mounted (`DOMARINN_MCP_ENABLED`).
     ///
     /// Advertised because the endpoint is opt-in and unauthenticated probing
@@ -75,6 +96,11 @@ mod tests {
                 max_bytes: 1024 * 1024 * 1024,
                 max_age_days: 30,
             },
+            cache_tiers: vec![CacheTierMeta {
+                id: CacheTier::Server,
+                label: "Server".to_string(),
+                search: "fts".to_string(),
+            }],
             mcp_enabled: true,
         };
         assert_eq!(
@@ -97,6 +123,11 @@ mod tests {
                     "max_bytes": 1024 * 1024 * 1024,
                     "max_age_days": 30,
                 },
+                "cache_tiers": [{
+                    "id": "server",
+                    "label": "Server",
+                    "search": "fts",
+                }],
                 "mcp_enabled": true,
             })
         );

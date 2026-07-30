@@ -45,6 +45,31 @@ export const CASE_FILTER_KEYS = [
 export type CaseFilterKey = (typeof CASE_FILTER_KEYS)[number];
 export type CaseFilters = Partial<Record<CaseFilterKey, string>>;
 
+// Cache-browser keys. `entry` (drawer selection) is the ONLY client-only key
+// here — note that `sort` is a SERVER key on this page, the opposite of
+// CASE_FILTER_KEYS two declarations above. The entries list is cursor
+// paginated over a store far larger than one page, so sorting client-side
+// would order the loaded page and quietly claim to have ordered the cache.
+// Anything that strips `sort` before the request (as `useRunCases` correctly
+// does for its own grid) breaks this page in a way that still looks like it
+// works.
+export const CACHE_FILTER_KEYS = [
+  "tier",
+  "kind",
+  "model",
+  "q",
+  "since",
+  "until",
+  "sort",
+  "entry",
+] as const;
+export type CacheFilterKey = (typeof CACHE_FILTER_KEYS)[number];
+export type CacheFilters = Partial<Record<CacheFilterKey, string>>;
+
+/** Sort values the entries endpoint accepts. Anything else is a server 400. */
+const CACHE_SORT_COLUMNS = ["created", "last_access", "size", "cost"] as const;
+const DEFAULT_CACHE_SORT = "-created";
+
 function isBlank(v: string | undefined | null): boolean {
   return v === undefined || v === null || v.trim() === "";
 }
@@ -123,6 +148,56 @@ export function activeRunsFilterCount(sp: URLSearchParams): number {
     (n, key) => (isBlank(sp.get(key)) ? n : n + 1),
     0,
   );
+}
+
+export function parseCacheFilters(sp: URLSearchParams): CacheFilters {
+  return pickParams(sp, CACHE_FILTER_KEYS);
+}
+
+/** The request params for `GET /cache/entries`, given the URL's state. */
+export interface CacheRequestFilters {
+  tier?: string;
+  kind?: string;
+  model?: string;
+  q?: string;
+  since?: string;
+  until?: string;
+  sort?: string;
+  order?: string;
+}
+
+/**
+ * Map the cache browser's URL state to the entries request.
+ *
+ * Three jobs. It drops `entry`, which selects the drawer and means nothing to
+ * the server. It splits the single `?sort=-size` param the grid speaks into the
+ * `sort` + `order` pair the endpoint speaks, defaulting to newest-first and
+ * falling back to that default for a column the server would reject — a junk
+ * value in a shared URL should show the page, not a 400. And it leaves `sort`
+ * IN the request, unlike the case grid's client-only sort.
+ */
+export function cacheRequestFilters(filters: CacheFilters): CacheRequestFilters {
+  const { entry: _entry, sort, ...rest } = filters;
+  const raw = isBlank(sort) ? DEFAULT_CACHE_SORT : (sort as string);
+  const desc = raw.startsWith("-");
+  const column = desc ? raw.slice(1) : raw;
+  const known = (CACHE_SORT_COLUMNS as readonly string[]).includes(column);
+  return {
+    ...rest,
+    sort: known ? column : "created",
+    order: known ? (desc ? "desc" : "asc") : "desc",
+  };
+}
+
+/**
+ * Number of active filters. `tier` and `entry` are excluded: the first is a
+ * view selector rather than a narrowing, and the second is the open drawer —
+ * counting either would make "Clear 1 filter" appear when nothing is filtered.
+ */
+export function activeCacheFilterCount(sp: URLSearchParams): number {
+  return CACHE_FILTER_KEYS.filter(
+    (key) => key !== "tier" && key !== "entry" && key !== "sort",
+  ).reduce((n, key) => (isBlank(sp.get(key)) ? n : n + 1), 0);
 }
 
 /** Toggle a value: if the key already equals value, clear it; else set it. */

@@ -28,6 +28,12 @@ export {
 } from "./fixtures/history";
 export { compareRuns } from "./fixtures/compare";
 export {
+  cacheEntryDetail,
+  cacheEntryList,
+  cacheEntryRuns,
+  cacheFacets,
+} from "./fixtures/cacheEntries";
+export {
   cacheStats,
   META,
   projectSummaries,

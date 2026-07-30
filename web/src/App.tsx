@@ -13,6 +13,7 @@ import { RunDetail } from "@/pages/RunDetail";
 import { ComparePage } from "@/pages/ComparePage";
 import { SearchPage } from "@/pages/SearchPage";
 import { CacheStatsPage } from "@/pages/CacheStatsPage";
+import { CacheEntriesPage } from "@/pages/cache/CacheEntriesPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { SetupPage } from "@/pages/SetupPage";
@@ -73,6 +74,21 @@ const router = createBrowserRouter([
           { path: "runs/:id/compare/:other", element: <ComparePage /> },
           { path: "search", element: <SearchPage /> },
           { path: "cache", element: <CacheStatsPage /> },
+          // A sibling route rather than a nested one. The two pages have
+          // incompatible scroll ownership — the grid takes the viewport via
+          // `useFillViewport`, the stats page does not — and a shared parent
+          // would flip the shell's overflow on every transition. Listing is
+          // admin-scoped on the server, so the guard here matches rather than
+          // letting the page render and 401, which `useUnauthorizedRedirect`
+          // would turn into a baffling bounce to /login for a logged-in user.
+          {
+            path: "cache/entries",
+            element: (
+              <RequireAdmin>
+                <CacheEntriesPage />
+              </RequireAdmin>
+            ),
+          },
           { path: "settings", element: <SettingsPage /> },
           { path: "keys", element: <KeysPage /> },
           {

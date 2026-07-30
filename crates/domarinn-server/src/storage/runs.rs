@@ -107,6 +107,10 @@ struct PreparedCase {
     // Migration-6 column: whether the provider response was a cache hit,
     // promoted so the case list can filter to fresh responses at SQL level.
     cached: bool,
+    // Migration-13 column: the key this case's provider call was addressed by.
+    // Plain NULL when absent, no sentinel — the field is new, so absence means
+    // "had no key" rather than "not yet backfilled".
+    cache_key: Option<String>,
     // Migration-3 cell columns, promoted out of the `detail` blob so the matrix
     // views can filter/join without decompressing every row.
     provider_id: String,
@@ -242,6 +246,7 @@ impl PreparedRun {
                 latency_ms: case.latency_ms as i64,
                 detail,
                 cached: case.cached,
+                cache_key: case.cache_key.clone(),
                 provider_id: case.cell.provider_id.clone(),
                 prompt_id: case.cell.prompt_id.clone(),
                 test_id: case.cell.test_id.clone(),
@@ -410,10 +415,11 @@ impl PreparedRun {
                     output_hash, asserts, prompt_tokens, completion_tokens, cost_microusd,
                     latency_ms, detail,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached,
-                    error, prompt_digest, provider_digest, assert_digest, error_class
+                    error, prompt_digest, provider_digest, assert_digest, error_class,
+                    cache_key
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
                 )",
                 params![
                     self.id,
@@ -448,6 +454,7 @@ impl PreparedRun {
                     case.provider_digest,
                     case.assert_digest,
                     case.error_class,
+                    case.cache_key,
                 ],
             )?;
             for tag in &case.tags {

@@ -23,7 +23,7 @@ use domarinn_core::result::{CaseStatus, RunResult, RESULT_SCHEMA_VERSION};
 use crate::auth::{Admin, Read, Scoped, Write};
 use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
 use crate::dto::cache::PruneResponse;
-use crate::dto::meta::{MetaCacheLimits, MetaResponse};
+use crate::dto::meta::{CacheTierMeta, MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
 use crate::dto::search::SearchResponse;
 use crate::extract::{ApiJson, ApiQuery};
@@ -114,6 +114,20 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/cache/stats", get(cache_stats))
         .route("/api/v1/cache/prune", post(cache_prune))
+        // Static segments win over `{key}` in axum's router, and more strongly:
+        // `validate_cache_key` requires `sha256:<64 hex>`, so no legal key can
+        // ever be the literal `entries` or `facets`. `/cache/stats` already
+        // proves the pattern in production.
+        .route("/api/v1/cache/entries", get(crate::cachebrowse::list))
+        .route("/api/v1/cache/facets", get(crate::cachebrowse::facets))
+        .route(
+            "/api/v1/cache/entries/{key}",
+            get(crate::cachebrowse::detail),
+        )
+        .route(
+            "/api/v1/cache/entries/{key}/runs",
+            get(crate::cachebrowse::entry_runs),
+        )
         .route(
             "/api/v1/cache/{key}",
             get(cache_get).head(cache_head).put(cache_put),
@@ -245,6 +259,23 @@ async fn meta(State(state): State<AppState>) -> ApiResult<Response> {
     Ok(Json(meta_view(&state).await?).into_response())
 }
 
+/// The browsable cache tiers, in the order a switcher should show them.
+fn cache_tiers(state: &AppState) -> Vec<CacheTierMeta> {
+    let mut tiers = vec![CacheTierMeta {
+        id: crate::domain::CacheTier::Server,
+        label: "Server".to_string(),
+        search: "fts".to_string(),
+    }];
+    if state.local_cache.is_some() {
+        tiers.push(CacheTierMeta {
+            id: crate::domain::CacheTier::Local,
+            label: "Local disk".to_string(),
+            search: "substring".to_string(),
+        });
+    }
+    tiers
+}
+
 /// Build the instance-metadata view.
 ///
 /// Factored out of the handler so the MCP `get_server_info` tool answers from
@@ -267,6 +298,7 @@ pub(crate) async fn meta_view(state: &AppState) -> anyhow::Result<MetaResponse> 
             max_bytes: state.cache_limits.max_bytes,
             max_age_days: state.cache_limits.max_age_days,
         },
+        cache_tiers: cache_tiers(state),
         mcp_enabled: state.mcp.is_some(),
     })
 }
@@ -722,7 +754,7 @@ async fn case_history(
 // Cache
 // ---------------------------------------------------------------------------
 
-fn validate_cache_key(key: &str) -> ApiResult<()> {
+pub(crate) fn validate_cache_key(key: &str) -> ApiResult<()> {
     if CacheKey::is_valid(key) {
         Ok(())
     } else {
@@ -820,7 +852,7 @@ async fn cache_prune(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn clamp_limit(limit: Option<i64>) -> i64 {
+pub(crate) fn clamp_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 

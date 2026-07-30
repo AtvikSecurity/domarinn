@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 domarinn-core = { workspace = true }
-domarinn-cache = { workspace = true }
+domarinn-cache = { workspace = true, features = ["remote-http", "s3"] }
 domarinn-server = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
 # Color/styling layer. Both crates are already in the lockfile via clap

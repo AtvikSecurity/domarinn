@@ -10,6 +10,10 @@ import type {
   ApiKeyCreatedResponse,
   ApiKeyListResponse,
   AuthScope,
+  CacheEntryDetail,
+  CacheEntryListResponse,
+  CacheEntryRunsResponse,
+  CacheFacetsResponse,
   CacheStatsResponse,
   CaseHistoryResponse,
   CaseListResponse,
@@ -29,7 +33,14 @@ import type {
   UserListResponse,
   UserView,
 } from "@/api";
-import { runsRequestFilters, type CaseFilters, type RunsFilters } from "@/lib/filters";
+import {
+  cacheRequestFilters,
+  runsRequestFilters,
+  type CacheFilters,
+  type CacheRequestFilters,
+  type CaseFilters,
+  type RunsFilters,
+} from "@/lib/filters";
 
 export const qk = {
   meta: ["meta"] as const,
@@ -51,6 +62,14 @@ export const qk = {
   projects: ["projects"] as const,
   suites: (project: string) => ["suites", project] as const,
   cacheStats: ["cache", "stats"] as const,
+  // Everything cache-related nests under ["cache"], so pruning can invalidate
+  // the whole subtree in one call — see `usePruneCache`.
+  cacheEntries: (filters: CacheRequestFilters) =>
+    ["cache", "entries", filters] as const,
+  cacheEntry: (key: string, raw: boolean) =>
+    ["cache", "entry", key, raw] as const,
+  cacheFacets: ["cache", "facets"] as const,
+  cacheEntryRuns: (key: string) => ["cache", "entryRuns", key] as const,
 };
 
 export function useMeta() {
@@ -346,7 +365,91 @@ export function usePruneCache() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: () => apiRequest<PruneResponse>("/cache/prune", { method: "POST" }),
-    onSuccess: () => client.invalidateQueries({ queryKey: qk.cacheStats }),
+    // The whole ["cache"] subtree, not just the stats. A prune deletes entries,
+    // so leaving the entries list cached would keep rendering rows the server
+    // has just evicted.
+    onSuccess: () => client.invalidateQueries({ queryKey: ["cache"] }),
+  });
+}
+
+/**
+ * The entries list. Keyed on the MAPPED filters so cache identity equals
+ * request identity — `?sort` absent and `?sort=-created` are the same request
+ * and must not be two entries.
+ */
+export function useCacheEntries(filters: CacheFilters) {
+  const request = cacheRequestFilters(filters);
+  return useInfiniteQuery({
+    queryKey: qk.cacheEntries(request),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      apiRequest<CacheEntryListResponse>("/cache/entries", {
+        params: { ...request, limit: 100, cursor: pageParam },
+        signal,
+      }),
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
+    // Dim the current rows while a filter change is in flight rather than
+    // unmounting the grid. Consumers MUST gate `fetchNextPage` on
+    // `!isPlaceholderData`, or the previous filter's cursor appends its next
+    // page into the new result set.
+    placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * One entry.
+ *
+ * `staleTime: Infinity` is honest here where it rarely is: entries are
+ * immutable by construction (the store is first-write-wins), so a fetched
+ * entry can never go stale — only be deleted.
+ */
+export function useCacheEntry(
+  key: string | undefined,
+  opts: { enabled?: boolean; raw?: boolean } = {},
+) {
+  const raw = opts.raw ?? false;
+  return useQuery({
+    queryKey: qk.cacheEntry(key ?? "", raw),
+    queryFn: ({ signal }) =>
+      apiRequest<CacheEntryDetail>(`/cache/entries/${encodeURIComponent(key!)}`, {
+        params: { raw: raw ? "true" : undefined },
+        signal,
+      }),
+    enabled: (opts.enabled ?? true) && !!key,
+    staleTime: Infinity,
+  });
+}
+
+/**
+ * Which runs used an entry.
+ *
+ * Gated on the drawer section being open: this is the one section whose answer
+ * costs a query against the runs database, and most drawer opens never expand
+ * it.
+ */
+export function useCacheEntryRuns(
+  key: string | undefined,
+  opts: { enabled?: boolean } = {},
+) {
+  return useQuery({
+    queryKey: qk.cacheEntryRuns(key ?? ""),
+    queryFn: ({ signal }) =>
+      apiRequest<CacheEntryRunsResponse>(
+        `/cache/entries/${encodeURIComponent(key!)}/runs`,
+        { signal },
+      ),
+    enabled: (opts.enabled ?? true) && !!key,
+    // Runs can be added later, so this is not immutable the way an entry is.
+    staleTime: 60_000,
+  });
+}
+
+export function useCacheFacets(opts: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.cacheFacets,
+    queryFn: ({ signal }) =>
+      apiRequest<CacheFacetsResponse>("/cache/facets", { signal }),
+    enabled: opts.enabled ?? true,
   });
 }
 

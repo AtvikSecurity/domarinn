@@ -27,6 +27,7 @@
 
 pub mod accounts;
 pub mod cache;
+pub mod cacheentries;
 pub mod cases;
 pub mod compare;
 pub mod config;

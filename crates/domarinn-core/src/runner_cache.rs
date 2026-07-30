@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use chrono::Utc;
 use serde_json::Value as Json;
 
-use crate::cache::{CacheBackend, CacheEntry, CacheKey, CacheMode};
+use crate::cache::{CacheBackend, CacheEntry, CacheKey, CacheMode, EntryKind};
 use crate::cache_key::request_cache_key;
 use crate::cache_migrate::{legacy_provider_key, MigrationProbe};
 use crate::error_class::ErrorClass;
@@ -71,6 +71,12 @@ pub(super) struct CallOutcome {
     /// the *original* call's latency replayed from the entry, not the cache-read
     /// time.
     pub provider_latency_ms: Option<u64>,
+    /// The key this call was addressed by, hit or miss.
+    ///
+    /// `None` when the call had no key at all — `--no-cache`, a provider that
+    /// declines caching, or a request with no stable canonical form. Recorded
+    /// on the case so an entry can name the runs that used it.
+    pub cache_key: Option<CacheKey>,
 }
 
 /// A failed provider call. Carries the attempt count so an errored case can
@@ -84,6 +90,13 @@ pub(super) struct CallFailure {
     pub class: ErrorClass,
     /// Structured diagnostics the provider attached, if any.
     pub details: Option<Json>,
+    /// The key this call was addressed by, when it had one.
+    ///
+    /// Set on the `--cache-only` miss path in particular: that failure names a
+    /// key in its own message, and it is exactly the case someone wants to look
+    /// up. Recording it makes the errored case link to the entry that is
+    /// missing.
+    pub cache_key: Option<CacheKey>,
 }
 
 impl CallFailure {
@@ -97,6 +110,15 @@ impl CallFailure {
             // domarinn generated this failure itself, so there is no
             // provider-authored detail to carry.
             details: None,
+            cache_key: None,
+        }
+    }
+
+    /// The same, for a failure that knows which key it was looking for.
+    pub(super) fn before_any_attempt_for(class: &str, message: String, key: &CacheKey) -> Self {
+        CallFailure {
+            cache_key: Some(key.clone()),
+            ..CallFailure::before_any_attempt(class, message)
         }
     }
 }
@@ -151,7 +173,7 @@ pub(super) async fn call_with_cache(
         match cache.get(key).await {
             Ok(Some(entry)) => {
                 tracing::debug!(%key, "cache hit");
-                return Ok(hit(provider, entry, state));
+                return Ok(hit(provider, entry, state, key));
             }
             Ok(None) => {
                 tracing::debug!(%key, "cache miss");
@@ -169,16 +191,22 @@ pub(super) async fn call_with_cache(
                         // `provider_fingerprint` is left as written — it is the
                         // provenance of the call that actually happened.
                         entry.request = Some(request_to_persist(canonical));
+                        // Same argument as the request: this path knows what it
+                        // called, and re-filing is the only chance a ≤0.4-era
+                        // entry gets to say so — the store is immutable, so a
+                        // later write under this key is a no-op.
+                        entry.kind = Some(EntryKind::new(EntryKind::PROVIDER));
                         if let Err(e) = cache.put(key, &entry).await {
                             tracing::warn!(error = %e, "adopting a legacy cache entry: write failed");
                         }
                     }
-                    return Ok(hit(provider, entry, state));
+                    return Ok(hit(provider, entry, state, key));
                 }
                 if mode == CacheMode::ReadOnlyStrict {
-                    return Err(CallFailure::before_any_attempt(
+                    return Err(CallFailure::before_any_attempt_for(
                         ErrorClass::CACHE_MISS,
                         format!("cache-only: miss for key {key}"),
+                        key,
                     ));
                 }
             }
@@ -209,6 +237,11 @@ pub(super) async fn call_with_cache(
                 cached: false,
                 attempts: Some(stats.attempts),
                 provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
+                // A miss carries the key too: it is a property of the request,
+                // so the entry this call just wrote is the same one a later hit
+                // will read. Recording only on hits would make "which runs used
+                // this entry" mean "which runs were cache hits".
+                cache_key: key,
             })
         }
         Err(err) => {
@@ -226,6 +259,9 @@ pub(super) async fn call_with_cache(
                 attempts: stats.attempts,
                 class,
                 details,
+                // A provider error still had a key, and recording it means the
+                // failing case links to the entry a later successful run wrote.
+                cache_key: key,
             })
         }
     }
@@ -233,7 +269,12 @@ pub(super) async fn call_with_cache(
 
 /// Turn a found entry into an outcome, reporting anything about it that the key
 /// deliberately does not cover.
-fn hit(provider: &dyn Provider, entry: CacheEntry, state: &CacheRunState) -> CallOutcome {
+fn hit(
+    provider: &dyn Provider,
+    entry: CacheEntry,
+    state: &CacheRunState,
+    key: &CacheKey,
+) -> CallOutcome {
     warn_on_program_drift(provider, &entry, state);
     let attempts = entry.attempts;
     let provider_latency_ms = entry.provider_latency_ms;
@@ -242,6 +283,7 @@ fn hit(provider: &dyn Provider, entry: CacheEntry, state: &CacheRunState) -> Cal
         cached: true,
         attempts,
         provider_latency_ms,
+        cache_key: Some(key.clone()),
     }
 }
 
@@ -411,6 +453,7 @@ pub(super) fn response_to_entry(
 ) -> CacheEntry {
     CacheEntry {
         created_at: Utc::now(),
+        kind: Some(EntryKind::new(EntryKind::PROVIDER)),
         // The request replaces the fingerprint rather than joining it: the key
         // is derived from the request now, so the fingerprint would be
         // provenance for a key nothing computes. Entries in the wild still carry

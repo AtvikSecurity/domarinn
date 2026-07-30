@@ -855,6 +855,7 @@ mod tests {
             _ => vec![],
         };
         let case = |test: &str, status: CaseStatus, score: f64| CaseResult {
+            cache_key: None,
             tool_calls: Vec::new(),
             case_key: cell(test).case_key(),
             cell: cell(test),

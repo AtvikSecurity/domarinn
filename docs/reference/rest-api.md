@@ -123,12 +123,82 @@ The content-addressed cache lets many CI runs share every request domarinn makes
 | GET    | `/api/v1/cache/{key}`      | `read`  | Fetch an entry (`application/octet-stream`). `404` on miss. The only method that moves the hit/miss counters. |
 | HEAD   | `/api/v1/cache/{key}`      | `read`  | Existence probe: `200` hit / `404` miss. Deliberately **excluded from the hit/miss counters** — the domarinn client only ever `GET`s, so counting probes would inflate the lookup hit rate the server reports. A found entry still refreshes its last-access time so a probed entry is not evicted next. |
 | PUT    | `/api/v1/cache/{key}`      | `write` | Store an entry (first-write-wins: `201` created / `200` already present). `413` if larger than `max_entry_bytes`. |
-| GET    | `/api/v1/cache/stats`      | `read`  | `{ entries, total_bytes, hits, misses, oldest_entry_at }`. `hits`/`misses` are `GET` lookups, which is what the web UI's **Lookup hit rate** tile is computed from. |
+| GET    | `/api/v1/cache/stats`      | `read`  | `{ entries, total_bytes, hits, misses, unindexed, oldest_entry_at }`. `hits`/`misses` are `GET` lookups, which is what the web UI's **Lookup hit rate** tile is computed from. |
 | POST   | `/api/v1/cache/prune`      | `admin` | Prune by `older_than_days` and/or `target_bytes` (LRU eviction). Returns `{ "pruned": N }`. |
 
 > The server also runs an **hourly retention** task that prunes the cache to
 > `DOMARINN_CACHE_MAX_AGE_DAYS` and `DOMARINN_CACHE_MAX_BYTES` automatically;
 > `POST /cache/prune` is the manual equivalent.
+
+### Browsing the cache
+
+| Method | Path | Scope | Notes |
+|--------|------|-------|-------|
+| GET | `/api/v1/cache/entries` | `admin` | List entries. Filters: `kind`, `model`, `q`, `since`, `until`, `min_cost_microusd`, `max_cost_microusd`, `tier`. Sort: `sort=created\|last_access\|size\|cost` with `order=desc\|asc`. Paginates by opaque `cursor` (`limit` default `50`, max `200`). |
+| GET | `/api/v1/cache/entries/{key}` | `read` | One entry, parsed. `?raw=true` also returns the provider's raw metadata, which is withheld by default. |
+| GET | `/api/v1/cache/entries/{key}/runs` | `read` | Cases whose provider call was addressed by this key, newest run first. Cursor paginated. |
+| GET | `/api/v1/cache/facets` | `admin` | Values the `kind` and `model` filters can take, with counts, plus `total` / `unindexed` / `unparseable`. |
+
+**Listing is `admin`; reading one entry is `read`.** That asymmetry is deliberate.
+A key is `sha256(canonical_json({request, repeat, salts}))` — the only way to
+compute one is to already possess the exact prompt, model and parameters — so
+`GET /cache/{key}` at `read` scope never revealed anything the caller did not
+already have. *Enumerating* is a different capability: it turns "you already
+know the prompt" into every prompt and every response, sorted by cost and
+searchable. Two facts decide where that belongs: `read` is the **anonymous**
+scope under `protect-writes`, and `write` is the CI-token scope. So listing sits
+with `POST /cache/prune` at `admin` — destroying the corpus and enumerating it
+are comparable powers.
+
+Note one genuinely new exposure: in a `layered` setup a developer's local
+iteration writes cache entries to the shared server even when the run itself is
+never `--share`d. Those prompts were already on the server; listing is what
+makes them reachable.
+
+**Browsing never moves the counters.** Neither listing nor inspecting touches
+`hits`/`misses` (which would make the lookup hit-rate tile lie) or
+`last_access_at` (which is what `POST /cache/prune` evicts on — a browse that
+refreshed it would let looking at the cache change what the cache evicts). Both
+read through a pooled read-only connection, so this is a property of the
+connection rather than of discipline.
+
+Two `kind=` pseudo-values exist because a real kind filter provably cannot match
+rows nothing is known about: `kind=unindexed` selects entries the backfill has
+not reached, and `kind=unparseable` selects entries whose body this server could
+not read. Without them those rows would be unreachable exactly while someone
+wants to look at them.
+
+`sort=cost` lists only entries whose cost is known. Ordering by an unknown value
+is meaningless, and the NULL tail would also stop keyset pagination dead.
+
+**An empty `…/runs` list is ambiguous, and readers must say so.** A case carries
+its cache key only if it was recorded by a version that wrote one, and older
+runs cannot be backfilled: the key is derived from the canonical request plus
+the repeat index and salts, and a stored run document contains none of those —
+a backfill would produce *wrong* keys, not missing ones. So "no runs" means
+"nothing on this server records having used it", never "this entry is unused".
+
+### Indexed metadata
+
+An entry's `body` is opaque to the server: it is stored and served byte-for-byte,
+and a `PUT` the server cannot parse still succeeds. Alongside that, the server
+*tries* to read each entry once, and promotes what it finds — kind, model, cost,
+token counts, a request summary and an output preview — into indexed columns so
+entries can be listed, filtered and searched without decoding every row.
+
+New entries are indexed on the way in. Entries already in a database when it was
+upgraded are indexed by a **background task** that drains in small batches
+alongside normal traffic, rather than blocking startup. `stats.unindexed` counts
+what it has left; `0` is the steady state.
+
+Two consequences worth knowing:
+
+- Entries that are not yet indexed are still listed, never hidden — but a
+  `kind=` or `model=` filter cannot match them, and full-text search cannot
+  reach them, because nothing about them has been established yet.
+- An entry whose body the server cannot parse is indexed as *unparseable* once
+  and never re-examined. It stays fully readable through `GET /cache/{key}`;
+  it simply carries no metadata.
 
 ---
 

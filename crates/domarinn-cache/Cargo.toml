@@ -19,11 +19,25 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 
 # remote HTTP backend
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip"] }
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "rustls",
+    "gzip",
+], optional = true }
 
 # S3 (and any S3-compatible endpoint) backend
-object_store = { version = "0.14", features = ["aws"] }
-bytes = "1"
+object_store = { version = "0.14", features = ["aws"], optional = true }
+bytes = { version = "1", optional = true }
+
+[features]
+# Everything, which is what the CLI builds and what a bare `cargo test` gets.
+default = ["remote-http", "s3"]
+remote-http = ["dep:reqwest"]
+# Pulls the whole AWS stack. The server takes this crate with
+# `default-features = false` purely to keep `object_store` out of its
+# dependency tree — and out of the musl static build, the tightest gate in CI —
+# since it only ever needs the local disk backend for the read-only browse tier.
+s3 = ["dep:object_store", "dep:bytes"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -87,6 +87,12 @@ export const META: MetaResponse = {
     max_bytes: 5_368_709_120,
     max_age_days: 30,
   },
+  // Two tiers, so the demo exercises the switcher rather than the
+  // single-tier branch that hides it.
+  cache_tiers: [
+    { id: "server", label: "Server", search: "fts" },
+    { id: "local", label: "Local disk", search: "substring" },
+  ],
   // On, so the mock exercises the connected branch of the settings card; the
   // disabled branch is the trivial one.
   mcp_enabled: true,
@@ -98,6 +104,9 @@ export function cacheStats(): CacheStatsResponse {
     total_bytes: 268_435_456,
     hits: 19_233,
     misses: 4821,
+    // Drained, which is the steady state. The still-indexing branch is
+    // exercised by the entries-page fixtures rather than here.
+    unindexed: 0,
     oldest_entry_at: toIso(NOW - 37 * DAY),
   };
 }

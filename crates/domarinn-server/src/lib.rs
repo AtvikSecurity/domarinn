@@ -37,9 +37,11 @@ use crate::storage::Storage;
 
 pub mod accounts;
 pub mod auth;
+pub mod cachebrowse;
 pub mod domain;
 pub mod dto;
 pub mod extract;
+pub mod localcache;
 pub mod mcp;
 pub mod routes;
 pub mod sso;
@@ -170,6 +172,17 @@ pub struct Settings {
     /// touching their instance at all should be able to say so without
     /// relying on credential hygiene.
     pub mcp_enabled: Option<bool>,
+    /// A local disk cache directory to expose as a second, read-only browsable
+    /// tier (`DOMARINN_LOCAL_CACHE_DIR`). `None` — the default — mounts
+    /// nothing, and `?tier=local` is then a 404.
+    ///
+    /// An environment variable rather than a `ServerConfig` field or a CLI
+    /// flag: that struct's field set is a documented contract (`port`,
+    /// `data_dir`, `auth_mode`), and every other knob here already obeys it.
+    pub local_cache_dir: Option<std::path::PathBuf>,
+    /// Files the local tier will stat before reporting truncation
+    /// (`DOMARINN_LOCAL_CACHE_MAX_SCAN`).
+    pub local_cache_max_scan: Option<usize>,
     /// Extra origins allowed to reach the MCP endpoint
     /// (`DOMARINN_MCP_ALLOWED_ORIGINS`, comma-separated). Drives both the
     /// spec-required `Origin` check and the route's CORS layer. When this and
@@ -201,6 +214,8 @@ impl Settings {
             // because someone wrote `DOMARINN_MCP_ENABLED=ture` is a bad hour.
             mcp_enabled: parse_bool_env("DOMARINN_MCP_ENABLED", env("DOMARINN_MCP_ENABLED"))?,
             mcp_allowed_origins: env("DOMARINN_MCP_ALLOWED_ORIGINS"),
+            local_cache_dir: env("DOMARINN_LOCAL_CACHE_DIR").map(std::path::PathBuf::from),
+            local_cache_max_scan: env("DOMARINN_LOCAL_CACHE_MAX_SCAN").and_then(|v| v.parse().ok()),
         })
     }
 }
@@ -245,6 +260,9 @@ pub struct AppState {
     /// MCP endpoint state. `None` means the endpoint is disabled and its route
     /// is never mounted — presence *is* the feature flag.
     pub(crate) mcp: Option<Arc<mcp::McpState>>,
+    /// A mounted local disk cache, browsable read-only as `?tier=local`.
+    /// `None` means no such tier exists on this instance.
+    pub(crate) local_cache: Option<Arc<localcache::LocalTier>>,
 }
 
 impl AppState {
@@ -279,6 +297,20 @@ impl AppState {
             settings.public_url.as_deref(),
             settings.mcp_allowed_origins.as_deref(),
         );
+        // A bad path costs one tier, never the process: an operator who
+        // renamed a directory should lose the browse view, not their server.
+        let local_cache = settings.local_cache_dir.as_ref().and_then(|dir| {
+            match localcache::LocalTier::open(dir.clone(), settings.local_cache_max_scan) {
+                Ok(tier) => {
+                    tracing::info!(path = %tier.root().display(), "mounted local cache tier");
+                    Some(Arc::new(tier))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "DOMARINN_LOCAL_CACHE_DIR is unusable; not mounting a local tier");
+                    None
+                }
+            }
+        });
         Ok(AppState {
             api_key_auth: Arc::new(ApiKeyAuthenticator::new(storage.clone())),
             session_auth: Arc::new(SessionAuthenticator::new(storage.clone())),
@@ -291,6 +323,7 @@ impl AppState {
             cookie_secure,
             sso: sso_registry,
             mcp,
+            local_cache,
         })
     }
 }
@@ -482,6 +515,7 @@ pub async fn build_app(
 pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
     let settings = Settings::from_env()?;
     let (app, state) = build_app(&config, settings).await?;
+    spawn_cache_index_backfill(state.clone());
     spawn_cache_retention(state);
 
     let port = config.port;
@@ -492,6 +526,50 @@ pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+/// Rows per indexing batch.
+///
+/// Small on purpose. Each batch takes the cache writer mutex to stamp its
+/// results, and that mutex is also what every `cache_put` and every `cache_get`
+/// needs — `cache_get` is a write, because it bumps the hit counter.
+const INDEX_BATCH: i64 = 200;
+/// Yielded between batches, so a CI burst arriving mid-backfill meets a bounded
+/// stall rather than a stalled cache.
+const INDEX_PAUSE: Duration = Duration::from_millis(250);
+/// How often to re-check once drained. The probe is one lookup against a
+/// partial index that is empty in the steady state, so this costs nothing.
+const INDEX_IDLE: Duration = Duration::from_secs(300);
+
+/// Drain the cache migration-2 columns in the background.
+///
+/// Entries written from now on are indexed by `cache_put` on the way in, so
+/// this exists for databases that predate the migration. Deliberately *not* in
+/// `storage::backfill`, which runs synchronously before the server binds its
+/// port: that is fine for the runs database, bounded by run count, and would
+/// turn a restart into an outage here, where a shared cache can hold a million
+/// entries of up to 4 MiB each.
+///
+/// It idles rather than exiting when drained, so a data dir restored from an
+/// older backup is indexed without needing a restart to notice.
+fn spawn_cache_index_backfill(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            match state.storage.cache_index_batch(INDEX_BATCH).await {
+                Ok(0) => tokio::time::sleep(INDEX_IDLE).await,
+                Ok(indexed) => {
+                    tracing::debug!(indexed, "cache index backfill progressed");
+                    tokio::time::sleep(INDEX_PAUSE).await;
+                }
+                // Never fatal: an unindexed cache still serves every read and
+                // write, it just cannot be filtered or searched yet.
+                Err(e) => {
+                    tracing::warn!(error = %e, "cache index backfill failed");
+                    tokio::time::sleep(INDEX_IDLE).await;
+                }
+            }
+        }
+    });
 }
 
 /// Hourly LRU/age retention against the configured cache limits, plus the
@@ -572,12 +650,17 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     use ts_rs::Config;
 
     use crate::accounts::{CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody};
-    use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
+    use crate::domain::{
+        CacheSort, CacheTier, CachedFilter, OriginFilter, RunStatusFilter, SortOrder,
+    };
     use crate::dto::accounts::{
         ApiKeyCreatedResponse, ApiKeyListResponse, AuthSessionResponse, MeResponse, OkResponse,
         UserListResponse,
     };
     use crate::dto::cache::{CacheStatsResponse, PruneResponse};
+    use crate::dto::cacheentries::{
+        CacheEntryDetail, CacheEntryListResponse, CacheEntryRunsResponse, CacheFacetsResponse,
+    };
     use crate::dto::cases::CaseListResponse;
     use crate::dto::compare::CompareResponse;
     use crate::dto::config::RunConfigResponse;
@@ -603,6 +686,16 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     ProjectsResponse::export_all(&cfg)?;
     SuitesResponse::export_all(&cfg)?;
     CacheStatsResponse::export_all(&cfg)?;
+    CacheEntryListResponse::export_all(&cfg)?;
+    CacheEntryDetail::export_all(&cfg)?;
+    CacheFacetsResponse::export_all(&cfg)?;
+    CacheEntryRunsResponse::export_all(&cfg)?;
+    // Query-string enums: `Deserialize`-only, so unreachable from any response
+    // graph, and listed as their own roots for the same reason
+    // `RunStatusFilter` is — the browse UI imports them to build its controls.
+    CacheTier::export_all(&cfg)?;
+    CacheSort::export_all(&cfg)?;
+    SortOrder::export_all(&cfg)?;
     PruneResponse::export_all(&cfg)?;
     MetaResponse::export_all(&cfg)?;
     SearchResponse::export_all(&cfg)?;

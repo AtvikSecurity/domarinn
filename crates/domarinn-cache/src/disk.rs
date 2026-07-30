@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use domarinn_core::cache::{
-    CacheBackend, CacheEntry, CacheError, CacheKey, CacheStats, PurgeFilter,
+    CacheBackend, CacheEntry, CacheEnumerate, CacheError, CacheKey, CacheStats, Enumerated,
+    EnumeratedEntry, PurgeFilter,
 };
 
 /// A cache rooted at a directory on the local filesystem.
@@ -36,6 +37,86 @@ impl LocalDiskCache {
         let hex = key.0.strip_prefix("sha256:").unwrap_or(&key.0);
         let shard = &hex[..hex.len().min(2)];
         self.root.join(shard).join(format!("{hex}.json"))
+    }
+}
+
+#[async_trait]
+impl CacheEnumerate for LocalDiskCache {
+    /// Walk the shard tree, stat every entry file, and return the newest
+    /// `limit` of them.
+    ///
+    /// Two phases, and the order matters. Everything is stat'ed first and the
+    /// result is sorted by mtime before truncating, so cutting the list drops
+    /// the *oldest* entries. Truncating during the walk instead would drop
+    /// whichever entries `read_dir` happened to name last, which is arbitrary
+    /// and would make two calls disagree about what exists.
+    ///
+    /// A missing root is an empty cache, not an error: the directory is created
+    /// lazily on first write, so a suite that has never run has nothing here.
+    async fn enumerate(&self, limit: usize) -> Result<Enumerated, CacheError> {
+        let mut found: Vec<EnumeratedEntry> = Vec::new();
+        let mut scanned = 0usize;
+
+        let mut shards = match tokio::fs::read_dir(&self.root).await {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Enumerated::default()),
+            Err(e) => return Err(CacheError(anyhow::anyhow!("reading {:?}: {e}", self.root))),
+        };
+        while let Some(shard) = shards
+            .next_entry()
+            .await
+            .map_err(|e| CacheError(anyhow::anyhow!("iterating shards: {e}")))?
+        {
+            if !shard.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let mut files = tokio::fs::read_dir(shard.path())
+                .await
+                .map_err(|e| CacheError(anyhow::anyhow!("reading shard: {e}")))?;
+            while let Some(file) = files
+                .next_entry()
+                .await
+                .map_err(|e| CacheError(anyhow::anyhow!("iterating shard: {e}")))?
+            {
+                let name = file.file_name();
+                let name = name.to_string_lossy();
+                // `.json` only, which also skips the `.tmp-*` files a concurrent
+                // writer leaves in flight — a run writing this cache while it is
+                // being browsed is the normal case, not a race to guard against.
+                let Some(hex) = name.strip_suffix(".json") else {
+                    continue;
+                };
+                scanned += 1;
+                let key = CacheKey(format!("sha256:{hex}"));
+                if !CacheKey::is_valid(&key.0) {
+                    continue;
+                }
+                let Ok(meta) = file.metadata().await else {
+                    continue;
+                };
+                found.push(EnumeratedEntry {
+                    key,
+                    size: meta.len(),
+                    modified: meta
+                        .modified()
+                        .ok()
+                        .map(chrono::DateTime::<chrono::Utc>::from),
+                });
+            }
+        }
+
+        found.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then_with(|| a.key.0.cmp(&b.key.0))
+        });
+        let truncated = found.len() > limit;
+        found.truncate(limit);
+        Ok(Enumerated {
+            entries: found,
+            truncated,
+            scanned,
+        })
     }
 }
 
@@ -191,6 +272,7 @@ mod tests {
 
     fn sample_entry() -> CacheEntry {
         CacheEntry {
+            kind: None,
             tool_calls: Vec::new(),
             created_at: chrono::Utc::now(),
             provider_fingerprint: Some(json!({"type": "exec"})),
@@ -250,6 +332,71 @@ mod tests {
         let stats = cache.stats().await.unwrap();
         assert_eq!(stats.entries, 3);
         assert!(stats.total_bytes > 0);
+    }
+
+    /// Truncation must drop the oldest, not an arbitrary slice. `read_dir`
+    /// order is arbitrary, so a walk that stopped early would return whichever
+    /// entries the filesystem named first and two calls could disagree about
+    /// what the cache contains.
+    #[tokio::test]
+    async fn enumerating_past_the_limit_drops_the_oldest_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path());
+
+        // Written oldest-first, with distinct mtimes.
+        let mut keys = Vec::new();
+        for i in 0..5 {
+            let key = CacheKey::compute(&json!({ "i": i }));
+            cache.put(&key, &sample_entry()).await.unwrap();
+            keys.push(key);
+            tokio::time::sleep(std::time::Duration::from_millis(12)).await;
+        }
+
+        let all = cache.enumerate(100).await.unwrap();
+        assert_eq!(all.entries.len(), 5);
+        assert!(!all.truncated);
+        assert_eq!(all.entries[0].key, keys[4], "newest must lead");
+
+        let page = cache.enumerate(2).await.unwrap();
+        assert!(page.truncated);
+        assert_eq!(
+            page.entries.iter().map(|e| &e.key).collect::<Vec<_>>(),
+            vec![&keys[4], &keys[3]],
+            "the two newest, not two arbitrary entries"
+        );
+    }
+
+    /// A cache directory that has never been written to is an empty cache. The
+    /// root is created lazily on first write, so this is the ordinary state of
+    /// a suite that has not run yet — not a misconfiguration.
+    #[tokio::test]
+    async fn enumerating_a_root_that_does_not_exist_is_empty_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path().join("never-written"));
+        let found = cache.enumerate(10).await.unwrap();
+        assert!(found.entries.is_empty());
+        assert!(!found.truncated);
+    }
+
+    /// A run writing this cache while it is being browsed is the normal case.
+    /// In-flight temp files must not surface as entries.
+    #[tokio::test]
+    async fn a_writers_temp_file_is_not_an_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path());
+        let key = CacheKey::compute(&json!({ "a": 1 }));
+        cache.put(&key, &sample_entry()).await.unwrap();
+
+        let shard = dir
+            .path()
+            .join(&key.0.strip_prefix("sha256:").unwrap()[..2]);
+        tokio::fs::write(shard.join(".tmp-123-4"), b"half written")
+            .await
+            .unwrap();
+
+        let found = cache.enumerate(10).await.unwrap();
+        assert_eq!(found.entries.len(), 1);
+        assert_eq!(found.entries[0].key, key);
     }
 
     #[tokio::test]

@@ -364,13 +364,51 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE runs ADD COLUMN grader_cost_microusd   INTEGER;
         "#,
         ),
+        // Migration 13: promote the provider call's cache key, so a cached case
+        // links to the entry that answered it and an entry can name the runs
+        // that used it.
+        //
+        // No backfill, and no sentinel — migration 8's reason rather than
+        // migration 7's. `CaseResult.cache_key` is *new*: no run recorded
+        // before it can carry one, so NULL here means exactly "this case had no
+        // key" and always will.
+        //
+        // Worth being precise that a backfill is not merely expensive but
+        // impossible. The key is
+        // `request_cache_key(canonical_request, repeat, provider_salt,
+        // case_salt)`, and a stored run document holds none of those three
+        // ingredients: `CaseResult.request` is a *preview* envelope, not the
+        // canonical request (`exec`'s canonical strips `test`; `http` declines
+        // a preview outright to avoid persisting env-templated credentials;
+        // `--no-raw` drops it), and neither salt appears anywhere in the
+        // document. A backfill would produce wrong keys, not missing ones.
+        //
+        // So this is a contract, exactly as migration 9's is: cross-linking
+        // works between an entry and a run produced by this version or later,
+        // and every reader must render absence as unknown rather than as "no
+        // cache was used".
+        M::up(
+            r#"
+        ALTER TABLE cases ADD COLUMN cache_key TEXT;
+
+        -- Partial, matching the lookup's predicate exactly. `cache_key = ?1`
+        -- provably implies `cache_key IS NOT NULL`, so SQLite will use it — and
+        -- the NULL population here is every row ever written before this
+        -- migration, which a full index would carry forever for nothing. See
+        -- migration 11 for the matching rule, and for why no COALESCE may
+        -- appear on either side.
+        CREATE INDEX idx_cases_cache_key ON cases(cache_key)
+            WHERE cache_key IS NOT NULL;
+        "#,
+        ),
     ])
 }
 
 /// Schema for `cache.db` (disposable content-addressed cache).
 pub(super) fn cache_migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(
-        r#"
+    Migrations::new(vec![
+        M::up(
+            r#"
         CREATE TABLE cache_entries (
             key            TEXT PRIMARY KEY,
             body           BLOB NOT NULL,
@@ -387,5 +425,68 @@ pub(super) fn cache_migrations() -> Migrations<'static> {
         );
         INSERT INTO cache_counters (id, hits, misses) VALUES (1, 0, 0);
         "#,
-    )])
+        ),
+        // Migration 2: promote the browsable facts out of the opaque `body`
+        // blob, and index the searchable text, so entries can be listed,
+        // filtered and searched without decoding every row.
+        //
+        // `body` stays opaque *by contract* — the cache is a blob store and a
+        // PUT this server cannot parse must still succeed (see `cache_put`) —
+        // so every promoted column is nullable and NULL means "no value",
+        // never zero. Migration 12's argument on the runs side, applied here.
+        //
+        // `indexed_at` / `index_ok` are the tri-state that makes the backfill
+        // terminate: NULL = never looked at, non-NULL = looked at, and
+        // `index_ok` records whether looking found a `CacheEntry`. This is
+        // migration 7's sentinel lesson expressed as one state column rather
+        // than one sentinel per promoted column — there are eight promoted
+        // columns here, and eight sentinels would be eight chances to leave a
+        // row eligible for every future pass.
+        M::up(
+            r#"
+        ALTER TABLE cache_entries ADD COLUMN indexed_at       INTEGER;
+        ALTER TABLE cache_entries ADD COLUMN index_ok         INTEGER;
+        ALTER TABLE cache_entries ADD COLUMN kind             TEXT;
+        ALTER TABLE cache_entries ADD COLUMN model            TEXT;
+        ALTER TABLE cache_entries ADD COLUMN cost_microusd    INTEGER;
+        ALTER TABLE cache_entries ADD COLUMN input_tokens     INTEGER;
+        ALTER TABLE cache_entries ADD COLUMN output_tokens    INTEGER;
+        -- When the *call* happened, as the entry records it. Distinct from
+        -- `created_at`, which is when this server was handed the blob — for a
+        -- team tier those differ by however long the entry sat on a laptop.
+        ALTER TABLE cache_entries ADD COLUMN entry_created_at INTEGER;
+        ALTER TABLE cache_entries ADD COLUMN request_summary  TEXT;
+        ALTER TABLE cache_entries ADD COLUMN output_preview   TEXT;
+
+        CREATE INDEX idx_cache_created       ON cache_entries(created_at);
+        CREATE INDEX idx_cache_size          ON cache_entries(size);
+        CREATE INDEX idx_cache_kind_created  ON cache_entries(kind, created_at);
+        CREATE INDEX idx_cache_model_created ON cache_entries(model, created_at);
+
+        -- Partial, matching each query's predicate exactly. The backfill probe
+        -- runs against an index that empties as it drains, and the cost sort
+        -- excludes NULL cost outright rather than wrapping the column in a
+        -- COALESCE that would make it unusable. See migration 11.
+        CREATE INDEX idx_cache_unindexed ON cache_entries(indexed_at)
+            WHERE indexed_at IS NULL;
+        CREATE INDEX idx_cache_cost ON cache_entries(cost_microusd, key)
+            WHERE cost_microusd IS NOT NULL;
+
+        -- Plain fts5, not external-content: entries are immutable and are only
+        -- ever inserted or deleted, so there is no update path to keep in sync
+        -- and nothing to gain from making the blob table the content source.
+        -- Rowids are kept aligned with `cache_entries` so a delete is a rowid
+        -- lookup rather than a scan over an UNINDEXED key column.
+        CREATE VIRTUAL TABLE cache_entries_fts USING fts5(request, output);
+
+        -- Deletes are the only mutation, and they arrive from two directions
+        -- (`cache_prune`'s age pass and its LRU pass), so the sync belongs in
+        -- a trigger rather than at each call site. Inserts cannot be a trigger:
+        -- the text comes from parsing a body the trigger cannot see.
+        CREATE TRIGGER cache_entries_delete_fts AFTER DELETE ON cache_entries BEGIN
+            DELETE FROM cache_entries_fts WHERE rowid = old.rowid;
+        END;
+        "#,
+        ),
+    ])
 }

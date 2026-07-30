@@ -60,6 +60,7 @@ mod tests {
 
     fn entry(text: &str) -> CacheEntry {
         CacheEntry {
+            kind: None,
             tool_calls: Vec::new(),
             created_at: chrono::Utc::now(),
             provider_fingerprint: Some(json!({"type": "exec"})),
