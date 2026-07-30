@@ -100,6 +100,49 @@ jobs:
       - run: cargo clippy -p domarinn-server --features saml --all-targets -- -D warnings
       - run: cargo test -p domarinn-server --features saml
 
+  commit-messages:
+    name: commit messages parse for release-please
+    # A message release-please cannot parse is SKIPPED by it rather than
+    # reported, so the work it carries never reaches a changelog — and when it
+    # is the only commit since the last release, no release pull request is
+    # created at all. This is the gate; the lefthook commit-msg hook is the
+    # same checker run earlier, and skips when node deps are absent.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      MISE_DISABLE_TOOLS: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+          # Every commit in the pull request, not just the tip.
+          fetch-depth: 0
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          install_args: node pnpm
+      - run: mise run web-install
+      # Guard on the guard: if the checker itself is wrong, the messages it
+      # blesses mean nothing.
+      - name: Self-test the checker
+        run: pnpm -C web run check-commit-msg -- --self-test
+      - name: Check every commit in this pull request
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          failed=0
+          msg="$(mktemp)"
+          for sha in $(git rev-list "$BASE..$HEAD"); do
+            git log -1 --format=%B "$sha" > "$msg"
+            if ! node web/scripts/check-commit-msg.mjs "$msg"; then
+              echo "::error::commit $sha has a message release-please cannot parse"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
   web:
     name: web (lint + build + vitest)
     runs-on: ubuntu-24.04

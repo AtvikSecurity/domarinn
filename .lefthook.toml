@@ -26,3 +26,13 @@ exclude = ["web/pnpm-lock.yaml", "web/pnpm-workspace.yaml"]
 # next run then reverts.
 [pre-commit.commands.format-markdown]
 exclude = ["docs/**", "CHANGELOG.md"]
+
+# A commit message release-please cannot parse is SKIPPED by it, not warned
+# about — so the work never reaches a changelog, and if it is the only commit
+# since the last release, no release pull request is created at all. That has
+# happened once (see web/scripts/check-commit-msg.mjs for the exact shape).
+#
+# Skips silently when web/node_modules is absent so a fresh clone can still
+# commit; CI runs the same checker unconditionally, which is the real gate.
+[commit-msg.commands.conventional]
+run = "test -d web/node_modules/@conventional-commits || exit 0; node web/scripts/check-commit-msg.mjs {1}"
