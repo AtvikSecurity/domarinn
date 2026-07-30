@@ -631,6 +631,20 @@ pub struct Grader {
     /// transport fault rather than a budget one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Whether the judge is shown the tool calls the model made. Default false.
+    ///
+    /// Opt-in rather than automatic because the grading prompt *is* the judge's
+    /// cache key: turning this on for everyone would re-grade every warm entry
+    /// in every store, and pay for it, the first time a suite reported a call.
+    /// Left unset, the prompt — and therefore the key — is byte-identical to
+    /// what it was before this field existed.
+    ///
+    /// Set it on the `grader:` block the assertion actually resolves to. A
+    /// per-assert `grader:` replaces the suite-level block whole rather than
+    /// merging field by field, so an assertion that overrides the grader at all
+    /// must restate this to keep it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_tool_calls: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

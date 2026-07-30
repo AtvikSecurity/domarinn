@@ -927,4 +927,32 @@ pub const EXAMPLES: &[Example] = &[
             },
         ],
     },
+    Example {
+        dir: "40-rubric-sees-tool-calls",
+        shows: "a rubric shown the tool calls, so the delegation decision is \
+                gradeable and not just the prose",
+        env: &[
+            ("ANTHROPIC_BASE_URL", Env::StubBase),
+            (
+                "ANTHROPIC_API_KEY",
+                Env::Literal("sk-ant-stub-not-a-real-key"),
+            ),
+        ],
+        stub: &[Route {
+            fragment: "/v1/messages",
+            bodies: &[stubs::ANTHROPIC_VERDICT_TOOL_AWARE],
+        }],
+        // One grader call, as in example 29: the system under test is an
+        // offline exec provider, so the judge is the only thing on the network.
+        stub_calls: 1,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(1),
+            case_ids: &["orders/looks-it-up-before-answering"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
 ];

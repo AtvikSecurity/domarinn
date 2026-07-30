@@ -49,6 +49,19 @@ ASSISTANT OUTPUT:
 <the provider output>
 ```
 
+With [`include_tool_calls: true`](#letting-the-judge-see-tool-calls) on the grader, a third section is appended:
+
+```
+RUBRIC:
+<your rubric, rendered with the test vars>
+
+ASSISTANT OUTPUT:
+<the provider output>
+
+TOOL CALLS (the tool calls the assistant made, in order, as JSON):
+<a pretty-printed array of {"name", "arguments"} objects>
+```
+
 ---
 
 ## Grader resolution
@@ -72,6 +85,7 @@ The `grader:` block wraps a provider plus grading options:
 | `provider`     | provider spec | –          | The grader model. Only `anthropic` and `openai` are supported for grading. |
 | `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template, relative to the suite directory. It renders into the prompt the grader reads, and [the request is the key](caching.md#the-rule) — so editing it re-grades. (An `exec` assertion's *program* is named by `command` and pinned by `cache_salt`, for the opposite reason: it receives the question rather than being part of it.) |
 | `verdict_mode` | string        | `forced`   | How the structured verdict is obtained: `forced` (default) or `auto` (rejected at load — not implemented). |
+| `include_tool_calls` | bool    | `false`    | Append the case's tool calls to the judge's user message. Off leaves the message byte-identical to before, so existing verdicts keep hitting the cache. See [Letting the judge see tool calls](#letting-the-judge-see-tool-calls). |
 
 The `provider` is a standard [`ProviderKind`](../reference/providers.md) — but only the `anthropic` and `openai` shapes are valid graders. Any other provider type errors with `grader provider type … is not supported for llm-rubric`.
 
@@ -120,6 +134,58 @@ tests:
             type: openai
             model: gpt-4o
 ```
+
+---
+
+## Letting the judge see tool calls
+
+The judge reads prose. A case the model answered with a tool call has no prose, so `ASSISTANT OUTPUT` is empty and the rubric grades a blank. `include_tool_calls: true` on the `grader:` block shows the judge what the model actually *did*:
+
+```yaml
+grader:
+  provider:
+    type: anthropic
+    model: claude-haiku-4-5
+  include_tool_calls: true
+```
+
+The user message then carries the third section shown [above](#the-verdict-shape) — `TOOL CALLS (the tool calls the assistant made, in order, as JSON):` followed by a pretty-printed array of `{"name", "arguments"}` objects, in the order the model made them. The provider's call `id` is **not** included: it is a per-response nonce, and putting it in the prompt would make every request unique and every verdict a cache miss.
+
+**The section is always there when the flag is on.** Zero calls render `[]` rather than dropping the heading, so a rubric can judge the *absence* of a call ("answers from the context without calling `search`") as readily as its presence. A rubric that only ever sees the section when something happened cannot ask that question.
+
+**Flipping the flag re-grades.** [The request is the key](caching.md#the-rule), and the flag changes the request — so turning it on re-asks the judge for the affected cells, and turning it back off restores the old message byte-for-byte and replays the old verdicts. With the flag off nothing changes at all, so an existing store keeps hitting.
+
+**A per-assert `grader:` replaces the whole block, flag included.** An override is not a patch. An assertion with its own `grader:` must restate `include_tool_calls: true` or that one assertion grades blind while the rest of the suite does not:
+
+```yaml
+grader:
+  provider: { type: anthropic, model: claude-haiku-4-5 }
+  include_tool_calls: true
+
+tests:
+  - vars: { question: "What is the weather in Oslo?" }
+    assert:
+      # Uses the suite grader — sees the tool calls.
+      - type: llm-rubric
+        value: "Looks the weather up rather than guessing."
+
+      - type: llm-rubric
+        value: "Never reaches for a destructive tool."
+        grader:
+          provider: { type: openai, model: gpt-4o }
+          include_tool_calls: true    # restated: the override replaced the whole block
+```
+
+**A custom `template` must agree with the flag.** A grader `template` substitutes `{{rubric}}` and `{{output}}` literally — plain string replacement, not the template engine — and gains a third placeholder, `{{tool_calls}}`, on the same terms. The two are checked against each other, both directions:
+
+- Flag **off** and the template contains `{{tool_calls}}` — an error. The placeholder would go to the judge verbatim, as a section nothing ever fills.
+- Flag **on** and the template omits `{{tool_calls}}` — an error. The flag would silently do nothing.
+
+The check runs **when the template is read, at grading time** — not at load. A suite holding the contradiction validates clean and then fails the first graded cell that reaches it, as a fail-closed `grader misconfigured: …` on that assertion: the case is promoted to `error` and the run exits `3`. (A missing `{{rubric}}` or `{{output}}` stays tolerated; a template is allowed to grade on less than everything.)
+
+**Do not combine it with `runner.skip_on_empty_reason: [tool_use_only]`.** That setting skips tool-only cells *before* grading, so exactly the cells this flag exists for never reach the judge. Pick one: skip them, or show them to the grader.
+
+**0.4.x verdicts are never adopted for a flag-on grading.** [Cache migration](caching.md#upgrading-to-05) adopts pre-0.5 grader entries on a miss, but every one of them was produced by a judge that could not see tool calls. Adopting one would answer the new question with the old answer.
 
 ---
 

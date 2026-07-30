@@ -234,6 +234,17 @@ pub struct AssertReq {
     /// without them a child can only grade the text in isolation.
     #[serde(default)]
     pub vars: Json,
+
+    /// The tool calls the model made, in the order it made them; omitted when
+    /// there were none.
+    ///
+    /// The first time [`ToolCall`] travels domarinn → child rather than the
+    /// other way round. An assertion about *behaviour* — did it call `search`
+    /// before answering, with the scope it was given? — is unanswerable from
+    /// `output` alone, because a cell whose right answer is a tool call has no
+    /// prose to read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,6 +322,51 @@ mod tests {
         let resp: ProviderResp =
             serde_json::from_str(r#"{"output":"hi","invented_later":{"a":1}}"#).unwrap();
         assert_eq!(resp.output, Json::String("hi".into()));
+    }
+
+    fn minimal_assert_req() -> AssertReq {
+        AssertReq {
+            envelope: Envelope::new(Kind::Assert),
+            output: Json::String("hi".into()),
+            test: TestRef {
+                id: "t".into(),
+                tags: vec![],
+            },
+            prompt: None,
+            provider: ProviderRef { id: "p".into() },
+            config: Json::Null,
+            vars: serde_json::json!({}),
+            tool_calls: vec![],
+        }
+    }
+
+    /// The same byte-shape guard as `a_minimal_response_serializes_to_exactly_output`,
+    /// applied to the request side: a cell whose model called nothing must send
+    /// no `tool_calls` member. The exec-assert cache key is built from this
+    /// document, so a member that appeared unconditionally would re-key every
+    /// entry in every store for a field the child never reads.
+    #[test]
+    fn an_assert_request_without_tool_calls_does_not_mention_them() {
+        let s = serde_json::to_string(&minimal_assert_req()).unwrap();
+        assert!(!s.contains("tool_calls"), "{s}");
+    }
+
+    #[test]
+    fn an_assert_request_round_trips_its_tool_calls() {
+        let req = AssertReq {
+            tool_calls: vec![ToolCall {
+                id: Some("toolu_1".into()),
+                name: "get_weather".into(),
+                arguments: serde_json::json!({"city": "Reykjavik"}),
+            }],
+            ..minimal_assert_req()
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: AssertReq = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.tool_calls.len(), 1);
+        assert_eq!(back.tool_calls[0].name, "get_weather");
+        assert_eq!(back.tool_calls[0].arguments["city"], "Reykjavik");
+        assert_eq!(back.tool_calls[0].id.as_deref(), Some("toolu_1"));
     }
 
     #[test]

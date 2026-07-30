@@ -241,23 +241,133 @@ fn read_grader_template(
         .map_err(|e| GraderError::Misconfigured(format!("reading grader.template `{rel}`: {e}")))
 }
 
+const TOOL_CALLS_PLACEHOLDER: &str = "{{tool_calls}}";
+
+/// The tool calls as the judge sees them: a JSON array of `{name, arguments}`.
+///
+/// The vendor's call id is deliberately dropped. It is a fresh random token on
+/// every live response (`toolu_…`), so carrying it would put a different string
+/// in the judge's request body — and therefore a different cache key — for a
+/// decision the model made identically twice. Nothing a rubric can sensibly ask
+/// is answered by it.
+///
+/// An empty slice pretty-prints to `[]`, which is the point rather than a case
+/// to special-case: the section has to be able to say "it called nothing".
+fn format_tool_calls(calls: &[crate::result::ToolCall]) -> String {
+    let view: Vec<Json> = calls
+        .iter()
+        .map(|c| json!({"name": c.name, "arguments": c.arguments}))
+        .collect();
+    serde_json::to_string_pretty(&view).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Substitute placeholders in ONE left-to-right pass.
+///
+/// Chained `str::replace` rescans: whatever the first pass substituted is
+/// visible to the second, so a rubric containing the literal `{{output}}` had
+/// the model's answer spliced into it. With three placeholders there is no
+/// ordering that avoids it either — a single pass is the only shape where a
+/// substituted value is never itself a placeholder.
+fn substitute_once(template: &str, replacements: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    loop {
+        let next = replacements
+            .iter()
+            .filter_map(|(key, value)| rest.find(key).map(|at| (at, *key, *value)))
+            .min_by_key(|(at, _, _)| *at);
+        match next {
+            Some((at, key, value)) => {
+                out.push_str(&rest[..at]);
+                out.push_str(value);
+                rest = &rest[at + key.len()..];
+            }
+            None => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
+}
+
 /// Render a `grader.template` override into the grading prompt.
 ///
-/// Another field that was parsed and never read. The contract is two
-/// placeholders — `{{rubric}}` and `{{output}}` — substituted literally rather
-/// than through the template engine, because the *output* is untrusted model
-/// text and running it through minijinja would make a grading prompt an SSTI
-/// surface.
+/// Another field that was parsed and never read. The contract is three
+/// placeholders — `{{rubric}}`, `{{output}}` and `{{tool_calls}}` — substituted
+/// literally rather than through the template engine, because the output *and*
+/// the tool arguments are untrusted model text and running either through
+/// minijinja would make a grading prompt an SSTI surface.
+///
+/// `tool_calls` is `Some` exactly when `grader.include_tool_calls` is on. The
+/// two settings come out of the same authored `grader:` block, so disagreeing
+/// is an internal contradiction rather than a default to apply: a placeholder
+/// with the flag off would be sent to the judge verbatim, and the flag on with
+/// no placeholder is a suite that asked for something it never receives.
+/// Missing `{{rubric}}` or `{{output}}` stays tolerated — a template is allowed
+/// to grade on less than everything.
 fn render_grader_template(
     spec: &str,
     base_dir: Option<&std::path::Path>,
     rubric: &str,
     output: &str,
+    tool_calls: Option<&str>,
 ) -> Result<String, GraderError> {
     let text = read_grader_template(spec, base_dir)?;
-    Ok(text
-        .replace("{{rubric}}", rubric)
-        .replace("{{output}}", output))
+    match (tool_calls, text.contains(TOOL_CALLS_PLACEHOLDER)) {
+        (None, true) => {
+            return Err(GraderError::Misconfigured(format!(
+                "grader.template uses `{TOOL_CALLS_PLACEHOLDER}` but \
+                 grader.include_tool_calls is not set"
+            )))
+        }
+        (Some(_), false) => {
+            return Err(GraderError::Misconfigured(format!(
+                "grader.include_tool_calls is set but grader.template has no \
+                 `{TOOL_CALLS_PLACEHOLDER}` to put them in"
+            )))
+        }
+        _ => {}
+    }
+    let mut replacements = vec![("{{rubric}}", rubric), ("{{output}}", output)];
+    if let Some(calls) = tool_calls {
+        replacements.push((TOOL_CALLS_PLACEHOLDER, calls));
+    }
+    Ok(substitute_once(&text, &replacements))
+}
+
+/// The judge's user message: the whole grading prompt, and the whole of what
+/// separates one judge cache entry from another.
+///
+/// Split out of `grade_llm_rubric` so the bytes are testable without a judge.
+/// With `include_tool_calls` unset this is exactly the string the built-in
+/// framing produced before the flag existed, down to the byte — the flag is
+/// opt-in precisely so that stays true and no warm entry is re-graded.
+fn grading_user_message(
+    grader: &Grader,
+    working_dir: Option<&std::path::Path>,
+    rubric: &str,
+    output_text: &str,
+    tool_calls: &[crate::result::ToolCall],
+) -> Result<String, GraderError> {
+    let calls = grader
+        .include_tool_calls
+        .unwrap_or(false)
+        .then(|| format_tool_calls(tool_calls));
+    match &grader.template {
+        Some(spec) => {
+            render_grader_template(spec, working_dir, rubric, output_text, calls.as_deref())
+        }
+        // The framing lives here rather than in `SYSTEM_PROMPT`: that constant
+        // is in every judge request body and is a published adoption contract,
+        // so a section that only some runs have cannot be described in it.
+        None => Ok(match &calls {
+            Some(json) => format!(
+                "RUBRIC:\n{rubric}\n\nASSISTANT OUTPUT:\n{output_text}\n\n\
+                 TOOL CALLS (the tool calls the assistant made, in order, as JSON):\n{json}"
+            ),
+            None => format!("RUBRIC:\n{rubric}\n\nASSISTANT OUTPUT:\n{output_text}"),
+        }),
+    }
 }
 
 impl DefaultGrader {
@@ -292,6 +402,18 @@ impl DefaultGrader {
             },
             config: config.clone().unwrap_or(Json::Null),
             vars: ctx.vars.clone(),
+            // No flag on this side: the field is `skip_serializing_if`, so a
+            // tool-less cell writes the same bytes it always did and a child
+            // that never reads it cannot tell the difference.
+            tool_calls: ctx
+                .tool_calls
+                .iter()
+                .map(|c| crate::exec_protocol::ToolCall {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    arguments: c.arguments.clone(),
+                })
+                .collect(),
         };
         let request = serde_json::to_value(&request)
             .map_err(|e| GraderError::InvalidVerdict(format!("serializing assert request: {e}")))?;
@@ -302,19 +424,26 @@ impl DefaultGrader {
                 canonical: exec_assert_canonical(command, &request),
                 kind: EntryKind::new(EntryKind::EXEC_ASSERT),
                 case_salt: cache_salt.as_deref(),
-                legacy: legacy_verdict(
-                    assert,
-                    self.default_grader.as_ref(),
-                    &crate::cache_migrate::LegacyGraded {
-                        output,
-                        rubric: "",
-                        vars: ctx.vars,
-                        test_id: ctx.test_id,
-                        test_tags: ctx.test_tags,
-                        provider_id: ctx.provider_id,
-                    },
-                    ctx.working_dir,
-                ),
+                // Nothing to adopt once there are calls to send: a ≤0.4.x child
+                // was handed a request without them and judged whatever it
+                // could see, so its verdict does not answer this question.
+                legacy: if ctx.tool_calls.is_empty() {
+                    legacy_verdict(
+                        assert,
+                        self.default_grader.as_ref(),
+                        &crate::cache_migrate::LegacyGraded {
+                            output,
+                            rubric: "",
+                            vars: ctx.vars,
+                            test_id: ctx.test_id,
+                            test_tags: ctx.test_tags,
+                            provider_id: ctx.provider_id,
+                        },
+                        ctx.working_dir,
+                    )
+                } else {
+                    None
+                },
             },
             |payload| {
                 let resp: AssertResp = serde_json::from_value(payload.clone()).map_err(|e| {
@@ -495,13 +624,16 @@ impl DefaultGrader {
             .map_err(|e| GraderError::Misconfigured(format!("rendering rubric: {e}")))?;
         let output_text = output.as_text();
         // The grading prompt. `grader.template` replaces the built-in framing
-        // when set; the two placeholders are the whole contract. Its *contents*
-        // land here, which is why editing that file busts the key with no
+        // when set; its placeholders are the whole contract. That file's
+        // *contents* land here, which is why editing it busts the key with no
         // separate digest to keep in step.
-        let user = match &grader.template {
-            Some(spec) => render_grader_template(spec, ctx.working_dir, &rubric, &output_text)?,
-            None => format!("RUBRIC:\n{rubric}\n\nASSISTANT OUTPUT:\n{output_text}"),
-        };
+        let user = grading_user_message(
+            grader,
+            ctx.working_dir,
+            &rubric,
+            &output_text,
+            ctx.tool_calls,
+        )?;
 
         let (judge, model, base_url, api_key_env, params, pricing) = match &grader.provider {
             ProviderKind::Anthropic {
@@ -557,19 +689,28 @@ impl DefaultGrader {
                 canonical: crate::provider::http_request_preview("POST", &url, body.clone()),
                 kind: EntryKind::new(EntryKind::JUDGE),
                 case_salt: None,
-                legacy: legacy_verdict(
-                    assert,
-                    self.default_grader.as_ref(),
-                    &crate::cache_migrate::LegacyGraded {
-                        output,
-                        rubric: &rubric,
-                        vars: ctx.vars,
-                        test_id: ctx.test_id,
-                        test_tags: ctx.test_tags,
-                        provider_id: ctx.provider_id,
-                    },
-                    ctx.working_dir,
-                ),
+                // No adoption when the judge is being shown tool calls: a
+                // ≤0.4.x verdict was reached without them, so replaying it here
+                // would answer a question the old judge was never asked. The
+                // frozen key space cannot express the difference, so the only
+                // honest option is to re-grade.
+                legacy: if grader.include_tool_calls.unwrap_or(false) {
+                    None
+                } else {
+                    legacy_verdict(
+                        assert,
+                        self.default_grader.as_ref(),
+                        &crate::cache_migrate::LegacyGraded {
+                            output,
+                            rubric: &rubric,
+                            vars: ctx.vars,
+                            test_id: ctx.test_id,
+                            test_tags: ctx.test_tags,
+                            provider_id: ctx.provider_id,
+                        },
+                        ctx.working_dir,
+                    )
+                },
             },
             // Fail closed on both paths: a truncated or unparseable verdict is
             // an error whether it arrived just now or a month ago.

@@ -25,7 +25,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | [Your own system](your-own-system.md) | The `exec` provider, a custom assertion, tool-call grading, and the protocol itself in bash. |
 | [Running & reporting](running-and-reporting.md) | Tags and filters, composition, exit codes, errors and retries, runner tuning, output formats, and importing a promptfoo config. |
 | [Caching & statistics](caching-and-statistics.md) | The one cache-key rule, salts, repeat and confidence, baselines and diff. |
-| [Models, grading & budgets](models-grading-and-budgets.md) | OpenAI-compatible and Anthropic providers (native tool calls included), HTTP and `output_expr`, LLM-rubric grading judged by either vendor, similarity, budgets — and every top-level key at once, annotated. |
+| [Models, grading & budgets](models-grading-and-budgets.md) | OpenAI-compatible and Anthropic providers (native tool calls included), HTTP and `output_expr`, LLM-rubric grading judged by either vendor, a rubric that sees the tool calls, similarity, budgets — and every top-level key at once, annotated. |
 
 | #   | Example | Demonstrates |
 | --- | ------- | ------------ |
@@ -68,6 +68,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 37  | [The exec protocol, in bash](your-own-system.md#example-37--the-exec-protocol-in-bash) | The same provider contract, spoken in bash and `jq` instead of Python. |
 | 38  | [Every key, once](models-grading-and-budgets.md#example-38--every-key-once) | One runnable suite setting every top-level key, annotated as a map of the reference. |
 | 39  | [A promptfoo config, converted](running-and-reporting.md#example-39--a-promptfoo-config-converted) | A promptfoo config and the suite `domarinn import promptfoo` turns it into, both shipped. |
+| 40  | [A rubric that sees the tool calls](models-grading-and-budgets.md#example-40--a-rubric-that-sees-the-tool-calls) | `include_tool_calls`, for grading the delegation decision instead of the prose. |
 
 ## See also
 

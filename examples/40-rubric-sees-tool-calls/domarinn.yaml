@@ -1,0 +1,88 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Grading a decision the prose does not contain.
+#
+# A rubric reads the assistant's TEXT. When the thing you care about is whether
+# the assistant LOOKED SOMETHING UP rather than answered from memory, the text is
+# the one place that evidence is not: "Order 4471 shipped on Tuesday" reads
+# identically whether it came from the order system or from a confident guess.
+#
+# `include_tool_calls: true` on the grader block puts the calls the model made
+# into the judge's prompt — a pretty-printed JSON array of {"name", "arguments"}
+# in a `TOOL CALLS` section after `ASSISTANT OUTPUT`. The delegation itself
+# becomes gradeable.
+#
+# TWO THINGS TO KNOW BEFORE TURNING IT ON:
+#
+#   * It is OPT-IN because it spends prompt tokens on every graded cell, and
+#     most rubrics have no use for the calls. Turn it on for the suites that do.
+#   * The rubric has to SAY it is reading them. A judge handed a TOOL CALLS
+#     section it was never asked about will ignore it — or, worse, invent an
+#     opinion about a call that was perfectly correct.
+#
+# AND WHEN NOT TO REACH FOR IT: `tool-call` (example 15) grades a call you can
+# name exactly, for free and without a model's judgement in the loop. A rubric
+# earns its cost only when the question is whether the decision was RIGHT —
+# which tool, which argument, and whether answering directly would have done.
+#
+# Run:  domarinn run examples/40-rubric-sees-tool-calls
+version: 1
+project: examples
+suite: rubric-sees-tool-calls
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "./agent.py"]
+    cache_salt: "dev"
+
+# Declared suite-level, as in example 15: every provider is offered the same
+# surface, and what it chooses to do with it is the thing under test.
+tools:
+  - name: lookup_order
+    description: Fetch an order's current status by its id.
+    input_schema:
+      type: object
+      required: ["order_id"]
+      properties:
+        order_id: { type: integer }
+
+# The grader. A different model from the one under test, pinned exactly, with
+# its own `api_key_env` — the reasoning for all three is example 29's.
+grader:
+  provider:
+    type: anthropic
+    model: claude-haiku-4-5
+    base_url: "${env:ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+    api_key_env: ANTHROPIC_API_KEY
+    params:
+      max_tokens: 4096
+  # The line this example exists for. Off by default: without it the judge is
+  # shown ASSISTANT OUTPUT and nothing else, and the rubric below would be
+  # grading a sentence that looks the same either way.
+  include_tool_calls: true
+  verdict_mode: forced
+  timeout_ms: 120000
+
+tests:
+  - id: orders/looks-it-up-before-answering
+    vars:
+      user_input: "Has order 4471 shipped yet?"
+    assert:
+      # Note what the rubric names: the section, the tool, and the argument. A
+      # rubric that only said "the assistant should check the order" would leave
+      # the judge to decide for itself whether the prose counted as checking.
+      - type: llm-rubric
+        value: |
+          THIS RUBRIC MEASURES THE DELEGATION DECISION ONLY.
+
+          The TOOL CALLS section MUST contain a `lookup_order` call whose
+          `order_id` is the order the user asked about (4471), and the answer
+          MUST be consistent with having made that call.
+
+          Score 0 if TOOL CALLS is empty, if it names some other tool, or if it
+          looks up a different order. A confident answer with no lookup behind
+          it is the exact failure this rubric exists to catch.
+
+          Do NOT penalise the answer for brevity, for phrasing, for not
+          mentioning the tool in the prose, or for extra arguments on the call.
