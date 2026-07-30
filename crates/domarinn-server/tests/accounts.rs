@@ -601,9 +601,9 @@ async fn a_viewer_account_can_read_and_nothing_else() {
     assert_eq!(
         post_json(
             &app,
-            "/api/v1/apikeys",
+            "/api/v1/runs",
             Some(&viewer),
-            &json!({ "name": "k" })
+            &run_value(&simple_run("viewer-write"))
         )
         .await
         .status,
@@ -613,6 +613,20 @@ async fn a_viewer_account_can_read_and_nothing_else() {
         get_auth(&app, "/api/v1/users", Some(&viewer)).await.status,
         StatusCode::FORBIDDEN
     );
+
+    // Minting a key is not a write in that sense: it is how a read-only
+    // account gets a credential for scripting, and the scope ceiling keeps
+    // that credential read-only. See `list_apikeys` for why the gate is
+    // `read`.
+    let key = post_json(
+        &app,
+        "/api/v1/apikeys",
+        Some(&viewer),
+        &json!({ "name": "k" }),
+    )
+    .await;
+    assert_eq!(key.status, StatusCode::CREATED);
+    assert_eq!(key.json()["scope"], "read");
 }
 
 /// The key-minting ceiling is the caller's own scope. In open mode the write
@@ -881,5 +895,111 @@ async fn throttled_lookup_still_honors_revocation() {
         after.json()["authenticated"],
         false,
         "revoked key must not authenticate via the throttled read path"
+    );
+}
+
+/// A viewer has `read` scope and so cannot reach a `write`-gated route at all.
+/// The key endpoints are `read`-gated instead, because the two checks that
+/// actually protect them — a user-backed identity, and a scope ceiling — are
+/// per-request and stricter than the route gate ever was.
+#[tokio::test]
+async fn a_viewer_can_mint_a_read_key_but_nothing_stronger() {
+    let (app, _dir) = test_app_with_mode(
+        Settings {
+            auth_mode: Some(AuthMode::Closed),
+            ..Default::default()
+        },
+        AuthMode::Closed,
+    )
+    .await;
+    let admin = setup_admin(&app).await;
+    let viewer = create_and_login(&app, &admin, "vera", "viewer").await;
+
+    // The default is the caller's own scope: read.
+    let minted = post_json(&app, "/api/v1/apikeys", Some(&viewer), &json!({})).await;
+    assert_eq!(minted.status, StatusCode::CREATED, "{:?}", minted.json());
+    assert_eq!(minted.json()["scope"], "read");
+    let key = minted.json()["key"].as_str().unwrap().to_string();
+    let key_id = minted.json()["id"].as_str().unwrap().to_string();
+
+    // Explicitly asking for read is fine too.
+    let explicit = post_json(
+        &app,
+        "/api/v1/apikeys",
+        Some(&viewer),
+        &json!({ "scope": "read" }),
+    )
+    .await;
+    assert_eq!(explicit.status, StatusCode::CREATED);
+
+    // The ceiling still holds: a viewer cannot mint above their own scope.
+    for scope in ["write", "admin"] {
+        let too_high = post_json(
+            &app,
+            "/api/v1/apikeys",
+            Some(&viewer),
+            &json!({ "scope": scope }),
+        )
+        .await;
+        assert_eq!(
+            too_high.status,
+            StatusCode::FORBIDDEN,
+            "a viewer must not mint a {scope} key"
+        );
+    }
+
+    // The minted key reads, and does not write.
+    let read = get_auth(&app, "/api/v1/runs", Some(&key)).await;
+    assert_eq!(read.status, StatusCode::OK);
+    let write = post_json(
+        &app,
+        "/api/v1/runs",
+        Some(&key),
+        &run_value(&simple_run("viewer-run")),
+    )
+    .await;
+    assert_eq!(write.status, StatusCode::FORBIDDEN);
+
+    // Listing and revoking their own keys works at the same scope.
+    let listed = get_auth(&app, "/api/v1/apikeys", Some(&viewer)).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.json()["keys"].as_array().unwrap().len(), 2);
+    let revoked = delete(&app, &format!("/api/v1/apikeys/{key_id}"), Some(&viewer)).await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+}
+
+/// Lowering the route gate must not let a credential with no owning user in:
+/// `require_user` is what actually protects these endpoints.
+#[tokio::test]
+async fn key_endpoints_still_refuse_static_tokens_and_anonymous_callers() {
+    let (app, _dir) = test_app_with_mode(
+        Settings {
+            tokens: Some("read:tok_read,admin:tok_admin".to_string()),
+            auth_mode: Some(AuthMode::Closed),
+            ..Default::default()
+        },
+        AuthMode::Closed,
+    )
+    .await;
+
+    for token in ["tok_read", "tok_admin"] {
+        let created = post_json(&app, "/api/v1/apikeys", Some(token), &json!({})).await;
+        assert_eq!(
+            created.status,
+            StatusCode::FORBIDDEN,
+            "static token {token} has no owning user to attach a key to"
+        );
+        let listed = get_auth(&app, "/api/v1/apikeys", Some(token)).await;
+        assert_eq!(listed.status, StatusCode::FORBIDDEN);
+        let deleted = delete(&app, "/api/v1/apikeys/whatever", Some(token)).await;
+        assert_eq!(deleted.status, StatusCode::FORBIDDEN);
+    }
+
+    // Closed mode rejects the anonymous caller before the handler runs.
+    let anon = post_json(&app, "/api/v1/apikeys", None, &json!({})).await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        get_auth(&app, "/api/v1/apikeys", None).await.status,
+        StatusCode::UNAUTHORIZED
     );
 }
