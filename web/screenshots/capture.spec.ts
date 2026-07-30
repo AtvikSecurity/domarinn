@@ -5,14 +5,20 @@ import { newestRunId, newestRunIds, prepareForCapture, THEMES, waitForFonts } fr
 import type { Theme } from "./helpers";
 
 /**
- * Captures the docs' 12 reference screenshots in both themes (24 PNGs total)
- * from a real, already-seeded domarinn server (scripts/docs-screenshots.sh
- * runs scripts/seed-docs-runs.sh before this ever launches).
+ * Captures the docs' reference screenshots in both themes from a real,
+ * already-seeded domarinn server (scripts/docs-screenshots.sh runs
+ * scripts/seed-docs-runs.sh before this ever launches). Every shot is a
+ * light/dark pair, consumed by docs/reference/web-ui.md through Material's
+ * `#only-light` / `#only-dark` image convention.
  *
  * Run ids are resolved through the real API via `page.request` (see
  * ./helpers.ts), never by clicking through the UI — the one exception is the
  * case-drawer shot, which opens a matrix cell because that interaction is
  * itself part of what the docs need to show.
+ *
+ * One shot (`run-detail-local`) needs a suite only the Ollama-backed seed
+ * block produces, so it skips itself under SKIP_LLM=1 rather than failing the
+ * capture; its committed PNGs then simply keep their previous contents.
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +31,20 @@ function outPath(name: string, theme: Theme): string {
 async function shoot(page: import("@playwright/test").Page, name: string, theme: Theme) {
   await waitForFonts(page);
   await page.screenshot({ path: outPath(name, theme) });
+}
+
+/**
+ * A run-detail page that has finished rendering its case list.
+ *
+ * Deliberately NOT `getByRole("link", { name: "Runs" })`: this page carries two
+ * of those — the primary nav's and the breadcrumb's — so that locator is a
+ * strict-mode violation the moment both have mounted, and passes only by
+ * winning a race with React. The case-count line appears once, and only after
+ * the cases query has resolved, which is also exactly what the shot needs.
+ */
+async function expectRunDetailRendered(page: import("@playwright/test").Page) {
+  await expect(page.locator("h1").first()).toBeVisible();
+  await expect(page.getByText(/Showing \d+ cases?/)).toBeVisible();
 }
 
 for (const theme of THEMES) {
@@ -53,7 +73,14 @@ for (const theme of THEMES) {
     });
 
     test("runs", async ({ page }) => {
-      await page.goto("/runs");
+      // `?cached=all` on purpose. The seed replays against a cache directory
+      // that survives between runs, so most seeded runs are 100% cached — and
+      // the list hides fully-cached passing runs by default (RunsList.tsx's
+      // `cached_hidden` affordance). The default view of THIS server is
+      // therefore two suites and a "14 fully cached runs hidden" line, which
+      // documents the seed rather than the page. The filter lives in the URL,
+      // which is what the page itself says about its filters.
+      await page.goto("/runs?cached=all");
       await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
       await shoot(page, "runs", theme);
     });
@@ -61,9 +88,26 @@ for (const theme of THEMES) {
     test("run-detail", async ({ page }) => {
       const runId = await newestRunId(page, "baselines-and-diff");
       await page.goto(`/runs/${runId}`);
-      await expect(page.getByRole("link", { name: "Runs" })).toBeVisible();
-      await expect(page.locator("h1").first()).toBeVisible();
+      await expectRunDetailRendered(page);
       await shoot(page, "run-detail", theme);
+    });
+
+    test("run-detail-local", async ({ page }) => {
+      // The local-LLM guide's one shot: a run whose `llm-rubric` was graded by
+      // the Ollama endpoint on loopback (examples/38's grader block resolves
+      // OPENAI_BASE_URL/OPENAI_MODEL the same way examples/33 documents). Only
+      // the Ollama-backed seed block produces it.
+      const [runId] = await newestRunIds(page, "annotated-reference", 1);
+      if (runId === undefined) {
+        test.skip(
+          true,
+          "no annotated-reference run seeded (SKIP_LLM=1) — its llm-rubric needs a live judge",
+        );
+        return;
+      }
+      await page.goto(`/runs/${runId}`);
+      await expectRunDetailRendered(page);
+      await shoot(page, "run-detail-local", theme);
     });
 
     test("run-matrix", async ({ page }) => {

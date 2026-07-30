@@ -6,7 +6,8 @@
 # `mise run dev`) does that, and hands this one a URL via $DOMARINN_SERVER_URL.
 # Every run below is `--share`d to that server so the UI has something real to
 # screenshot — a stream of runs, a matrix, a baseline diff, a cache hit, search
-# hits, and (unless skipped) two runs against a local Ollama endpoint.
+# hits, an HTTP provider against a loopback stub, and (unless skipped) several
+# runs against a local Ollama endpoint, judge included.
 #
 # Env:
 #   OLLAMA_URL           where Ollama's OpenAI-compatible API lives (default
@@ -75,8 +76,17 @@ export DOMARINN_SERVER_URL="${DOMARINN_SERVER_URL:-http://localhost:8322}"
 export DOMARINN_TOKEN="${DOMARINN_TOKEN:-docs-seed-token}"
 export DOMARINN_READ_TOKEN="${DOMARINN_READ_TOKEN:-docs-read-token}"
 export DOMARINN_RUNS_DIR
-DOMARINN_RUNS_DIR="$(mktemp -d)" # trap-cleaned below; isolates the local run store
-trap 'rm -rf "$DOMARINN_RUNS_DIR"' EXIT
+DOMARINN_RUNS_DIR="$(mktemp -d)" # cleaned by cleanup() below; isolates the local run store
+
+STUB_PID=""
+cleanup() {
+  if [ -n "$STUB_PID" ]; then
+    kill "$STUB_PID" 2>/dev/null || true
+    wait "$STUB_PID" 2>/dev/null || true
+  fi
+  rm -rf "$DOMARINN_RUNS_DIR"
+}
+trap cleanup EXIT
 export DOMARINN_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/domarinn/docs-seed" # survives; re-seeds replay as cache hits
 export DOMARINN_ACTOR=demo DOMARINN_HOST=docs-seed
 export DOMARINN_SMOKE_BASE_URL="${OLLAMA_URL}/v1" DOMARINN_SMOKE_MODEL="$OLLAMA_MODEL" DOMARINN_SMOKE_API_KEY=ollama
@@ -117,6 +127,71 @@ run_any() {
   esac
 }
 
+# --- A loopback stub for the `http` provider example -------------------------
+#
+# Example 36 is offline in the sense that matters here — it calls no model — but
+# it does speak HTTP, and its `url` defaults to a public example host this
+# pipeline must never reach. The suite redirects with
+# `${env:ORDERS_API_URL:-…}`, exactly as the CI harness does
+# (crates/domarinn-cli/tests/examples/table.rs, `Env::StubBase`), so point it at
+# a loopback stub that answers the one body its two `output_expr`s read. The
+# stub's URL is what lands in the run's config_snapshot, which is why it has to
+# be loopback and not merely unreachable.
+STUB_PORT="${STUB_PORT:-8323}"
+export ORDERS_API_URL="http://127.0.0.1:${STUB_PORT}"
+
+echo "==> starting the loopback HTTP stub on :$STUB_PORT (for examples/36)"
+python3 - "$STUB_PORT" <<'PY' &
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# The same shape crates/domarinn-cli/tests/examples/stubs.rs serves: a reply
+# string containing "shipped"/"Tuesday"/"Thursday" and a numeric confidence of
+# 0.93, which are what example 36's two providers assert on.
+BODY = json.dumps(
+    {
+        "request_id": "req_stub",
+        "result": {
+            "reply": "Your order 1042 shipped on Tuesday and arrives Thursday.",
+            "confidence": 0.93,
+        },
+    }
+).encode()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802 (BaseHTTPRequestHandler's naming)
+        length = int(self.headers.get("content-length") or 0)
+        self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(BODY)))
+        self.end_headers()
+        self.wfile.write(BODY)
+
+    def log_message(self, *_args):
+        pass  # the seed log is noisy enough
+
+
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+PY
+STUB_PID=$!
+
+stub_ready=0
+for _ in $(seq 1 40); do
+  if curl -fsS -X POST -H 'content-type: application/json' -d '{}' \
+    "$ORDERS_API_URL" >/dev/null 2>&1; then
+    stub_ready=1
+    break
+  fi
+  sleep 0.25
+done
+if [ "$stub_ready" -ne 1 ]; then
+  echo "seed-docs-runs: the loopback HTTP stub never came up on :$STUB_PORT" >&2
+  exit 1
+fi
+
 echo "==> seeding offline exec examples (no model calls)"
 run_expect 0 01-hello-eval
 run_expect 0 01-hello-eval
@@ -131,6 +206,10 @@ run_expect 3 19-errors-and-retries
 run_expect 0 23-repeat-and-confidence --repeat 3
 run_expect 0 24-baselines-and-diff
 run_any 24-baselines-and-diff --against latest
+run_expect 0 34-multi-turn-conversation
+run_expect 0 36-http-output-expr # the one HTTP-provider run; answered by the stub above
+run_expect 0 37-exec-provider-bash
+run_expect 0 39-import-promptfoo
 
 if [ "${SEED_OFFLINE_ONLY:-0}" = "1" ]; then
   echo "==> SEED_OFFLINE_ONLY=1: skipping the Ollama-backed block"
@@ -139,8 +218,19 @@ else
   run_expect 0 32-live-endpoint-smoke
   run_expect 0 32-live-endpoint-smoke # second run: shows cache hits
   run_expect 0 26-openai-provider
+  # The two graded suites, judged by the same local endpoint via OPENAI_*.
+  # `run_any`, not `run_expect 0`: a rubric's verdict is the local judge's
+  # opinion, and a small model that scores one case zero must leave the docs
+  # with a real failing verdict to show rather than aborting the seed.
+  run_any 33-openai-grader-rubric
+  run_any 38-annotated-reference-suite
   if [ "${SEED_EMBEDDINGS:-0}" = "1" ]; then
-    run_expect 0 30-similar-embeddings
+    # Also `run_any`: example 30's `threshold: 0.85` is a cosine, and cosines
+    # are not comparable across embedding models — the very thing that example
+    # says. nomic-embed-text scores its paraphrase around 0.76, so this run
+    # fails here and would pass against OpenAI's embedding model. That is real
+    # data about a local model, not a broken seed.
+    run_any 30-similar-embeddings
   fi
 fi
 
@@ -154,7 +244,7 @@ fi
 # write-scoped $DOMARINN_TOKEN used above for `--share`: the write token would
 # work too (write subsumes read), but the assertion needs no write access, and
 # reusing it here would leave the read token dead configuration.
-echo "==> checking every seeded run's config_snapshot for non-localhost base_url values"
+echo "==> checking every seeded run's config_snapshot for non-localhost endpoints"
 if ! command -v jq >/dev/null 2>&1; then
   echo "seed-docs-runs: jq is required for the data-at-rest check (pinned in .mise/config.toml)" >&2
   exit 1
@@ -169,10 +259,13 @@ violations=0
 while IFS= read -r run_id; do
   [ -n "$run_id" ] || continue
   config_json="$(curl -fsS -H "$auth_header" "$DOMARINN_SERVER_URL/api/v1/runs/$run_id/config")"
+  # Both key names, because both name an endpoint: the model providers resolve
+  # `base_url`, and `type: http` resolves `url`. Checking only the first would
+  # have waved example 36 through to a public host.
   bad="$(printf '%s' "$config_json" | jq -r '
-    [.. | objects | select(has("base_url")) | .base_url]
+    [.. | objects | (select(has("base_url")) | .base_url), (select(has("url")) | .url)]
     | .[]
-    | select(. != null)
+    | select(type == "string")
     | select((startswith("http://localhost") or startswith("http://127.0.0.1")) | not)
   ')"
   if [ -n "$bad" ]; then

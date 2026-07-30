@@ -133,6 +133,7 @@ DOMARINN_SERVER_URL="$SERVER_URL" \
   OLLAMA_URL="$OLLAMA_URL" \
   OLLAMA_MODEL="$OLLAMA_MODEL" \
   OLLAMA_EMBED_MODEL="$OLLAMA_EMBED_MODEL" \
+  SEED_EMBEDDINGS="${SEED_EMBEDDINGS:-0}" \
   "$REPO_ROOT/scripts/seed-docs-runs.sh"
 
 # --- 6. Capture screenshots ----------------------------------------------------
