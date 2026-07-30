@@ -155,7 +155,12 @@ The distinction is worth internalising because the two numbers get confused cons
 
 ## Cache entries
 
+![The cache entries table, reading a mounted local disk tier](../assets/screenshots/cache-entries-light.png#only-light)
+![The cache entries table, reading a mounted local disk tier](../assets/screenshots/cache-entries-dark.png#only-dark)
+
 `Browse entries →` leads from the stats page to the entries table, which answers the question the tiles cannot: *what is actually in there*.
+
+The shot above is the **local disk** tier, and that is not a convenient choice — it is the only tier with anything in it. These runs cached to disk like every default setup, which is exactly why the stats page above reads zero. `Last used` is empty for the same honest reason: a filesystem has no reliable access time, and printing its modification time under that heading would be a different measurement wearing the same name.
 
 Each row is one cached exchange — its key, what kind of call it answered (`provider`, `judge`, `embedding`, `exec_assert`), the model, where the request went, tokens, cost, size, and when it was created and last used. Filter by kind or model, narrow by date, or search the request and output text. Sorting is done by the server, not within the loaded page, so `Size` really does surface the largest entry in the cache rather than the largest one currently on screen — which is why only the four columns the database can order by are sortable.
 

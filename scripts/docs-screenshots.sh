@@ -23,6 +23,15 @@ OLLAMA_EMBED_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
 SERVER_PORT=8322
 SERVER_URL="http://localhost:${SERVER_PORT}"
 
+# The cache the seeded runs actually fill. Defined here rather than in the seed
+# script because the server needs it at startup, before any run exists: it is
+# mounted read-only as the browsable *local* cache tier, which is what makes
+# /cache/entries show real entries. The server tier stays empty on purpose —
+# these suites cache to disk, like every default setup — so the cache stats
+# page keeps reading zero, which is the thing its docs prose explains.
+SEED_CACHE_DIR="${DOMARINN_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/domarinn/docs-seed}"
+export DOMARINN_CACHE_DIR="$SEED_CACHE_DIR"
+
 BIN="$REPO_ROOT/target/release/domarinn"
 DIST_INDEX="$REPO_ROOT/web/dist/index.html"
 
@@ -82,10 +91,16 @@ fi
 SERVER_DATA_DIR="$(mktemp -d)"
 SERVER_LOG="$(mktemp)"
 
+# The tier is refused (with a warning, never a hard failure) if the directory
+# does not exist yet, which it will not on a first run.
+mkdir -p "$SEED_CACHE_DIR"
+
 echo "==> starting domarinn server on :$SERVER_PORT (data dir: $SERVER_DATA_DIR)"
+echo "==> mounting $SEED_CACHE_DIR as the read-only local cache tier"
 DOMARINN_ADMIN_USER=admin \
   DOMARINN_ADMIN_PASSWORD=screenshots \
   DOMARINN_TOKENS="write:docs-seed-token,read:docs-read-token" \
+  DOMARINN_LOCAL_CACHE_DIR="$SEED_CACHE_DIR" \
   "$BIN" server --port "$SERVER_PORT" --data-dir "$SERVER_DATA_DIR" \
   >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!

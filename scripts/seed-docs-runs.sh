@@ -87,7 +87,11 @@ cleanup() {
   rm -rf "$DOMARINN_RUNS_DIR"
 }
 trap cleanup EXIT
-export DOMARINN_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/domarinn/docs-seed" # survives; re-seeds replay as cache hits
+# Survives between runs, so a re-seed replays as cache hits. Overridable
+# because docs-screenshots.sh has to know this path *before* it starts the
+# server — it mounts the same directory as the browsable local cache tier,
+# and two scripts hardcoding one path is a drift waiting to happen.
+export DOMARINN_CACHE_DIR="${DOMARINN_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/domarinn/docs-seed}"
 export DOMARINN_ACTOR=demo DOMARINN_HOST=docs-seed
 export DOMARINN_SMOKE_BASE_URL="${OLLAMA_URL}/v1" DOMARINN_SMOKE_MODEL="$OLLAMA_MODEL" DOMARINN_SMOKE_API_KEY=ollama
 export OPENAI_BASE_URL="${OLLAMA_URL}/v1" OPENAI_API_KEY=ollama OPENAI_MODEL="$OLLAMA_MODEL" OPENAI_EMBED_MODEL="$OLLAMA_EMBED_MODEL"

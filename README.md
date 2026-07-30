@@ -89,6 +89,30 @@ tests:
 
 See **[docs/start/first-eval.md](docs/start/first-eval.md)** for a full walkthrough.
 
+## What it looks like
+
+`domarinn server` serves the API and this UI from the same binary — no separate
+frontend to deploy. Runs are grouped by suite, filtered from the URL, and every
+filter is shareable:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/runs-dark.png">
+  <img alt="The runs list: filter bar across project, suite, tag, branch, origin, actor and date; runs grouped per suite with pass rates and a pass-rate trend" src="docs/assets/screenshots/runs-light.png">
+</picture>
+
+Open any case and you get the whole exchange — every assertion with the criteria
+as you authored it and the result it produced, the output, the variables that
+were substituted into the prompt, and where the request was actually sent:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/case-drawer-dark.png">
+  <img alt="The case drawer: score, tokens, cost and latency; a passing icontains assertion showing its criteria and result; the output; and the rendered input with its variables and endpoint" src="docs/assets/screenshots/case-drawer-light.png">
+</picture>
+
+More in **[the web UI reference](docs/reference/web-ui.md)** — the overview
+board, the prompt × provider matrix, run comparison with McNemar significance,
+and the cache browser.
+
 ## Documentation
 
 Full documentation is published at **<https://docs.domarinn.com/>** (source in [`docs/`](docs/)). The tree, and a handful of curated links per section:

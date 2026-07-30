@@ -175,6 +175,25 @@ for (const theme of THEMES) {
       await shoot(page, "cache", theme);
     });
 
+    test("cache-entries", async ({ page }) => {
+      // `?tier=local` on purpose, and it is the honest view rather than a
+      // convenient one. These suites cache to disk like every default setup,
+      // so the SERVER tier is empty by construction — that is exactly what the
+      // stats shot above documents. The entries worth showing are the ones the
+      // seeded runs actually wrote, which docs-screenshots.sh mounts as the
+      // read-only local tier.
+      await page.goto("/cache/entries?tier=local");
+      await expect(
+        page.getByRole("heading", { name: "Cache entries" }),
+      ).toBeVisible();
+      // The grid, not just the heading: the page renders its header and filter
+      // bar before the entries query resolves, so a shot taken on the heading
+      // alone races an empty table.
+      await expect(page.getByRole("grid")).toBeVisible();
+      await expect(page.getByRole("row").nth(1)).toBeVisible();
+      await shoot(page, "cache-entries", theme);
+    });
+
     test("settings", async ({ page }) => {
       await page.goto("/settings");
       await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
