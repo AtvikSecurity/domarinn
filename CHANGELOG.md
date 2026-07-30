@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/AtvikSecurity/domarinn/compare/0.4.0...0.5.0) (2026-07-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **caching:** provider cache keys move. A store written by 0.4.x or earlier is adopted on first lookup and re-filed, so a warm store keeps serving; `--no-cache-migration` opts out and re-pays instead.
+
+### Features
+
+* **caching:** one rule — key every outgoing request on its content ([#29](https://github.com/AtvikSecurity/domarinn/issues/29)) ([b914837](https://github.com/AtvikSecurity/domarinn/commit/b914837523c3b69373f6427f26a30d4877ee7985))
+
+
+### Documentation
+
+* overhaul the site — six-section IA, UI screenshots, local-LLM stack, examples 33-39 ([#31](https://github.com/AtvikSecurity/domarinn/issues/31)) ([e04c94f](https://github.com/AtvikSecurity/domarinn/commit/e04c94f2b11c9e4a928288a314f9d4cd33ef028b))
+
 ## [0.4.0](https://github.com/AtvikSecurity/domarinn/compare/0.3.1...0.4.0) (2026-07-29)
 
 
