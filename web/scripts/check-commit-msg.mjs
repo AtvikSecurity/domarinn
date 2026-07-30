@@ -120,7 +120,11 @@ function selfTest() {
   console.log("\nself-test passed");
 }
 
-const [arg] = process.argv.slice(2);
+// `pnpm run <script> -- --self-test` forwards the bare `--` to the script, so
+// it arrives as argv[2] and would be read as a filename. Dropping it here means
+// the script behaves the same however it is invoked — directly, through
+// `pnpm run`, or through `pnpm exec`.
+const [arg] = process.argv.slice(2).filter((a) => a !== "--");
 if (arg === "--self-test") {
   selfTest();
 } else if (!arg) {
