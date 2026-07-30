@@ -16,7 +16,33 @@ export function PassRateBadge({
   error: number;
   className?: string;
 }) {
-  const rate = passRate(pass, fail, error);
+  return (
+    <RateBadge
+      rate={passRate(pass, fail, error)}
+      title={`${pass} pass / ${fail} fail / ${error} error`}
+      className={className}
+    />
+  );
+}
+
+/**
+ * The same pill, for a payload that carries a rate rather than counts.
+ *
+ * The run-set browser is the one such caller: its `latest_pass_rate` is the
+ * newest run's, while the counts beside it are the set's lifetime totals.
+ * Feeding those counts to {@link PassRateBadge} would put a percentage over
+ * every run ever in a column labelled "latest", and a tooltip describing a
+ * different set of runs than the number above it.
+ */
+export function RateBadge({
+  rate,
+  title,
+  className,
+}: {
+  rate: number | null;
+  title?: string;
+  className?: string;
+}) {
   const pct = rate === null ? 0 : rate * 100;
   const tone =
     rate === null
@@ -42,7 +68,7 @@ export function PassRateBadge({
         tone,
         className,
       )}
-      title={`${pass} pass / ${fail} fail / ${error} error`}
+      title={title}
     >
       <span
         className="absolute inset-y-0 left-0 opacity-[0.14]"

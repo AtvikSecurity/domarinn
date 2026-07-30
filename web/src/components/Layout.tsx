@@ -138,6 +138,7 @@ export function Layout() {
     : [
         { to: "/", label: "Overview", end: true },
         { to: "/runs", label: "Runs" },
+        { to: "/sets", label: "Sets" },
         { to: "/cache", label: "Cache" },
       ];
   if (!chromeOnly && !view.promptLogin) nav.push({ to: "/keys", label: "API keys" });

@@ -14,6 +14,9 @@ import { ComparePage } from "@/pages/ComparePage";
 import { SearchPage } from "@/pages/SearchPage";
 import { CacheStatsPage } from "@/pages/CacheStatsPage";
 import { CacheEntriesPage } from "@/pages/cache/CacheEntriesPage";
+import { SetsPage } from "@/pages/sets/SetsPage";
+import { SetProjectPage } from "@/pages/sets/SetProjectPage";
+import { SetSuitePage } from "@/pages/sets/SetSuitePage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { SetupPage } from "@/pages/SetupPage";
@@ -73,6 +76,15 @@ const router = createBrowserRouter([
           // below otherwise.
           { path: "runs/:id/compare/:other", element: <ComparePage /> },
           { path: "search", element: <SearchPage /> },
+          // Sibling routes, not nested ones, for the same reason the cache
+          // pages below are: a shared parent would own the scroll for three
+          // pages that lay out differently, and there is no shared chrome
+          // between them worth the coupling — each renders its own breadcrumb.
+          // No scope guard: `/sets` is readable by every authenticated view and
+          // the server filters the listing to what the caller may see.
+          { path: "sets", element: <SetsPage /> },
+          { path: "sets/:project", element: <SetProjectPage /> },
+          { path: "sets/:project/:suite", element: <SetSuitePage /> },
           { path: "cache", element: <CacheStatsPage /> },
           // A sibling route rather than a nested one. The two pages have
           // incompatible scroll ownership — the grid takes the viewport via
