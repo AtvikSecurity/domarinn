@@ -14,7 +14,7 @@ That suite is not a sketch. It is a real directory in this repository, it needs 
 
 ## Start here
 
-One path, in order. Nothing in it costs money.
+One path, in order. It starts offline, with no API key, and spends nothing until you choose to point a suite at a real model.
 
 1. **[Install](start/install.md)** — a prebuilt static binary, `cargo`, source, or Docker.
 2. **[Your first eval](start/first-eval.md)** — write and run the suite above offline, then add a real model and an LLM grader, and share the result.
