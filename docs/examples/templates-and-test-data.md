@@ -114,7 +114,7 @@ A generator is an exec-protocol program like any other: it reads one JSON reques
 
 ## Example 34 — A multi-turn conversation
 
-Every example above uses a `template:` prompt — one string. `messages:` renders a whole transcript instead: system, a prior user turn, a prior assistant turn, then the newest one. That is what a real follow-up question looks like — the model needs to see what it already said, not just the newest line.
+Example 02 already used a `messages:` prompt — system, then one user turn. This one adds what an actual back-and-forth needs: a prior ASSISTANT turn too, fixed across every case, with only the newest user turn templated per case. That is what a real follow-up question looks like — the model needs to see what it already said, not just the newest line.
 
 ```yaml
 --8<-- "examples/34-multi-turn-conversation/domarinn.yaml"

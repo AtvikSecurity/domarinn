@@ -155,7 +155,7 @@ Example 29's grader was `type: anthropic`. A grader is a provider like any other
 --8<-- "examples/33-openai-grader-rubric/domarinn.yaml"
 ```
 
-The system under test here is the offline exec provider from example 13, so the only thing that reaches a network is the judge — and the same one variable that redirects a *provider* in example 26 redirects this *grader* instead:
+The system under test here is the offline echo provider, so the only thing that reaches a network is the judge — and the same one variable that redirects a *provider* in example 26 redirects this *grader* instead:
 
 ```
 OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=qwen3:4b domarinn run examples/33-openai-grader-rubric

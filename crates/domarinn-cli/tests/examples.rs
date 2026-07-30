@@ -316,6 +316,34 @@ fn python3_is_available_for_the_examples_that_need_it() {
     );
 }
 
+/// Whether any non-comment line in any file directly under `dir` mentions
+/// `jq`.
+///
+/// Deliberately not "does `domarinn.yaml` contain the word jq": unlike
+/// `python3`, which only ever appears inside a `command:` array, "jq" also
+/// shows up in this ladder's own prose (a header comment explaining why a
+/// script uses it). A text-only selector keyed on that prose would still
+/// "pass" — vacuously — the day someone rewords the sentence, guarding
+/// nothing while looking green. Comment lines (`#`, the marker in both YAML
+/// and bash) are excluded so only an actual invocation — a real command
+/// line in a provider script — trips this, the same way `python3` inside a
+/// `command:` array is a real invocation and not a description of one.
+fn invokes_jq(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let path = entry.path();
+        path.is_file()
+            && std::fs::read_to_string(&path).is_ok_and(|text| {
+                text.lines()
+                    .map(str::trim_start)
+                    .filter(|line| !line.starts_with('#'))
+                    .any(|line| line.contains("jq"))
+            })
+    })
+}
+
 /// A missing `jq` is not an example failure, and must not read like one.
 ///
 /// Mirrors [`python3_is_available_for_the_examples_that_need_it`]: without
@@ -327,16 +355,20 @@ fn python3_is_available_for_the_examples_that_need_it() {
 fn jq_is_available_for_the_examples_that_need_it() {
     let users: Vec<&str> = EXAMPLES
         .iter()
-        .filter(|e| {
-            std::fs::read_to_string(examples_root().join(e.dir).join("domarinn.yaml"))
-                .map(|s| s.contains("jq"))
-                .unwrap_or(false)
-        })
+        .filter(|e| invokes_jq(&examples_root().join(e.dir)))
         .map(|e| e.dir)
         .collect();
-    if users.is_empty() {
-        return;
-    }
+    // Guard against a vacuous pass: unlike the python3 guard (which returns
+    // early when nothing uses it, because that was true before example 13
+    // shipped), this repository has shipped a jq-backed example since the
+    // day this test was added — so an empty selector here always means the
+    // selector broke, never that the guard has nothing to do.
+    assert!(
+        !users.is_empty(),
+        "no shipped example's non-comment lines mention jq — either \
+         37-exec-provider-bash stopped using it or `invokes_jq` no longer \
+         matches it, and either way this guard is currently vacuous"
+    );
     let ok = Command::new("jq")
         .arg("--version")
         .output()

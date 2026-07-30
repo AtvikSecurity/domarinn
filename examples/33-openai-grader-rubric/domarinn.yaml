@@ -5,8 +5,8 @@
 # Example 29 built its grader from `type: anthropic`. This one is `type:
 # openai` instead — which means ANY OpenAI-compatible endpoint can grade:
 # OpenAI itself, a gateway, or a local Ollama serving the chat-completions API.
-# The system under test below is the offline echo provider from example 13, so
-# the only thing that reaches a network here is the judge.
+# The system under test below is the offline echo provider, so the only thing
+# that reaches a network here is the judge.
 #
 # ONE VARIABLE MOVES THE JUDGE, the same variable that moves a provider in
 # example 26:
