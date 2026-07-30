@@ -53,7 +53,7 @@ whoami = "2"
 # Pinned below 0.49 deliberately: that release requires rustc 1.85 and would
 # silently raise the MSRV declared in the workspace manifest, which no CI job
 # builds at.
-jsonschema = { version = "0.46", default-features = false }
+jsonschema = { version = "0.49", default-features = false }
 
 [dev-dependencies]
 serde_json = { workspace = true }
