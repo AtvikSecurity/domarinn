@@ -96,6 +96,29 @@ pub const ANTHROPIC_VERDICT_PARTIAL: &str = r#"{
   "usage": {"input_tokens": 176, "output_tokens": 51}
 }"#;
 
+/// Anthropic Messages, calling a tool — the native-API sibling of example 15's
+/// exec `tool_calls`.
+///
+/// `content` carries one `tool_use` block; the client reads its `name` and
+/// its already-decoded `input` (Anthropic sends the arguments as JSON, not a
+/// string) into a `ToolCall`, in block order. `stop_reason` is `tool_use`
+/// rather than `end_turn` — expected here, not an error, since the model's
+/// whole answer is the call.
+pub const ANTHROPIC_TOOL_USE: &str = r#"{
+  "id": "msg_stub",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5",
+  "content": [{
+    "type": "tool_use",
+    "id": "toolu_stub",
+    "name": "lookup_order",
+    "input": {"order_id": 1042}
+  }],
+  "stop_reason": "tool_use",
+  "usage": {"input_tokens": 210, "output_tokens": 24}
+}"#;
+
 /// OpenAI chat-completions, plain text. The client reads
 /// `choices[0].message.content`.
 ///
@@ -124,6 +147,33 @@ pub const OPENAI_TEXT_ALT: &str = r#"{
     "finish_reason": "stop"
   }],
   "usage": {"prompt_tokens": 18, "completion_tokens": 7, "total_tokens": 25}
+}"#;
+
+/// An OpenAI `llm-rubric` verdict, passing — the `type: openai` grader's
+/// counterpart to [`ANTHROPIC_VERDICT_PASS`].
+///
+/// The grader's `response_format` forces strict `json_schema` mode, so unlike
+/// [`OPENAI_TEXT`] the content is not prose: `choices[0].message.content` is
+/// the verdict itself, already JSON — but still carried as a STRING (OpenAI's
+/// structured-output modes return a JSON string, not a nested object), which
+/// is why the grader parses it with `serde_json::from_str` rather than
+/// reading it as a value directly.
+///
+/// `finish_reason` must not be `length` — the grader treats that as a
+/// truncated, fail-closed error before it ever parses the content.
+pub const OPENAI_VERDICT_PASS: &str = r#"{
+  "id": "chatcmpl-stub",
+  "object": "chat.completion",
+  "model": "gpt-4o-mini",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "{\"reasoning\": \"States the 30-day window and offers a separate partial-credit check, without promising any exception.\", \"pass\": true, \"score\": 1.0}"
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 210, "completion_tokens": 48, "total_tokens": 258}
 }"#;
 
 /// An embeddings vector. The client reads `data[0].embedding` and rejects an
