@@ -118,6 +118,22 @@ export type { SuitePoint } from "./generated/SuitePoint";
 export type { SuiteSummary } from "./generated/SuiteSummary";
 export type { SuitesResponse } from "./generated/SuitesResponse";
 
+// The run-set browser (`/api/v1/sets*`) and its access lists. Timestamps here
+// are epoch-ms, not the RFC3339 strings the older `/projects*` DTOs above use.
+// `restricted` is the *covering* answer on the browse views (a restricted
+// project restricts its suites) but the *exact-scope* answer on
+// `SetAccessResponse`, whose restriction toggle writes that one row.
+export type { SetsResponse } from "./generated/SetsResponse";
+export type { ProjectSetView } from "./generated/ProjectSetView";
+export type { ProjectSetDetailResponse } from "./generated/ProjectSetDetailResponse";
+export type { SuiteSetView } from "./generated/SuiteSetView";
+export type { SuiteSetDetailResponse } from "./generated/SuiteSetDetailResponse";
+export type { SetAccessResponse } from "./generated/SetAccessResponse";
+export type { SetGrantView } from "./generated/SetGrantView";
+export type { SetGrantUpsert } from "./generated/SetGrantUpsert";
+/** What a grant lets its holder do: `view` < `upload` < `manage`. */
+export type { GrantLevel } from "./generated/GrantLevel";
+
 // Per-case history timeline (`GET
 // /projects/{project}/suites/{suite}/cases/{case_key}/history`). `points` are
 // newest-first; each point's `output_changed` is vs the next-older point

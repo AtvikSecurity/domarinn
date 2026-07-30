@@ -134,6 +134,8 @@ pub fn router(state: AppState) -> Router {
             get(cache_get).head(cache_head).put(cache_put),
         )
         .route("/assets/{*path}", get(serve_asset))
+        // The run-set browser and access management, from `crate::sets`.
+        .merge(crate::sets::routes())
         .fallback(spa_fallback);
 
     // The MCP endpoint, only when enabled. Merged before the layers below so
@@ -421,6 +423,7 @@ async fn post_run(
         &scope.identity,
         run.project.as_deref(),
         run.suite.as_deref(),
+        GrantLevel::Upload,
     )
     .await?;
 
@@ -750,7 +753,14 @@ async fn put_baseline(
     Path((project, suite)): Path<(String, String)>,
     ApiJson(body): ApiJson<BaselineBody>,
 ) -> ApiResult<Response> {
-    require_set_access(&state, &scope.identity, Some(&project), Some(&suite)).await?;
+    require_set_access(
+        &state,
+        &scope.identity,
+        Some(&project),
+        Some(&suite),
+        GrantLevel::Upload,
+    )
+    .await?;
     if state
         .storage
         .set_baseline(
@@ -777,7 +787,14 @@ async fn delete_baseline(
     State(state): State<AppState>,
     Path((project, suite)): Path<(String, String)>,
 ) -> ApiResult<Response> {
-    require_set_access(&state, &scope.identity, Some(&project), Some(&suite)).await?;
+    require_set_access(
+        &state,
+        &scope.identity,
+        Some(&project),
+        Some(&suite),
+        GrantLevel::Upload,
+    )
+    .await?;
     if state.storage.delete_baseline(project, suite).await? {
         Ok(StatusCode::NO_CONTENT.into_response())
     } else {
@@ -924,18 +941,20 @@ pub(crate) fn clamp_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
-/// Gate a write on the target run set, on top of whatever global scope the
-/// route already demanded.
+/// Gate a write on the target run set at `needed`, on top of whatever global
+/// scope the route already demanded.
 ///
 /// A 403 rather than a 404: unlike a run id, the `(project, suite)` pair here
 /// comes from the caller, so refusing it discloses nothing they did not already
 /// name — and a silent 404 on a legitimate upload would be a debugging trap for
-/// whoever runs the CI job.
+/// whoever runs the CI job. The access endpoints in [`crate::sets`] make the
+/// opposite trade, and say why.
 async fn require_set_access(
     state: &AppState,
     identity: &crate::auth::Identity,
     project: Option<&str>,
     suite: Option<&str>,
+    needed: GrantLevel,
 ) -> ApiResult<()> {
     let allowed = state
         .storage
@@ -943,7 +962,7 @@ async fn require_set_access(
             RunVisibility::of(identity),
             project.map(str::to_string),
             suite.map(str::to_string),
-            GrantLevel::Upload,
+            needed,
         )
         .await?;
     if allowed {
@@ -951,7 +970,7 @@ async fn require_set_access(
     }
     Err(ApiError::status(
         StatusCode::FORBIDDEN,
-        "this run set is restricted; you need an upload grant on it",
+        format!("this run set is restricted; you need a {needed} grant on it"),
     ))
 }
 
