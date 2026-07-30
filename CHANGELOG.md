@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/AtvikSecurity/domarinn/compare/0.5.0...0.5.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **release:** unblock release-please, and guard the message format ([#33](https://github.com/AtvikSecurity/domarinn/issues/33)) ([2933573](https://github.com/AtvikSecurity/domarinn/commit/2933573c704dfa33eb0468b35a9b186aa22e4795))
+
 ## [0.5.0](https://github.com/AtvikSecurity/domarinn/compare/0.4.0...0.5.0) (2026-07-30)
 
 
