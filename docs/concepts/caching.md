@@ -109,6 +109,8 @@ providers:
 
 Keep it a **version pin**. It answers one question: *is this the same build?* In CI that is usually the commit SHA, which is more honest than hashing the binary — Rust builds are not byte-reproducible, so two runners compiling identical source disagree about the artifact while agreeing about the version. `"$digest: src/**/*.rs"` works too, and pins to the source rather than to what came out of the compiler.
 
+A provider's `$digest:` resolves the same way a case's does — blake3 over the matched files in sorted order with their relative paths interleaved, sandboxed to the suite directory, and a glob that matches nothing is an error rather than an empty digest. Two differences: the glob is **not templated**, because a provider has no vars to render it against; and it needs a suite directory to resolve against, so a provider built without one rejects the salt rather than quietly resolving it against whatever the process cwd happens to be.
+
 **A forgotten pin is reported, not silent.** domarinn records a digest of the program *on the entry* — never in the key — and compares it on a hit. When they disagree you get:
 
 ```

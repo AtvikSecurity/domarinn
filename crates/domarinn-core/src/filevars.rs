@@ -128,7 +128,7 @@ pub fn resolve_digest_salts(
 ) -> Result<(), ResolveError> {
     for tc in tests.iter_mut() {
         let Some(salt) = &tc.cache_salt else { continue };
-        let Some(spec) = salt.strip_prefix("$digest:") else {
+        let Some(spec) = digest_spec(salt) else {
             continue;
         };
         let vars = serde_json::Value::Object(
@@ -138,7 +138,7 @@ pub fn resolve_digest_salts(
                 .collect(),
         );
         let pattern = engine
-            .render_str(spec.trim(), &vars)
+            .render_str(spec, &vars)
             .map_err(|e| ResolveError::Parse {
                 path: DIGEST_KEY.to_string(),
                 message: format!("rendering `$digest` glob `{spec}`: {e}"),
@@ -146,6 +146,57 @@ pub fn resolve_digest_salts(
         tc.cache_salt = Some(digest_of_glob(&pattern, base_dir)?);
     }
     Ok(())
+}
+
+/// The glob behind a `$digest:` salt, or `None` for an ordinary opaque salt.
+///
+/// One reader for both salt scopes, so a provider and a case can never disagree
+/// about what counts as a digest spec.
+fn digest_spec(salt: &str) -> Option<&str> {
+    salt.strip_prefix("$digest:").map(str::trim)
+}
+
+/// Resolve a **provider's** `$digest:` salt, if it has one.
+///
+/// The provider-scope twin of [`resolve_digest_salts`]. Both scopes advertise
+/// `$digest:` — [`crate::config::ProviderKind::Exec::cache_salt`] offers it as
+/// the way to pin a provider to its sources, and the rebuild warning the runner
+/// emits on a stale hit (`runner_cache`) tells you to reach for it by name — but
+/// only the case scope ever resolved it. A provider salt went verbatim into the cache key, so
+/// `"$digest: src/**/*.rs"` keyed every request on that literal 20-odd-character
+/// string: a constant that never moves when the sources do. It failed silently
+/// and looked like it worked, which is the worst way for a cache pin to be wrong.
+///
+/// Two deliberate differences from the case scope:
+///
+/// - **The glob is not templated.** A case renders it against its own `vars` so
+///   each case can digest the one file it exercises; a provider has no vars, and
+///   inventing a namespace for it would be a second, subtly different templating
+///   context for no gain.
+/// - **`base_dir` is required.** The case scope always has the suite directory;
+///   a provider can be built without one (unit tests, embedders), and resolving a
+///   relative glob against the process cwd would silently key on whatever
+///   directory the caller happened to be standing in — the exact
+///   machine-dependence 0.5.0 removed from these keys.
+///
+/// Returns the salt to actually use: the digest for a `$digest:` spec, the
+/// original string otherwise.
+pub fn resolve_provider_digest_salt(
+    salt: Option<&str>,
+    base_dir: Option<&Path>,
+) -> Result<Option<String>, ResolveError> {
+    let Some(salt) = salt else { return Ok(None) };
+    let Some(spec) = digest_spec(salt) else {
+        return Ok(Some(salt.to_string()));
+    };
+    let base_dir = base_dir.ok_or_else(|| ResolveError::Parse {
+        path: DIGEST_KEY.to_string(),
+        message: format!(
+            "`$digest: {spec}` needs a suite directory to resolve against, but this \
+             provider was built without one"
+        ),
+    })?;
+    Ok(Some(digest_of_glob(spec, base_dir)?))
 }
 
 /// blake3 of every file matched by `pattern`, in sorted order.

@@ -208,6 +208,16 @@ pub enum ProviderKind {
         /// field is how you tell it: a git SHA, a release tag, or
         /// `"$digest: src/**/*.rs"`.
         ///
+        /// A `$digest:` salt is resolved to the blake3 of the matched files, in
+        /// sorted order, with their relative paths interleaved — so it pins to
+        /// the sources rather than to what the compiler produced (Rust builds are
+        /// not byte-reproducible, so two machines compiling identical source
+        /// disagree about the artifact while agreeing about the version). Unlike
+        /// a *case's* `$digest:`, the glob is **not templated** — a provider has
+        /// no vars to render against — and it resolves against the suite
+        /// directory, which it may not escape. A glob matching nothing is an
+        /// error, not an empty digest.
+        ///
         /// Leave it unset for a program that is not changing under you. A run
         /// warns when a cached answer came from a different build than the one
         /// on disk, so a forgotten pin is reported rather than silent.
