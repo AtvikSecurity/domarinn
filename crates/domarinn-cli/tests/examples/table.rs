@@ -1062,4 +1062,38 @@ pub const EXAMPLES: &[Example] = &[
             cache_hits: 0,
         }],
     },
+    Example {
+        dir: "38-annotated-reference-suite",
+        shows: "every top-level suite key in one file, each annotated with where \
+                its full story lives",
+        env: &[
+            ("OPENAI_BASE_URL", Env::StubBaseV1),
+            ("OPENAI_API_KEY", Env::Literal("sk-stub-not-a-real-key")),
+        ],
+        stub: &[Route {
+            fragment: "/chat/completions",
+            bodies: &[stubs::OPENAI_VERDICT_PASS],
+        }],
+        // One grader call, not three: only the inline case carries an
+        // `llm-rubric`, and the system under test is the offline echo provider.
+        stub_calls: 1,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            // Three cells from two test sources: one inline case plus a
+            // two-value matrix axis. `register/plain` is deliberately NOT among
+            // them — `plain` is the `defaults.vars` value the inline case
+            // inherits, and an axis value overrides it rather than adding a
+            // third cell.
+            cells: Cells::pass(3),
+            case_ids: &[
+                "policy/names-the-product",
+                "register/casual",
+                "register/formal",
+            ],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
 ];

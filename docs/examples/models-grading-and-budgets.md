@@ -1,6 +1,6 @@
 # Models, grading & budgets
 
-Ten suites about talking to a real model and judging what comes back. They cover the OpenAI-compatible and Anthropic providers (native tool calls included), a plain HTTP service you already run and the shapes `output_expr` can pull out of it, and a live endpoint of your own — then a structured LLM rubric judged by either vendor, embedding similarity for when many wordings are right, and the budgets that ask whether an answer was affordable, not just correct. Read these once you are ready to spend real tokens.
+Eleven suites about talking to a real model and judging what comes back. They cover the OpenAI-compatible and Anthropic providers (native tool calls included), a plain HTTP service you already run and the shapes `output_expr` can pull out of it, and a live endpoint of your own — then a structured LLM rubric judged by either vendor, embedding similarity for when many wordings are right, and the budgets that ask whether an answer was affordable, not just correct. The last one is a different kind of suite: every top-level key at once, annotated as a map of the reference. Read these once you are ready to spend real tokens.
 
 ---
 
@@ -194,3 +194,31 @@ Example 28 pulled one nested string field out of a JSON body. `output_expr` is n
 `only_providers` (from [example 16](running-and-reporting.md#example-16--tags-and-filters)) scopes each test to the provider it is actually testing — the two providers are not being compared, they are answering two different questions about the same response.
 
 Whatever `output_expr` evaluates to becomes the output as-is: a string stays text, and anything else — a number here, but the same holds for an object or an array — becomes structured output. Every text assertion still reads it (stringified), and `is-json` / `contains-json` could inspect it directly. `output_expr` only ever sees a *successful* response: a non-2xx status is a transport error before the expression runs, same as any other provider's failure.
+
+---
+
+## Example 38 — Every key, once
+
+The rest of the ladder takes one capability at a time. This suite takes the shape of the file itself: every top-level key `domarinn.yaml` accepts, set exactly once, each with a comment saying what it is and where its full story lives.
+
+```yaml
+--8<-- "examples/38-annotated-reference-suite/domarinn.yaml"
+```
+
+It composes, so two smaller files ship beside it — the `extends` base and the `imports` fragment, in that precedence order:
+
+```yaml
+--8<-- "examples/38-annotated-reference-suite/base.yaml"
+```
+
+```yaml
+--8<-- "examples/38-annotated-reference-suite/house-rules.yaml"
+```
+
+Read it as a map, not as a recommendation. A real suite sets a fraction of these keys, and the three cells here exist only so the file is a suite that runs rather than a listing — the `grader` block is example 33's env-parameterized form, which is how the judge is pointed at a stub in CI.
+
+/// info | "Every key" is checked, not claimed
+
+A guard in `crates/domarinn-cli/tests/examples/docs_guards.rs` reads the top-level properties out of the committed JSON Schema — the same schema CI pins to the config structs — and fails if this file stops setting one of them. So a key added to the config cannot leave this page quietly incomplete.
+
+///

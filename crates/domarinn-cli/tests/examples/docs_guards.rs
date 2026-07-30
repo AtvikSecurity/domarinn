@@ -219,6 +219,65 @@ fn the_examples_index_table_maps_every_example_to_its_page() {
     );
 }
 
+/// `38-annotated-reference-suite` is documented as setting **every** top-level
+/// key a suite accepts, and both its own header comment and the config
+/// reference say so in those words. A claim that strong cannot be maintained by
+/// review: add a key to `struct Suite` and the sentence is quietly false, on a
+/// page whose whole job is completeness.
+///
+/// The key list comes from the committed JSON Schema, which CI already pins to
+/// the structs (`mise run schema-check`), so this reads the same source of truth
+/// the reference page claims to be verified against.
+///
+/// Deliberately the *file's* keys, not the loaded suite's: `extends` and
+/// `imports` are consumed during composition and are gone by the time a `Suite`
+/// exists, so a loaded suite could never evidence them.
+#[test]
+fn the_annotated_reference_example_sets_every_top_level_suite_key() {
+    let root = repo_root();
+    let schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("domarinn.schema.json"))
+            .expect("domarinn.schema.json is committed at the repository root"),
+    )
+    .expect("the committed schema parses");
+    let keys: Vec<&str> = schema["properties"]
+        .as_object()
+        .expect("the schema's root is an object with properties")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    // Guard against a vacuous pass: a schema whose shape moved (a `$ref`'d root,
+    // a renamed section) yields no keys, and every assertion below would then
+    // hold while checking nothing.
+    assert!(
+        keys.len() >= 10,
+        "the committed schema lists {} top-level suite properties; the schema \
+         shape moved, not the example",
+        keys.len()
+    );
+
+    let dir = "38-annotated-reference-suite";
+    let file = examples_root().join(dir).join("domarinn.yaml");
+    let text = std::fs::read_to_string(&file).expect("the annotated example ships");
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&text).expect("the annotated example is valid YAML");
+    let mapping = doc.as_mapping().expect("a suite file is a YAML mapping");
+
+    let missing: Vec<&str> = keys
+        .iter()
+        .copied()
+        .filter(|key| !mapping.contains_key(serde_yaml_ng::Value::String((*key).to_string())))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "examples/{dir}/domarinn.yaml sets no {missing:?}, but it is documented \
+         as setting every top-level suite key — and docs/reference/domarinn-yaml.md \
+         links it as the complete annotated suite.\n\
+         Add each missing key with a comment saying what it is and where its full \
+         story lives, or stop claiming completeness on both pages."
+    );
+}
+
 /// Every `--8<-- "path"` in every markdown file under `dir`, as (page, path).
 fn snippet_includes(dir: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();

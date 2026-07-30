@@ -1,0 +1,207 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# The whole shape of a suite, at a glance.
+#
+# Every top-level key a domarinn suite accepts appears here exactly once, and
+# every one carries a comment saying what it is and WHERE ITS FULL STORY LIVES.
+# Read it as a table of contents for the rest of the documentation.
+#
+# The suite itself is deliberately tiny — one provider, one prompt, three cells
+# — because the comments are the subject. This is a MAP, not a recommendation:
+# a real suite sets a fraction of these keys and says nothing about the rest.
+#
+# The field-by-field reference is docs/reference/domarinn-yaml.md. The machine
+# version is `domarinn schema config`, generated from the same structs the
+# loader deserializes into, so neither can drift from what actually loads.
+#
+# Run:  domarinn run examples/38-annotated-reference-suite
+
+# `version` — the config schema version. Required, and currently always 1.
+version: 1
+
+# `project` — namespaces this suite's runs on the results server. Optional.
+#   docs/reference/server.md
+project: examples
+
+# `suite` — names the suite inside that project. It is the unit `--against`
+# compares run over run, so changing it starts a new history.
+#   examples/24-baselines-and-diff
+suite: annotated-reference
+
+# `description` — free prose, carried into the run document. Nothing reads it as
+# configuration.
+description: >-
+  Every top-level suite key in one file, annotated with where its full story
+  lives.
+
+# `extends` — ONE base suite this file is merged on top of.
+# `imports` — an ordered list of fragments merged after that base.
+#
+# Precedence runs low to high: the base, each fragment in listed order, then
+# this file. Maps merge key by key and sequences are replaced wholesale —
+# except an `assert` sequence, which appends.
+#   examples/17-defaults-and-composition owns the mechanics
+#   docs/reference/domarinn-yaml.md#composition-with-extends-and-imports
+extends: "file://base.yaml"
+imports:
+  - "file://house-rules.yaml"
+
+# `providers` — the systems under test. At least one is required, and every case
+# is evaluated against every provider, so a second entry compares two systems
+# rather than replacing the first.
+#
+# This one runs a program over the exec protocol, which is what a real suite
+# points at its own code.
+#   examples/13-exec-provider, docs/reference/providers.md,
+#   docs/reference/protocol.md
+providers:
+  - id: assistant
+    type: exec
+    # Resolved relative to THIS FILE's directory, not the shell's, so the suite
+    # runs identically from the repository root or from inside this folder.
+    command: ["python3", "../echo-provider.py"]
+    # Version-pins the program behind `command`. The cache key hashes what the
+    # program is SENT, never its bytes, so an edited program keeps answering
+    # from the entries it already wrote until this changes.
+    #   docs/concepts/caching.md#salts
+    cache_salt: "dev"
+
+# `prompts` — templates rendered per case from that case's `vars`. Optional: an
+# exec provider can build its own input from the vars directly.
+#
+# A run is a grid, so one prompt against three cases is three cells; a second
+# prompt here would make six.
+#   examples/02-prompts-and-vars, docs/reference/domarinn-yaml.md#prompts
+prompts:
+  - id: support-reply
+    template: |
+      Reply to the customer in a {{ register }} register, naming {{ product }}.
+
+      Customer: {{ user_input }}
+
+# `tools` — the tool surface every provider in this suite offers the model.
+#
+# Declaring a tool never makes domarinn RUN one: what it wants is the model's
+# decision, reported back as `tool_calls` and graded by a `tool-call`
+# assertion. The echo provider below ignores the offer, so nothing here is
+# graded — the examples that grade a decision are 15 (exec) and 35 (the native
+# Anthropic API).
+#   docs/reference/protocol.md#tools
+tools:
+  - name: lookup_order
+    description: "Look up an order by id."
+    # A contract, not a per-case value: passed to the provider verbatim and
+    # never rendered as a template.
+    input_schema:
+      type: object
+      properties:
+        order_id: { type: integer }
+      required: [order_id]
+
+# `tests` — the cases. Three sources exist and can be mixed in one list: an
+# inline case (both below), a `file://` glob of YAML/JSON/CSV/JSONL cases
+# (examples 09 and 10), and a generator command that prints cases as JSON
+# (example 11). Only the inline form appears here.
+#   docs/reference/domarinn-yaml.md#tests
+tests:
+  - id: policy/names-the-product
+    vars:
+      user_input: "How long do I have to send a jacket back?"
+    assert:
+      # Deterministic asserts run first and short-circuit the judge, so a case
+      # that already failed never pays for a grader call.
+      #   docs/reference/assertions.md
+      - type: contains
+        value: "Aurora Notes"
+      # The one graded assert in this file, so the `grader` block below is real
+      # rather than decorative. Writing a rubric is example 29's subject.
+      #
+      # The system under test is the echo provider, which mirrors its input, so
+      # what the judge actually reads here is the RENDERED PROMPT (the same
+      # trick example 02 explains). Point `command` at your own program and the
+      # judge grades a real answer instead.
+      - type: llm-rubric
+        value: |
+          THIS RUBRIC MEASURES ONE THING: whether the text names the product
+          the customer is being answered about.
+
+          Score 0 if it names no product at all.
+
+          Do NOT penalise it for reading as an instruction rather than as an
+          answer, for length, or for word choice.
+
+  # `matrix` — a parameter sweep. One axis with two values fans this single case
+  # out into two cells; a second axis would give the cartesian product. Each
+  # axis value lands in `vars`, and `matrix_id` names the cells (the default id
+  # is `<base>[key=value,…]`).
+  #   examples/08-matrix-sweeps,
+  #   docs/reference/domarinn-yaml.md#matrix--parameter-sweeps
+  - id: register
+    matrix_id: "register/{{ register }}"
+    matrix:
+      register: ["formal", "casual"]
+    vars:
+      user_input: "Hi — can I still return this?"
+    assert:
+      - type: contains
+        value: "Aurora Notes"
+
+# `defaults` — values merged into every test. `vars` fill gaps only (a case's
+# own value wins, which is how the matrix axis above overrides `register`),
+# `assert` entries are PREPENDED to each case's own, `tags` union, and
+# `threshold` / `cache_salt` fill in if unset.
+#
+# The house rule imported above lands in this same list, ahead of the entry
+# below.
+#   docs/reference/domarinn-yaml.md#defaults
+defaults:
+  vars:
+    product: "Aurora Notes"
+    register: "plain"
+  tags: ["reference"]
+  assert:
+    - type: length
+      max: 400
+
+# `grader` — the default judge for `llm-rubric` assertions. A grader is a
+# provider like any other, so any OpenAI-compatible endpoint can judge, a local
+# Ollama included; the verdict is structured and fails closed on truncation
+# rather than scoring zero.
+#
+# Parameterized by environment exactly as example 33 documents, which is also
+# how it is executed offline in CI:
+#   OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=qwen3:4b \
+#     domarinn run examples/38-annotated-reference-suite
+#   examples/29-llm-rubric-grading (the verdict shape),
+#   examples/33-openai-grader-rubric (this env-parameterized form),
+#   docs/concepts/grading.md
+grader:
+  provider:
+    type: openai
+    model: "${env:OPENAI_MODEL:-gpt-4o-mini}"
+    base_url: "${env:OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    # Names the VARIABLE, never the key: the value is read at call time and
+    # never enters the suite, the cache key, or a shared run.
+    api_key_env: OPENAI_API_KEY
+    params:
+      max_tokens: 4096
+  verdict_mode: forced
+  timeout_ms: 120000
+
+# `runner` — how the run is scheduled. Two of its six knobs are set here;
+# `rate_limit`, `timeout_ms`, `short_circuit` and `skip_on_empty_reason` are
+# documented alongside them, and base.yaml contributes the `timeout_ms` this
+# file never restates.
+#   examples/20-runner-tuning, docs/reference/domarinn-yaml.md#runner
+runner:
+  concurrency: 2
+  retries:
+    max: 2
+    jitter: true
+
+# `cache` — where cached responses live. `disk` (the default) is a local
+# content-addressed store; `layered` fronts it with a shared remote so a team
+# and CI stop paying for each other's answers.
+#   examples/21-caching-basics, docs/concepts/caching.md#backends
+cache:
+  backend: disk

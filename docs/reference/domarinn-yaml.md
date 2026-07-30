@@ -626,6 +626,14 @@ A suite is validated structurally before any provider is contacted — both by `
 
 ---
 
+## A complete suite, annotated
+
+The [minimal suite](#a-minimal-complete-suite) at the top of this page is where a suite starts. The other end of the range ships as a runnable example: [Example 38 — Every key, once](../examples/models-grading-and-budgets.md#example-38--every-key-once) sets every top-level key documented above exactly once, and annotates each with what it is and where its full story lives — including the `extends` base and `imports` fragment it composes from.
+
+Read it as a map of this page rather than as a suite to copy. It is linked rather than reproduced here so there stays one copy of those bytes — the file, the page that transcludes it, and the CI run that executes it all read the same suite. A guard fails the build if the config grows a top-level key that example stops setting, so "every key" stays true on both pages.
+
+---
+
 ## See also
 
 - [`assertions.md`](./assertions.md) — every assertion `type` and its options.

@@ -1,0 +1,13 @@
+# The `extends` layer: ONE base suite that domarinn.yaml is merged on top of.
+# Not run on its own.
+#
+# What belongs in a base is whatever a family of suites shares and should not
+# restate — here, the scheduling budget. See examples/17-defaults-and-composition
+# for the merge rules in full.
+version: 1
+
+runner:
+  # Inherited rather than restated: the child declares a `runner` block of its
+  # own and never mentions `timeout_ms`, and maps merge key by key, so the
+  # composed suite carries this AND the child's knobs.
+  timeout_ms: 60000

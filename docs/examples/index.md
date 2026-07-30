@@ -25,7 +25,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | [Your own system](your-own-system.md) | The `exec` provider, a custom assertion, tool-call grading, and the protocol itself in bash. |
 | [Running & reporting](running-and-reporting.md) | Tags and filters, composition, exit codes, errors and retries, runner tuning, output formats. |
 | [Caching & statistics](caching-and-statistics.md) | The one cache-key rule, salts, repeat and confidence, baselines and diff. |
-| [Models, grading & budgets](models-grading-and-budgets.md) | OpenAI-compatible and Anthropic providers (native tool calls included), HTTP and `output_expr`, LLM-rubric grading judged by either vendor, similarity, and budgets. |
+| [Models, grading & budgets](models-grading-and-budgets.md) | OpenAI-compatible and Anthropic providers (native tool calls included), HTTP and `output_expr`, LLM-rubric grading judged by either vendor, similarity, budgets — and every top-level key at once, annotated. |
 
 | #   | Example | Demonstrates |
 | --- | ------- | ------------ |
@@ -66,6 +66,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 35  | [Anthropic tools, natively](models-grading-and-budgets.md#example-35--anthropic-tools-natively) | Tool-call grading over the native API — the sibling of example 15's `exec` version. |
 | 36  | [`output_expr`, sliced two ways](models-grading-and-budgets.md#example-36--output_expr-sliced-two-ways) | Pulling more than one shape — including a non-string one — out of the same response. |
 | 37  | [The exec protocol, in bash](your-own-system.md#example-37--the-exec-protocol-in-bash) | The same provider contract, spoken in bash and `jq` instead of Python. |
+| 38  | [Every key, once](models-grading-and-budgets.md#example-38--every-key-once) | One runnable suite setting every top-level key, annotated as a map of the reference. |
 
 ## See also
 
