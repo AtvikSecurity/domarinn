@@ -5,37 +5,67 @@
 //! here is additive: `/api/v1/projects*` keeps the wire shape older CLIs
 //! depend on, and this surface is free to grow.
 //!
-//! # Three gates, three status codes
+//! # Two independent gates
 //!
-//! * **Reads of the browser** ([`list`], [`project`], [`suite`]) are
-//!   `Scoped<Read>` and filtered by [`RunVisibility`]. An invisible set is
-//!   `None` from storage and so 404s through exactly the same path as one that
-//!   never existed — no 403, no existence leak. Identical to the run reads.
+//! Every endpoint here passes through a **route scope** (the deployment's auth
+//! mode, via [`Scoped`]) and, where it touches policy, a **set gate** (the
+//! caller's grant over this `(project, suite)`, via
+//! [`crate::storage::Storage::set_access`]). They answer different questions —
+//! "is this credential strong enough" and "does this principal own this set" —
+//! and neither substitutes for the other.
 //!
-//! * **Reads and writes of a set's access list** need
-//!   [`GrantLevel::Manage`] over it, and a refusal is a **404**. That is not
-//!   politeness: the access list names the users who can reach a restricted
-//!   set, so "you may not see this" and "there is nothing here" must be the
-//!   same answer. The manage level is never granted by the default-open waiver
-//!   (see [`crate::storage::Storage::set_access`]), so an unrestricted set is
-//!   just as closed here as a locked one — a caller who could otherwise upload
-//!   into it still cannot read or edit who else may.
+//! That independence is the whole point, because a grant belongs to a *user*
+//! and every user-backed credential rides its owner's grants:
+//! [`RunVisibility::of`] maps a session and an API key alike to
+//! `User(user_id)`, whatever scope the key was minted at. So the set gate alone
+//! would let the least privileged credential the product offers — a `read` API
+//! key — inherit its owner's `manage` grant and rewrite an access list. The
+//! scope gate is what keeps a leaked read-only key meaning "read what I can
+//! read".
+//!
+//! | Endpoint | Route scope | Set gate | Refusal |
+//! |---|---|---|---|
+//! | browse (`list`, `project`, `suite`) | `Read` | visibility filter | 404 |
+//! | `GET .../access` | `Read` | `Manage` | 404 |
+//! | `PUT`/`DELETE .../grants/{user}` | `Write` | `Manage` | 403 / 404 |
+//! | `PUT`/`DELETE .../restriction` | `Admin` | — | 403 |
+//!
+//! # Why those refusals
+//!
+//! * **The browse reads** are filtered by [`RunVisibility`]. An invisible set
+//!   is `None` from storage and so 404s through exactly the same path as one
+//!   that never existed — no 403, no existence leak. Identical to the run
+//!   reads.
+//!
+//! * **The set gate refuses with 404**, not 403. That is not politeness: the
+//!   access list names the users who can reach a restricted set, so "you may
+//!   not see this" and "there is nothing here" must be the same answer.
+//!   [`GrantLevel::Manage`] is never handed out by the default-open waiver, so
+//!   an unrestricted set is just as closed here as a locked one — a caller who
+//!   could otherwise upload into it still cannot read or edit who else may.
+//!
+//! * **The scope gate refuses with 403**, because by the time it can matter the
+//!   caller has already proved they hold the manage grant, so the only thing
+//!   left to tell them is that their credential is too weak. Reading the panel
+//!   stays at `Read`: a viewer-role manager may look at the access list, and
+//!   `Write` is what stops them (and any read-scoped key) changing it. A viewer
+//!   browses; it never mutates.
 //!
 //! * **Restriction toggling** is `Scoped<Admin>`, so a manage-grant holder gets
-//!   a **403**: they administer their set's access list, but locking a set (and
-//!   unlocking one) stays with the operator. The 403 is safe precisely because
-//!   the caller already proved, by holding the manage grant, that they know the
-//!   set exists.
+//!   a 403: they administer their set's access list, but locking and unlocking
+//!   a set stays with the operator.
 //!
-//! # Why the grant mutations are `Scoped<Read>`
+//! # What the classes actually resolve to
 //!
-//! They are writes, but the route scope is not their gate — the covering manage
-//! grant is, and it is strictly stronger: no auth mode grants it, and
-//! [`RunVisibility::Public`] can never satisfy it, so an anonymous or
-//! static-token caller is refused in every mode. Layering `Scoped<Write>` on
-//! top would subtract capability rather than add safety: it would stop a
-//! viewer-role account that was deliberately given `manage` over one set from
-//! using it. CSRF is unaffected — that middleware keys on the HTTP method.
+//! [`RunVisibility::of`] is the only derivation, and it is worth being precise
+//! about static tokens rather than waving at them: a token carrying
+//! [`crate::auth::Scope::Admin`] resolves to [`RunVisibility::Full`] and *does*
+//! manage every set — it is an operator credential. Only **non-admin** static
+//! tokens and anonymous callers are [`RunVisibility::Public`], which can never
+//! satisfy the set gate at any level above the waiver, so those are the ones
+//! refused unconditionally here.
+//!
+//! CSRF is unaffected by any of this — that middleware keys on the HTTP method.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -43,7 +73,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 
-use crate::auth::{Admin, Identity, Read, Scoped};
+use crate::auth::{Admin, Identity, Read, Scoped, Write};
 use crate::domain::UserId;
 use crate::dto::sets::{SetAccessResponse, SetGrantUpsert, SetGrantView};
 use crate::extract::ApiJson;
@@ -321,7 +351,7 @@ async fn ungrant(
 }
 
 async fn project_grant(
-    scope: Scoped<Read>,
+    scope: Scoped<Write>,
     State(state): State<AppState>,
     Path((project, user_id)): Path<(String, UserId)>,
     ApiJson(body): ApiJson<SetGrantUpsert>,
@@ -330,7 +360,7 @@ async fn project_grant(
 }
 
 async fn suite_grant(
-    scope: Scoped<Read>,
+    scope: Scoped<Write>,
     State(state): State<AppState>,
     Path((project, suite, user_id)): Path<(String, String, UserId)>,
     ApiJson(body): ApiJson<SetGrantUpsert>,
@@ -347,7 +377,7 @@ async fn suite_grant(
 }
 
 async fn project_ungrant(
-    scope: Scoped<Read>,
+    scope: Scoped<Write>,
     State(state): State<AppState>,
     Path((project, user_id)): Path<(String, UserId)>,
 ) -> ApiResult<Response> {
@@ -355,7 +385,7 @@ async fn project_ungrant(
 }
 
 async fn suite_ungrant(
-    scope: Scoped<Read>,
+    scope: Scoped<Write>,
     State(state): State<AppState>,
     Path((project, suite, user_id)): Path<(String, String, UserId)>,
 ) -> ApiResult<Response> {

@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use rusqlite::types::Value;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::projects::read_baseline;
 use super::runsets::{covering_level, restricted};
@@ -204,6 +204,10 @@ fn latest_pass_rates(
 
 /// Whether the project has any visible run — the existence test both detail
 /// endpoints 404 on.
+///
+/// `.optional()?`, never `.is_ok()`: this answer becomes a 404, so swallowing
+/// the error would report "no such set" for a locked database or a corrupt
+/// page, and the operator would never see the 500 that is really happening.
 fn project_has_visible_runs(
     conn: &Connection,
     project: &str,
@@ -219,7 +223,8 @@ fn project_has_visible_runs(
     );
     Ok(conn
         .query_row(&sql, rusqlite::params_from_iter(args.iter()), |_| Ok(()))
-        .is_ok())
+        .optional()?
+        .is_some())
 }
 
 fn run_set_project(

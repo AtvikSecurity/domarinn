@@ -683,6 +683,118 @@ async fn a_manager_may_add_relevel_and_remove_grants() {
     assert_eq!(names(&sets(&f.app, Some(&f.stranger)).await), ["open"]);
 }
 
+/// Mint an API key of `scope` under the account holding `token`. The scope
+/// ceiling in `create_apikey` means the caller must already hold it.
+async fn mint_key(app: &Router, token: &str, scope: &str) -> String {
+    let r = post_json(
+        app,
+        "/api/v1/apikeys",
+        Some(token),
+        &json!({ "name": scope, "scope": scope }),
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "minting a {scope} key: {:?}",
+        r.json()
+    );
+    r.json()["key"].as_str().unwrap().to_string()
+}
+
+/// Editing an access list is a mutation, so it needs `write` scope on top of
+/// the covering `manage` grant.
+///
+/// The grant alone is not enough, because a grant belongs to a *user* and an
+/// API key rides its owner's grants: without the scope gate, the least
+/// privileged credential the product offers — a `read` key — would inherit its
+/// owner's manage grant, and a leaked one would mean "install a persistent
+/// grant for an account you control on a restricted set" rather than "read what
+/// I can read". The same gate is what stops a viewer-role account from
+/// mutating policy: a viewer browses, never writes.
+///
+/// Reading the panel stays at `read`, because reading it is not mutating.
+#[tokio::test]
+async fn a_read_scoped_credential_may_view_the_panel_but_never_rewrite_policy() {
+    let f = fixture().await;
+    let target = user_id(&f.storage, "stranger").await;
+
+    // A viewer-role account, deliberately given `manage` over the whole set.
+    let watcher_id = user_id(&f.storage, "watcher").await;
+    f.storage
+        .upsert_run_set_grant(
+            "locked".into(),
+            None,
+            watcher_id.into(),
+            GrantLevel::Manage,
+            Some("root".into()),
+        )
+        .await
+        .unwrap();
+
+    // Two keys under `manager`, which holds `manage` on `locked`.
+    let read_key = mint_key(&f.app, &f.manager, "read").await;
+    let write_key = mint_key(&f.app, &f.manager, "write").await;
+
+    let paths = [
+        format!("/api/v1/sets/locked/grants/{target}"),
+        format!("/api/v1/sets/locked/suites/s1/grants/{target}"),
+    ];
+    for (who, token) in [
+        ("read-scoped api key", read_key.clone()),
+        ("viewer role with a manage grant", f.watcher.clone()),
+    ] {
+        // The panel itself is readable — that is a read.
+        for path in [
+            "/api/v1/sets/locked/access",
+            "/api/v1/sets/locked/suites/s1/access",
+        ] {
+            let r = get_auth(&f.app, path, Some(&token)).await;
+            assert_eq!(
+                r.status,
+                StatusCode::OK,
+                "GET {path} as {who}: {:?}",
+                r.json()
+            );
+        }
+        // All four mutation routes refuse. A 403, not the manager check's 404:
+        // this caller already proved they can see the set, so the only thing
+        // left to tell them is that their credential is too weak.
+        for path in &paths {
+            let (status, body) = put_grant(&f.app, path, Some(&token), GrantLevel::Manage).await;
+            assert_eq!(
+                status,
+                StatusCode::FORBIDDEN,
+                "PUT {path} as {who}: {body:?}"
+            );
+            let r = send(&f.app, "DELETE", path, Some(&token), None, Vec::new()).await;
+            assert_eq!(r.status, StatusCode::FORBIDDEN, "DELETE {path} as {who}");
+        }
+    }
+    assert_eq!(
+        f.storage
+            .run_set_grant_level(Some("locked".into()), None, target.clone().into())
+            .await
+            .unwrap(),
+        None,
+        "nothing above may have landed a grant"
+    );
+
+    // The same user's write-scoped key does the job.
+    let (status, body) = put_grant(&f.app, &paths[0], Some(&write_key), GrantLevel::View).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body:?}");
+    let r = send(
+        &f.app,
+        "DELETE",
+        &paths[0],
+        Some(&write_key),
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+}
+
 #[tokio::test]
 async fn a_non_manager_cannot_grant_itself_anything() {
     let f = fixture().await;
@@ -692,11 +804,14 @@ async fn a_non_manager_cannot_grant_itself_anything() {
     for (who, token) in [
         ("ungranted member", Some(f.stranger.clone())),
         ("view grant holder", Some(f.viewer_grant.clone())),
-        ("anonymous", None),
     ] {
         let (status, body) = put_grant(&f.app, &path, token.as_deref(), GrantLevel::Manage).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{who}: {body:?}");
     }
+    // Anonymous never reaches the manage check: `protect-writes` demands a
+    // credential for any mutation first.
+    let (status, body) = put_grant(&f.app, &path, None, GrantLevel::Manage).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "anonymous: {body:?}");
     assert_eq!(
         f.storage
             .run_set_grant_level(Some("locked".into()), None, stranger_id.into())
