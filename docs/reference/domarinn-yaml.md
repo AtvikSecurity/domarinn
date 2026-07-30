@@ -408,7 +408,7 @@ The default LLM grader for [`llm-rubric`](../concepts/grading.md) assertions. A 
 | `template` | string (`file://`) | no | Override the built-in grading-prompt template. Resolved relative to the suite directory and sandboxed to it, like every other `file://`. It renders into the prompt the grader reads, and the grader's request is its cache key — so editing the grading prompt re-grades rather than replaying the old verdict. |
 | `verdict_mode` | string | no | How the structured verdict is obtained: `forced` (default) or `auto` — which is in the schema but not implemented, and rejected at load. See [grading.md](../concepts/grading.md#grader-configuration). |
 | `include_tool_calls` | bool | no (default `false`) | Append the case's tool calls to the judge's user message, as a JSON array of `{name, arguments}` in call order — `[]` when there were none, so a rubric can judge the absence of a call. Off leaves the judge's prompt byte-identical to before; turning it on re-grades those cells. A custom `template` must then contain `{{tool_calls}}`, and must not contain it when the flag is off. See [Letting the judge see tool calls](../concepts/grading.md#letting-the-judge-see-tool-calls). |
-| `timeout_ms` | int | no (default `120000`) | How long to wait for a verdict, in milliseconds. Defaults to 120s. Covers `exec` assertions as well as the HTTP graders. |
+| `timeout_ms` | int | no (default `120000`) | How long to wait for a verdict, in milliseconds. Defaults to 120s, and covers `exec` assertions as well as the HTTP graders. **Read from this suite-level block only** — it is resolved once for the run, so a per-assertion `grader` that sets it is accepted and never applied. |
 
 ```yaml
 grader:

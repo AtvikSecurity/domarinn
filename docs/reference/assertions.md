@@ -357,7 +357,7 @@ Graded assertions run through the runner's async grader path after the determini
 
 ### `exec`
 
-Runs an external command as a custom grader over the **exec assert protocol**. The command receives an `assert` request on stdin (`{ output, test, prompt, provider, config }`) and must return `{ pass, score?, reason?, details? }` on stdout. `config` is your assertion's own config block, passed through verbatim.
+Runs an external command as a custom grader over the **exec assert protocol**. The command receives an `assert` request on stdin (`{ output, test, prompt, provider, config, vars }`, plus `tool_calls` when the model made any) and must return `{ pass, score?, reason?, details? }` on stdout. `config` is your assertion's own config block, passed through verbatim.
 
 ```yaml
 - type: exec
@@ -369,7 +369,7 @@ Runs an external command as a custom grader over the **exec assert protocol**. T
 - `pass` (boolean) is required. `score` defaults to `1.0` when `pass` is true, `0.0` otherwise. `reason` and `details` are surfaced in results.
 - A failing assert (`pass: false`) is a normal `fail`, not an `error` — the command should still exit `0`. A **non-zero exit**, a timeout, or unparseable stdout is an infrastructure `error`.
 - The round-trip is cached like any other request, keyed on the command and what it is sent. An optional `cache_salt` on the assertion is a version pin for the grader program, scoped to that assertion's gradings; see [caching.md](../concepts/caching.md#every-knob-once).
-- The request also carries `tool_calls` when the model made any — omitted entirely when it made none, so a tool-less case's stdin is unchanged; see [protocol.md](protocol.md#kind-assert).
+- `tool_calls` is an additive protocol-1 field: a tool-less case's stdin — and so its cache key — is unchanged, while a tool-calling case re-keys and adopts no pre-0.5 verdict. See [protocol.md](protocol.md#kind-assert).
 
 See [protocol.md](protocol.md) for the full `assert` request/response wire format.
 

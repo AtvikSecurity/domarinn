@@ -243,9 +243,9 @@ A custom grader. Receives the provider's output plus context and returns a `Grad
 | `test`     | object          | `{ "id", "tags" }`, as above. |
 | `prompt`   | any JSON        | **Optional.** The prompt that produced the output. |
 | `provider` | object          | `{ "id": string }` — which provider produced the output. |
-| `tool_calls` | array         | **Optional.** The tool calls the model made, in the order it made them — `{ id?, name, arguments }`, the same shape the provider reported them in. `arguments` is the **decoded** object, never a JSON string. The key is **absent, not empty**, when the model called nothing, so a tool-free case's request is byte-identical to before and its cache entry still hits. |
 | `config`   | any JSON        | The assertion's own config block from the suite. Defaults to `{}`. |
 | `vars`     | any JSON object | The case's rendered variables — for an assert request this is the full render context, including an `env` object snapshotting the parent's environment. The child receives `env` in this document even though its own spawned environment is empty; the cache key excludes it. Defaults to `{}`. |
+| `tool_calls` | array         | **Optional.** The tool calls the model made, in the order it made them — `{ id?, name, arguments }`, the same shape the provider reported them in. `arguments` is the **decoded** object, never a JSON string. The key is **absent, not empty**, when the model called nothing, so a tool-free case's request is byte-identical to before and its cache entry still hits. A case that *did* call something re-keys, and no pre-0.5 verdict is [adopted](../concepts/caching.md#upgrading-to-05) for it: that child was handed a request with no calls in it and judged whatever it could see. |
 
 ### Response
 
