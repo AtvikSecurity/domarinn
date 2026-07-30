@@ -281,4 +281,4 @@ if [ "$violations" -gt 0 ]; then
   echo "seed-docs-runs: $violations of $checked seeded run(s) failed the data-at-rest check" >&2
   exit 1
 fi
-echo "    $checked run(s) checked, all base_url values are localhost"
+echo "    $checked run(s) checked, every base_url/url is localhost"
