@@ -20,6 +20,9 @@ export interface CacheFilterBarProps {
   /** Debounced search box value, owned by the page. */
   search: string;
   onSearch: (value: string) => void;
+  /** True on a tier with no full-text index — say so rather than let the box
+   *  imply a capability it does not have. */
+  substringOnly?: boolean;
 }
 
 export function CacheFilterBar({
@@ -29,6 +32,7 @@ export function CacheFilterBar({
   onPatch,
   search,
   onSearch,
+  substringOnly = false,
 }: CacheFilterBarProps) {
   const clearAll = () =>
     onPatch(Object.fromEntries(CLEARABLE.map((k) => [k, undefined])));
@@ -39,7 +43,9 @@ export function CacheFilterBar({
         <input
           type="search"
           className={`${controlCls} w-56`}
-          placeholder="request or output text"
+          placeholder={
+            substringOnly ? "substring match" : "request or output text"
+          }
           value={search}
           onChange={(e) => onSearch(e.target.value)}
         />

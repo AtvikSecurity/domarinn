@@ -83,3 +83,21 @@ test.describe("Cache entries", () => {
     await expect(page.getByRole("grid")).toBeVisible();
   });
 });
+
+test.describe("Cache tiers", () => {
+  test("switching tier changes what is listed and what search means", async ({
+    page,
+  }) => {
+    await page.goto("/cache/entries");
+    await expect(page.getByRole("grid")).toBeVisible();
+    await expect(page.getByPlaceholder("request or output text")).toBeVisible();
+
+    await page.getByRole("radiogroup", { name: "Cache tier" }).getByText("Local disk").click();
+    await expect(page).toHaveURL(/tier=local/);
+
+    // The tier has no full-text index, and the box says so rather than
+    // implying a capability it does not have.
+    await expect(page.getByPlaceholder("substring match")).toBeVisible();
+    await expect(page.getByText(/reading Local disk/)).toBeVisible();
+  });
+});

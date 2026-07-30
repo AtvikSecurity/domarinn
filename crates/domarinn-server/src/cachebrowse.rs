@@ -69,15 +69,16 @@ pub(crate) struct FacetQuery {
     tier: Option<CacheTier>,
 }
 
-/// Check that the requested tier exists on this instance.
+/// Resolve the requested tier, or explain why it is not here.
 ///
 /// The single place tier dispatch lives, so adding one is a change here rather
 /// than in three handlers. A tier that is not mounted is a `404`, not a `400`:
 /// the request is well-formed and the tier is a real one, it simply is not
 /// present on this server. `/meta` advertises which tiers are.
-fn resolve_tier(tier: Option<CacheTier>) -> ApiResult<CacheTier> {
+fn resolve_tier(state: &AppState, tier: Option<CacheTier>) -> ApiResult<CacheTier> {
     match tier.unwrap_or_default() {
         CacheTier::Server => Ok(CacheTier::Server),
+        CacheTier::Local if state.local_cache.is_some() => Ok(CacheTier::Local),
         CacheTier::Local => Err(not_found("local cache tier")),
     }
 }
@@ -87,7 +88,7 @@ pub(crate) async fn list(
     State(state): State<AppState>,
     ApiQuery(q): ApiQuery<ListQuery>,
 ) -> ApiResult<Response> {
-    resolve_tier(q.tier)?;
+    let tier = resolve_tier(&state, q.tier)?;
     let filter = CacheListFilter {
         kind: q.kind,
         model: q.model,
@@ -101,7 +102,10 @@ pub(crate) async fn list(
         limit: clamp_limit(q.limit),
         cursor: q.cursor.as_deref().and_then(decode_entry_cursor),
     };
-    let page = state.storage.cache_list_entries(filter).await?;
+    let page = match (tier, &state.local_cache) {
+        (CacheTier::Local, Some(local)) => local.list(filter).await?,
+        _ => state.storage.cache_list_entries(filter).await?,
+    };
     Ok(Json(page).into_response())
 }
 
@@ -112,9 +116,13 @@ pub(crate) async fn detail(
     ApiQuery(q): ApiQuery<DetailQuery>,
 ) -> ApiResult<Response> {
     validate_cache_key(&key)?;
-    resolve_tier(q.tier)?;
+    let tier = resolve_tier(&state, q.tier)?;
     let include_raw = q.raw.unwrap_or(false);
-    match state.storage.cache_entry_detail(key, include_raw).await? {
+    let found = match (tier, &state.local_cache) {
+        (CacheTier::Local, Some(local)) => local.detail(&key, include_raw).await?,
+        _ => state.storage.cache_entry_detail(key, include_raw).await?,
+    };
+    match found {
         Some(detail) => Ok(Json(detail).into_response()),
         None => Err(not_found("cache entry")),
     }
@@ -125,6 +133,10 @@ pub(crate) async fn facets(
     State(state): State<AppState>,
     ApiQuery(q): ApiQuery<FacetQuery>,
 ) -> ApiResult<Response> {
-    resolve_tier(q.tier)?;
-    Ok(Json(state.storage.cache_facets().await?).into_response())
+    let tier = resolve_tier(&state, q.tier)?;
+    let facets = match (tier, &state.local_cache) {
+        (CacheTier::Local, Some(local)) => local.facets().await?,
+        _ => state.storage.cache_facets().await?,
+    };
+    Ok(Json(facets).into_response())
 }

@@ -426,6 +426,51 @@ pub trait CacheBackend: Send + Sync {
     async fn purge(&self, filter: &PurgeFilter) -> Result<u64, CacheError>;
 }
 
+/// One entry as a walk found it, before anything reads its body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumeratedEntry {
+    pub key: CacheKey,
+    pub size: u64,
+    /// Last modification time.
+    ///
+    /// Deliberately *not* offered as a last-access time. Access times are
+    /// unreliable under `relatime`/`noatime`, and reporting mtime as one would
+    /// be a different measurement wearing the same name — the mistake
+    /// [`CacheEntry::provider_latency_ms`] exists to fix, in another place.
+    pub modified: Option<DateTime<Utc>>,
+}
+
+/// The result of walking a store.
+#[derive(Debug, Clone, Default)]
+pub struct Enumerated {
+    /// Newest first, so truncation drops the oldest rather than an arbitrary
+    /// slice — directory order is arbitrary, and a walk cut off mid-`read_dir`
+    /// would return whichever entries the filesystem happened to name first.
+    pub entries: Vec<EnumeratedEntry>,
+    /// True when the walk stopped at its limit with entries left unseen.
+    pub truncated: bool,
+    /// Files looked at, including any that were not entries.
+    pub scanned: usize,
+}
+
+/// A backend that can enumerate what it holds.
+///
+/// Deliberately **not** a method on [`CacheBackend`]. `S3Cache` can only
+/// enumerate through paginated `ListObjectsV2` — network round-trips,
+/// per-request charges, and no predicate beyond a key prefix — and
+/// `RemoteHttpCache` has no list verb at all. Putting `enumerate` on the core
+/// trait would force both to implement something they cannot do cheaply, and a
+/// backend whose enumeration is a lie is worse than one that does not offer it.
+///
+/// A separate trait is where "this store can be walked" gets stated, so a
+/// caller that needs walking asks for it in its bound instead of hoping.
+#[async_trait]
+pub trait CacheEnumerate: Send + Sync {
+    /// Metadata for up to `limit` entries, newest first. Cheap by contract:
+    /// this stats files, it does not read them.
+    async fn enumerate(&self, limit: usize) -> Result<Enumerated, CacheError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -508,3 +508,125 @@ async fn facets_count_the_values_a_filter_can_take() {
     let models = body["models"].as_array().unwrap();
     assert!(models.iter().any(|m| m["value"] == json!("gpt-4o")));
 }
+
+// ---------------------------------------------------------------------------
+// The local disk tier
+// ---------------------------------------------------------------------------
+
+/// Seed a directory in the on-disk cache layout and mount it.
+async fn app_with_local_tier() -> (axum::Router, tempfile::TempDir, tempfile::TempDir) {
+    use domarinn_cache::LocalDiskCache;
+    use domarinn_core::cache::CacheBackend;
+
+    let local_dir = tempfile::TempDir::new().expect("tempdir");
+    let disk = LocalDiskCache::new(local_dir.path());
+    let mut judge = entry();
+    judge.kind = Some(EntryKind::new(EntryKind::JUDGE));
+    judge.model = Some("gpt-4o".into());
+    disk.put(&CacheKey(key_for("localA")), &entry())
+        .await
+        .unwrap();
+    disk.put(&CacheKey(key_for("localB")), &judge)
+        .await
+        .unwrap();
+
+    let settings = Settings {
+        local_cache_dir: Some(local_dir.path().to_path_buf()),
+        ..Default::default()
+    };
+    let (app, data_dir) = test_app(settings).await;
+    (app, data_dir, local_dir)
+}
+
+#[tokio::test]
+async fn a_mounted_local_tier_lists_what_is_on_disk() {
+    let (app, _data, _local) = app_with_local_tier().await;
+
+    // The server tier is empty; the local one is not. That asymmetry is the
+    // whole point — `cache.backend` defaults to `disk`, so this is where a
+    // single developer's entries actually are.
+    let server: Value = get(&app, "/api/v1/cache/entries").await.json();
+    assert!(entries(&server).is_empty());
+
+    let local: Value = get(&app, "/api/v1/cache/entries?tier=local").await.json();
+    assert_eq!(entries(&local).len(), 2);
+    assert_eq!(local["truncated"], json!(false));
+}
+
+/// A filesystem has no reliable access time, and reporting mtime in that field
+/// would be a different measurement wearing the same name.
+#[tokio::test]
+async fn the_local_tier_reports_no_last_access_time() {
+    let (app, _data, _local) = app_with_local_tier().await;
+    let body: Value = get(&app, "/api/v1/cache/entries?tier=local").await.json();
+    for row in entries(&body) {
+        assert!(row["last_access_at"].is_null(), "{row}");
+    }
+}
+
+#[tokio::test]
+async fn the_local_tier_filters_and_inspects() {
+    let (app, _data, _local) = app_with_local_tier().await;
+
+    let judges: Value = get(&app, "/api/v1/cache/entries?tier=local&kind=judge")
+        .await
+        .json();
+    assert_eq!(entries(&judges).len(), 1);
+    assert_eq!(entries(&judges)[0]["model"], json!("gpt-4o"));
+
+    let key = entries(&judges)[0]["key"].as_str().unwrap().to_string();
+    let detail: Value = get(&app, &format!("/api/v1/cache/entries/{key}?tier=local"))
+        .await
+        .json();
+    assert_eq!(detail["kind"], json!("judge"));
+    assert_eq!(detail["output"], json!("hello"));
+}
+
+#[tokio::test]
+async fn meta_advertises_a_mounted_tier_but_never_its_path() {
+    let (app, _data, local) = app_with_local_tier().await;
+    let meta: Value = get(&app, "/api/v1/meta").await.json();
+    let tiers = meta["cache_tiers"].as_array().unwrap();
+    assert_eq!(tiers.len(), 2);
+    assert_eq!(tiers[1]["id"], json!("local"));
+    // Two tiers, two different meanings for `?q=`, said out loud.
+    assert_eq!(tiers[0]["search"], json!("fts"));
+    assert_eq!(tiers[1]["search"], json!("substring"));
+
+    // `/meta` is unauthenticated by design, so it must not leak where an
+    // operator keeps their cache directory.
+    let raw = serde_json::to_string(&meta).unwrap();
+    assert!(
+        !raw.contains(&local.path().display().to_string()),
+        "meta leaked the local cache path"
+    );
+}
+
+#[tokio::test]
+async fn meta_advertises_only_the_server_tier_when_nothing_is_mounted() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let meta: Value = get(&app, "/api/v1/meta").await.json();
+    let tiers = meta["cache_tiers"].as_array().unwrap();
+    assert_eq!(tiers.len(), 1);
+    assert_eq!(tiers[0]["id"], json!("server"));
+}
+
+/// A renamed or deleted directory must cost the tier, not the process.
+#[tokio::test]
+async fn an_unusable_local_cache_path_is_not_fatal() {
+    let settings = Settings {
+        local_cache_dir: Some("/nonexistent/definitely/not/here".into()),
+        ..Default::default()
+    };
+    let (app, _dir) = test_app(settings).await;
+    // The server is up and serving...
+    assert_eq!(
+        get(&app, "/api/v1/cache/entries").await.status,
+        StatusCode::OK
+    );
+    // ...and simply has no local tier.
+    assert_eq!(
+        get(&app, "/api/v1/cache/entries?tier=local").await.status,
+        StatusCode::NOT_FOUND
+    );
+}

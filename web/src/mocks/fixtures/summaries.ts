@@ -87,6 +87,12 @@ export const META: MetaResponse = {
     max_bytes: 5_368_709_120,
     max_age_days: 30,
   },
+  // Two tiers, so the demo exercises the switcher rather than the
+  // single-tier branch that hides it.
+  cache_tiers: [
+    { id: "server", label: "Server", search: "fts" },
+    { id: "local", label: "Local disk", search: "substring" },
+  ],
   // On, so the mock exercises the connected branch of the settings card; the
   // disabled branch is the trivial one.
   mcp_enabled: true,

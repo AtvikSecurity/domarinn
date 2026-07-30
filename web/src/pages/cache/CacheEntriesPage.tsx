@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { useCacheEntries, useCacheFacets, useCacheStats } from "@/api/queries";
+import { useCacheEntries, useCacheFacets, useCacheStats, useMeta } from "@/api/queries";
+import { Chip } from "@/components/ui/Chip";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { useFillViewport } from "@/components/AppShell";
 import { EmptyState, ErrorState } from "@/components/States";
 import { CenteredSpinner } from "@/components/ui/Spinner";
@@ -29,7 +31,11 @@ export function CacheEntriesPage() {
   const activeCount = activeCacheFilterCount(params);
 
   const stats = useCacheStats();
+  const meta = useMeta();
   const facets = useCacheFacets();
+  const tiers = meta.data?.cache_tiers ?? [];
+  const tier = filters.tier ?? "server";
+  const activeTier = tiers.find((t) => t.id === tier);
   const entriesQ = useCacheEntries(filters);
 
   const patch = (next: Record<string, string | undefined>) => {
@@ -78,19 +84,48 @@ export function CacheEntriesPage() {
 
   const total = stats.data?.entries ?? 0;
   const empty = entries.length === 0;
+  const truncated = entriesQ.data?.pages.some((p) => p.truncated) ?? false;
 
   return (
     <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1">
       <div className="shrink-0">
         <div className="flex items-baseline justify-between gap-3">
           <h1 className="text-lg font-semibold tracking-tight">Cache entries</h1>
-          <Link to="/cache" className="text-sm text-accent hover:underline">
-            ← Cache stats
-          </Link>
+          <div className="flex items-center gap-3">
+            {/* Only when there is a choice to make. A control with one option
+                is chrome that teaches nothing; with a single tier the chip
+                below still says which cache you are looking at. */}
+            {tiers.length > 1 ? (
+              <SegmentedControl
+                ariaLabel="Cache tier"
+                size="xs"
+                value={tier}
+                onChange={(next) => patch({ tier: next === "server" ? undefined : next })}
+                options={tiers.map((t) => ({ value: t.id, label: t.label }))}
+              />
+            ) : null}
+            <Link to="/cache" className="text-sm text-accent hover:underline">
+              ← Cache stats
+            </Link>
+          </div>
         </div>
-        <p className="text-sm text-muted tabular-nums">
-          {formatInt(total)} entries · {formatBytes(stats.data?.total_bytes ?? 0)}
-          {stats.data && stats.data.unindexed > 0 ? (
+        <p className="flex flex-wrap items-center gap-2 text-sm text-muted tabular-nums">
+          {tiers.length <= 1 && activeTier ? (
+            <Chip tone="neutral" size="xs" mono>
+              {activeTier.label}
+            </Chip>
+          ) : null}
+          {tier === "server" ? (
+            <span>
+              {formatInt(total)} entries · {formatBytes(stats.data?.total_bytes ?? 0)}
+            </span>
+          ) : (
+            // The stats endpoint only knows the server tier, so quoting its
+            // totals beside a local listing would be a straightforwardly wrong
+            // number rather than a missing one.
+            <span>reading {activeTier?.label ?? "local disk"}</span>
+          )}
+          {tier === "server" && stats.data && stats.data.unindexed > 0 ? (
             <span className="text-amber">
               {" · "}
               {formatInt(stats.data.unindexed)} still indexing
@@ -106,9 +141,17 @@ export function CacheEntriesPage() {
         onPatch={patch}
         search={search}
         onSearch={setSearch}
+        substringOnly={activeTier?.search === "substring"}
       />
 
-      {empty && total === 0 ? (
+      {truncated ? (
+        <p className="shrink-0 text-xs text-amber">
+          This tier has more entries than one scan covers; showing the most
+          recent. Older entries are not listed.
+        </p>
+      ) : null}
+
+      {empty && tier === "server" && total === 0 ? (
         <ServerTierEmpty />
       ) : empty ? (
         <EmptyState title="No entries match these filters">

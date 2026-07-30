@@ -507,7 +507,14 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       return json(fx.cacheFacets());
     }
     if (method === "GET" && seg[1] === "entries" && seg.length === 2) {
-      const filtered = filterCacheEntries(fx.cacheEntryList(), p);
+      // The local tier is a different, smaller corpus — a developer's own
+      // machine, not the shared server — so the switcher visibly changes what
+      // is listed rather than re-rendering the same rows.
+      const corpus =
+        p.get("tier") === "local"
+          ? fx.cacheEntryList().filter((_, i) => i % 4 === 0)
+          : fx.cacheEntryList();
+      const filtered = filterCacheEntries(corpus, p);
       const { page, next_cursor } = paginate(filtered, p);
       const res: CacheEntryListResponse = {
         entries: page,

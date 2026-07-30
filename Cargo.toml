@@ -27,7 +27,10 @@ authors = ["Atvik Security"]
 domarinn-protocol = { path = "crates/domarinn-protocol" }
 domarinn-types = { path = "crates/domarinn-types" }
 domarinn-core = { path = "crates/domarinn-core" }
-domarinn-cache = { path = "crates/domarinn-cache" }
+# `default-features = false` here so a member that wants only the local disk
+# backend actually gets it: cargo ignores a member's `default-features = false`
+# unless the workspace entry opts out too, and the failure is silent.
+domarinn-cache = { path = "crates/domarinn-cache", default-features = false }
 domarinn-server = { path = "crates/domarinn-server" }
 domarinn-logging = { path = "crates/domarinn-logging" }
 

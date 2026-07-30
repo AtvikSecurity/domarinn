@@ -46,7 +46,7 @@ mod auth;
 mod backfill;
 mod cache;
 mod cachebrowse;
-mod cacheindex;
+pub(crate) mod cacheindex;
 mod cases;
 mod compare;
 mod history;

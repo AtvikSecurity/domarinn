@@ -31,7 +31,7 @@ use super::{now_ms, to_microusd, Storage};
 /// this holds the comparison of two. They are different things that happen to
 /// come from the same assertion, and collapsing them would make a `kind` filter
 /// return entries that cannot answer the same question.
-pub(super) const SIMILAR_VERDICT: &str = "similar_verdict";
+pub(crate) const SIMILAR_VERDICT: &str = "similar_verdict";
 
 /// Characters of request/output text handed to FTS per entry.
 ///
@@ -45,7 +45,7 @@ const SUMMARY_MAX: usize = 256;
 const PREVIEW_MAX: usize = 300;
 
 /// Everything migration 2 promotes, derived from one body.
-pub(super) struct EntryIndex {
+pub(crate) struct EntryIndex {
     pub kind: Option<String>,
     pub model: Option<String>,
     pub cost_microusd: Option<i64>,
@@ -66,8 +66,19 @@ impl EntryIndex {
     /// a newer domarinn, or by something that is not domarinn at all, and the
     /// caller records it as "looked at, found nothing" so the row is never
     /// examined again.
-    pub(super) fn derive(body: &[u8]) -> Option<EntryIndex> {
+    pub(crate) fn derive(body: &[u8]) -> Option<EntryIndex> {
         let entry: CacheEntry = serde_json::from_slice(body).ok()?;
+        Some(EntryIndex::from_entry(&entry))
+    }
+
+    /// The same projection, from an entry that is already parsed.
+    ///
+    /// Split out so the local disk tier — which reads through a backend that
+    /// hands back a `CacheEntry` rather than bytes — describes an entry the
+    /// same way the server tier does. Two definitions of "what a row shows"
+    /// would drift, and the drift would look like the tiers disagreeing about
+    /// the same cache.
+    pub(crate) fn from_entry(entry: &CacheEntry) -> EntryIndex {
         let output_text = output_to_text(&entry.output);
         let request_text = entry
             .request
@@ -75,8 +86,8 @@ impl EntryIndex {
             .map(|r| r.to_string())
             .unwrap_or_default();
 
-        Some(EntryIndex {
-            kind: infer_kind(&entry),
+        EntryIndex {
+            kind: infer_kind(entry),
             model: entry.model.clone(),
             cost_microusd: to_microusd(entry.cost_usd),
             input_tokens: entry.usage.as_ref().map(|u| u.input_tokens as i64),
@@ -86,7 +97,7 @@ impl EntryIndex {
             output_preview: Some(truncate(&output_text, PREVIEW_MAX)),
             fts_request: truncate(&request_text, FTS_TEXT_MAX),
             fts_output: truncate(&output_text, FTS_TEXT_MAX),
-        })
+        }
     }
 }
 

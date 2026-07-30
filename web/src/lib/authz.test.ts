@@ -19,7 +19,8 @@ function meta(auth_mode: AuthMode, setup_required = false): MetaResponse {
     supported_schema_versions: [1],
     result_schema_version: 1,
     cache: { max_entry_bytes: 1_048_576, max_bytes: 1_073_741_824, max_age_days: 30 },
-    mcp_enabled: false,
+    cache_tiers: [],
+  mcp_enabled: false,
   };
 }
 
