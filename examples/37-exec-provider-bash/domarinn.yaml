@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# The exec protocol needs no SDK. Anything that can read one JSON document
+# from stdin and write one JSON document to stdout can be a provider — here
+# it's bash and jq, not Python or Rust.
+#
+# The contract is exactly the one every other exec example in this ladder
+# uses (see example 13, and docs/reference/protocol.md): one request in, one
+# response out, exit 0 for "I produced a response" — even a failing one — and
+# a non-zero exit only for your own program breaking.
+#
+# Run:  domarinn run examples/37-exec-provider-bash
+version: 1
+project: examples
+suite: exec-provider-bash
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["bash", "./provider.sh"]
+    # Bump this when you edit provider.sh, like every hand-written file-backed
+    # exec example in this ladder — the cache key hashes what the program is
+    # SENT, never its bytes, so an edited script otherwise keeps answering
+    # from stale cached results. (Example 01 needs no salt: its whole program
+    # is inline argv, so editing it changes the request. Example 39 is
+    # file-backed and has none only because it is converter output, verbatim.)
+    cache_salt: "dev"
+
+tests:
+  - id: greeting/echoes-input
+    vars:
+      user_input: "hello from the suite"
+    assert:
+      # Proves `.vars.user_input` reached the script and came back.
+      - type: contains
+        value: "hello from the suite"
+      # Proves `.test.id` reached it too — the request carries more than
+      # just the vars, and jq can pull out whichever field it needs.
+      - type: contains
+        value: "greeting/echoes-input"

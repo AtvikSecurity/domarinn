@@ -41,6 +41,7 @@ providers:
     # Bump when the program's own logic changes.
     cache_salt: "runner-v3"
 
+# --8<-- [start:salts]
 tests:
   - id: prompts/greeting
     vars:
@@ -71,3 +72,4 @@ tests:
     assert:
       - type: length
         min: 1
+# --8<-- [end:salts]

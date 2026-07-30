@@ -33,3 +33,7 @@ core
 
 # Playwright MCP session artifacts
 .playwright-mcp/
+
+# Docs-screenshot pipeline: the saved login session (a real bearer token),
+# never the captured PNGs — those under docs/assets/screenshots/ are committed.
+web/screenshots/.auth/

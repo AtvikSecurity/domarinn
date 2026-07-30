@@ -14,217 +14,11 @@
 
 #![allow(dead_code)]
 
+use crate::spec::{
+    Cells, Env, Example, Route, Step, REPEAT_3, RUN, RUN_AGAIN, RUN_AGAINST_LATEST, RUN_JUNIT,
+    RUN_WITH_SUMMARY, VALIDATE,
+};
 use crate::stubs;
-
-/// One shipped example and everything needed to prove it works.
-pub struct Example {
-    /// Directory name under `examples/`. Also the path the docs transclude.
-    pub dir: &'static str,
-    /// One line: what the docs use this example to show. Printed on failure, so
-    /// the operator learns the *point* of the example without opening it.
-    pub shows: &'static str,
-    /// Environment for the child process, over and above the scrubbed baseline.
-    /// The only lever that redirects a networked example at the stub.
-    pub env: &'static [(&'static str, Env)],
-    /// Endpoints the stub answers, keyed by a fragment of the request line.
-    ///
-    /// Each route scripts a *sequence* of bodies, one per matching request. A
-    /// single body cannot express a case whose point is that two calls differ —
-    /// `similar` embeds the output and the reference, so one repeated embedding
-    /// scores 1.0 against itself and the threshold goes untested. Runs are
-    /// serial by default, so the order is stable.
-    pub stub: &'static [Route],
-    /// Exactly how many requests the stub must serve across every step.
-    ///
-    /// Not decoration — this is the egress guard. If `${env:…}` ever stopped
-    /// redirecting `base_url`, the request would go to the real vendor and the
-    /// stub would serve zero, so a count mismatch is how "this test quietly
-    /// started calling api.anthropic.com" gets caught. `0` asserts the example
-    /// is genuinely offline.
-    pub stub_calls: usize,
-    /// The invocations, in order. More than one for an example whose point is a
-    /// second run — a warm cache, a baseline diff.
-    pub steps: &'static [Step],
-}
-
-/// One `domarinn` invocation and what it must produce.
-pub struct Step {
-    /// Everything after `domarinn`. `{dir}` is the example's absolute path and
-    /// `{tmp}` the per-row scratch directory. Written out in full rather than
-    /// assembled from flags, so a failure can print a command that pastes into
-    /// a shell unchanged.
-    pub argv: &'static [&'static str],
-    pub exit: u8,
-    /// The tallies this step's result document must carry. [`Cells::NONE`] for
-    /// a step that writes none (`validate`, `list`).
-    pub cells: Cells,
-    /// Every `cell.test_id` the run must contain, order-insensitive. Empty only
-    /// when `cells` is [`Cells::NONE`].
-    pub case_ids: &'static [&'static str],
-    /// Assert the run actually priced itself.
-    ///
-    /// `AssertKind::Cost` *passes* when `cost_usd` is `None` — "cost not
-    /// reported; budget not enforced". So an example whose page claims a budget
-    /// was enforced can be green while enforcing nothing, if the stub forgot
-    /// `usage` or the model is not in the pricing table. Set this on any such
-    /// example.
-    pub priced: bool,
-    /// Files this step must have written, non-empty, when it finishes.
-    ///
-    /// `{tmp}` is substituted as in `argv`. Exists for the examples whose whole
-    /// subject is a side file — a JUnit report, a Markdown summary — which the
-    /// cell tallies say nothing about: a run can be perfectly green while the
-    /// reporter it is demonstrating writes nothing at all.
-    pub writes: &'static [&'static str],
-    /// The run must report at least this many cache hits.
-    ///
-    /// `0` for a step that should do real work. A caching example's whole claim
-    /// is that its *second* run pays nothing, and without this the second step
-    /// would look identical to the first whether the cache worked or not.
-    pub cache_hits: u64,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct Cells {
-    pub passed: u64,
-    pub failed: u64,
-    pub errored: u64,
-    pub skipped: u64,
-}
-
-impl Cells {
-    /// A step that writes no result document.
-    pub const NONE: Cells = Cells {
-        passed: 0,
-        failed: 0,
-        errored: 0,
-        skipped: 0,
-    };
-
-    /// The common case: everything green.
-    pub const fn pass(n: u64) -> Cells {
-        Cells {
-            passed: n,
-            failed: 0,
-            errored: 0,
-            skipped: 0,
-        }
-    }
-
-    pub fn total(&self) -> u64 {
-        self.passed + self.failed + self.errored + self.skipped
-    }
-}
-
-/// A stubbed endpoint: matched with `request_line.contains(fragment)`.
-pub struct Route {
-    pub fragment: &'static str,
-    /// One body per matching request; the last repeats once exhausted.
-    pub bodies: &'static [&'static str],
-}
-
-/// A value for the child's environment.
-pub enum Env {
-    Literal(&'static str),
-    /// `http://127.0.0.1:<port>` — an Anthropic `base_url`, which the client
-    /// suffixes with `/v1/messages`.
-    StubBase,
-    /// `http://127.0.0.1:<port>/v1` — an OpenAI-compatible `base_url`, which
-    /// the client suffixes with `/chat/completions` (its real default already
-    /// ends in `/v1`). Carried so an example's default value stays byte-honest
-    /// about the endpoint shape.
-    StubBaseV1,
-}
-
-/// The standard run: JSON to a scratch file, no progress bar, isolated cache.
-///
-/// `--cache-dir` is not optional. The cache defaults to
-/// `<suite dir>/.domarinn/cache`, so without it a run writes into the
-/// repository — and `.gitignore` hides it, which makes it worse: the *next*
-/// run of that example is then served from a stale cache, the stub sees zero
-/// requests, and the egress guard fails for a reason that looks like a broken
-/// example.
-pub const RUN: &[&str] = &[
-    "run",
-    "{dir}",
-    "--format",
-    "json",
-    "--out",
-    "{tmp}/result.json",
-    "--no-progress",
-    "--cache-dir",
-    "{tmp}/cache",
-];
-
-/// A second run against the same cache directory — the warm half of a caching
-/// example.
-pub const RUN_AGAIN: &[&str] = RUN;
-
-/// [`RUN`] with three trials per cell, for the confidence-interval example.
-pub const REPEAT_3: &[&str] = &[
-    "run",
-    "{dir}",
-    "--format",
-    "json",
-    "--out",
-    "{tmp}/result.json",
-    "--no-progress",
-    "--cache-dir",
-    "{tmp}/cache",
-    "--repeat",
-    "3",
-];
-
-/// [`RUN`] gated against the previous run in the local store.
-pub const RUN_AGAINST_LATEST: &[&str] = &[
-    "run",
-    "{dir}",
-    "--format",
-    "json",
-    "--out",
-    "{tmp}/result.json",
-    "--no-progress",
-    "--cache-dir",
-    "{tmp}/cache",
-    "--against",
-    "latest",
-];
-
-/// [`RUN`] plus the Markdown summary CI pastes into a job summary.
-///
-/// `--out` takes a single path, so a run emits ONE machine format to a file.
-/// Producing a second one is a second invocation — which is what the row does,
-/// and what the page shows.
-pub const RUN_WITH_SUMMARY: &[&str] = &[
-    "run",
-    "{dir}",
-    "--format",
-    "json",
-    "--out",
-    "{tmp}/result.json",
-    "--no-progress",
-    "--cache-dir",
-    "{tmp}/cache",
-    "--summary-md",
-    "{tmp}/summary.md",
-];
-
-/// The same suite again, emitting JUnit for a CI system to render.
-pub const RUN_JUNIT: &[&str] = &[
-    "run",
-    "{dir}",
-    "--no-progress",
-    "--cache-dir",
-    "{tmp}/cache",
-    "--format",
-    "junit",
-    "--out",
-    "{tmp}/results.xml",
-];
-
-/// Parse and structurally validate only. For an example that cannot run here
-/// because it deliberately points at an endpoint only its reader has.
-pub const VALIDATE: &[&str] = &["validate", "{dir}"];
 
 pub const EXAMPLES: &[Example] = &[
     Example {
@@ -957,5 +751,180 @@ pub const EXAMPLES: &[Example] = &[
             writes: &[],
             cache_hits: 0,
         }],
+    },
+    Example {
+        dir: "33-openai-grader-rubric",
+        shows: "an llm-rubric judge that is OpenAI-shaped instead of Anthropic — any \
+                OpenAI-compatible endpoint, local or hosted, can grade",
+        env: &[
+            ("OPENAI_BASE_URL", Env::StubBaseV1),
+            ("OPENAI_API_KEY", Env::Literal("sk-stub-not-a-real-key")),
+        ],
+        stub: &[Route {
+            fragment: "/chat/completions",
+            bodies: &[stubs::OPENAI_VERDICT_PASS],
+        }],
+        // One grader call: the system under test is an offline exec provider,
+        // so the only thing reaching the network is the judge.
+        stub_calls: 1,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(1),
+            case_ids: &["policy/no-invented-exceptions"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "34-multi-turn-conversation",
+        shows: "a `messages:` prompt carrying real history, not just the newest line",
+        env: &[],
+        stub: &[],
+        stub_calls: 0,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(2),
+            case_ids: &["turns/asks-about-electronics", "turns/asks-about-receipts"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "35-anthropic-tools",
+        shows: "tool-call grading over the native Anthropic API, not just an exec provider",
+        env: &[
+            ("ANTHROPIC_BASE_URL", Env::StubBase),
+            (
+                "ANTHROPIC_API_KEY",
+                Env::Literal("sk-ant-stub-not-a-real-key"),
+            ),
+        ],
+        stub: &[Route {
+            fragment: "/v1/messages",
+            bodies: &[stubs::ANTHROPIC_TOOL_USE],
+        }],
+        stub_calls: 1,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(1),
+            case_ids: &["agent/looks-up-order"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "36-http-output-expr",
+        shows: "`output_expr` reaching more than one shape out of the same JSON body",
+        env: &[("ORDERS_API_URL", Env::StubBase)],
+        stub: &[Route {
+            // Both providers post to the stub root, same as example 28.
+            fragment: "POST /",
+            bodies: &[stubs::SERVICE_REPLY],
+        }],
+        // One call per provider: each test is scoped to a single provider via
+        // `only_providers`, so the pair of tests makes exactly two calls.
+        stub_calls: 2,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(2),
+            case_ids: &["orders/reply-text", "orders/confidence-score"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "37-exec-provider-bash",
+        shows: "the exec protocol read and answered in bash + jq, not just python",
+        env: &[],
+        stub: &[],
+        stub_calls: 0,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(1),
+            case_ids: &["greeting/echoes-input"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "38-annotated-reference-suite",
+        shows: "every top-level suite key in one file, each annotated with where \
+                its full story lives",
+        env: &[
+            ("OPENAI_BASE_URL", Env::StubBaseV1),
+            ("OPENAI_API_KEY", Env::Literal("sk-stub-not-a-real-key")),
+        ],
+        stub: &[Route {
+            fragment: "/chat/completions",
+            bodies: &[stubs::OPENAI_VERDICT_PASS],
+        }],
+        // One grader call, not three: only the inline case carries an
+        // `llm-rubric`, and the system under test is the offline echo provider.
+        stub_calls: 1,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            // Three cells from two test sources: one inline case plus a
+            // two-value matrix axis. `register/plain` is deliberately NOT among
+            // them — `plain` is the `defaults.vars` value the inline case
+            // inherits, and an axis value overrides it rather than adding a
+            // third cell.
+            cells: Cells::pass(3),
+            case_ids: &[
+                "policy/names-the-product",
+                "register/casual",
+                "register/formal",
+            ],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "39-import-promptfoo",
+        shows: "a promptfoo config and the suite `domarinn import promptfoo` turns \
+                it into, both shipped and both exercised",
+        env: &[],
+        stub: &[],
+        stub_calls: 0,
+        steps: &[
+            // The converter prints to stdout and takes no output path, so this
+            // step can only prove it converts the shipped config without
+            // erroring. That the printed suite matches the committed one — and
+            // runs — is
+            // `example_39_the_committed_conversion_is_the_converters_output_and_runs`,
+            // which needs the stdout this table cannot capture.
+            Step {
+                argv: &["import", "promptfoo", "{dir}/promptfooconfig.yaml"],
+                exit: 0,
+                cells: Cells::NONE,
+                case_ids: &[],
+                priced: false,
+                writes: &[],
+                cache_hits: 0,
+            },
+            // The committed conversion, run in place like every other example:
+            // `case-0` / `case-1` are the ids the converter generates for
+            // promptfoo cases that carry no description of their own.
+            Step {
+                argv: RUN,
+                exit: 0,
+                cells: Cells::pass(2),
+                case_ids: &["case-0", "case-1"],
+                priced: false,
+                writes: &[],
+                cache_hits: 0,
+            },
+        ],
     },
 ];

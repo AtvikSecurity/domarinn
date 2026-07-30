@@ -26,6 +26,7 @@ providers:
     timeout_ms: 5000
     cache_salt: "dev"
 
+# --8<-- [start:runner]
 runner:
   # Eight calls in flight. Match this to what the system under test can take,
   # not to your core count — the bottleneck is almost always on the other end.
@@ -51,6 +52,7 @@ runner:
   # cheap failure never pays for an expensive grader. Set false only when you
   # want every assertion's score recorded even on a decided case.
   short_circuit: true
+# --8<-- [end:runner]
 
 tests:
   - id: throughput/a

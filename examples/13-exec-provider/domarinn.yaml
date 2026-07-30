@@ -29,6 +29,7 @@ project: examples
 suite: exec-provider
 
 providers:
+  # --8<-- [start:provider]
   - id: assistant-fast
     label: "assistant (fast model)"
     type: exec
@@ -40,6 +41,11 @@ providers:
       ASSISTANT_STYLE: "concise"
     # A slow system under test needs a longer leash than the default.
     timeout_ms: 30000
+    # Bump this when you edit assistant.py — the cache key hashes what the
+    # program is SENT, never its bytes, so an edited script otherwise keeps
+    # answering from stale cached results. See example 22 for the salt levels.
+    cache_salt: "dev"
+  # --8<-- [end:provider]
 
   # A second provider, not a flag. Both run against every case, so the report
   # compares them cell by cell.
@@ -50,6 +56,7 @@ providers:
     env:
       ASSISTANT_STYLE: "thorough"
     timeout_ms: 30000
+    cache_salt: "dev"
 
 tests:
   - id: billing/refund-window

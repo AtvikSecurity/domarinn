@@ -21,6 +21,7 @@ project: examples
 suite: anthropic-provider
 
 providers:
+  # --8<-- [start:provider]
   - id: claude
     label: "claude-haiku-4-5"
     type: anthropic
@@ -32,11 +33,14 @@ providers:
     params:
       max_tokens: 512
     # USD per million tokens. Only the fields you state are overridden.
+    # --8<-- [start:pricing]
     pricing:
       input_per_mtok: 1.00
       output_per_mtok: 5.00
       cache_read_per_mtok: 0.10
       cache_write_per_mtok: 1.25
+    # --8<-- [end:pricing]
+  # --8<-- [end:provider]
 
 prompts:
   - id: returns-policy

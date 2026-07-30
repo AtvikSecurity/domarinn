@@ -27,7 +27,7 @@
 #
 # Because the names carry a version, `releases/latest/download/<name>` is no
 # longer constructible — GitHub has no wildcard there. Consumers resolve the tag
-# first via the `/releases/latest` redirect; README.md, docs/getting-started.md
+# first via the `/releases/latest` redirect; README.md, docs/start/install.md
 # and .github/actions/domarinn-eval/action.yml all do this.
 name: Release
 

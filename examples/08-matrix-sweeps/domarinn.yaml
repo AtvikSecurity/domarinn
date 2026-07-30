@@ -19,6 +19,7 @@ providers:
     command: ["python3", "../echo-provider.py"]
     cache_salt: "dev"
 
+# --8<-- [start:matrix]
 tests:
   # Default ids: greet[style=terse,temperature=0], greet[style=terse,temperature=1],
   # greet[style=warm,temperature=0], greet[style=warm,temperature=1].
@@ -42,3 +43,4 @@ tests:
     assert:
       - type: icontains
         value: "lang"
+# --8<-- [end:matrix]

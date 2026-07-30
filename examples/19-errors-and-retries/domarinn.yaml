@@ -5,7 +5,7 @@
 # A failed assertion means the system under test got worse. An ERROR means you
 # learned nothing — the call never produced a gradeable answer. Conflating the
 # two is how a gate starts lying, so domarinn keeps them apart end to end:
-# separate cell status, separate tally, separate exit code (3, which beats 1).
+# separate case status, separate tally, separate exit code (3, which beats 1).
 #
 # Three mechanisms appear below.
 #
@@ -55,7 +55,7 @@ tests:
       - type: contains
         value: "handled"
 
-  # The provider declines. With `refusal` listed above, this cell is SKIPPED —
+  # The provider declines. With `refusal` listed above, this case is SKIPPED —
   # neither a pass nor a failure, and visible as such in the report.
   - id: empty/refusal-is-skipped
     vars:
@@ -65,7 +65,7 @@ tests:
         value: "never evaluated"
 
   # A retriable failure. It is attempted 1 + 2 more times, and still errors —
-  # so the cell is an ERROR and the run exits 3. `summary.retried_cases`
+  # so the case is an ERROR and the run exits 3. `summary.retried_cases`
   # records that the attempts happened.
   - id: error/retriable-gives-up
     vars:

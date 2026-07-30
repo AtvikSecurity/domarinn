@@ -61,6 +61,9 @@ shellcheck = "0.11.0"
 # `mise install --locked … uv` (what the docs workflow asks for) looks up `uv`,
 # misses, and fails with "No lockfile URL found for uv@0.11.32".
 uv = "0.11.32"
+# The docs screenshot pipeline's seed script asserts data-at-rest hygiene with
+# a jq filter over the runs API; pin it like every other CI-relevant tool.
+jq = "1.8.2"
 
 # --- Tasks (ported 1:1 from the former justfile) ---------------------------
 
@@ -211,6 +214,10 @@ run = "zizmor --offline .github/workflows/*.yml .github/actions/*/action.yml"
 [tasks.docs]
 description = "Build the full docs site (MkDocs user docs + the protocol crate's rustdoc) into site/. Fails on a broken link, a missing nav file, or a `--8<--` include pointing at a file that is not there."
 run = "scripts/build-docs.sh"
+
+[tasks.screenshots]
+description = "Capture the docs' reference screenshots into docs/assets/screenshots/ from a real, seeded server: builds the UI if needed, brings up a local Ollama, seeds runs of the shipped examples, then drives Playwright. SKIP_LLM=1 skips Ollama and seeds only the offline examples; KEEP_SERVER=1 leaves the seeded server running afterwards."
+run = "scripts/docs-screenshots.sh"
 
 [tasks.docs-serve]
 description = "Serve the docs locally with live reload on http://127.0.0.1:8000 (no rustdoc nesting, so the `Protocol API` link 404s here — build with `mise run docs` to see it)."

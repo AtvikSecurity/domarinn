@@ -356,7 +356,7 @@ tests:
 /// function does has to be re-applied to them — or a generated case is a
 /// second-class one.
 ///
-/// `docs/caching.md` tells generator authors to emit a `cache_salt` per case and
+/// `docs/concepts/caching.md` tells generator authors to emit a `cache_salt` per case and
 /// documents `$digest:` as the way to compute one, but the literal string used
 /// to survive as the salt: one constant shared by every generated case, which
 /// never moves when the file it names is edited. Observed here through the cache

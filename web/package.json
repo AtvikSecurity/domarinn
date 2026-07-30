@@ -15,6 +15,7 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
+    "screenshots": "playwright test --config playwright.screenshots.config.ts",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "node ./node_modules/typescript-7/bin/tsc -b --noEmit"
   },

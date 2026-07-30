@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# A prompt with real history.
+#
+# `template:` renders one string. `messages:` renders a whole conversation —
+# system, user, assistant, user again — which is what a follow-up question
+# actually looks like: the model needs to see what it already said, not just
+# the newest line. A prompt sets exactly one of the two; setting both, or
+# neither, is a load error.
+#
+# Every message's `content` is a template like any other, so a fixed turn
+# (the system persona, the canned prior answer) is free to hold no `{{ }}` at
+# all — only the LAST turn below varies per case. The provider still receives
+# the whole array on every call; it is domarinn that fans the case out over
+# `vars`, not the shape of the messages.
+#
+# The exec protocol hands a messages-shaped prompt to a provider as
+# `{"messages": [...]}` rather than a bare string (see
+# docs/reference/protocol.md). The echo provider used here just returns
+# whatever `prompt` it was given, which is exactly that object — so the
+# assertions below can see the whole rendered transcript reached it.
+#
+# Run:  domarinn run examples/34-multi-turn-conversation
+version: 1
+project: examples
+suite: multi-turn-conversation
+
+providers:
+  - id: echo
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+# --8<-- [start:messages]
+prompts:
+  - id: support-followup
+    messages:
+      - role: system
+        content: "You are a support agent for Aurora Notes. Cite the policy window exactly; never invent one."
+      - role: user
+        content: "Can I return a laptop sleeve I bought 10 days ago?"
+      - role: assistant
+        content: "Yes — items are returnable within 30 days of delivery, in original condition."
+      - role: user
+        content: "{{ followup }}"
+# --8<-- [end:messages]
+
+tests:
+  # Both cases share the fixed turns above and differ only in the follow-up,
+  # which is the thing under test.
+  - id: turns/asks-about-electronics
+    vars:
+      followup: "Does that 30-day window apply to opened electronics too?"
+    assert:
+      # The assistant's earlier turn reached the provider — proof the whole
+      # history, not just the newest line, is part of every call.
+      - type: contains
+        value: "30 days of delivery"
+      # The last turn's var rendered into the transcript the provider saw.
+      - type: contains
+        value: "opened electronics"
+
+  - id: turns/asks-about-receipts
+    vars:
+      followup: "What if I've lost the original receipt?"
+    assert:
+      - type: contains
+        value: "30 days of delivery"
+      - type: contains
+        value: "lost the original receipt"
+      # Proof this case rendered its OWN follow-up rather than the other
+      # case's: each case gets a fresh render, never a leftover from one that
+      # ran before it.
+      - type: not-contains
+        value: "opened electronics"

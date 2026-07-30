@@ -19,6 +19,7 @@
 # is appended, base first.
 #
 # Run:  domarinn run examples/17-defaults-and-composition
+# --8<-- [start:extends]
 version: 1
 project: examples
 suite: composition
@@ -34,6 +35,7 @@ defaults:
     # APPENDED to the base's assert list, not replacing it. Both run.
     - type: length
       max: 2000
+# --8<-- [end:extends]
 
 tests:
   - id: support/mentions-product

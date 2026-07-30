@@ -1,6 +1,5 @@
 import { defineConfig } from "@playwright/test";
-import { existsSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { resolveChromeExecutable } from "./playwright.shared";
 
 /**
  * E2E config for the domarinn web UI.
@@ -13,57 +12,12 @@ import { execSync } from "node:child_process";
  * the resulting `dist/` on a fixed port. This makes the deterministic fixture in
  * `src/mocks/` active with no Rust backend required.
  *
- * Browser selection
- * -----------------
- * On CI (or any machine with Playwright's browsers installed) this uses the
- * bundled chromium. On systems where the CDN-downloaded chromium can't run
- * (e.g. NixOS, whose prebuilt binaries fail to find system shared libraries),
- * it points at an already-installed Google Chrome / Chromium instead. Set
- * `PLAYWRIGHT_CHROME_PATH` to override detection.
+ * Browser selection: see `resolveChromeExecutable` in ./playwright.shared.ts,
+ * shared with the docs-screenshot config.
  */
 
 const PORT = 4173;
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${PORT}`;
-
-function resolveChromeExecutable(): string | undefined {
-  const explicit = process.env.PLAYWRIGHT_CHROME_PATH ?? process.env.CHROME_PATH;
-  if (explicit && existsSync(explicit)) return explicit;
-
-  // On CI the bundled chromium is installed deliberately and is version-matched
-  // to the driver. The runner image also ships a system Google Chrome, which the
-  // detection below would otherwise prefer — silently swapping a matched browser
-  // for one that can drift from the driver's supported protocol. An explicit
-  // override above still wins.
-  if (process.env.CI) return undefined;
-
-  const home = process.env.HOME ?? "";
-  const user = process.env.USER ?? "";
-  const candidates = [
-    `${home}/.nix-profile/bin/google-chrome-stable`,
-    `/etc/profiles/per-user/${user}/bin/google-chrome-stable`,
-    `/etc/profiles/per-user/${user}/bin/google-chrome`,
-    "/run/current-system/sw/bin/google-chrome-stable",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/google-chrome",
-    "/opt/google/chrome/chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/snap/bin/chromium",
-  ];
-  for (const c of candidates) {
-    if (c && existsSync(c)) return c;
-  }
-
-  for (const bin of ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"]) {
-    try {
-      const p = execSync(`command -v ${bin} 2>/dev/null`, { encoding: "utf8" }).trim();
-      if (p && existsSync(p)) return p;
-    } catch {
-      /* not on PATH */
-    }
-  }
-  return undefined;
-}
 
 const chromeExecutable = resolveChromeExecutable();
 

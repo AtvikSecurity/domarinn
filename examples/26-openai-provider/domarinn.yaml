@@ -16,15 +16,23 @@
 #
 # Run:  domarinn run examples/26-openai-provider
 #       OPENAI_BASE_URL=http://localhost:11434/v1 domarinn run examples/26-openai-provider
+#       OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=qwen3:4b domarinn run examples/26-openai-provider
+#
+# The model, like the endpoint, resolves at load time and is part of the
+# cache key.
 version: 1
 project: examples
 suite: openai-provider
 
 providers:
+  # --8<-- [start:provider]
   - id: gpt
-    label: "gpt-4o-mini"
+    # The label interpolates the same variable as `model`: it exists to name
+    # the system under test wherever results are displayed, and a run against
+    # qwen3:4b must not report itself as gpt-4o-mini.
+    label: "${env:OPENAI_MODEL:-gpt-4o-mini}"
     type: openai
-    model: "gpt-4o-mini"
+    model: "${env:OPENAI_MODEL:-gpt-4o-mini}"
     # Defaults to the real API, and redirects with one variable — the same one
     # the vendor's own SDK honours, so a gateway, a proxy or a local Ollama
     # needs no edit to this file.
@@ -35,6 +43,7 @@ providers:
     params:
       temperature: 0
       max_tokens: 256
+  # --8<-- [end:provider]
 
 prompts:
   - id: geography

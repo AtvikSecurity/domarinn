@@ -1,0 +1,66 @@
+# The AFTER half of the migration pair, and not hand-written: this is the suite
+# `domarinn import promptfoo ./promptfooconfig.yaml` prints. Two things were
+# added — this header, and the sequence indentation this repository's formatter
+# applies to every YAML file in it. Nothing else was cleaned up, including the
+# ids.
+#
+# Read the `# NOTE:` lines first. Each one is something the converter could not
+# translate faithfully and refused to drop silently — here a `not-icontains`
+# assertion it does not recognise, and a `javascript` assertion that has no
+# equivalent at all. Both left the suite; re-adding them is the migration work
+# this file does not do for you.
+#
+# Two things a converted suite always wants next, neither of which the converter
+# can guess: `project:` / `suite:` names (they group and compare runs on the
+# results server), and provider and case ids that mean something — `p0` and
+# `case-0` are placeholders, and ids are what `--provider`, `only_providers` and
+# a baseline diff refer to.
+#
+# CI re-runs the converter on promptfooconfig.yaml, compares the result against
+# this file as YAML, and runs both — so this can only fall out of date if the
+# converter itself changes.
+#
+# The `$schema=./domarinn.schema.json` line below is the converter's own, and it
+# assumes the only thing the converter can assume: a suite sitting beside a
+# schema you wrote with `domarinn schema config > domarinn.schema.json` at your
+# project root. This suite lives two levels down, so that hint resolves to
+# nothing — left unedited on purpose, because every line after this header is
+# the converter's verbatim.
+#
+# Run:  domarinn run examples/39-import-promptfoo
+# Converted from a promptfoo config by `domarinn import promptfoo`.
+# yaml-language-server: $schema=./domarinn.schema.json
+# NOTE: assertion type 'not-icontains' was skipped (no equivalent)
+# NOTE: 'javascript' assertion has no direct equivalent; rewrite as an `exec` assertion
+version: 1
+description: Refund-policy replies from the support assistant
+providers:
+  - id: p0
+    type: exec
+    command:
+      - ../echo-provider.py
+prompts:
+  - id: prompt-0
+    template: |
+      You are a support agent for {{ product }}. Answer in one sentence.
+
+      Customer: {{ question }}
+defaults:
+  vars:
+    product: Aurora Notes
+  assert:
+    - type: icontains
+      value: Aurora
+tests:
+  - id: case-0
+    vars:
+      question: How long do I have to return something?
+    assert:
+      - type: contains
+        value: return something
+  - id: case-1
+    vars:
+      question: Can I get a refund on a gift card?
+    assert:
+      - type: icontains
+        value: gift card

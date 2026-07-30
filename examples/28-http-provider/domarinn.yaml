@@ -28,6 +28,7 @@ project: examples
 suite: http-provider
 
 providers:
+  # --8<-- [start:provider]
   - id: support-api
     type: http
     url: "${env:SUPPORT_API_URL:-https://api.example.com/v1/assist}"
@@ -43,6 +44,7 @@ providers:
     # Reach into the parsed body for the field that is actually the answer.
     # Note `response.json`, not `response` — the latter is the envelope.
     output_expr: "response.json.result.reply"
+  # --8<-- [end:provider]
 
 defaults:
   vars:

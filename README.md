@@ -13,7 +13,7 @@ domarinn inverts that:
 - **Deterministic assertions run first** and can short-circuit the LLM grader.
 - **The grader is structured** (tool-use / JSON-schema verdicts, never regex-from-prose) and **fails closed** — a missing or truncated verdict is an error, never a silent pass.
 - **Statistics built in** — Wilson confidence intervals, McNemar significance, and pass@k, not bare pass rates.
-- **Content-addressed caching** of every outgoing request — provider calls, judge verdicts, embeddings — under one rule, so it is safe to share between teammates over a server URL or an S3-compatible bucket.
+- **Content-addressed caching** of every outgoing request — provider calls, grader verdicts, embeddings — under one rule, so it is safe to share between teammates over a server URL or an S3-compatible bucket.
 - **A self-hostable server + web UI** with real accounts — local logins, an admin role, and per-user API keys — plus run comparison and a shared cache.
 - **Structured logging** — human-readable on a terminal, JSON one-object-per-line in a container (or when requested), with per-request ids on the server.
 
@@ -48,7 +48,7 @@ docker run -p 8321:8321 -v domarinn-data:/data ghcr.io/atviksecurity/domarinn:ro
 > **not** — it builds the CLI only, so `domarinn server` will serve a placeholder
 > page. Build the UI first (`mise run install`) if you want it.
 
-See [docs/getting-started.md](docs/getting-started.md) for `aarch64`, checksum verification, pinned versions, and building from source.
+See [docs/start/install.md](docs/start/install.md) for `aarch64`, checksum verification, pinned versions, and building from source.
 
 ## Quick start
 
@@ -87,25 +87,26 @@ tests:
       - { type: icontains, value: "hello" }
 ```
 
-See **[docs/getting-started.md](docs/getting-started.md)** for a full walkthrough.
+See **[docs/start/first-eval.md](docs/start/first-eval.md)** for a full walkthrough.
 
 ## Documentation
 
-Full documentation is published at **<https://docs.domarinn.com/>** (source in [`docs/`](docs/)):
+Full documentation is published at **<https://docs.domarinn.com/>** (source in [`docs/`](docs/)). The tree, and a handful of curated links per section:
 
-- [Getting started](docs/getting-started.md) · [Configuration](docs/configuration.md) · [Assertions](docs/assertions.md) · [Providers](docs/providers.md)
-- [Grading](docs/grading.md) · [Caching](docs/caching.md) · [Statistics](docs/statistics.md) · [CLI reference](docs/cli.md)
-- [Server & accounts](docs/server.md) · [Deploy](docs/deploy.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/protocol.md)
-- [MCP endpoint](docs/server.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
-- **[Examples](docs/examples.md)** — 32 runnable suites, one capability each, every one executed in CI
-- **[Scenarios](docs/scenarios/index.md)** · [How a run works](docs/concepts/how-a-run-works.md) · [Troubleshooting](docs/troubleshooting.md) · [Migrating from promptfoo](docs/migrate-promptfoo.md)
+- **Start here** — [Install](docs/start/install.md) · [Your first eval](docs/start/first-eval.md)
+- **Concepts** — [How a run works](docs/concepts/how-a-run-works.md) · [Providers & the exec boundary](docs/concepts/exec-boundary.md) · [Grading](docs/concepts/grading.md) · [Caching](docs/concepts/caching.md) · [Statistics](docs/concepts/statistics.md) · [Why domarinn is built this way](docs/concepts/why-domarinn.md)
+- **[Guides](https://docs.domarinn.com/guides/)** (twelve, end to end) — [Test a model API](docs/guides/test-a-model-api.md) · [Test your app via exec](docs/guides/evaluate-your-app.md) · [A zero-cost gate on every PR](docs/guides/render-gate.md) · [Gate a PR in CI](docs/guides/gate-in-ci.md) · [Self-hosting](docs/guides/self-host.md) · [Migrating from promptfoo](docs/guides/migrate-promptfoo.md) · [Troubleshooting](docs/guides/troubleshooting.md)
+- **Reference** — [domarinn.yaml](docs/reference/domarinn-yaml.md) · [Providers](docs/reference/providers.md) · [Assertions](docs/reference/assertions.md) · [CLI](docs/reference/cli.md) · [Server & accounts](docs/reference/server.md) · [REST API](docs/reference/rest-api.md) · [MCP endpoint](docs/reference/mcp.md) · [Exec protocol](docs/reference/protocol.md) · [The web UI](docs/reference/web-ui.md)
+- **[Examples](https://docs.domarinn.com/examples/)** — 39 runnable suites, one capability each, every one executed in CI: [first steps](docs/examples/first-steps.md) · [templates & test data](docs/examples/templates-and-test-data.md) · [your own system](docs/examples/your-own-system.md) · [running & reporting](docs/examples/running-and-reporting.md) · [caching & statistics](docs/examples/caching-and-statistics.md) · [models, grading & budgets](docs/examples/models-grading-and-budgets.md)
+
+Also the [Claude Code plugin](plugin/README.md), which bundles the MCP endpoint with eval-authoring and triage skills, and the [Rust API reference](https://docs.domarinn.com/rustdoc/) for `domarinn-protocol`.
 
 ## For agents
 
 The server can expose your eval history to MCP clients, read-only, so an agent can answer "which
 cases regressed between these two runs, and why" directly against the data:
 
-```bash
+```sh
 DOMARINN_MCP_ENABLED=true domarinn server
 
 claude mcp add --transport http domarinn http://localhost:8321/api/v1/mcp \
@@ -113,7 +114,7 @@ claude mcp add --transport http domarinn http://localhost:8321/api/v1/mcp \
 ```
 
 Eight read-only tools, three prompts, dual-era MCP (`2026-07-28` plus the handshake revisions), in
-the same binary — no sidecar process. See [MCP endpoint](docs/server.md#mcp-endpoint), or install
+the same binary — no sidecar process. See [MCP endpoint](docs/reference/mcp.md#mcp-endpoint), or install
 the [Claude Code plugin](plugin/README.md) which bundles it with eval-authoring and triage skills.
 
 ## Workspace layout
@@ -158,7 +159,7 @@ Every source file is kept under 1000 lines (enforced by a ratchet test), and CI 
 
 Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) — it covers the setup, the single `mise run ci` gate, and the [Conventional Commit PR title](CONTRIBUTING.md#naming-a-pull-request) that drives releases. Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Releases are automated with [Release Please](https://github.com/googleapis/release-please): merging a `feat:` or `fix:` PR opens a release PR, and merging that publishes the tag, the binaries, and the container image. See [docs/ci.md](docs/ci.md#releases).
+Releases are automated with [Release Please](https://github.com/googleapis/release-please): merging a `feat:` or `fix:` PR opens a release PR, and merging that publishes the tag, the binaries, and the container image. See [CONTRIBUTING.md](CONTRIBUTING.md#releases).
 
 Found a security issue? Please report it privately — see [SECURITY.md](SECURITY.md).
 

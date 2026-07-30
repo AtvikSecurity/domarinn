@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Tool calls, over the wire this time.
+#
+# Example 15 declared tools for an `exec` provider — your own program decided
+# whether to call one, and reported the decision itself. This is the same
+# `tools:` block and the same `tool-call` assertion, aimed at `type:
+# anthropic` instead: the suite declares tools once, and every API-shaped
+# provider in it is offered the same surface in that vendor's native shape.
+#
+# domarinn still never EXECUTES a tool (see docs/reference/protocol.md#tools)
+# — it only grades the decision, whichever transport carried it.
+#
+# Run:  domarinn run examples/35-anthropic-tools
+version: 1
+project: examples
+suite: anthropic-tools
+
+providers:
+  - id: claude
+    type: anthropic
+    model: "claude-haiku-4-5"
+    base_url: "${env:ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+    api_key_env: ANTHROPIC_API_KEY
+    params:
+      max_tokens: 512
+
+# Suite-level, so every provider is offered the same surface — see example 15
+# for the two-tool version and the read-only/dangerous-tool distinction.
+tools:
+  - name: lookup_order
+    description: Fetch an order by its id.
+    input_schema:
+      type: object
+      required: ["order_id"]
+      properties:
+        order_id: { type: integer }
+
+prompts:
+  - id: support
+    messages:
+      - role: user
+        content: "{{ user_input }}"
+
+tests:
+  - id: agent/looks-up-order
+    vars:
+      user_input: "What's the status of order 1042?"
+    assert:
+      - type: tool-call
+        name: lookup_order
+        # A subset match, as in example 15: the call may carry more, but this
+        # must be present and equal.
+        args:
+          order_id: 1042

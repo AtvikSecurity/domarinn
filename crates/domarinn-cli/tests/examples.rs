@@ -15,213 +15,25 @@ mod common;
 // `tests/table.rs`, which Cargo auto-discovers as a *separate* test target. A
 // `tests/examples/` directory with no `main.rs` is not auto-discovered, so the
 // whole harness links as one binary.
+#[path = "examples/docs_guards.rs"]
+mod docs_guards;
+#[path = "examples/spec.rs"]
+mod spec;
+#[path = "examples/stub_contract.rs"]
+mod stub_contract;
 #[path = "examples/stubs.rs"]
 mod stubs;
 #[path = "examples/table.rs"]
 mod table;
 
 use std::collections::BTreeSet;
-use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
-use common::{stub_script, stub_server};
-use table::{Cells, Env, Example, Step, EXAMPLES};
-
-/// Send one raw request to a stub and return the whole response, headers and
-/// all. Raw rather than a client crate because what is under test *is* the
-/// framing.
-fn raw_request(url: &str, request: &str) -> String {
-    let addr = url.strip_prefix("http://").expect("stub url is http");
-    let mut sock = TcpStream::connect(addr).expect("stub is listening");
-    sock.write_all(request.as_bytes()).unwrap();
-    sock.flush().unwrap();
-    let mut response = String::new();
-    // The stub answers `connection: close`, so read-to-EOF terminates.
-    sock.read_to_string(&mut response).unwrap();
-    response
-}
-
-fn post(path: &str, body: &str) -> String {
-    format!(
-        "POST {path} HTTP/1.1\r\nhost: stub\r\ncontent-type: application/json\r\n\
-         content-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
-    )
-}
-
-/// The declared `content-length` of a response, for comparison against what it
-/// actually sent.
-fn declared_length(response: &str) -> usize {
-    response
-        .to_lowercase()
-        .split("content-length:")
-        .nth(1)
-        .and_then(|rest| rest.split("\r\n").next())
-        .and_then(|v| v.trim().parse().ok())
-        .expect("response declares a content-length")
-}
-
-fn body_of(response: &str) -> &str {
-    response
-        .split_once("\r\n\r\n")
-        .expect("response has a header/body split")
-        .1
-}
-
-/// The stub must wait for a declared request body before replying.
-///
-/// It used to answer at end-of-headers, which is fine for the GETs its first
-/// callers made but resets the connection under a POST: the client is still
-/// writing when the socket closes, so it reports a transport error instead of
-/// the status under test. Every model provider POSTs, so without this the
-/// example harness could not stub a single one of them.
-///
-/// The headers and body are sent as two writes *on purpose*. Sent as one, the
-/// kernel hands the server both in its first `read`, and a stub that never
-/// waits still looks correct — so the obvious version of this test passes
-/// against the very bug it is meant to catch.
-#[test]
-fn the_stub_waits_for_a_request_body_before_replying() {
-    let (url, server) = stub_script(
-        vec![("/v1/messages", vec![r#"{"ok":true}"#.to_string()])],
-        1,
-        Duration::from_secs(10),
-    );
-
-    let body = r#"{"model":"m","messages":[]}"#;
-    let addr = url.strip_prefix("http://").expect("stub url is http");
-    let mut sock = TcpStream::connect(addr).expect("stub is listening");
-    sock.write_all(
-        format!(
-            "POST /v1/messages HTTP/1.1\r\nhost: stub\r\ncontent-type: application/json\r\n\
-             content-length: {}\r\nconnection: close\r\n\r\n",
-            body.len()
-        )
-        .as_bytes(),
-    )
-    .unwrap();
-    sock.flush().unwrap();
-
-    // Nothing may come back yet: the request is incomplete, and a reply here is
-    // exactly what leaves a real client writing into a closed socket.
-    sock.set_read_timeout(Some(Duration::from_millis(300)))
-        .unwrap();
-    let mut early = [0u8; 128];
-    match sock.read(&mut early) {
-        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-        Ok(n) => panic!(
-            "the stub replied before the body arrived: {:?}",
-            String::from_utf8_lossy(&early[..n])
-        ),
-        Err(e) => panic!("unexpected error reading from the stub: {e}"),
-    }
-
-    sock.write_all(body.as_bytes()).unwrap();
-    sock.flush().unwrap();
-    sock.set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let mut response = String::new();
-    sock.read_to_string(&mut response).unwrap();
-
-    assert!(
-        response.starts_with("HTTP/1.1 200 OK"),
-        "a POST with a body must be answered once complete, got: {response:?}"
-    );
-    assert_eq!(body_of(&response), r#"{"ok":true}"#);
-
-    // Guard against a vacuous pass: prove the stub routed *this* request rather
-    // than the assertions above passing on some unrelated reply.
-    assert_eq!(
-        server.join().unwrap(),
-        vec!["POST /v1/messages HTTP/1.1".to_string()],
-        "the stub did not record the POST it answered"
-    );
-}
-
-/// `stub_server` shares the same drain, and is what `share` / `ci-summary`
-/// exercise — those POST a whole run document, the largest body any test sends.
-#[test]
-fn the_one_shot_stub_also_drains_a_body_and_returns_it() {
-    let (url, server) = stub_server("200 OK", r#"{"url":"https://domarinn.test/runs/x"}"#);
-
-    let sent = r#"{"schema_version":2,"cases":[]}"#;
-    let response = raw_request(&url, &post("/api/v1/runs", sent));
-
-    assert!(response.starts_with("HTTP/1.1 200 OK"), "got: {response:?}");
-    let captured = String::from_utf8(server.join().unwrap()).unwrap();
-    assert!(
-        captured.ends_with(sent),
-        "the stub must hand back the full body it drained, got: {captured:?}"
-    );
-}
-
-/// A route answers a *sequence*, not one fixed body.
-///
-/// This is what makes a `similar` example honest: the assertion embeds the
-/// output and the reference and takes their cosine, so a stub that returned one
-/// vector for both would score 1.0 against itself and the threshold on the page
-/// would be untested at every value.
-#[test]
-fn a_route_serves_a_different_body_per_request_then_repeats_the_last() {
-    let (url, server) = stub_script(
-        vec![(
-            "/embeddings",
-            vec![r#"{"n":1}"#.to_string(), r#"{"n":2}"#.to_string()],
-        )],
-        3,
-        Duration::from_secs(10),
-    );
-
-    let bodies: Vec<String> = (0..3)
-        .map(|_| body_of(&raw_request(&url, &post("/embeddings", "{}"))).to_string())
-        .collect();
-
-    assert_eq!(
-        bodies,
-        vec![r#"{"n":1}"#, r#"{"n":2}"#, r#"{"n":2}"#],
-        "the script must advance per request, then hold on its last body"
-    );
-    assert_eq!(server.join().unwrap().len(), 3);
-}
-
-/// An unrouted request must produce a 404 a client can actually parse.
-///
-/// The 404 used to hardcode `content-length: 11` for the 12-byte body
-/// `{"error":""}`, so a client reading by length got truncated JSON and
-/// reported a deserialization failure — hiding the fact that it had simply
-/// asked for a path no route matched.
-#[test]
-fn an_unrouted_request_gets_a_parseable_404_that_names_the_path() {
-    let (url, server) = stub_script(
-        vec![("/v1/messages", vec![r#"{"ok":true}"#.to_string()])],
-        1,
-        Duration::from_secs(10),
-    );
-
-    let response = raw_request(&url, &post("/v1/nope", "{}"));
-
-    assert!(
-        response.starts_with("HTTP/1.1 404 Not Found"),
-        "got: {response:?}"
-    );
-    let body = body_of(&response);
-    assert_eq!(
-        declared_length(&response),
-        body.len(),
-        "content-length must match the body it describes, or the client truncates it"
-    );
-    serde_json::from_str::<serde_json::Value>(body)
-        .unwrap_or_else(|e| panic!("the 404 body must be valid JSON, got {body:?}: {e}"));
-    assert!(
-        body.contains("/v1/nope"),
-        "the 404 must name the unrouted path so the operator can see what missed: {body:?}"
-    );
-
-    server.join().unwrap();
-}
+use common::stub_script;
+use spec::{Cells, Env, Example, Step};
+use table::EXAMPLES;
 
 // ---------------------------------------------------------------------------
 // The example harness
@@ -241,12 +53,15 @@ const HOST_ENV: &[&str] = &[
     "ANTHROPIC_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
+    "OPENAI_MODEL",
+    "OPENAI_EMBED_MODEL",
     "DOMARINN_SERVER_URL",
     "DOMARINN_TOKEN",
     "DOMARINN_CACHE_DIR",
     "DOMARINN_SMOKE_BASE_URL",
     "DOMARINN_SMOKE_MODEL",
     "DOMARINN_SMOKE_API_KEY",
+    "ORDERS_API_URL",
 ];
 
 fn repo_root() -> PathBuf {
@@ -268,194 +83,28 @@ fn scrubbed_bin() -> Command {
     cmd
 }
 
-/// `NN-kebab-name`: two digits, a dash, then lowercase words.
-///
-/// Policed rather than merely conventional because the docs address examples by
-/// this shape, and a misnamed directory is one the ladder cannot transclude.
-fn is_ladder_name(name: &str) -> bool {
-    let Some((num, rest)) = name.split_once('-') else {
-        return false;
-    };
-    num.len() == 2
-        && num.chars().all(|c| c.is_ascii_digit())
-        && !rest.is_empty()
-        && rest
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-/// Every example directory that ships, by name.
-fn shipped_example_dirs() -> BTreeSet<String> {
-    let root = examples_root();
-    let mut out = BTreeSet::new();
-    for entry in std::fs::read_dir(&root).expect("examples/ exists") {
-        let entry = entry.expect("readable directory entry");
-        if !entry.file_type().expect("file type").is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        assert!(
-            is_ladder_name(&name),
-            "examples/{name}/ does not match the NN-kebab-name scheme the docs \
-             address examples by. Rename it, or move it out of examples/ if it \
-             is not an example."
-        );
-        assert!(
-            entry.path().join("domarinn.yaml").is_file(),
-            "examples/{name}/ has no domarinn.yaml, so there is no suite to run"
-        );
-        out.insert(name);
-    }
-    out
-}
-
-/// A directory under `examples/` that no row covers is an example nobody runs,
-/// and an example nobody runs is a page that lies. This is the guard that makes
-/// "every example is verified end to end" a property of the repository rather
-/// than of whoever reviewed the last pull request.
-#[test]
-fn every_shipped_example_is_in_the_table() {
-    let shipped = shipped_example_dirs();
-    // Guard against a vacuous pass: a broken glob — a moved crate, a renamed
-    // directory — yields an empty set that satisfies every assertion below,
-    // and this test would stay green forever while covering nothing.
-    assert!(
-        shipped.len() >= 4,
-        "found {} example directories under {}; the glob is broken, not the repo",
-        shipped.len(),
-        examples_root().display()
-    );
-
-    let covered: BTreeSet<&str> = EXAMPLES.iter().map(|e| e.dir).collect();
-    assert_eq!(
-        covered.len(),
-        EXAMPLES.len(),
-        "two rows name the same example directory"
-    );
-
-    let untested: Vec<&str> = shipped
-        .iter()
-        .filter(|d| !covered.contains(d.as_str()))
-        .map(String::as_str)
-        .collect();
-    assert!(
-        untested.is_empty(),
-        "these examples ship but nothing runs them: {untested:?}\n\
-         Add a row to crates/domarinn-cli/tests/examples/table.rs — a directory \
-         under examples/ and a row in that table are the same thing."
-    );
-
-    let stale: Vec<&str> = EXAMPLES
-        .iter()
-        .map(|e| e.dir)
-        .filter(|d| !shipped.contains(*d))
-        .collect();
-    assert!(
-        stale.is_empty(),
-        "these rows name directories that no longer exist: {stale:?}"
-    );
-}
-
-/// An example the documentation never shows is dead weight that still has to be
-/// kept green; a `--8<--` pointing at a file that is not there renders as a
-/// broken page.
-///
-/// MkDocs' `check_paths` catches only the second, and only when the site is
-/// built. The reverse — an example no page transcludes — is invisible to it,
-/// which is exactly the direction that rots: an example gets renamed, the page
-/// keeps showing the old one, and nobody notices because both still exist.
-#[test]
-fn every_example_is_transcluded_and_every_transclusion_resolves() {
-    let root = repo_root();
-    let includes = snippet_includes(&root.join("docs"));
-    assert!(
-        !includes.is_empty(),
-        "no `--8<--` includes found under docs/; the scanner is broken, or the \
-         examples are not being transcluded anywhere"
-    );
-
-    // Forward: a snippet path must exist. Resolved against the repo root, which
-    // is what pymdownx.snippets' `base_path` is set to in mkdocs.yml.
-    let dangling: Vec<&(String, String)> = includes
-        .iter()
-        .filter(|(_, path)| !root.join(path).is_file())
-        .collect();
-    assert!(
-        dangling.is_empty(),
-        "doc snippets point at files that do not exist: {dangling:#?}"
-    );
-
-    // Reverse: every example is shown somewhere.
-    let shown: BTreeSet<&str> = includes
-        .iter()
-        .filter_map(|(_, path)| path.strip_prefix("examples/"))
-        .filter_map(|rest| rest.split('/').next())
-        .collect();
-    let undocumented: Vec<&str> = EXAMPLES
-        .iter()
-        .map(|e| e.dir)
-        .filter(|d| !shown.contains(d))
-        .collect();
-    assert!(
-        undocumented.is_empty(),
-        "these examples are tested but no page shows them: {undocumented:?}\n\
-         Transclude each with `--8<-- \"examples/<dir>/domarinn.yaml\"`, or \
-         delete it: an example whose only reader is CI is a maintenance cost \
-         with no payer."
-    );
-}
-
-/// Every `--8<-- "path"` in every markdown file under `dir`, as (page, path).
-fn snippet_includes(dir: &Path) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        for entry in std::fs::read_dir(&current).expect("readable docs directory") {
-            let path = entry.expect("readable entry").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "md") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
-            for line in text.lines() {
-                let Some(rest) = line.trim_start().strip_prefix("--8<--") else {
-                    continue;
-                };
-                let quoted = rest.trim();
-                let include = quoted
-                    .strip_prefix('"')
-                    .and_then(|r| r.strip_suffix('"'))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "{}: `--8<--` is not the inline quoted form this repo \
-                             uses, so nothing checks it: {line}",
-                            path.display()
-                        )
-                    });
-                // A `file:section` or `file:5:8` include names the file before
-                // the first colon.
-                let file = include.split(':').next().unwrap_or(include);
-                out.push((path.display().to_string(), file.to_string()));
-            }
-        }
-    }
-    out
-}
-
 /// A missing interpreter is not an example failure, and must not read like one.
 ///
 /// Without this, `python3` absent turns every python-backed row red at once
 /// with "provider error" and nothing anywhere naming the cause.
+///
+/// A `.py` path counts as much as the word `python3`: a suite whose `command` is
+/// the script itself relies on its `#!/usr/bin/env python3` shebang, so it needs
+/// the interpreter just as much while never spelling it out. The converted suite
+/// in `39-import-promptfoo` is that shape — and it is the converter's output, so
+/// it cannot be reworded to say `python3`.
+///
+/// The selector is a plain text search over the whole file, prose included, and
+/// that is deliberate: it can only over-include, and over-including costs one
+/// `python3 --version` on a machine that has it anyway. Contrast [`invokes_jq`],
+/// which cannot afford the same looseness.
 #[test]
 fn python3_is_available_for_the_examples_that_need_it() {
     let users: Vec<&str> = EXAMPLES
         .iter()
         .filter(|e| {
             std::fs::read_to_string(examples_root().join(e.dir).join("domarinn.yaml"))
-                .map(|s| s.contains("python3"))
+                .map(|s| s.contains("python3") || names_a_py_file(&s))
                 .unwrap_or(false)
         })
         .map(|e| e.dir)
@@ -471,6 +120,82 @@ fn python3_is_available_for_the_examples_that_need_it() {
         ok,
         "python3 is not on PATH, but {} shipped example(s) use it as their \
          system under test: {users:?}",
+        users.len()
+    );
+}
+
+/// Whether `text` names a `.py` file, rather than merely containing those three
+/// bytes: `.py` has to end the path component, so `../echo-provider.py` and a
+/// quoted `"gen.py"` count while `.pyc`, `.pyi` and `.pyproject` do not.
+fn names_a_py_file(text: &str) -> bool {
+    text.match_indices(".py").any(|(at, hit)| {
+        text[at + hit.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !next.is_alphanumeric() && next != '_')
+    })
+}
+
+/// Whether any non-comment line in any file directly under `dir` mentions
+/// `jq`.
+///
+/// Deliberately not "does `domarinn.yaml` contain the word jq": "jq" also shows
+/// up in this ladder's own prose (a header comment explaining why a script uses
+/// it). What this relies on, and what the python3 guard above does not need, is
+/// that the selector be non-vacuous — [`jq_is_available_for_the_examples_that_need_it`]
+/// asserts it matched something, so a prose match would keep that assertion
+/// green the day the last real `jq` invocation disappeared, guarding nothing
+/// while looking correct. Excluding comment lines (`#`, the marker in both YAML
+/// and bash) leaves only real command lines in a provider script.
+fn invokes_jq(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let path = entry.path();
+        path.is_file()
+            && std::fs::read_to_string(&path).is_ok_and(|text| {
+                text.lines()
+                    .map(str::trim_start)
+                    .filter(|line| !line.starts_with('#'))
+                    .any(|line| line.contains("jq"))
+            })
+    })
+}
+
+/// A missing `jq` is not an example failure, and must not read like one.
+///
+/// Mirrors [`python3_is_available_for_the_examples_that_need_it`]: without
+/// this, `jq` absent turns the bash-backed row red with "provider error" and
+/// nothing anywhere naming the cause. `jq` is pinned in `.mise/config.toml`,
+/// so a `mise`-run shell always has it — this only catches a bare
+/// `cargo test` run outside one.
+#[test]
+fn jq_is_available_for_the_examples_that_need_it() {
+    let users: Vec<&str> = EXAMPLES
+        .iter()
+        .filter(|e| invokes_jq(&examples_root().join(e.dir)))
+        .map(|e| e.dir)
+        .collect();
+    // Guard against a vacuous pass: unlike the python3 guard (which returns
+    // early when nothing uses it, because that was true before example 13
+    // shipped), this repository has shipped a jq-backed example since the
+    // day this test was added — so an empty selector here always means the
+    // selector broke, never that the guard has nothing to do.
+    assert!(
+        !users.is_empty(),
+        "no shipped example's non-comment lines mention jq — either \
+         37-exec-provider-bash stopped using it or `invokes_jq` no longer \
+         matches it, and either way this guard is currently vacuous"
+    );
+    let ok = Command::new("jq")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    assert!(
+        ok,
+        "jq is not on PATH, but {} shipped example(s) use it as their system \
+         under test: {users:?}",
         users.len()
     );
 }
@@ -526,6 +251,217 @@ fn example_05_scores_are_what_its_comments_claim() {
         (score("gate/weighted") - 0.75).abs() < 1e-9,
         "weighted scored {}, the page says (1*3 + 0*1) / 4",
         score("gate/weighted")
+    );
+}
+
+/// Run one shipped example against a scripted stub with extra environment,
+/// asserting success and the exact call count, and hand back the full requests
+/// the stub served.
+///
+/// This exists for the `${env:…}` override invocations the example pages
+/// document. The table rows exercise only the `:-default` branch — HOST_ENV
+/// scrubs the variables — so without these runs a typo'd variable name, or a
+/// quiet fall back to a literal, would keep CI green while every documented
+/// override invocation silently tested the default.
+fn run_with_env(
+    dir: &str,
+    routes: Vec<(&'static str, Vec<String>)>,
+    calls: usize,
+    env: &[(&str, &str)],
+) -> Vec<String> {
+    let (url, server) = stub_script(routes, calls, Duration::from_secs(30));
+    let tmp = tempfile::tempdir().expect("scratch directory");
+    let mut cmd = scrubbed_bin();
+    cmd.args(["run"])
+        .arg(examples_root().join(dir))
+        .args(["--format", "json", "--no-progress", "--out"])
+        .arg(tmp.path().join("result.json"))
+        .arg("--cache-dir")
+        .arg(tmp.path().join("cache"))
+        .env("OPENAI_BASE_URL", format!("{url}/v1"))
+        .env("OPENAI_API_KEY", "sk-stub-not-a-real-key")
+        .current_dir(tmp.path());
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let out = cmd.output().expect("the domarinn binary runs");
+    assert!(
+        out.status.success(),
+        "`domarinn run {dir}` with {env:?} failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let served = server.join().expect("the stub thread does not panic");
+    assert_eq!(
+        served.len(),
+        calls,
+        "example `{dir}` with {env:?} made {} stub request(s), expected {calls}",
+        served.len()
+    );
+    served
+}
+
+/// Example 26's page documents `OPENAI_MODEL=… domarinn run …` as the way to
+/// point the suite at another model. Prove the override survives load-time
+/// interpolation all the way into the request body — the row above can only
+/// ever see the default, so this is the one place the documented invocation is
+/// actually exercised.
+#[test]
+fn example_26_env_overridden_model_reaches_the_wire() {
+    let served = run_with_env(
+        "26-openai-provider",
+        vec![(
+            "/chat/completions",
+            vec![
+                stubs::OPENAI_TEXT.to_string(),
+                stubs::OPENAI_TEXT_ALT.to_string(),
+            ],
+        )],
+        2,
+        &[("OPENAI_MODEL", "stub-chat-override")],
+    );
+    for request in &served {
+        assert!(
+            request.contains(r#""model":"stub-chat-override""#),
+            "the overridden model never reached the request body: {request:?}"
+        );
+    }
+}
+
+/// The embeddings twin of the test above: example 30's `similar` assertion
+/// documents `OPENAI_EMBED_MODEL` as its override.
+#[test]
+fn example_30_env_overridden_embed_model_reaches_the_wire() {
+    let served = run_with_env(
+        "30-similar-embeddings",
+        vec![(
+            "/embeddings",
+            vec![stubs::EMBED_A.to_string(), stubs::EMBED_NEAR_A.to_string()],
+        )],
+        2,
+        &[("OPENAI_EMBED_MODEL", "stub-embed-override")],
+    );
+    for request in &served {
+        assert!(
+            request.contains(r#""model":"stub-embed-override""#),
+            "the overridden embeddings model never reached the request body: {request:?}"
+        );
+    }
+}
+
+/// Example 39 ships both halves of a promptfoo migration, and the second half is
+/// a claim about a program: `examples/39-import-promptfoo/domarinn.yaml` says it
+/// is what `domarinn import promptfoo` prints for the config beside it. So it is
+/// checked against the converter — and then run, because "it converted" is not
+/// "it works".
+///
+/// Neither half fits the example table. The converter writes to stdout and takes
+/// no output path, so a table row can only assert its exit code; the row does
+/// that, and this test does the two things that need the stdout itself.
+#[test]
+fn example_39_the_committed_conversion_is_the_converters_output_and_runs() {
+    let dir = examples_root().join("39-import-promptfoo");
+    let out = scrubbed_bin()
+        .args(["import", "promptfoo"])
+        .arg(dir.join("promptfooconfig.yaml"))
+        .output()
+        .expect("the domarinn binary runs");
+    assert!(
+        out.status.success(),
+        "`domarinn import promptfoo` failed on the shipped config:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8(out.stdout).expect("the converter prints utf-8");
+    let committed =
+        std::fs::read_to_string(dir.join("domarinn.yaml")).expect("the committed conversion ships");
+
+    // The `# NOTE:` lines are the point of the pair: two assertions in that
+    // promptfoo config have no faithful equivalent, and the guide tells readers
+    // to read the notes before running anything. A conversion that silently
+    // stopped emitting them would still parse, still run, and still be green.
+    let notes: Vec<&str> = printed
+        .lines()
+        .filter(|l| l.starts_with("# NOTE:"))
+        .collect();
+    assert_eq!(
+        notes.len(),
+        2,
+        "the shipped promptfoo config carries two deliberately unmappable \
+         assertions (`not-icontains` and `javascript`), so the converter must \
+         emit two notes; it emitted: {notes:?}"
+    );
+    for note in &notes {
+        assert!(
+            committed.contains(note),
+            "the committed conversion dropped a converter note: {note:?}"
+        );
+    }
+
+    // Compared as YAML rather than as bytes: the committed file carries a header
+    // saying where it came from, and this repository's formatter indents its
+    // sequences. Neither changes the suite, and a byte comparison would reject
+    // the file for saying what it is.
+    let parse = |what: &str, text: &str| {
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text)
+            .unwrap_or_else(|e| panic!("{what} is not valid YAML: {e}"))
+    };
+    assert_eq!(
+        parse("the converter's output", &printed),
+        parse("the committed conversion", &committed),
+        "examples/39-import-promptfoo/domarinn.yaml is no longer what \
+         `domarinn import promptfoo promptfooconfig.yaml` prints.\n\
+         If crates/domarinn-cli/src/import.rs changed on purpose, regenerate the \
+         file (keeping its header) and commit it — the example's whole claim is \
+         that it is the tool's output, not a hand-written suite."
+    );
+
+    // And the printed suite runs, not just the committed one. Written into a
+    // scratch tree with the shared echo provider beside it, because the
+    // converted `command` is `../echo-provider.py` — resolved relative to the
+    // suite file, exactly as it is in the example directory.
+    let tmp = tempfile::tempdir().expect("scratch directory");
+    std::fs::copy(
+        examples_root().join("echo-provider.py"),
+        tmp.path().join("echo-provider.py"),
+    )
+    .expect("the shared echo provider copies, mode included");
+    let suite_dir = tmp.path().join("converted");
+    std::fs::create_dir(&suite_dir).expect("scratch suite directory");
+    std::fs::write(suite_dir.join("domarinn.yaml"), &printed).expect("the conversion writes");
+
+    let result = tmp.path().join("result.json");
+    let run = scrubbed_bin()
+        .args(["run"])
+        .arg(&suite_dir)
+        .args(["--format", "json", "--no-progress", "--out"])
+        .arg(&result)
+        .arg("--cache-dir")
+        .arg(tmp.path().join("cache"))
+        .current_dir(tmp.path())
+        .output()
+        .expect("the domarinn binary runs");
+    assert!(
+        run.status.success(),
+        "the converter's own output did not run:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let doc: domarinn_core::result::RunResult = serde_json::from_str(
+        &std::fs::read_to_string(&result).expect("the run wrote a result document"),
+    )
+    .expect("the result document parses");
+    let ids: BTreeSet<&str> = doc.cases.iter().map(|c| c.cell.test_id.as_str()).collect();
+    assert_eq!(
+        (doc.summary.passed, doc.summary.total),
+        (2, 2),
+        "the converted suite ran {} of {} cells green",
+        doc.summary.passed,
+        doc.summary.total
+    );
+    assert_eq!(
+        ids,
+        BTreeSet::from(["case-0", "case-1"]),
+        "the converted suite's case ids are the converter's, and the table row \
+         for the committed copy claims the same two"
     );
 }
 
@@ -625,6 +561,12 @@ fn verify(spec: &Example) {
         // reached the stub — almost always because `${env:…}` stopped
         // redirecting `base_url`, which in CI means the request went to the
         // real vendor.
+        // Request lines only: the recorded requests carry their whole bodies,
+        // which on a miscount would bury the useful part of this message.
+        let lines: Vec<&str> = served
+            .iter()
+            .map(|r| r.lines().next().unwrap_or_default())
+            .collect();
         assert_eq!(
             served.len(),
             spec.stub_calls,
@@ -636,7 +578,7 @@ fn verify(spec: &Example) {
             spec.dir,
             served.len(),
             spec.stub_calls,
-            served.join("\n  "),
+            lines.join("\n  "),
             spec.dir,
         );
     }

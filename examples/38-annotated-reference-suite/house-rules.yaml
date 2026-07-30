@@ -1,0 +1,10 @@
+# An `imports` FRAGMENT: not a suite, just the part of one that several suites
+# share. Merged after the `extends` base and before the local file.
+#
+# A shared `assert` sequence APPENDS rather than replacing, which is why a
+# fragment is the right home for a house rule: a suite that declares its own
+# `defaults.assert` cannot drop this one by accident.
+defaults:
+  assert:
+    - type: not-icontains
+      value: "as an AI"

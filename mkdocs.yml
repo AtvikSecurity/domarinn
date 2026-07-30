@@ -23,7 +23,7 @@ site_url: https://docs.domarinn.com/
 repo_url: https://github.com/AtvikSecurity/domarinn
 repo_name: AtvikSecurity/domarinn
 # Appended to repo_url + a doc's path relative to docs_dir, e.g.
-# .../edit/main/docs/getting-started.md
+# .../edit/main/docs/start/install.md
 edit_uri: edit/main/docs/
 
 docs_dir: docs
@@ -150,40 +150,102 @@ markdown_extensions:
 
 plugins:
   - search
+  # Old -> new page moves get an entry here so a published URL never 404s once
+  # the page is gone. mkdocs-redirects writes a static HTML stub at the old
+  # path whose JS carries over any URL fragment (#anchor) to the new page, so
+  # deep links keep working too; scripts/build-docs.sh verifies every entry
+  # against the built site. The first five entries below are the
+  # reference-section restructure: each old top-level page moved under
+  # reference/ (configuration.md was also retitled to domarinn-yaml.md). The
+  # examples split needs no entry here: it kept /examples/ itself alive (its
+  # index reoccupies the old URL, so there is no old path to stub), and the old
+  # per-example anchors are forwarded by a script on docs/examples/index.md
+  # instead. server.md and deploy.md are the server split: the old top-level
+  # server.md moved to reference/server.md (its REST API and MCP sections
+  # split further into their own reference/ pages, which need no redirect of
+  # their own since those URLs never existed before), and deploy.md became the
+  # self-hosting guide under guides/. The eleven entries below are the guides
+  # restructure: scenarios/* moved under guides/ (regression-gate.md's content
+  # merged into gate-in-ci.md rather than moving 1:1, so both its old path and
+  # ci.md's old path redirect there), and getting-started.md split into
+  # start/install.md + start/first-eval.md — the old URL forwards to the
+  # latter since that is where most of the page's content (and its inbound
+  # links) landed; start/install.md has no old URL to redirect from.
+  - redirects:
+      redirect_maps:
+        configuration.md: reference/domarinn-yaml.md
+        providers.md: reference/providers.md
+        assertions.md: reference/assertions.md
+        cli.md: reference/cli.md
+        protocol.md: reference/protocol.md
+        server.md: reference/server.md
+        deploy.md: guides/self-host.md
+        grading.md: concepts/grading.md
+        caching.md: concepts/caching.md
+        statistics.md: concepts/statistics.md
+        getting-started.md: start/first-eval.md
+        ci.md: guides/gate-in-ci.md
+        migrate-promptfoo.md: guides/migrate-promptfoo.md
+        troubleshooting.md: guides/troubleshooting.md
+        scenarios/index.md: guides/index.md
+        scenarios/render-gate.md: guides/render-gate.md
+        scenarios/grade-against-policy.md: guides/grade-against-policy.md
+        scenarios/structured-output.md: guides/structured-output.md
+        scenarios/regression-gate.md: guides/gate-in-ci.md
+        scenarios/shared-cache.md: guides/share-cache-and-baselines.md
+        scenarios/evaluate-your-app.md: guides/evaluate-your-app.md
 
 nav:
   - Introduction: index.md
+  - Start here:
+      - Install: start/install.md
+      - Your first eval: start/first-eval.md
   - Concepts:
       - How a run works: concepts/how-a-run-works.md
+      - Architecture — one binary: concepts/architecture.md
+      - Providers & the exec boundary: concepts/exec-boundary.md
+      - Grading: concepts/grading.md
+      - The one-rule cache: concepts/caching.md
+      - Statistics: concepts/statistics.md
       - Why domarinn is built this way: concepts/why-domarinn.md
-  - User guide:
-      - Getting started: getting-started.md
-      - Suite configuration: configuration.md
-      - Providers: providers.md
-      - Assertions: assertions.md
-      - LLM-rubric grading: grading.md
-      - Caching: caching.md
-      - Statistics & baselines: statistics.md
-      - CI integration: ci.md
-      - Server & accounts: server.md
-      - Self-hosting: deploy.md
-      - Migrating from promptfoo: migrate-promptfoo.md
-      - Troubleshooting: troubleshooting.md
-  - Examples: examples.md
-  # Scenarios = end-to-end, problem-driven walkthroughs, as opposed to the
-  # per-capability ladder in examples.md. navigation.indexes makes
-  # scenarios/index.md the section landing page, so it must be the first child.
-  - Scenarios:
-      - scenarios/index.md
-      - A zero-cost gate on every PR: scenarios/render-gate.md
-      - Grade an assistant against a policy: scenarios/grade-against-policy.md
-      - Evaluate structured output: scenarios/structured-output.md
-      - Gate a pull request on regressions: scenarios/regression-gate.md
-      - Share a cache across a team: scenarios/shared-cache.md
-      - Evaluate your own application: scenarios/evaluate-your-app.md
+  # Guides = end-to-end, problem-driven walkthroughs, as opposed to the
+  # per-capability ladder grouped under examples/. navigation.indexes makes
+  # guides/index.md the section landing page, so it must be the first child.
+  - Guides:
+      - guides/index.md
+      - Test a model API: guides/test-a-model-api.md
+      - Test your app via exec: guides/evaluate-your-app.md
+      - Test an HTTP endpoint: guides/test-an-http-endpoint.md
+      - Local LLMs with Ollama: guides/local-llms.md
+      - A zero-cost gate on every PR: guides/render-gate.md
+      - Gate a PR in CI: guides/gate-in-ci.md
+      - Grade an assistant against a policy: guides/grade-against-policy.md
+      - Evaluate structured output: guides/structured-output.md
+      - Share a cache and baselines: guides/share-cache-and-baselines.md
+      - Self-host the server: guides/self-host.md
+      - Migrate from promptfoo: guides/migrate-promptfoo.md
+      - Troubleshooting: guides/troubleshooting.md
   - Reference:
-      - CLI: cli.md
-      - Exec protocol: protocol.md
+      - domarinn.yaml: reference/domarinn-yaml.md
+      - Providers: reference/providers.md
+      - Assertions: reference/assertions.md
+      - CLI: reference/cli.md
+      - Server: reference/server.md
+      - REST API: reference/rest-api.md
+      - MCP endpoint: reference/mcp.md
+      - Exec protocol: reference/protocol.md
+      - The web UI: reference/web-ui.md
+  # No example-number ranges in these labels: nothing would keep them true
+  # when the ladder grows, and the guarded index table already maps every
+  # number to its page (crates/domarinn-cli/tests/examples.rs).
+  - Examples:
+      - examples/index.md
+      - First steps: examples/first-steps.md
+      - Templates & test data: examples/templates-and-test-data.md
+      - Your own system: examples/your-own-system.md
+      - Running & reporting: examples/running-and-reporting.md
+      - Caching & statistics: examples/caching-and-statistics.md
+      - Models, grading & budgets: examples/models-grading-and-budgets.md
   # A top-level entry so the Rust API docs are one click from the top of every
   # page. Root-absolute link into the rustdoc tree build-docs.sh nests at
   # /rustdoc/; it exists in the assembled site/ and in production, but NOT

@@ -7,9 +7,9 @@
 //! can read.
 //!
 //! It is a **reporter, not a gate**. It exits 0 for a failing run, because the
-//! verdict belongs to `run`'s exit code (see `docs/ci.md`); a summary step that
-//! could also fail a job would make the same failure gate twice, and mask which
-//! one actually spoke.
+//! verdict belongs to `run`'s exit code (see `docs/guides/gate-in-ci.md`); a
+//! summary step that could also fail a job would make the same failure gate
+//! twice, and mask which one actually spoke.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
