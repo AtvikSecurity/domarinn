@@ -23,9 +23,9 @@ The first four answer "what am I pointing domarinn at"; the rest are what you do
 | 03 | [Test an HTTP endpoint](test-an-http-endpoint.md) | The assistant is already behind your own JSON API. | Depends |
 | 04 | [Local LLMs with Ollama](local-llms.md) | Iterate on prompts and rubrics with no key and no spend. | Free |
 | 05 | [A zero-cost gate on every PR](render-gate.md) | Catch template and formatting regressions with no key and no spend. | Free |
-| 06 | [Grade an assistant against a policy](grade-against-policy.md) | Scope enforcement, refusals, and rubrics that grade one thing. | Judge only |
-| 07 | [Evaluate structured output](structured-output.md) | An agent that must emit a parseable object with correct field semantics. | Judge only |
-| 08 | [Gate a PR in CI](gate-in-ci.md) | Block a merge that makes things worse, without demanding perfection. | Per run |
+| 06 | [Gate a PR in CI](gate-in-ci.md) | Block a merge that makes things worse, without demanding perfection. | Per run |
+| 07 | [Grade an assistant against a policy](grade-against-policy.md) | Scope enforcement, refusals, and rubrics that grade one thing. | Judge only |
+| 08 | [Evaluate structured output](structured-output.md) | An agent that must emit a parseable object with correct field semantics. | Judge only |
 | 09 | [Share a cache across a team](share-cache-and-baselines.md) | Stop everyone paying separately for the same answers. | Saves money |
 | 10 | [Self-host the server](self-host.md) | Run the results server yourself: Docker, compose, Kubernetes, backups. | Self-hosted |
 | 11 | [Migrate from promptfoo](migrate-promptfoo.md) | Convert an existing promptfoo config and see exactly what changes. | Free |
@@ -36,7 +36,7 @@ The first four answer "what am I pointing domarinn at"; the rest are what you do
 Most teams that get value out of this end up with the same shape, and it is worth stating plainly because it is not obvious from the reference docs:
 
 - **A deterministic layer** that runs on *every* pull request. No API key, no spend, seconds to run. It catches render holes, missing sections, format drift, leaked internals. [Guide 05](render-gate.md).
-- **A graded layer** that runs on a schedule or on demand, costs real money, and is gated against a stored baseline. It catches behavioural regressions the first layer cannot see. [Guide 08](gate-in-ci.md).
+- **A graded layer** that runs on a schedule or on demand, costs real money, and is gated against a stored baseline. It catches behavioural regressions the first layer cannot see. [Guide 06](gate-in-ci.md).
 
 Trying to do both in one suite means either paying for the cheap checks or skipping the expensive ones. Splitting them means the fast gate can be mandatory.
 

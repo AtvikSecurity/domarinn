@@ -73,4 +73,4 @@ $ domarinn run eval/behavioral.yaml --repeat 5
 
 - [Example 29](../examples/models-grading-and-budgets.md#example-29--llm-rubric-grading) — the suite above.
 - [LLM-rubric grading](../concepts/grading.md) — verdict mechanics in full.
-- [Guide 07](structured-output.md) — when the answer is an object, not prose.
+- [Guide 08](structured-output.md) — when the answer is an object, not prose.

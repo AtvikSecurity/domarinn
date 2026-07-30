@@ -129,7 +129,7 @@ grader:
   verdict_mode: forced
 ```
 
-A model grading its own output is not an independent measurement. The mechanics — verdict shape, fail-closed truncation, per-assert grader overrides, what grading costs — are in [Grading](../concepts/grading.md), and writing a rubric that measures one thing is [Guide 06](grade-against-policy.md).
+A model grading its own output is not an independent measurement. The mechanics — verdict shape, fail-closed truncation, per-assert grader overrides, what grading costs — are in [Grading](../concepts/grading.md), and writing a rubric that measures one thing is [Guide 07](grade-against-policy.md).
 
 If what you need to measure is a **tool decision** rather than prose, that is its own shape: declare `tools:` and assert on the `tool_calls` the model reports back. Over the native Anthropic API that is [example 35](../examples/models-grading-and-budgets.md#example-35--anthropic-tools-natively); over your own program it is [example 15](../examples/your-own-system.md#example-15--tool-call-assertions). Declaring a tool never makes domarinn run one.
 
