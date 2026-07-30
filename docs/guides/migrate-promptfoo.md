@@ -28,7 +28,7 @@ Both halves of one conversion ship in the repository as [example 39](../examples
 --8<-- "examples/39-import-promptfoo/promptfooconfig.yaml"
 ```
 
-And the suite coming out, committed as the converter printed it apart from its header:
+And the suite coming out — the converter's own output rather than a hand-written suite, with a header on top naming the two cosmetic things that were added:
 
 ```yaml
 --8<-- "examples/39-import-promptfoo/domarinn.yaml"
@@ -53,7 +53,6 @@ CI re-runs the converter on that config, compares the output against the committ
 | `is-json`, `contains-json` | the same |
 | `llm-rubric` | `llm-rubric`, with the grader configured in a `grader:` block |
 | `similar` | `similar`, needing a `type: embeddings` provider in the suite |
-| `not-` prefixes | the same |
 | `threshold`, `weight` | the same |
 
 ## What changes, and why
@@ -61,6 +60,8 @@ CI re-runs the converter on that config, compares the output against the committ
 **Provider id strings become blocks.** There is no `openai:gpt-4o` shorthand. Every provider is a config block with an `id` and a `type`. It is more to write, and it is what lets two providers differ by `base_url`, `params` or `pricing` without inventing more string syntax — and what makes `--provider` and `only_providers` refer to something you named.
 
 **Templating is Jinja, not Nunjucks.** `{{ var }}` is the same. Filters mostly are not: domarinn ships `json_encode`, `b64encode`, `sha256`, `slugify`, `regex_replace`, `truncate` and friends, plus `now()`, `uuid()` and `randint()`. Check any filter you rely on.
+
+**`not-` prefixed assertions are supported, but not converted.** domarinn accepts `not-contains`, `not-icontains` and every other `not-<kind>` spelling, in inline cases and in every loaded test format. The converter does not: it matches on the bare type name, so a `not-` assertion is reported as unmapped and left out of the output. The note names it, and the fix is to paste the assertion back unchanged.
 
 **JavaScript and Python assertions do not exist.** There is no `javascript:` or `python:` assertion type. The replacement is [an `exec` assertion](../examples/your-own-system.md#example-14--a-custom-assertion) — your program, any language, over a small JSON protocol. It is a process boundary rather than an embedded interpreter, which costs a spawn and buys you a checker you can run and test on its own.
 
