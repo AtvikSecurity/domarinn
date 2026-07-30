@@ -136,7 +136,7 @@ Colour follows `NO_COLOR` and `CLICOLOR_FORCE`, and the machine formats are neve
 
 If you already have a promptfoo suite, the first domarinn suite you run can be that one. `domarinn import promptfoo` translates what has a faithful equivalent and leaves a `# NOTE:` for what does not, so nothing disappears quietly.
 
-This example ships both halves of one migration. The promptfoo config going in, and a walk through the conversion, are in the [migration guide](../guides/migrate-promptfoo.md#a-worked-conversion); here is the suite that came out — the converter's own output rather than a hand-written suite, header aside:
+This example ships both halves of one migration. The promptfoo config going in, and a walk through the conversion, are in the [migration guide](../guides/migrate-promptfoo.md#a-worked-conversion); here is the suite that came out — the converter's own output rather than a hand-written suite, header and sequence indentation aside:
 
 ```yaml
 --8<-- "examples/39-import-promptfoo/domarinn.yaml"

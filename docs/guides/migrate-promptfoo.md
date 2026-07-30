@@ -46,7 +46,7 @@ CI re-runs the converter on that config, compares the output against the committ
 | --------- | -------- |
 | `providers: [openai:gpt-4o]` | a `type: openai` block with `model: gpt-4o` |
 | `providers: [anthropic:messages:claude-…]` | a `type: anthropic` block |
-| `prompts:` (inline or `file://`) | `prompts:` with `template:` or `messages:` |
+| `prompts:` (a plain string, inline or `file://`) | `prompts:` with a single-string `template:` |
 | `tests:` with `vars` | `tests:` with `vars` |
 | `defaultTest` | `defaults` |
 | `contains`, `icontains`, `regex`, `equals`, `starts-with` | the same, kebab-case |
@@ -60,6 +60,8 @@ CI re-runs the converter on that config, compares the output against the committ
 **Provider id strings become blocks.** There is no `openai:gpt-4o` shorthand. Every provider is a config block with an `id` and a `type`. It is more to write, and it is what lets two providers differ by `base_url`, `params` or `pricing` without inventing more string syntax — and what makes `--provider` and `only_providers` refer to something you named.
 
 **Templating is Jinja, not Nunjucks.** `{{ var }}` is the same. Filters mostly are not: domarinn ships `json_encode`, `b64encode`, `sha256`, `slugify`, `regex_replace`, `truncate` and friends, plus `now()`, `uuid()` and `randint()`. Check any filter you rely on.
+
+**A converted prompt is always a `template:`, never `messages:`.** The converter reads each promptfoo prompt as one string and emits one single-string template. domarinn's chat-transcript form — a system turn, prior turns, then the newest one — is [a `messages:` prompt](../reference/domarinn-yaml.md#prompts), and it has to be written by hand. A `file://` string is carried across as a `file://` template, which domarinn does load from disk — but relative to the *suite* directory, and refusing anything outside it, so a prompt file that lived above your promptfoo config has to move in beside the suite.
 
 **`not-` prefixed assertions are supported, but not converted.** domarinn accepts `not-contains`, `not-icontains` and every other `not-<kind>` spelling, in inline cases and in every loaded test format. The converter does not: it matches on the bare type name, so a `not-` assertion is reported as unmapped and left out of the output. The note names it, and the fix is to paste the assertion back unchanged.
 

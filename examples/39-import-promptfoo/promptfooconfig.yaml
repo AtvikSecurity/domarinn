@@ -33,8 +33,9 @@ defaultTest:
       value: Aurora
     # NOT recognised by the converter, which matches on the bare type name: this
     # one is reported as unmapped and left out. domarinn does support the
-    # spelling (see examples/03-deterministic-asserts) — it has to be re-added
-    # by hand, which is exactly why the notes are worth reading.
+    # spelling — `not-<type>` sugar, documented in docs/reference/assertions.md
+    # and used by examples/13-exec-provider — so it has to be re-added by hand,
+    # which is exactly why the notes are worth reading.
     - type: not-icontains
       value: as an AI
 
