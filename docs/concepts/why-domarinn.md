@@ -6,9 +6,7 @@ domarinn inverts the assumption. Below is what follows from that, and the handfu
 
 ## External systems are first class
 
-An `exec` command or an `http` endpoint is a normal provider. Prompts are optional, because a system that resolves its own prompts does not want yours.
-
-The consequence people notice first: **what you test is what ships**. The eval drives the same code path production does. The consequence people notice second is the price — domarinn cannot see inside your program, so it cannot know when your prompt changed. That is why [`cache_salt` exists at two granularities](../examples/caching-and-statistics.md#example-22--cache-salts) rather than one.
+An `exec` command or an `http` endpoint is a normal provider, on equal footing with a native model client — the thesis, what it costs, and why that cost is `cache_salt`, are laid out in [Providers & the exec boundary](exec-boundary.md).
 
 ## Deterministic assertions run first
 
@@ -48,10 +46,12 @@ So: full minijinja, plus a per-value [`!raw`](../examples/templates-and-test-dat
 
 ## One binary
 
-The CLI, the engine, the results server and the web UI are one static executable. There is no service to stand up before you can run your first suite, and no version skew between a CLI and a server that were released separately.
+The CLI, the engine, the results server and the web UI are one static executable. There is no service to stand up before you can run your first suite, and no version skew between a CLI and a server that were released separately. See [Architecture — one binary](architecture.md) for how the one binary plays those roles, and where its data actually lives.
 
 ## See also
 
 - [How a run works](how-a-run-works.md) — the mechanics.
+- [Architecture — one binary](architecture.md) — the crates, the data, the versioned boundaries.
+- [Providers & the exec boundary](exec-boundary.md) — the exec-boundary decision, in full.
 - [Migrating from promptfoo](../migrate-promptfoo.md) — what changes, concretely.
 - [Examples](../examples/index.md) — each decision above, as something you can run.

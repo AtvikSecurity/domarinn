@@ -60,6 +60,8 @@ The full rule, every knob, and what a 0.5 upgrade does to a warm store are in [c
 ## See also
 
 - [Why domarinn is built this way](why-domarinn.md) — the decisions behind the above.
+- [Architecture — one binary](architecture.md) — the crates, the data, the versioned boundaries.
+- [Providers & the exec boundary](exec-boundary.md) — providers, and what crosses the process boundary.
 - [Examples](../examples/index.md) — every idea here, as a suite you can run.
 - [Caching](caching.md) — backends, salts, and what busts what.
 - [Assertions](../reference/assertions.md) — scoring, weights, and the full type list.

@@ -182,6 +182,8 @@ nav:
   - Introduction: index.md
   - Concepts:
       - How a run works: concepts/how-a-run-works.md
+      - Architecture — one binary: concepts/architecture.md
+      - Providers & the exec boundary: concepts/exec-boundary.md
       - Grading: concepts/grading.md
       - The one-rule cache: concepts/caching.md
       - Statistics: concepts/statistics.md
