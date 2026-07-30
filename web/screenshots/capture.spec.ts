@@ -41,10 +41,16 @@ async function shoot(page: import("@playwright/test").Page, name: string, theme:
  * strict-mode violation the moment both have mounted, and passes only by
  * winning a race with React. The case-count line appears once, and only after
  * the cases query has resolved, which is also exactly what the shot needs.
+ *
+ * `(first )?` and no trailing noun because `formatCaseCount` (web/src/lib/
+ * format.ts) has three forms — "Showing N cases", "Showing first N cases" and
+ * "Showing first N of M+ cases" — and which one a seeded run lands on depends
+ * on whether its case list has a next page. Matching only the first form makes
+ * this helper fail on a run that grew past one page.
  */
 async function expectRunDetailRendered(page: import("@playwright/test").Page) {
   await expect(page.locator("h1").first()).toBeVisible();
-  await expect(page.getByText(/Showing \d+ cases?/)).toBeVisible();
+  await expect(page.getByText(/Showing (first )?\d+/)).toBeVisible();
 }
 
 for (const theme of THEMES) {

@@ -134,7 +134,7 @@ Colour follows `NO_COLOR` and `CLICOLOR_FORCE`, and the machine formats are neve
 
 ## Example 39 — A promptfoo config, converted
 
-If you already have a promptfoo suite, the first domarinn suite you run can be that one. `domarinn import promptfoo` translates what has a faithful equivalent and leaves a `# NOTE:` for what does not, so nothing disappears quietly.
+If you already have a promptfoo suite, the first domarinn suite you run can be that one. `domarinn import promptfoo` translates what has a faithful equivalent and leaves a `# NOTE:` for every assertion and provider that does not, so none of those disappears quietly.
 
 This example ships both halves of one migration. The promptfoo config going in, and a walk through the conversion, are in the [migration guide](../guides/migrate-promptfoo.md#a-worked-conversion); here is the suite that came out — the converter's own output rather than a hand-written suite, header and sequence indentation aside:
 

@@ -270,7 +270,7 @@ while IFS= read -r run_id; do
   ')"
   if [ -n "$bad" ]; then
     while IFS= read -r value; do
-      echo "seed-docs-runs: run $run_id has a non-localhost base_url: $value" >&2
+      echo "seed-docs-runs: run $run_id has a non-localhost endpoint: $value" >&2
     done <<<"$bad"
     violations=$((violations + 1))
   fi

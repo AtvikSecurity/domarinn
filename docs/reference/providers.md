@@ -48,7 +48,7 @@ For each call the provider writes one `provider` request to the child's stdin an
 - **Response** (child stdout → domarinn): `output` is the only required field; see [the protocol reference](protocol.md#response) for the full set. A string `output` becomes text; any other JSON becomes a structured output. `usage` fills token counts, `cost_usd` feeds the [`cost`](assertions.md#budget-assertions-cost-latency-tokens) assertion, and `metadata` is retained as the raw payload.
 - Worth reporting even though all of it is optional: `empty_reason` (so a refusal is diagnosed instead of scoring zero against every assertion), `error.class` (so a rejected credential is distinguishable from a crash), `error.details` (structured diagnostics that survive to the stored case), and `model` (so an alias that silently repointed is visible).
 
-The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus your `env`. The full wire contract, exit-code rules, and minimal Bash/Python examples live in **[protocol.md](protocol.md)**.
+The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus your `env`. The full wire contract, exit-code rules, and worked Bash/Python examples live in **[protocol.md](protocol.md)**.
 
 ### Caching, and when you need `cache_salt`
 

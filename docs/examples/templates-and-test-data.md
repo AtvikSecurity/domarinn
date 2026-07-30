@@ -120,6 +120,6 @@ Example 02 already used a `messages:` prompt — system, then one user turn. Thi
 --8<-- "examples/34-multi-turn-conversation/domarinn.yaml"
 ```
 
-Every turn is a template, so a fixed turn simply has nothing in it to substitute — only the last one varies per case. Both cases below share the first three turns byte for byte and differ only in the follow-up, which is the thing under test.
+Every turn is a template, so a fixed turn simply has nothing in it to substitute — only the last one varies per case. Both cases above share the first three turns byte for byte and differ only in the follow-up, which is the thing under test.
 
 The echo provider makes this observable: an exec provider receives a `messages:` prompt as `{"messages": [...]}` (see [the protocol](../reference/protocol.md)), and echoing it back is what lets a `contains` assertion prove the whole rendered history — not just the last var — actually reached the provider.

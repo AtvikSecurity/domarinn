@@ -53,6 +53,8 @@ grader:
       # silent pass. Generous costs nothing extra — you are billed for
       # tokens actually generated.
       max_tokens: 4096
+  # `forced` (the default) requires the tool call. `auto` lets the model choose,
+  # which is only worth it for a model that cannot be forced.
   verdict_mode: forced
   timeout_ms: 120000
 # --8<-- [end:grader]
@@ -65,7 +67,6 @@ tests:
       # Cheap and first. If this fails, the grader is never called.
       - type: contains
         value: "30 days"
-      # --8<-- [start:assert]
       - type: llm-rubric
         value: |
           THIS RUBRIC MEASURES POLICY FIDELITY ONLY.
@@ -79,4 +80,3 @@ tests:
           Do NOT penalise the response for brevity, for word choice, or for
           offering to check a partial credit — that is not an exception to
           the window, it is a separate offer.
-      # --8<-- [end:assert]

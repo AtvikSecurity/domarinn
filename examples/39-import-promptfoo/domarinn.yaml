@@ -20,6 +20,13 @@
 # this file as YAML, and runs both — so this can only fall out of date if the
 # converter itself changes.
 #
+# The `$schema=./domarinn.schema.json` line below is the converter's own, and it
+# assumes the only thing the converter can assume: a suite sitting beside a
+# schema you wrote with `domarinn schema config > domarinn.schema.json` at your
+# project root. This suite lives two levels down, so that hint resolves to
+# nothing — left unedited on purpose, because every line after this header is
+# the converter's verbatim.
+#
 # Run:  domarinn run examples/39-import-promptfoo
 # Converted from a promptfoo config by `domarinn import promptfoo`.
 # yaml-language-server: $schema=./domarinn.schema.json

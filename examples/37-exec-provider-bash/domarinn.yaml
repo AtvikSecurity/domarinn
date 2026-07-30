@@ -18,10 +18,11 @@ providers:
   - id: assistant
     type: exec
     command: ["bash", "./provider.sh"]
-    # Bump this when you edit provider.sh, same as every other exec example
+    # Bump this when you edit provider.sh, like every file-backed exec example
     # in this ladder — the cache key hashes what the program is SENT, never
     # its bytes, so an edited script otherwise keeps answering from stale
-    # cached results.
+    # cached results. (Example 01 needs no salt: its whole program is inline
+    # argv, so editing it changes the request.)
     cache_salt: "dev"
 
 tests:

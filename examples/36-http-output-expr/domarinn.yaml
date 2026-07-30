@@ -19,6 +19,10 @@
 # transport error before the expression runs, same as any other provider's
 # failure.
 #
+# The two expressions below reach `response.json`. That is one of several
+# things `response.*` exposes — status, headers and the raw body among them —
+# and docs/reference/providers.md#http lists the whole surface.
+#
 # Run:  domarinn run examples/36-http-output-expr
 version: 1
 project: examples

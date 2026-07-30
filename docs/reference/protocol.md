@@ -301,17 +301,21 @@ Each emitted test object follows the suite's test schema (see `domarinn schema c
 
 ---
 
-## Writing a provider: minimal examples
+## Writing a provider
+
+Two, in two languages and at two levels of detail. They also show the two equivalent ways to check the wire version: Bash reads the `DOMARINN_PROTOCOL` environment variable, Python reads `domarinn.protocol` out of the request. domarinn sets both on every call, so either one is enough.
 
 ### Bash
 
-A full, runnable version — [example 37](../examples/your-own-system.md#example-37--the-exec-protocol-in-bash) — reads `DOMARINN_PROTOCOL`, extracts both `vars.user_input` and `test.id` with `jq`, and reports `usage`:
+The shipped script in full, comments and all — [example 37](../examples/your-own-system.md#example-37--the-exec-protocol-in-bash). It reads `DOMARINN_PROTOCOL`, extracts both `vars.user_input` and `test.id` with `jq`, and reports `usage`:
 
 ```sh
 --8<-- "examples/37-exec-provider-bash/provider.sh"
 ```
 
 ### Python
+
+Stripped to the four lines that carry the contract:
 
 ```python
 #!/usr/bin/env python3

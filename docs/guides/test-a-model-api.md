@@ -146,7 +146,7 @@ $ domarinn run eval/models.yaml --share
 ![The runs list after sharing: runs grouped by suite, with pass-rate trends](../assets/screenshots/runs-light.png#only-light)
 ![The runs list after sharing: runs grouped by suite, with pass-rate trends](../assets/screenshots/runs-dark.png#only-dark)
 
-Shared runs land grouped by suite with a pass-rate sparkline per group, and every row carries who ran it, the branch and commit it ran against, and the token and cost totals — which is what makes "did that model snapshot change anything" a question you can answer next month instead of re-running from scratch. Filters live in the URL, so a link is a saved view.
+Shared runs land grouped by suite with a pass-rate sparkline per group, and every row carries who ran it, the branch and commit it ran against, and the token and cost totals — which is what makes "did that model snapshot change anything" a question you can answer next month instead of re-running from scratch. COST is a dash on every row above because a local model served those runs, and a model with no published rate has nothing to total. Filters live in the URL, so a link is a saved view.
 
 From there, `--against server:baseline` gates a run against a pinned reference, and the [compare view](../reference/web-ui.md#compare--mcnemar) tells you whether a difference is real or noise. See [Gate a PR in CI](gate-in-ci.md).
 

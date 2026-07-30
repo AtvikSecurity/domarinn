@@ -296,13 +296,18 @@ fn scrubbed_bin() -> Command {
 /// the interpreter just as much while never spelling it out. The converted suite
 /// in `39-import-promptfoo` is that shape — and it is the converter's output, so
 /// it cannot be reworded to say `python3`.
+///
+/// The selector is a plain text search over the whole file, prose included, and
+/// that is deliberate: it can only over-include, and over-including costs one
+/// `python3 --version` on a machine that has it anyway. Contrast [`invokes_jq`],
+/// which cannot afford the same looseness.
 #[test]
 fn python3_is_available_for_the_examples_that_need_it() {
     let users: Vec<&str> = EXAMPLES
         .iter()
         .filter(|e| {
             std::fs::read_to_string(examples_root().join(e.dir).join("domarinn.yaml"))
-                .map(|s| s.contains("python3") || s.contains(".py"))
+                .map(|s| s.contains("python3") || names_a_py_file(&s))
                 .unwrap_or(false)
         })
         .map(|e| e.dir)
@@ -322,18 +327,29 @@ fn python3_is_available_for_the_examples_that_need_it() {
     );
 }
 
+/// Whether `text` names a `.py` file, rather than merely containing those three
+/// bytes: `.py` has to end the path component, so `../echo-provider.py` and a
+/// quoted `"gen.py"` count while `.pyc`, `.pyi` and `.pyproject` do not.
+fn names_a_py_file(text: &str) -> bool {
+    text.match_indices(".py").any(|(at, hit)| {
+        text[at + hit.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !next.is_alphanumeric() && next != '_')
+    })
+}
+
 /// Whether any non-comment line in any file directly under `dir` mentions
 /// `jq`.
 ///
-/// Deliberately not "does `domarinn.yaml` contain the word jq": unlike
-/// `python3`, which only ever appears inside a `command:` array, "jq" also
-/// shows up in this ladder's own prose (a header comment explaining why a
-/// script uses it). A text-only selector keyed on that prose would still
-/// "pass" — vacuously — the day someone rewords the sentence, guarding
-/// nothing while looking green. Comment lines (`#`, the marker in both YAML
-/// and bash) are excluded so only an actual invocation — a real command
-/// line in a provider script — trips this, the same way `python3` inside a
-/// `command:` array is a real invocation and not a description of one.
+/// Deliberately not "does `domarinn.yaml` contain the word jq": "jq" also shows
+/// up in this ladder's own prose (a header comment explaining why a script uses
+/// it). What this relies on, and what the python3 guard above does not need, is
+/// that the selector be non-vacuous — [`jq_is_available_for_the_examples_that_need_it`]
+/// asserts it matched something, so a prose match would keep that assertion
+/// green the day the last real `jq` invocation disappeared, guarding nothing
+/// while looking correct. Excluding comment lines (`#`, the marker in both YAML
+/// and bash) leaves only real command lines in a provider script.
 fn invokes_jq(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;

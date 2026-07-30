@@ -84,7 +84,7 @@ The case most often missing is the one where **no** tool should be called. `agen
 
 ## Example 37 — The exec protocol, in bash
 
-Every other provider in this ladder is Python, because it ships with the fewest assumptions about your machine. The protocol itself does not care: anything that can read one JSON document from stdin and write one to stdout qualifies. Here it's bash and `jq`.
+Every other exec provider in this ladder is Python — bar example 01's inline shell one-liner — because Python ships with the fewest assumptions about your machine. The protocol itself does not care: anything that can read one JSON document from stdin and write one to stdout qualifies. Here it's bash and `jq`.
 
 ```yaml
 --8<-- "examples/37-exec-provider-bash/domarinn.yaml"
