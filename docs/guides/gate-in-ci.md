@@ -191,7 +191,9 @@ Keys are written even when empty, so a workflow referencing one always gets a de
 
 ## Gate a pull request on regressions
 
-**The problem.** A behavioural suite is never 100% green. Gating on an absolute pass rate means either setting the bar so low it catches nothing, or blocking every merge. What you actually want to block is a change that made things **worse** — which is exactly what the action and the exit-code contract above are for. Here is the whole thing wired together.
+**The problem.** A behavioural suite is never 100% green. Gating on an absolute pass rate means either setting the bar so low it catches nothing, or blocking every merge. What you actually want to block is a change that made things **worse**.
+
+**The shape.** Compare this run to a stored baseline, cell by cell, and fail on cases that passed before and fail now. Here is the whole thing wired together, using the action and the exit-code contract above.
 
 ### 1. Store runs somewhere CI can reach
 
