@@ -22,7 +22,7 @@ Three consequences worth knowing:
 - **Errors are never cached.** Only successful responses are stored.
 - **`latency` assertions bypass the cache entirely**, because a replayed response has no honest latency to report — and under `--cache-only` such a case is refused rather than called live. `cost` and `tokens` come from the stored response.
 
-Note the `cache:` block names only the *kind* of backend. The URL and credentials come from the environment, so a suite stays safe to commit. See [Caching](../caching.md#the-rule) for the full rule and the shared backends.
+Note the `cache:` block names only the *kind* of backend. The URL and credentials come from the environment, so a suite stays safe to commit. See [Caching](../concepts/caching.md#the-rule) for the full rule and the shared backends.
 
 ---
 

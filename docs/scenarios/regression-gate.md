@@ -71,4 +71,4 @@ $ domarinn ci-summary latest --out summary.md --github-output "$GITHUB_OUTPUT"
 
 - [Example 24](../examples/caching-and-statistics.md#example-24--baselines-and-diff) — the suite above.
 - [CI integration](../ci.md) — the action's inputs and outputs.
-- [Statistics](../statistics.md) — McNemar significance on a paired diff.
+- [Statistics](../concepts/statistics.md) — McNemar significance on a paired diff.

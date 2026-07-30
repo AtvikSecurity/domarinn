@@ -55,11 +55,11 @@ Every outgoing call — a provider, the judge, an embedding, an `exec` grader �
 
 That is what makes a cache shareable, and it has a consequence you must know about: **a rebuild of your own binary does not invalidate anything**, because the key hashes what the program *sends*, not its bytes. [`cache_salt`](../examples/caching-and-statistics.md#example-22--cache-salts) is the lever for that, and it exists at two granularities for good reason.
 
-The full rule, every knob, and what a 0.5 upgrade does to a warm store are in [caching.md](../caching.md#the-rule).
+The full rule, every knob, and what a 0.5 upgrade does to a warm store are in [caching.md](caching.md#the-rule).
 
 ## See also
 
 - [Why domarinn is built this way](why-domarinn.md) — the decisions behind the above.
 - [Examples](../examples/index.md) — every idea here, as a suite you can run.
-- [Caching](../caching.md) — backends, salts, and what busts what.
+- [Caching](caching.md) — backends, salts, and what busts what.
 - [Assertions](../reference/assertions.md) — scoring, weights, and the full type list.

@@ -246,7 +246,7 @@ Point CI at a shared [server](./reference/server.md) so every eval is browsable 
 
 On GitHub Actions the CLI automatically enriches the uploaded run with git (branch, commit, dirty flag) and CI (provider + run URL) metadata, so shared runs are traceable back to the workflow.
 
-**Shared cache for CI.** Multiple CI jobs can share every request domarinn makes — provider responses, judge verdicts, embeddings — through the server's content-addressed cache (`/api/v1/cache/*`), which cuts cost and time on reruns. The client side is `cache.backend: layered` plus `DOMARINN_SERVER_URL`, documented in [`./caching.md`](./caching.md#backends).
+**Shared cache for CI.** Multiple CI jobs can share every request domarinn makes — provider responses, judge verdicts, embeddings — through the server's content-addressed cache (`/api/v1/cache/*`), which cuts cost and time on reruns. The client side is `cache.backend: layered` plus `DOMARINN_SERVER_URL`, documented in [`./caching.md`](./concepts/caching.md#backends).
 
 A key is a hash of the request and nothing else, so a fresh checkout on a fresh runner reuses whatever another job wrote. Two things are worth setting up deliberately:
 
@@ -277,7 +277,7 @@ A key is a hash of the request and nothing else, so a fresh checkout on a fresh 
 
   The path resolves against the workspace — the same base `actions/cache` uses. A run-unique `key` with a shared `restore-keys` prefix is what lets the cache grow: a key that hits exactly is never saved again, so every case added after the first run would miss forever. Driving the CLI yourself rather than through the action, `--cache-dir` and `DOMARINN_CACHE_DIR` set the same thing.
 
-The first CI run after upgrading to 0.5 re-files what a 0.4-era cache holds under the new keys, automatically and once — see [Upgrading to 0.5](./caching.md#upgrading-to-05). A job that pins `--cache-only` should run once in the default read-write mode first, or `similar` assertions will hard-error: their 0.4 entries are the one shape that cannot be adopted.
+The first CI run after upgrading to 0.5 re-files what a 0.4-era cache holds under the new keys, automatically and once — see [Upgrading to 0.5](./concepts/caching.md#upgrading-to-05). A job that pins `--cache-only` should run once in the default read-write mode first, or `similar` assertions will hard-error: their 0.4 entries are the one shape that cannot be adopted.
 
 ---
 

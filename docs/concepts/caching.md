@@ -72,13 +72,10 @@ Reach for it when the system under test loads content domarinn cannot see — an
 
 #### Letting domarinn compute the digest
 
-Writing those digests by hand does not scale, and computing them outside the suite means a build step — in practice, a whole test generator whose only job is injecting one field per case. `$digest:` does it for you:
+Writing those digests by hand does not scale, and computing them outside the suite means a build step — in practice, a whole test generator whose only job is injecting one field per case. `$digest:` does it for you — from a shipped example, one case per prompt plus a third that digests a whole glob of them:
 
 ```yaml
-tests:
-  - id: refuses-out-of-scope
-    vars: {prompt_id: pentest-session, user_message: "scan 10.0.0.1"}
-    cache_salt: "$digest: prompts/{{ prompt_id }}.md"
+--8<-- "examples/22-cache-salts/domarinn.yaml:salts"
 ```
 
 The glob is rendered against the case's own vars, so each case digests exactly the file it exercises rather than a constant that busts the whole suite on every edit. Matched files are hashed in sorted order **with their relative paths**, so moving content between two matched files counts as a change. A glob that matches nothing is an error, not an empty digest — an empty digest would be one constant salt shared by every such case, which is no separation at all wearing a hash. Paths are sandboxed to the suite directory, like every other file reference.
@@ -237,7 +234,7 @@ domarinn cache clear                 # remove everything
 Durations accept `d`, `h`, `m`, `s` (e.g. `12h`, `90s`).
 
 - **`gc` requires `--older-than`.** A bare `domarinn cache gc` is a usage error, not a full purge: the obvious reading of `gc` is "tidy up a bit", and the command that removes everything should be the one that says so. Use `cache clear`.
-- **These commands address the local tier only.** They do not reach an S3 bucket or the server — remote retention is the bucket's lifecycle rules and the server's [prune endpoint and hourly retention task](./reference/rest-api.md#cache-shared-provider-cache).
+- **These commands address the local tier only.** They do not reach an S3 bucket or the server — remote retention is the bucket's lifecycle rules and the server's [prune endpoint and hourly retention task](../reference/rest-api.md#cache-shared-provider-cache).
 - **The legacy tier is reported by `stats` and `path` always, but only purged when it is yours.** `clear` and `gc` touch it only when the suite sits at or under the process working directory, because a cwd-relative `.domarinn/cache` belongs to whatever project you happen to be standing in — `cd ~/projB && domarinn cache clear ~/projA/evals` must not take projB's cache with it. `stats` says which of the two it is.
 
 ## Upgrading to 0.5
@@ -251,8 +248,8 @@ So domarinn migrates instead of re-paying. Things worth knowing before the first
 - **Entries now record the request they answer**, resolved URL or command included, so an entry is legible on its own. A request too large for the entry cap keeps a slim envelope — the address (`transport`, `method`, `url`, `command`, `args`) and nothing else.
 - **Entries got bigger.** A grader entry now carries the judge's whole response rather than a three-field verdict, and an embedding is tens of kilobytes of floats. The boundary is the shared store's: the server rejects anything over `DOMARINN_CACHE_MAX_ENTRY_BYTES` (4 MiB by default) with a `413`, which the client logs and continues past — so an oversized payload is re-paid every run rather than failing one.
 - **Suites with a `cache:` block see one `config_digest` change.** An unset `cache.grader` no longer serializes, where the old boolean always wrote `true`. `config_digest` is a hash of the serialized suite, so exactly one `--against` comparison across the upgrade reports config drift. No cache entry is affected — the digest is not a key ingredient.
-- **A future `exec` protocol bump is a deliberate cache flag day.** The `domarinn` envelope is inside the stdin document the key hashes, because it is genuinely sent and a child may answer a v2 request differently. Bumping `PROTOCOL_VERSION` therefore re-keys every `exec` entry in every store at once. A test asserts the current version so that decision is made on purpose, with a legacy generation frozen first — see [protocol.md](./reference/protocol.md#versioning).
+- **A future `exec` protocol bump is a deliberate cache flag day.** The `domarinn` envelope is inside the stdin document the key hashes, because it is genuinely sent and a child may answer a v2 request differently. Bumping `PROTOCOL_VERSION` therefore re-keys every `exec` entry in every store at once. A test asserts the current version so that decision is made on purpose, with a legacy generation frozen first — see [protocol.md](../reference/protocol.md#versioning).
 
 ## The server as the shared tier
 
-When the domarinn server backs a `layered` cache, it serves the entries over `/api/v1/cache/*` and prunes them on a schedule. The wire contract, the size and age limits, and the auth scopes are in [rest-api.md](./reference/rest-api.md#cache-shared-provider-cache).
+When the domarinn server backs a `layered` cache, it serves the entries over `/api/v1/cache/*` and prunes them on a schedule. The wire contract, the size and age limits, and the auth scopes are in [rest-api.md](../reference/rest-api.md#cache-shared-provider-cache).

@@ -148,7 +148,7 @@ Everything else renders through real Jinja (minijinja) with strict undefined —
 
 ## Add a real model and an LLM grader
 
-Point a provider at a model and grade its output with a rubric. The grader returns a **structured** verdict and **fails closed** — see [grading.md](./grading.md).
+Point a provider at a model and grade its output with a rubric. The grader returns a **structured** verdict and **fails closed** — see [grading.md](./concepts/grading.md).
 
 ```yaml
 version: 1
@@ -187,7 +187,7 @@ export ANTHROPIC_API_KEY=sk-...
 domarinn run --repeat 5            # 5 trials per cell for variance
 ```
 
-Every request domarinn makes is cached — the provider call and the judge alike — so re-running is free and deterministic. See [caching.md](./caching.md) and [statistics.md](./statistics.md).
+Every request domarinn makes is cached — the provider call and the judge alike — so re-running is free and deterministic. See [caching.md](./concepts/caching.md) and [statistics.md](./concepts/statistics.md).
 
 ## View, compare, and share
 
@@ -211,9 +211,9 @@ Open `http://localhost:8321` for the per-suite overview, `/runs` for the run lis
 - [domarinn.yaml](./reference/domarinn-yaml.md) — the complete suite YAML reference.
 - [assertions.md](./reference/assertions.md) — every assertion type.
 - [providers.md](./reference/providers.md) — exec / http / anthropic / openai / embeddings.
-- [grading.md](./grading.md) — the LLM-rubric grader.
-- [caching.md](./caching.md) — sharing cache between teammates.
-- [statistics.md](./statistics.md) — confidence intervals, significance, baselines.
+- [grading.md](./concepts/grading.md) — the LLM-rubric grader.
+- [caching.md](./concepts/caching.md) — sharing cache between teammates.
+- [statistics.md](./concepts/statistics.md) — confidence intervals, significance, baselines.
 - [cli.md](./reference/cli.md) — the full command reference.
 - [server.md](./reference/server.md) / [self-host.md](./guides/self-host.md) — hosting and accounts.
 - [ci.md](./ci.md) — gating pull requests.

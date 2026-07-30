@@ -67,10 +67,10 @@ Behavioural pass rates move run to run. One run of twenty cases gives you a numb
 $ domarinn run eval/behavioral.yaml --repeat 5
 ```
 
-[Wilson intervals and pass@k](../statistics.md) turn "17/20" into something you can compare against last week. See [example 23](../examples/caching-and-statistics.md#example-23--repeat-and-confidence).
+[Wilson intervals and pass@k](../concepts/statistics.md) turn "17/20" into something you can compare against last week. See [example 23](../examples/caching-and-statistics.md#example-23--repeat-and-confidence).
 
 ## See also
 
 - [Example 29](../examples/models-grading-and-budgets.md#example-29--llm-rubric-grading) — the suite above.
-- [LLM-rubric grading](../grading.md) — verdict mechanics in full.
+- [LLM-rubric grading](../concepts/grading.md) — verdict mechanics in full.
 - [Scenario 03](structured-output.md) — when the answer is an object, not prose.

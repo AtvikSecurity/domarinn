@@ -57,7 +57,7 @@ $ domarinn list tests .
 Worth knowing about, because they have no promptfoo equivalent and change how a suite is used:
 
 - **[Regression gating](examples/caching-and-statistics.md#example-24--baselines-and-diff)** against a stored baseline, with a defined exit-code contract — `1` for a failed assertion, `3` for a broken harness.
-- **[Statistics](statistics.md)** — Wilson confidence intervals, McNemar paired significance, pass@k. A pass rate with an error bar.
+- **[Statistics](concepts/statistics.md)** — Wilson confidence intervals, McNemar paired significance, pass@k. A pass rate with an error bar.
 - **[Errors that are not failures](examples/running-and-reporting.md#example-19--errors-and-retries)** — a separate status, tally and exit code, so "the harness broke" never reads as "the model got worse".
 - **[A fail-closed grader](examples/models-grading-and-budgets.md#example-29--llm-rubric-grading)** — structured verdicts, with truncation an error rather than a zero.
 - **A [self-hostable results server](reference/server.md)** with accounts, run comparison and a shared cache, in the same single binary.

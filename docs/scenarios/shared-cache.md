@@ -6,7 +6,7 @@
 
 ## Why this works at all
 
-A key is the SHA-256 of the request and nothing else — [one rule, documented once](../caching.md#the-rule). That is the whole reason a shared cache is possible.
+A key is the SHA-256 of the request and nothing else — [one rule, documented once](../concepts/caching.md#the-rule). That is the whole reason a shared cache is possible.
 
 ```yaml
 --8<-- "examples/21-caching-basics/domarinn.yaml"
@@ -19,7 +19,7 @@ A key is the SHA-256 of the request and nothing else — [one rule, documented o
 | `disk` | none | Solo work. The default. |
 | `layered` | S3 when `cache.s3` is set, else the results server's `/api/v1/cache` | Anything shared. |
 
-Those are the two. `http` and `s3` still parse as **deprecated aliases** for `layered` and warn at startup, but they name one tier outright instead of letting `cache.s3` choose — so `backend: s3` with no `cache.s3` block degrades to local disk alone rather than falling back to the server. See [caching.md](../caching.md#backends).
+Those are the two. `http` and `s3` still parse as **deprecated aliases** for `layered` and warn at startup, but they name one tier outright instead of letting `cache.s3` choose — so `backend: s3` with no `cache.s3` block degrades to local disk alone rather than falling back to the server. See [caching.md](../concepts/caching.md#backends).
 
 A remote always keeps the **local tier in front**, so a warm local hit never touches the network.
 
@@ -51,7 +51,7 @@ Two levels, two different jobs:
 
 Do **not** make the provider-level salt a content digest of everything your program reads. It works, and it discards the entire cache on any edit — which is exactly the outcome the per-case salt exists to prevent. With both in place, editing one prompt re-runs the handful of cases that use it and replays the rest.
 
-The theory — why a salt is a version pin rather than an entry ticket, and how `$digest:` resolves — is in [caching.md](../caching.md#salts).
+The theory — why a salt is a version pin rather than an entry ticket, and how `$digest:` resolves — is in [caching.md](../concepts/caching.md#salts).
 
 ## 3. Know what is and is not cached
 
@@ -62,7 +62,7 @@ The theory — why a salt is a version pin rather than an entry ticket, and how 
 - **Pricing is not in the key either.** `cost_usd` is recomputed on every hit, so correcting a rate re-prices history rather than discarding it.
 - **`latency` assertions bypass the cache entirely** — a replayed response has no honest latency — and under `--cache-only` the case is refused rather than called live.
 
-The full list is in [caching.md](../caching.md#what-is-and-is-not-cached).
+The full list is in [caching.md](../concepts/caching.md#what-is-and-is-not-cached).
 
 ## 4. Verify it is actually shared
 
@@ -80,6 +80,6 @@ $ domarinn cache gc --older-than 30d eval/
 
 ## See also
 
-- [Caching](../caching.md) — the full key semantics and backend details.
+- [Caching](../concepts/caching.md) — the full key semantics and backend details.
 - [Example 21](../examples/caching-and-statistics.md#example-21--caching) and [22](../examples/caching-and-statistics.md#example-22--cache-salts).
 - [Server](../reference/server.md) — running the shared tier.

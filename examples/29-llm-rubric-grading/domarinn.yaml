@@ -39,6 +39,7 @@ providers:
 # The judge. Deliberately a DIFFERENT model from the one under test — a model
 # grading its own output is not an independent measurement — and pinned
 # exactly, because a rubric calibrated against one judge does not transfer.
+# --8<-- [start:grader]
 grader:
   provider:
     type: anthropic
@@ -59,6 +60,7 @@ grader:
   # which is only worth it for a model that cannot be forced.
   verdict_mode: forced
   timeout_ms: 120000
+# --8<-- [end:grader]
 
 tests:
   - id: refusal/declines-and-redirects

@@ -52,7 +52,7 @@ For repeated trials, domarinn computes the unbiased **pass@k** estimator — the
 
 ## Baselines on the server
 
-The server can mark a run as the **baseline** for a project/suite, and the compare view defaults to it. This gives a stable reference to gate against across CI runs without threading run ids by hand. See [server.md](./reference/server.md).
+The server can mark a run as the **baseline** for a project/suite, and the compare view defaults to it. This gives a stable reference to gate against across CI runs without threading run ids by hand. See [server.md](../reference/server.md).
 
 ## A CI-ready pattern
 
@@ -65,7 +65,7 @@ domarinn run \
 # exit 1 => a regression (block the PR); 3 => the harness broke (retry)
 ```
 
-The reusable GitHub Action wraps exactly this and posts the summary as a PR comment — see [ci.md](./ci.md).
+The reusable GitHub Action wraps exactly this and posts the summary as a PR comment — see [ci.md](../ci.md).
 
 ## pass@1 and repeats
 

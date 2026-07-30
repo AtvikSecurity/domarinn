@@ -46,7 +46,7 @@ Every var goes through Jinja. A fixture containing `{{7*7}}` renders as `49` unl
 
 One case fans out over the cartesian product of its axes, producing one concrete case per combination. Each axis value is merged into `vars`, where it wins over a base var of the same name.
 
-The ids are deterministic — `greet[style=terse,temperature=0]` and friends — which is what lets [`domarinn diff`](../statistics.md) line two runs up cell by cell. When the generated shape is unwieldy, `matrix_id` renders a friendlier one against the axis values.
+The ids are deterministic — `greet[style=terse,temperature=0]` and friends — which is what lets [`domarinn diff`](../concepts/statistics.md) line two runs up cell by cell. When the generated shape is unwieldy, `matrix_id` renders a friendlier one against the axis values.
 
 ```yaml
 --8<-- "examples/08-matrix-sweeps/domarinn.yaml"

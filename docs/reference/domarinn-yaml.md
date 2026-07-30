@@ -205,7 +205,7 @@ Inline tests, and every test loaded from a file, share the same shape:
 | `matrix_id` | string | no | minijinja template for a matrix cell's id, rendered against the axis values. See [Matrix / parameter sweeps](#matrix--parameter-sweeps). |
 | `assert` | list | no | Assertions to run against the output. See [`assertions.md`](./assertions.md). |
 | `threshold` | float | no | If set, the case **passes when its weighted-mean assertion score ≥ `threshold`**. If unset, the case passes only when **every** assertion passes. |
-| `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of **this case's** provider requests only. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](../caching.md#per-case-salts). |
+| `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of **this case's** provider requests only. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](../concepts/caching.md#per-case-salts). |
 | `only_providers` | list of provider ids | no | Restrict this case to these providers. |
 | `skip_providers` | list of provider ids | no | Exclude these providers from this case. |
 
@@ -282,7 +282,7 @@ A glob string must start with `file://`; the remainder is a glob resolved relati
 | `description` | The test description. |
 | `tags` | Comma-separated tag list. |
 | `threshold` | Parsed as a float (ignored if it doesn't parse). |
-| `cache_salt` | The case's [cache salt](../caching.md#per-case-salts) — reserved so a digest column keys the cache instead of becoming a var. |
+| `cache_salt` | The case's [cache salt](../concepts/caching.md#per-case-salts) — reserved so a digest column keys the cache instead of becoming a var. |
 | `__assert` | A JSON array of assertions. |
 
 ```yaml
@@ -322,7 +322,7 @@ The `!file "path"` YAML tag and the format-agnostic `{$file: "path"}` object for
 
 **Sandboxed.** The path is resolved relative to the suite directory and must stay inside it: `!file "../../etc/passwd"` (or a symlink pointing outside the suite) is **refused**, not read. The same guard covers `file://` prompt/message content and `file://` test-file globs.
 
-**Cache note.** A file var's content is rendered into the request — into the prompt for a vendor provider, into the `vars` an `exec` child receives, into the url/headers/body of an `http` call — and [the request is the cache key](../caching.md#the-rule). So **editing a fixture busts the cache** for the cases that read it, exactly as editing an inline value would.
+**Cache note.** A file var's content is rendered into the request — into the prompt for a vendor provider, into the `vars` an `exec` child receives, into the url/headers/body of an `http` call — and [the request is the cache key](../concepts/caching.md#the-rule). So **editing a fixture busts the cache** for the cases that read it, exactly as editing an inline value would.
 
 ### Generators
 
@@ -376,7 +376,7 @@ Values merged into **every** resolved test case, so you don't repeat yourself.
 | `assert` | list | **Prepended** to each test's own asserts (defaults run first). |
 | `tags` | list | **Unioned** — added if not already present. |
 | `threshold` | float | **Fills** the test's threshold only if the test hasn't set one. |
-| `cache_salt` | string | **Fills** the test's [cache salt](../caching.md#per-case-salts) only if the test hasn't set one — generator-produced cases included. |
+| `cache_salt` | string | **Fills** the test's [cache salt](../concepts/caching.md#per-case-salts) only if the test hasn't set one — generator-produced cases included. |
 
 ```yaml
 defaults:
@@ -398,7 +398,7 @@ Defaults are merged into generator-produced cases too. Those cases do **not** ge
 
 ## `grader`
 
-The default LLM grader for [`llm-rubric`](../grading.md) assertions. A per- assertion `grader` overrides this one.
+The default LLM grader for [`llm-rubric`](../concepts/grading.md) assertions. A per- assertion `grader` overrides this one.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -416,7 +416,7 @@ grader:
   verdict_mode: forced
 ```
 
-See [`grading.md`](../grading.md) for how rubrics are scored and what `forced` vs `auto` do.
+See [`grading.md`](../concepts/grading.md) for how rubrics are scored and what `forced` vs `auto` do.
 
 ---
 
@@ -449,7 +449,7 @@ Execution controls for the whole run.
 
 ## `cache`
 
-Selects the cache **backend**. Every outgoing request is cached so re-runs are cheap; the backend decides where entries live. What goes into a key is one rule, documented once in [caching.md](../caching.md#the-rule).
+Selects the cache **backend**. Every outgoing request is cached so re-runs are cheap; the backend decides where entries live. What goes into a key is one rule, documented once in [caching.md](../concepts/caching.md#the-rule).
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
@@ -478,7 +478,7 @@ cache:
     force_path_style: true
 ```
 
-The suite only chooses the backend **type**. The server URL and any credentials are supplied by CLI flags and environment variables, not the config file — which is what keeps a suite safe to commit. A remote whose URL or credentials are missing degrades to local disk with a warning rather than failing the run. See [`caching.md`](../caching.md#backends).
+The suite only chooses the backend **type**. The server URL and any credentials are supplied by CLI flags and environment variables, not the config file — which is what keeps a suite safe to commit. A remote whose URL or credentials are missing degrades to local disk with a warning rather than failing the run. See [`caching.md`](../concepts/caching.md#backends).
 
 ---
 
@@ -627,7 +627,7 @@ A suite is validated structurally before any provider is contacted — both by `
 ## See also
 
 - [`assertions.md`](./assertions.md) — every assertion `type` and its options.
-- [`grading.md`](../grading.md) — the `llm-rubric` grader, rubrics, verdict modes.
+- [`grading.md`](../concepts/grading.md) — the `llm-rubric` grader, rubrics, verdict modes.
 - [`providers.md`](./providers.md) — provider behavior and the exec protocol.
-- [`caching.md`](../caching.md) — cache backends, keys, and invalidation.
+- [`caching.md`](../concepts/caching.md) — cache backends, keys, and invalidation.
 - [`cli.md`](./cli.md) — `run`, `validate`, `schema`, `list`, and exit codes.

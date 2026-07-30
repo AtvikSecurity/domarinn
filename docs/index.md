@@ -27,9 +27,9 @@ Read [How a run works](concepts/how-a-run-works.md) first — four ideas that ex
 
 | Guide | What it covers |
 | ----- | -------------- |
-| [Grading](grading.md) | The LLM-rubric grader: structured tool-use / JSON-schema verdicts, fail-closed, grader selection. |
-| [Caching](caching.md) | The one key rule, every cache knob, salts, backends, and sharing a cache between teammates. |
-| [Statistics](statistics.md) | `--repeat`, Wilson confidence intervals, McNemar significance, pass@k, and baselines. |
+| [Grading](concepts/grading.md) | The LLM-rubric grader: structured tool-use / JSON-schema verdicts, fail-closed, grader selection. |
+| [Caching](concepts/caching.md) | The one key rule, every cache knob, salts, backends, and sharing a cache between teammates. |
+| [Statistics](concepts/statistics.md) | `--repeat`, Wilson confidence intervals, McNemar significance, pass@k, and baselines. |
 | [Troubleshooting](troubleshooting.md) | Symptom, cause, fix — including the several ways a gate can be green and check nothing. |
 
 ## Reference

@@ -174,17 +174,20 @@ plugins:
         protocol.md: reference/protocol.md
         server.md: reference/server.md
         deploy.md: guides/self-host.md
+        grading.md: concepts/grading.md
+        caching.md: concepts/caching.md
+        statistics.md: concepts/statistics.md
 
 nav:
   - Introduction: index.md
   - Concepts:
       - How a run works: concepts/how-a-run-works.md
+      - Grading: concepts/grading.md
+      - The one-rule cache: concepts/caching.md
+      - Statistics: concepts/statistics.md
       - Why domarinn is built this way: concepts/why-domarinn.md
   - User guide:
       - Getting started: getting-started.md
-      - LLM-rubric grading: grading.md
-      - Caching: caching.md
-      - Statistics & baselines: statistics.md
       - CI integration: ci.md
       - Self-hosting: guides/self-host.md
       - Migrating from promptfoo: migrate-promptfoo.md

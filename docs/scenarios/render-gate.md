@@ -16,7 +16,7 @@ The system under test runs in "render" mode: given a template id, produce the re
 
 Rendering is cheap, and a stale render is worse than a re-render — but *omitting* `cache_salt` does not get you that. The key hashes what the provider **sends**, never the bytes of the program sending it, so a rebuilt renderer replays yesterday's output and the gate passes on a template it never rendered.
 
-Pin the salt to something that moves with the build — `cache_salt: "${env:GITHUB_SHA}"` in CI — or run this one gate with `--no-cache`. It costs seconds. See [caching.md](../caching.md#exec-providers-and-the-provider-salt).
+Pin the salt to something that moves with the build — `cache_salt: "${env:GITHUB_SHA}"` in CI — or run this one gate with `--no-cache`. It costs seconds. See [caching.md](../concepts/caching.md#exec-providers-and-the-provider-salt).
 
 ///
 

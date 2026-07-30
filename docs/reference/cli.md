@@ -67,7 +67,7 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--provider <ID>` | Only run this provider (repeatable). |
 | `--prompt <ID>` | Only run this prompt (repeatable). |
 | `--no-cache` | Never read or write the cache. |
-| `--cache-only` | Read cache only; a miss is an infrastructure error (offline CI). The credential preflight is skipped, and a case carrying a `latency` assertion is refused rather than called live — see [caching.md](../caching.md#cache-modes). |
+| `--cache-only` | Read cache only; a miss is an infrastructure error (offline CI). The credential preflight is skipped, and a case carrying a `latency` assertion is refused rather than called live — see [caching.md](../concepts/caching.md#cache-modes). |
 | `--no-grader-cache` | Grader-originated requests (the LLM judge, `exec` graders, embeddings) bypass the cache; responses of the systems under test are still replayed. Use it to measure judge variance deliberately. Replaces the deprecated suite key `cache.grader: false`. |
 | `--cache-dir DIR` | Where the local cache lives. Defaults to `.domarinn/cache` beside the suite, so the same suite hits the same cache from any directory. `DOMARINN_CACHE_DIR` sets the same thing; the flag wins. |
 | `--no-cache-migration` | Skip looking for entries written under an older cache-key shape. domarinn probes for those on a miss so an upgrade does not discard a warm cache, and stops once it is clear there is nothing to find. |
@@ -117,7 +117,7 @@ Set the environment variable in the image or on the machine when this is an orga
 
 **Live progress.** When stderr is a terminal, `run` draws a single progress bar on **stderr** — elapsed time, a bar, `done/total`, and a running pass/fail/error tally. It is purely cosmetic: it never touches **stdout**, so piping or redirecting results (`domarinn run --format json > out.json`) is byte-identical with or without it. The bar is suppressed automatically when stderr is not a terminal (e.g. captured CI logs), under `-vv`+ (so it never clobbers streamed diagnostics), and with `--no-progress`.
 
-See [domarinn.yaml](./domarinn-yaml.md) for the suite file and [statistics.md](../statistics.md) for `--repeat`/`--against`.
+See [domarinn.yaml](./domarinn-yaml.md) for the suite file and [statistics.md](../concepts/statistics.md) for `--repeat`/`--against`.
 
 ## `domarinn validate [PATH]`
 
@@ -221,7 +221,7 @@ Two scope rules worth knowing:
 - **Local tier only.** These never reach an S3 bucket or the server. Remote retention is the bucket's lifecycle rules and the server's [prune endpoint plus hourly retention task](rest-api.md#cache-shared-provider-cache).
 - **The pre-0.4 legacy tier is reported always, purged only when it is yours.** A cwd-relative `.domarinn/cache` left by an older domarinn is shown by `stats` and `path`, but `clear`/`gc` touch it only when the suite sits at or under the current directory — `cd ~/projB && domarinn cache clear ~/projA/evals` must not take projB's cache with it. `stats` says which of the two applies.
 
-See [caching.md](../caching.md) for the key rule, backends, and team sharing.
+See [caching.md](../concepts/caching.md) for the key rule, backends, and team sharing.
 
 ## `domarinn import promptfoo <PATH>`
 

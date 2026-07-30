@@ -227,7 +227,7 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 | `DOMARINN_SERVER_URL` | Target server base URL for `domarinn run --share` / `share` (or the `--server-url` flag). |
 | `DOMARINN_TOKEN`      | A single bearer token the CLI sends when uploading a run or using the HTTP cache backend. |
 
-See [`cli.md`](./cli.md) and [`../caching.md`](../caching.md) for the client side.
+See [`cli.md`](./cli.md) and [`../concepts/caching.md`](../concepts/caching.md) for the client side.
 
 ---
 

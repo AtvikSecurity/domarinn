@@ -66,13 +66,13 @@ The assertion still passes. Nothing warns you. The test simply stops testing wha
 
 **Symptom.** You edit a prompt your system loads by id, re-run, and get byte-identical results instantly.
 
-**Cause.** [The key is the request](caching.md#the-rule), and the request carries only an id. When your program resolves its own prompts across a process boundary, domarinn never sees that content, so nothing in the key changed.
+**Cause.** [The key is the request](concepts/caching.md#the-rule), and the request carries only an id. When your program resolves its own prompts across a process boundary, domarinn never sees that content, so nothing in the key changed.
 
 **Fix.** The [two-level salt pattern](examples/caching-and-statistics.md#example-22--cache-salts). A coarse `cache_salt` on the provider as a build pin, and a per-case `cache_salt: "$digest: prompts/{{ prompt_id }}.md"` so editing one prompt busts only the cases that use it. Do **not** make the provider-level salt a content digest of everything the program reads — that discards the whole cache on any edit, which is what the per-case salt exists to avoid.
 
 ### A rebuild did not re-run anything
 
-**Cause.** The key hashes what an `exec` provider *sends*, not the bytes of the program that sends it. That is deliberate: it is what makes a cache entry reusable on another machine. See [`exec` providers and the provider salt](caching.md#exec-providers-and-the-provider-salt).
+**Cause.** The key hashes what an `exec` provider *sends*, not the bytes of the program that sends it. That is deliberate: it is what makes a cache entry reusable on another machine. See [`exec` providers and the provider salt](concepts/caching.md#exec-providers-and-the-provider-salt).
 
 **Fix.** Bump the provider's `cache_salt` when a rebuild should discard old answers. domarinn warns when it replays cached answers for a provider whose program may have changed.
 
@@ -80,13 +80,13 @@ The assertion still passes. Nothing warns you. The test simply stops testing wha
 
 **Cause.** That case has a `latency` assertion. `latency` always measures a live call, and `--cache-only` promises not to make one — so the case is refused instead of quietly reaching the provider. Only that case fails; the rest of the suite replays.
 
-**Fix.** Drop `--cache-only` for that suite, or filter the latency cases out of the offline run (`--filter`, `--tag`). See [cache modes](caching.md#cache-modes).
+**Fix.** Drop `--cache-only` for that suite, or filter the latency cases out of the offline run (`--filter`, `--tag`). See [cache modes](concepts/caching.md#cache-modes).
 
 ### `--cache-only` fails every `similar` assertion after upgrading
 
 **Cause.** 0.4.x stored one cosine value per `similar` assertion; 0.5.0 caches the two embedding vectors instead, and a cosine decomposes into neither — so those entries are the one shape that is deliberately **not** adopted forward.
 
-**Fix.** Run the suite once in the default read-write mode to lay the vectors down. It costs a fraction of a cent and is warm from then on. See [Upgrading to 0.5](caching.md#upgrading-to-05).
+**Fix.** Run the suite once in the default read-write mode to lay the vectors down. It costs a fraction of a cent and is warm from then on. See [Upgrading to 0.5](concepts/caching.md#upgrading-to-05).
 
 ### The examples in this repo write into the repo
 
@@ -149,6 +149,6 @@ This fails asymmetrically, which is what makes it confusing: the system under te
 ## See also
 
 - [How a run works](concepts/how-a-run-works.md) — the model behind most of the above.
-- [Caching](caching.md) — the full key semantics.
+- [Caching](concepts/caching.md) — the full key semantics.
 - [CI integration](ci.md) — exit codes and gating.
 - [Examples](examples/index.md) — every entry here has a runnable counterpart.

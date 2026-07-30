@@ -94,7 +94,7 @@ See **[docs/getting-started.md](docs/getting-started.md)** for a full walkthroug
 Full documentation is published at **<https://docs.domarinn.com/>** (source in [`docs/`](docs/)):
 
 - [Getting started](docs/getting-started.md) · [domarinn.yaml](docs/reference/domarinn-yaml.md) · [Assertions](docs/reference/assertions.md) · [Providers](docs/reference/providers.md)
-- [Grading](docs/grading.md) · [Caching](docs/caching.md) · [Statistics](docs/statistics.md) · [CLI reference](docs/reference/cli.md)
+- [Grading](docs/concepts/grading.md) · [Caching](docs/concepts/caching.md) · [Statistics](docs/concepts/statistics.md) · [CLI reference](docs/reference/cli.md)
 - [Server & accounts](docs/reference/server.md) · [Self-hosting](docs/guides/self-host.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/reference/protocol.md)
 - [MCP endpoint](docs/reference/mcp.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
 - **[Examples](docs/examples/index.md)** — 32 runnable suites, one capability each, every one executed in CI

@@ -38,7 +38,7 @@ The flagship provider, and the escape hatch for testing anything you can run as 
 | `command`    | `[string]`          | –          | The command and its argv. Elements may contain [`${env:VAR}`](#environment-driven-config) placeholders. |
 | `env`        | `{string: string}`  | `{}`       | Extra environment variables for the child. Values may contain `${env:VAR}` placeholders too. |
 | `timeout_ms` | integer             | `60000`    | Per-call timeout in milliseconds. |
-| `cache_salt` | string              | *(none)*   | **Provider-level** version pin for the program — set it when a rebuild should discard cached answers. See below. Distinct from a test case's own [`cache_salt`](./domarinn-yaml.md#inline-and-loaded-test-fields), which keys a single case instead; see [caching.md](../caching.md#the-rule). |
+| `cache_salt` | string              | *(none)*   | **Provider-level** version pin for the program — set it when a rebuild should discard cached answers. See below. Distinct from a test case's own [`cache_salt`](./domarinn-yaml.md#inline-and-loaded-test-fields), which keys a single case instead; see [caching.md](../concepts/caching.md#the-rule). |
 
 ### Wire behavior
 
@@ -58,7 +58,7 @@ The price is that domarinn cannot tell one build of your program from the next, 
 
 Anything else that steers the program belongs in argv or `env` rather than in a salt, where the key can see it. [`${env:VAR}`](#environment-driven-config) drives those from the ambient environment while keeping them keyed; a variable the child reads *without* the suite declaring it is invisible to the cache.
 
-Full details — the two salt levels, `$digest:`, and what the child's environment does and does not key — are in [caching.md](../caching.md#exec-providers-and-the-provider-salt).
+Full details — the two salt levels, `$digest:`, and what the child's environment does and does not key — are in [caching.md](../concepts/caching.md#exec-providers-and-the-provider-salt).
 
 ### Error and retry classification
 
@@ -199,7 +199,7 @@ response.headers  # response headers as an object
 
 One input can still change what happens without changing the key, and it is worth knowing:
 
-- **The environment**, depending on which syntax you use. `${env:VAR}` resolves at **load time**, so the substituted value is keyed — use it for anything that changes the answer. `{{ env.VAR }}` renders **per request** and is keyed as a literal `${env:NAME}` placeholder — use it for credentials, where keying the value would give every API key its own private cache. A provider whose url, headers or body reference `{{ env.X }}` warns at startup naming the variable, because domarinn cannot tell a model selector from a token. See [caching.md](../caching.md#which-env-syntax).
+- **The environment**, depending on which syntax you use. `${env:VAR}` resolves at **load time**, so the substituted value is keyed — use it for anything that changes the answer. `{{ env.VAR }}` renders **per request** and is keyed as a literal `${env:NAME}` placeholder — use it for credentials, where keying the value would give every API key its own private cache. A provider whose url, headers or body reference `{{ env.X }}` warns at startup naming the variable, because domarinn cannot tell a model selector from a token. See [caching.md](../concepts/caching.md#which-env-syntax).
 
 ```yaml
 --8<-- "examples/28-http-provider/domarinn.yaml:provider"
@@ -261,7 +261,7 @@ The two failure classes map to `ProviderError::Retriable { retry_after }` and `P
 ## See also
 
 - **[protocol.md](./protocol.md)** — the exec JSON protocol wire format for `exec` providers, asserts, and generators.
-- **[caching.md](../caching.md)** — the one key rule, every cache knob in one table, and when `cache_salt` is needed.
+- **[caching.md](../concepts/caching.md)** — the one key rule, every cache knob in one table, and when `cache_salt` is needed.
 - **[assertions.md](./assertions.md)** — how provider outputs are graded, and the budget assertions that read `usage` / `cost_usd`.
-- **[grading.md](../grading.md)** — using `anthropic` / `openai` providers as the LLM-rubric grader.
+- **[grading.md](../concepts/grading.md)** — using `anthropic` / `openai` providers as the LLM-rubric grader.
 - **[domarinn.yaml](./domarinn-yaml.md)** — the full suite schema (`prompts`, `tests`, `defaults`, `runner`, `cache`).
