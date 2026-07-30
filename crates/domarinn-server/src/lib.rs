@@ -482,6 +482,7 @@ pub async fn build_app(
 pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
     let settings = Settings::from_env()?;
     let (app, state) = build_app(&config, settings).await?;
+    spawn_cache_index_backfill(state.clone());
     spawn_cache_retention(state);
 
     let port = config.port;
@@ -492,6 +493,50 @@ pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+/// Rows per indexing batch.
+///
+/// Small on purpose. Each batch takes the cache writer mutex to stamp its
+/// results, and that mutex is also what every `cache_put` and every `cache_get`
+/// needs — `cache_get` is a write, because it bumps the hit counter.
+const INDEX_BATCH: i64 = 200;
+/// Yielded between batches, so a CI burst arriving mid-backfill meets a bounded
+/// stall rather than a stalled cache.
+const INDEX_PAUSE: Duration = Duration::from_millis(250);
+/// How often to re-check once drained. The probe is one lookup against a
+/// partial index that is empty in the steady state, so this costs nothing.
+const INDEX_IDLE: Duration = Duration::from_secs(300);
+
+/// Drain the cache migration-2 columns in the background.
+///
+/// Entries written from now on are indexed by `cache_put` on the way in, so
+/// this exists for databases that predate the migration. Deliberately *not* in
+/// `storage::backfill`, which runs synchronously before the server binds its
+/// port: that is fine for the runs database, bounded by run count, and would
+/// turn a restart into an outage here, where a shared cache can hold a million
+/// entries of up to 4 MiB each.
+///
+/// It idles rather than exiting when drained, so a data dir restored from an
+/// older backup is indexed without needing a restart to notice.
+fn spawn_cache_index_backfill(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            match state.storage.cache_index_batch(INDEX_BATCH).await {
+                Ok(0) => tokio::time::sleep(INDEX_IDLE).await,
+                Ok(indexed) => {
+                    tracing::debug!(indexed, "cache index backfill progressed");
+                    tokio::time::sleep(INDEX_PAUSE).await;
+                }
+                // Never fatal: an unindexed cache still serves every read and
+                // write, it just cannot be filtered or searched yet.
+                Err(e) => {
+                    tracing::warn!(error = %e, "cache index backfill failed");
+                    tokio::time::sleep(INDEX_IDLE).await;
+                }
+            }
+        }
+    });
 }
 
 /// Hourly LRU/age retention against the configured cache limits, plus the

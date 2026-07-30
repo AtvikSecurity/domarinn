@@ -123,12 +123,34 @@ The content-addressed cache lets many CI runs share every request domarinn makes
 | GET    | `/api/v1/cache/{key}`      | `read`  | Fetch an entry (`application/octet-stream`). `404` on miss. The only method that moves the hit/miss counters. |
 | HEAD   | `/api/v1/cache/{key}`      | `read`  | Existence probe: `200` hit / `404` miss. Deliberately **excluded from the hit/miss counters** — the domarinn client only ever `GET`s, so counting probes would inflate the lookup hit rate the server reports. A found entry still refreshes its last-access time so a probed entry is not evicted next. |
 | PUT    | `/api/v1/cache/{key}`      | `write` | Store an entry (first-write-wins: `201` created / `200` already present). `413` if larger than `max_entry_bytes`. |
-| GET    | `/api/v1/cache/stats`      | `read`  | `{ entries, total_bytes, hits, misses, oldest_entry_at }`. `hits`/`misses` are `GET` lookups, which is what the web UI's **Lookup hit rate** tile is computed from. |
+| GET    | `/api/v1/cache/stats`      | `read`  | `{ entries, total_bytes, hits, misses, unindexed, oldest_entry_at }`. `hits`/`misses` are `GET` lookups, which is what the web UI's **Lookup hit rate** tile is computed from. |
 | POST   | `/api/v1/cache/prune`      | `admin` | Prune by `older_than_days` and/or `target_bytes` (LRU eviction). Returns `{ "pruned": N }`. |
 
 > The server also runs an **hourly retention** task that prunes the cache to
 > `DOMARINN_CACHE_MAX_AGE_DAYS` and `DOMARINN_CACHE_MAX_BYTES` automatically;
 > `POST /cache/prune` is the manual equivalent.
+
+### Indexed metadata
+
+An entry's `body` is opaque to the server: it is stored and served byte-for-byte,
+and a `PUT` the server cannot parse still succeeds. Alongside that, the server
+*tries* to read each entry once, and promotes what it finds — kind, model, cost,
+token counts, a request summary and an output preview — into indexed columns so
+entries can be listed, filtered and searched without decoding every row.
+
+New entries are indexed on the way in. Entries already in a database when it was
+upgraded are indexed by a **background task** that drains in small batches
+alongside normal traffic, rather than blocking startup. `stats.unindexed` counts
+what it has left; `0` is the steady state.
+
+Two consequences worth knowing:
+
+- Entries that are not yet indexed are still listed, never hidden — but a
+  `kind=` or `model=` filter cannot match them, and full-text search cannot
+  reach them, because nothing about them has been established yet.
+- An entry whose body the server cannot parse is indexed as *unparseable* once
+  and never re-examined. It stays fully readable through `GET /cache/{key}`;
+  it simply carries no metadata.
 
 ---
 

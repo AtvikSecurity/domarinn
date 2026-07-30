@@ -2,8 +2,10 @@
 //! has, immutable put, stats, and age/size pruning (also used by the retention
 //! task).
 
+use anyhow::Context;
 use rusqlite::{params, Connection, TransactionBehavior};
 
+use super::cacheindex::{self, EntryIndex};
 use super::{ms_to_rfc3339, now_ms, CachePutOutcome, Storage};
 use crate::dto::cache::CacheStatsResponse;
 
@@ -67,7 +69,24 @@ impl Storage {
             .await
     }
 
+    /// Store an entry, deriving its browsable columns on the way in.
+    ///
+    /// A body this server cannot parse is stored anyway, stamped as looked-at
+    /// with every promoted column NULL. That is not leniency, it is the
+    /// contract: the cache is a blob store, the client owns the format, and a
+    /// PUT that a *newer* client understands must not be rejected by an older
+    /// server that does not.
     pub async fn cache_put(&self, key: String, body: Vec<u8>) -> anyhow::Result<CachePutOutcome> {
+        // Derive before taking the writer. `Db::write` locks the single writer
+        // mutex and then runs its closure, so parsing a 4 MiB body inside one
+        // would stall every concurrent get and put for the duration.
+        let (body, index) = tokio::task::spawn_blocking(move || {
+            let index = EntryIndex::derive(&body);
+            (body, index)
+        })
+        .await
+        .context("cache index task panicked")?;
+
         self.cache
             .write(move |conn| {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -75,16 +94,43 @@ impl Storage {
                 let size = body.len() as i64;
                 // First-write-wins: INSERT OR IGNORE, then detect whether we won.
                 let n = tx.execute(
-                    "INSERT OR IGNORE INTO cache_entries (key, body, size, created_at, last_access_at)
-                     VALUES (?1, ?2, ?3, ?4, ?4)",
-                    params![key, body, size, now],
+                    "INSERT OR IGNORE INTO cache_entries
+                         (key, body, size, created_at, last_access_at,
+                          indexed_at, index_ok, kind, model, cost_microusd,
+                          input_tokens, output_tokens, entry_created_at,
+                          request_summary, output_preview)
+                     VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    params![
+                        key,
+                        body,
+                        size,
+                        now,
+                        now,
+                        index.is_some() as i64,
+                        index.as_ref().and_then(|i| i.kind.clone()),
+                        index.as_ref().and_then(|i| i.model.clone()),
+                        index.as_ref().and_then(|i| i.cost_microusd),
+                        index.as_ref().and_then(|i| i.input_tokens),
+                        index.as_ref().and_then(|i| i.output_tokens),
+                        index.as_ref().and_then(|i| i.entry_created_at),
+                        index.as_ref().and_then(|i| i.request_summary.clone()),
+                        index.as_ref().and_then(|i| i.output_preview.clone()),
+                    ],
                 )?;
-                tx.commit()?;
-                Ok(if n > 0 {
+                let outcome = if n > 0 {
+                    // Only the winner indexes: an entry is immutable, so a
+                    // losing PUT has nothing to add and a second FTS row would
+                    // make the same entry match twice.
+                    if let Some(index) = &index {
+                        let rowid = tx.last_insert_rowid();
+                        cacheindex::insert_fts(&tx, rowid, index)?;
+                    }
                     CachePutOutcome::Created
                 } else {
                     CachePutOutcome::Exists
-                })
+                };
+                tx.commit()?;
+                Ok(outcome)
             })
             .await
     }
@@ -120,11 +166,20 @@ fn cache_stats(conn: &Connection) -> anyhow::Result<CacheStatsResponse> {
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    // Its own query rather than a FILTER on the aggregate above, so the partial
+    // index serves it directly — and so it costs nothing once the backfill has
+    // drained, which is the steady state.
+    let unindexed: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM cache_entries WHERE indexed_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
     Ok(CacheStatsResponse {
         entries,
         total_bytes,
         hits,
         misses,
+        unindexed,
         oldest_entry_at: oldest.map(ms_to_rfc3339),
     })
 }

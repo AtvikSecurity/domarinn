@@ -98,6 +98,9 @@ export function cacheStats(): CacheStatsResponse {
     total_bytes: 268_435_456,
     hits: 19_233,
     misses: 4821,
+    // Drained, which is the steady state. The still-indexing branch is
+    // exercised by the entries-page fixtures rather than here.
+    unindexed: 0,
     oldest_entry_at: toIso(NOW - 37 * DAY),
   };
 }

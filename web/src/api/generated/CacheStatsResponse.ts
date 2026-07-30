@@ -5,6 +5,14 @@
  */
 export type CacheStatsResponse = { entries: number, total_bytes: number, hits: number, misses: number, 
 /**
+ * Entries whose body has never been examined, so their `kind`, `model`,
+ * cost and token columns are unknown and full-text search cannot reach
+ * them yet. Non-zero only while the background backfill drains a database
+ * that predates cache migration 2. The UI says "still indexing" rather
+ * than reporting those entries as having no model.
+ */
+unindexed: number, 
+/**
  * RFC3339, or `None` when the cache is empty.
  */
 oldest_entry_at: string | null, };

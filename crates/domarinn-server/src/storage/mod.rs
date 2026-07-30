@@ -20,7 +20,8 @@
 //! * [`matrix`] — the per-run prompt × provider aggregate matrix,
 //! * [`projects`] — projects, suites, and baselines,
 //! * [`search`] — FTS5 full-text search over runs and cases,
-//! * [`cache`] — the content-addressed cache table, stats, and pruning.
+//! * [`cache`] — the content-addressed cache table, stats, and pruning,
+//! * [`cacheindex`] — deriving the browsable columns from an entry's body.
 //!
 //! [`Storage`] is defined here; each submodule attaches its own `impl Storage`
 //! block. The public surface (`Storage`, [`RunListFilter`], [`CaseListFilter`],
@@ -43,6 +44,7 @@ use crate::dto::runs::CaseAssertLean;
 mod auth;
 mod backfill;
 mod cache;
+mod cacheindex;
 mod cases;
 mod compare;
 mod history;
