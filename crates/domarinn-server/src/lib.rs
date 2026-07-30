@@ -44,6 +44,7 @@ pub mod extract;
 pub mod localcache;
 pub mod mcp;
 pub mod routes;
+pub mod runsets;
 pub mod sso;
 pub mod storage;
 
