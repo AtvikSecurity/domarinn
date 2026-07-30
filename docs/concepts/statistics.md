@@ -115,6 +115,15 @@ McNemar: 12 regressions vs 3 fixes, statistic 4.27 (significant at 95%)
 
 This is what separates "20 regressions and 2 fixes" (`mcnemar(20, 2)` ≈ **13.14**, unambiguously significant) from "5 and 4" (`mcnemar(5, 4)` = **0** — the difference is too small for the continuity correction to register as directional at all). Raw counts alone cannot make that distinction; the paired test can.
 
+**Where it shows up.** The compare view renders the same three numbers — the regression count `b`, the fix count `c`, and the statistic — with a verdict badge beside them:
+
+![The compare view's significance panel: 0 regressions, 0 fixes, statistic 0.00, not significant](../assets/screenshots/compare-light.png#only-light)
+![The compare view's significance panel: 0 regressions, 0 fixes, statistic 0.00, not significant](../assets/screenshots/compare-dark.png#only-dark)
+
+Those two runs are re-runs of one suite over identical inputs, so **every** pair is concordant: `b = 0`, `c = 0`, statistic `0.00`, `Not significant`. That is the reading to expect from a healthy re-run, and it is worth recognising, because the panel looks the same whether nothing changed or nothing was comparable. The chip row above it separates those cases — `Added` and `Removed` count cases that exist on only one side and therefore never enter `b` or `c` at all.
+
+The two bars underneath carry each run's pass rate with its Wilson interval, which is the other half of the same honesty: seven shared cases give `100.0% (64.6–100.0)`, and no significance verdict can be sharper than the data it is computed from. See [The web UI → Compare](../reference/web-ui.md#compare--mcnemar).
+
 ## pass@k
 
 For repeated trials, domarinn computes the unbiased **pass@k** estimator (`pass_at_k()` in `stats.rs`, the Codex/HumanEval form) — given `n` trials of which `passed` succeeded, the probability that **at least one** of `k` sampled trials passes. It is the right question for anything with a retry loop in front of it: "does this work if we try up to k times," not "does it always work."

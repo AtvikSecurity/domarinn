@@ -24,7 +24,7 @@ Reuse your real code path. The value of this scenario comes entirely from the ev
 
 **`command` paths resolve relative to the suite file's directory**, not the shell's working directory. That is what lets `domarinn run eval/` from the repo root and `domarinn run .` from inside `eval/` behave identically.
 
-**The cache key hashes what your program is sent, not the program's bytes.** Rebuild your binary and the cache still replays the old answers. Set a provider `cache_salt` when a rebuild should invalidate — see [guide 05](share-cache-and-baselines.md#2-salt-at-the-right-granularity).
+**The cache key hashes what your program is sent, not the program's bytes.** Rebuild your binary and the cache still replays the old answers. Set a provider `cache_salt` when a rebuild should invalidate — see [guide 09](share-cache-and-baselines.md#2-salt-at-the-right-granularity).
 
 **There is no flag that swaps the model.** The model is part of argv, therefore part of the request — which is *why* two models can never collide in the cache. To compare two, declare two providers and scope a run with `--provider`.
 
@@ -72,4 +72,4 @@ Without a guard like this, a suite can sit on a model nobody serves — and ever
 
 - [Example 13](../examples/your-own-system.md#example-13--your-own-system) — the suite above.
 - [Exec protocol](../reference/protocol.md) — the full contract, in three languages.
-- [Guide 01](render-gate.md) — the free layer to put in front of this one.
+- [Guide 05](render-gate.md) — the free layer to put in front of this one.

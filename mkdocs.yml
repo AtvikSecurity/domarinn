@@ -213,7 +213,10 @@ nav:
   # guides/index.md the section landing page, so it must be the first child.
   - Guides:
       - guides/index.md
+      - Test a model API: guides/test-a-model-api.md
       - Test your app via exec: guides/evaluate-your-app.md
+      - Test an HTTP endpoint: guides/test-an-http-endpoint.md
+      - Local LLMs with Ollama: guides/local-llms.md
       - A zero-cost gate on every PR: guides/render-gate.md
       - Gate a PR in CI: guides/gate-in-ci.md
       - Grade an assistant against a policy: guides/grade-against-policy.md
@@ -231,6 +234,7 @@ nav:
       - REST API: reference/rest-api.md
       - MCP endpoint: reference/mcp.md
       - Exec protocol: reference/protocol.md
+      - The web UI: reference/web-ui.md
   # No example-number ranges in these labels: nothing would keep them true
   # when the ladder grows, and the guarded index table already maps every
   # number to its page (crates/domarinn-cli/tests/examples.rs).

@@ -1,7 +1,8 @@
 # domarinn — single-service self-host.
 #
 # SQLite is a single writer, so this is intentionally ONE replica with a
-# persistent volume. Do not scale this service to >1; see docs/deploy.md.
+# persistent volume. Do not scale this service to >1; see
+# docs/guides/self-host.md.
 #
 #   docker compose up -d
 #   # UI + API on http://localhost:8321
@@ -47,7 +48,8 @@ services:
       # prefix. REQUIRED if you enable any SSO provider below.
       DOMARINN_PUBLIC_URL: "https://domarinn.example.com"
 
-      # --- Single sign-on (optional) — see docs/server.md#single-sign-on ---
+      # --- Single sign-on (optional) — see
+      # docs/reference/server.md#single-sign-on-oidc--saml ---
       # OIDC (Google, Authentik, Okta, Entra, Keycloak, …):
       #DOMARINN_OIDC_PROVIDERS: "authentik"
       #DOMARINN_OIDC_AUTHENTIK_ISSUER: "https://auth.example.com/application/o/domarinn/"
@@ -79,7 +81,8 @@ services:
   #   docker compose --profile ollama exec ollama ollama pull qwen3:4b
   #   OPENAI_BASE_URL=http://localhost:11434/v1 domarinn run examples/26-openai-provider
   #
-  # See the local-LLM guide for the full walkthrough.
+  # See docs/guides/local-llms.md for the full walkthrough (remote GPU hosts,
+  # which examples run locally, and the model recommendations).
   ollama:
     image: ollama/ollama:0.32.5
     profiles: ["ollama"]
