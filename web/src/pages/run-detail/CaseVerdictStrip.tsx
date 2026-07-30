@@ -1,3 +1,4 @@
+import { Link } from "react-router";
 import type { CaseResult } from "@/api";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Chip } from "@/components/ui/Chip";
@@ -66,7 +67,27 @@ export function CaseVerdictStrip({
               {detail.model}
             </Chip>
           ) : null}
-          {detail.cached ? <Chip>cached</Chip> : null}
+          {/* The other half of the runs <-> cache link. The cache browser can
+              already name the runs that used an entry; this is how you get from
+              a case to the entry that answered it.
+
+              The key is recorded whether the call hit or missed — it is a
+              property of the request — so the link is offered on both, and the
+              chip still says which happened. A case with no key (--no-cache, a
+              provider that declines caching, or any run recorded before the
+              field existed) keeps the plain chip: absence is not "no cache was
+              used", it is "this run never wrote it down". */}
+          {detail.cache_key ? (
+            <Link
+              to={`/cache/entries?entry=${encodeURIComponent(detail.cache_key)}`}
+              title="Open the cache entry this case was addressed by"
+              className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Chip tone="accent">{detail.cached ? "cached" : "cache entry"} →</Chip>
+            </Link>
+          ) : detail.cached ? (
+            <Chip>cached</Chip>
+          ) : null}
           {detail.attempts > 1 ? (
             <Chip tone="amber">{detail.attempts} attempts</Chip>
           ) : null}
