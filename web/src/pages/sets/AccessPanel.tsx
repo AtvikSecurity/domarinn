@@ -178,9 +178,9 @@ export function AccessPanel({
           <>
             <section className="rounded-lg border border-border bg-bg/40 px-3 py-2.5">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium">
-                  {restricted ? "Restricted" : "Open"}
-                </span>
+                {/* "Visibility" rather than repeating the chip's word in
+                    bold beside it — the chip IS the status. */}
+                <span className="text-sm font-medium">Visibility</span>
                 <Chip tone={restricted ? "amber" : "neutral"} size="xs">
                   {restricted ? "restricted" : "open"}
                 </Chip>

@@ -56,7 +56,9 @@ export function SetsPage() {
                   <th className="px-3 py-2 text-right font-medium">Suites</th>
                   <th className="px-3 py-2 text-right font-medium">Runs</th>
                   <th className="px-3 py-2 font-medium">Last activity</th>
-                  <th className="px-3 py-2 font-medium">Pass rate</th>
+                  {/* Not "pass rate": this is one latest rate per suite, a
+                      spread across the project rather than a trend. */}
+                  <th className="px-3 py-2 font-medium">Suite pass rates</th>
                   <th className="px-3 py-2 text-right font-medium">
                     <span className="sr-only">Access</span>
                   </th>
