@@ -23,7 +23,7 @@ site_url: https://docs.domarinn.com/
 repo_url: https://github.com/AtvikSecurity/domarinn
 repo_name: AtvikSecurity/domarinn
 # Appended to repo_url + a doc's path relative to docs_dir, e.g.
-# .../edit/main/docs/getting-started.md
+# .../edit/main/docs/start/install.md
 edit_uri: edit/main/docs/
 
 docs_dir: docs
@@ -164,7 +164,13 @@ plugins:
   # server.md moved to reference/server.md (its REST API and MCP sections
   # split further into their own reference/ pages, which need no redirect of
   # their own since those URLs never existed before), and deploy.md became the
-  # self-hosting guide under guides/.
+  # self-hosting guide under guides/. The eleven entries below are the guides
+  # restructure: scenarios/* moved under guides/ (regression-gate.md's content
+  # merged into gate-in-ci.md rather than moving 1:1, so both its old path and
+  # ci.md's old path redirect there), and getting-started.md split into
+  # start/install.md + start/first-eval.md — the old URL forwards to the
+  # latter since that is where most of the page's content (and its inbound
+  # links) landed; start/install.md has no old URL to redirect from.
   - redirects:
       redirect_maps:
         configuration.md: reference/domarinn-yaml.md
@@ -177,9 +183,23 @@ plugins:
         grading.md: concepts/grading.md
         caching.md: concepts/caching.md
         statistics.md: concepts/statistics.md
+        getting-started.md: start/first-eval.md
+        ci.md: guides/gate-in-ci.md
+        migrate-promptfoo.md: guides/migrate-promptfoo.md
+        troubleshooting.md: guides/troubleshooting.md
+        scenarios/index.md: guides/index.md
+        scenarios/render-gate.md: guides/render-gate.md
+        scenarios/grade-against-policy.md: guides/grade-against-policy.md
+        scenarios/structured-output.md: guides/structured-output.md
+        scenarios/regression-gate.md: guides/gate-in-ci.md
+        scenarios/shared-cache.md: guides/share-cache-and-baselines.md
+        scenarios/evaluate-your-app.md: guides/evaluate-your-app.md
 
 nav:
   - Introduction: index.md
+  - Start here:
+      - Install: start/install.md
+      - Your first eval: start/first-eval.md
   - Concepts:
       - How a run works: concepts/how-a-run-works.md
       - Architecture — one binary: concepts/architecture.md
@@ -188,12 +208,20 @@ nav:
       - The one-rule cache: concepts/caching.md
       - Statistics: concepts/statistics.md
       - Why domarinn is built this way: concepts/why-domarinn.md
-  - User guide:
-      - Getting started: getting-started.md
-      - CI integration: ci.md
-      - Self-hosting: guides/self-host.md
-      - Migrating from promptfoo: migrate-promptfoo.md
-      - Troubleshooting: troubleshooting.md
+  # Guides = end-to-end, problem-driven walkthroughs, as opposed to the
+  # per-capability ladder grouped under examples/. navigation.indexes makes
+  # guides/index.md the section landing page, so it must be the first child.
+  - Guides:
+      - guides/index.md
+      - Test your app via exec: guides/evaluate-your-app.md
+      - A zero-cost gate on every PR: guides/render-gate.md
+      - Gate a PR in CI: guides/gate-in-ci.md
+      - Grade an assistant against a policy: guides/grade-against-policy.md
+      - Evaluate structured output: guides/structured-output.md
+      - Share a cache and baselines: guides/share-cache-and-baselines.md
+      - Self-host the server: guides/self-host.md
+      - Migrate from promptfoo: guides/migrate-promptfoo.md
+      - Troubleshooting: guides/troubleshooting.md
   # No example-number ranges in these labels: nothing would keep them true
   # when the ladder grows, and the guarded index table already maps every
   # number to its page (crates/domarinn-cli/tests/examples.rs).
@@ -205,17 +233,6 @@ nav:
       - Running & reporting: examples/running-and-reporting.md
       - Caching & statistics: examples/caching-and-statistics.md
       - Models, grading & budgets: examples/models-grading-and-budgets.md
-  # Scenarios = end-to-end, problem-driven walkthroughs, as opposed to the
-  # per-capability ladder grouped under examples/. navigation.indexes makes
-  # scenarios/index.md the section landing page, so it must be the first child.
-  - Scenarios:
-      - scenarios/index.md
-      - A zero-cost gate on every PR: scenarios/render-gate.md
-      - Grade an assistant against a policy: scenarios/grade-against-policy.md
-      - Evaluate structured output: scenarios/structured-output.md
-      - Gate a pull request on regressions: scenarios/regression-gate.md
-      - Share a cache across a team: scenarios/shared-cache.md
-      - Evaluate your own application: scenarios/evaluate-your-app.md
   - Reference:
       - domarinn.yaml: reference/domarinn-yaml.md
       - Providers: reference/providers.md
