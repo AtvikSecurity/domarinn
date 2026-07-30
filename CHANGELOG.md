@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/AtvikSecurity/domarinn/compare/0.5.1...0.6.0) (2026-07-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core:** let graded assertions see the model's tool calls ([#36](https://github.com/AtvikSecurity/domarinn/issues/36))
+
+### Features
+
+* **core:** let graded assertions see the model's tool calls ([#36](https://github.com/AtvikSecurity/domarinn/issues/36)) ([e9f0e30](https://github.com/AtvikSecurity/domarinn/commit/e9f0e30067189eff4f45774ab7de84791c994a15))
+
 ## [0.5.1](https://github.com/AtvikSecurity/domarinn/compare/0.5.0...0.5.1) (2026-07-30)
 
 
