@@ -429,6 +429,45 @@ async fn the_access_list_is_readable_only_by_admins_and_managers() {
     assert_eq!(r.json()["grants"], json!([]));
 }
 
+/// `restricted` on the access list is the **exact-scope** answer, because it
+/// describes the one row the toggle beside it creates and deletes. The browse
+/// views answer the covering question instead — a suite inside a restricted
+/// project is unreachable there, but its restriction is not its own to remove.
+#[tokio::test]
+async fn the_access_list_reports_the_restriction_its_toggle_owns() {
+    let f = fixture().await;
+    assert_eq!(
+        restriction(
+            &f.app,
+            "PUT",
+            "/api/v1/sets/open/restriction",
+            Some(&f.admin)
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+
+    let project = get_auth(&f.app, "/api/v1/sets/open/access", Some(&f.admin)).await;
+    assert_eq!(project.json()["restricted"], json!(true));
+
+    let suite = get_auth(
+        &f.app,
+        "/api/v1/sets/open/suites/alpha/access",
+        Some(&f.admin),
+    )
+    .await;
+    assert_eq!(suite.status, StatusCode::OK, "{:?}", suite.json());
+    assert_eq!(
+        suite.json()["restricted"],
+        json!(false),
+        "the suite carries no restriction row of its own"
+    );
+
+    // The browse view still tells the truth about reachability.
+    let browsed = get_auth(&f.app, "/api/v1/sets/open/suites/alpha", Some(&f.admin)).await;
+    assert_eq!(browsed.json()["restricted"], json!(true));
+}
+
 #[tokio::test]
 async fn a_grant_row_carries_the_fields_the_access_panel_renders() {
     let f = fixture().await;

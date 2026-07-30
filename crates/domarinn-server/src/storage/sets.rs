@@ -25,12 +25,12 @@ use crate::runsets::{visibility_predicate, GrantLevel, RunVisibility};
 
 /// How many recent runs a suite's sparkline covers. Matches the legacy suite
 /// series window, so the two surfaces tell the same story about "recent".
-pub const SPARKLINE_RUNS: usize = 20;
+const SPARKLINE_RUNS: usize = 20;
 
 /// How many per-suite pass rates a project's row carries. A project with more
-/// suites than this shows the first `SPARKLINE_RUNS` in name order rather than
-/// an unbounded array — the row is a glance, not a report.
-const PROJECT_SPARK_CAP: usize = SPARKLINE_RUNS;
+/// suites than this shows the first 20 in name order rather than an unbounded
+/// array — the row is a glance, not a report.
+const PROJECT_SPARK_CAP: usize = 20;
 
 /// The per-run aggregate columns, in the order every reader below unpacks them.
 const AGGREGATES: &str = "COUNT(*), MAX(created_at), \

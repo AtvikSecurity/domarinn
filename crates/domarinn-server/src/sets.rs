@@ -169,7 +169,7 @@ async fn access(
     // beside it writes, not a report on what covers the set.
     let restricted = state
         .storage
-        .run_set_restricted(Some(project.clone()), suite.clone())
+        .run_set_restricted_exactly(project.clone(), suite.clone())
         .await?;
     let grants = state
         .storage

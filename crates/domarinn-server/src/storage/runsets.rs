@@ -94,6 +94,34 @@ impl Storage {
             .await
     }
 
+    /// Whether `(project, suite)` carries a restriction row of *its own* scope.
+    ///
+    /// The exact-scope counterpart of [`Storage::run_set_restricted`], and the
+    /// question the access editor asks: this is the row
+    /// [`Storage::restrict_run_set`] writes and [`Storage::unrestrict_run_set`]
+    /// removes, so a suite inside a restricted project answers `false` — its
+    /// restriction lives on the project, and that is where it is lifted.
+    /// Exact scope for the same reason [`Storage::list_run_set_grants`] is.
+    pub async fn run_set_restricted_exactly(
+        &self,
+        project: String,
+        suite: Option<String>,
+    ) -> anyhow::Result<bool> {
+        self.runs
+            .read(move |conn| {
+                Ok(conn
+                    .query_row(
+                        "SELECT 1 FROM run_set_restrictions
+                          WHERE project = ?1 AND COALESCE(suite,'') = COALESCE(?2,'') LIMIT 1",
+                        params![project, suite],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some())
+            })
+            .await
+    }
+
     /// Create or re-level a user's grant on `(project, suite)`.
     pub async fn upsert_run_set_grant(
         &self,
