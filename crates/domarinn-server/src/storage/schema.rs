@@ -1,6 +1,26 @@
 //! Forward-only migration SQL for both databases.
 
+use rusqlite::Connection;
 use rusqlite_migration::{Migrations, M};
+
+/// Bring `conn` to the latest runs schema, with foreign keys disabled for the
+/// duration.
+///
+/// Migration 14 rebuilds `users`, and SQLite only permits a table rebuild with
+/// enforcement off: `DROP TABLE` runs an implicit `DELETE FROM` that fires
+/// every `ON DELETE CASCADE` hanging off the table, and `ALTER TABLE … RENAME`
+/// rewrites the children's `REFERENCES` clauses to name the scratch table. The
+/// pragma is a no-op inside a transaction and rusqlite_migration runs each
+/// migration in one, so it has to be toggled out here, on the connection,
+/// around the whole run — this is step 1 of SQLite's own documented rebuild
+/// recipe.
+pub(super) fn migrate_runs(conn: &mut Connection) -> anyhow::Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+    let applied = runs_migrations().to_latest(conn);
+    // Restore enforcement whatever happened: the caller keeps this connection.
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+    Ok(applied?)
+}
 
 /// Schema for `domarinn.db` (durable run history).
 ///
@@ -8,7 +28,7 @@ use rusqlite_migration::{Migrations, M};
 /// only add new ones to the end of the vec so existing databases upgrade in
 /// place. The accounts tables (migration 2) live in the runs database so they
 /// share its writer-mutex and reader-pool.
-pub(super) fn runs_migrations() -> Migrations<'static> {
+fn runs_migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(
             r#"
@@ -401,6 +421,73 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
             WHERE cache_key IS NOT NULL;
         "#,
         ),
+        // Migration 14: the read-only `viewer` role, and the two tables run-set
+        // visibility will be decided from.
+        //
+        // Widening a CHECK means rebuilding the table — SQLite has no ALTER for
+        // it — and `users` is the one table here with children hanging off
+        // `ON DELETE CASCADE` (`sessions`, `api_keys`, `user_identities`). The
+        // rebuild below is SQLite's documented recipe, and it is only safe
+        // because [`migrate_runs`] turns foreign keys off around the whole
+        // migration run: with enforcement on, the `DROP TABLE` fires every
+        // cascade (every session, API key and SSO link on the instance, gone on
+        // the next restart) and the `RENAME` rewrites the children's
+        // `REFERENCES` clauses to name `users_new`. See that function for why
+        // the pragma cannot live in this SQL.
+        //
+        // The column set is migration 2's plus migration 4's `email`.
+        // `username` carries its own UNIQUE constraint (an implicit index,
+        // recreated with the table); migration 2 declared no explicit index on
+        // `users`, so there is none to recreate here.
+        //
+        // The two new tables are inert — nothing reads or writes them yet. A
+        // NULL `suite` means "the whole project" in both, and the uniqueness
+        // that encodes cannot be a plain UNIQUE constraint: SQLite treats every
+        // NULL as distinct, so `(project, NULL)` would insert twice over and a
+        // project-wide rule would exist in N conflicting copies. Hence the
+        // expression indexes over `COALESCE(suite,'')` — a suite may never be
+        // named `''`, so the collapse is lossless. `created_at` is epoch-ms
+        // like every other timestamp here; `created_by` is a free label, and
+        // NULL means the row records no author.
+        M::up(
+            r#"
+        CREATE TABLE users_new (
+            id            TEXT PRIMARY KEY,
+            username      TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL CHECK (role IN ('admin','member','viewer')),
+            disabled      INTEGER NOT NULL DEFAULT 0,
+            created_at    INTEGER NOT NULL,
+            email         TEXT
+        );
+        INSERT INTO users_new (id, username, password_hash, role, disabled, created_at, email)
+            SELECT id, username, password_hash, role, disabled, created_at, email FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_new RENAME TO users;
+
+        CREATE TABLE run_set_restrictions (
+            project    TEXT NOT NULL,
+            suite      TEXT,
+            created_at INTEGER NOT NULL,
+            created_by TEXT
+        );
+        CREATE UNIQUE INDEX idx_run_set_restrictions_scope
+            ON run_set_restrictions(project, COALESCE(suite,''));
+
+        CREATE TABLE run_set_grants (
+            id         TEXT PRIMARY KEY,
+            project    TEXT NOT NULL,
+            suite      TEXT,
+            user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            level      TEXT NOT NULL CHECK (level IN ('view','upload','manage')),
+            created_at INTEGER NOT NULL,
+            created_by TEXT
+        );
+        CREATE UNIQUE INDEX idx_run_set_grants_scope
+            ON run_set_grants(project, COALESCE(suite,''), user_id);
+        CREATE INDEX idx_run_set_grants_user ON run_set_grants(user_id);
+        "#,
+        ),
     ])
 }
 
@@ -489,4 +576,163 @@ pub(super) fn cache_migrations() -> Migrations<'static> {
         "#,
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{params, Connection};
+
+    /// A runs database stopped at migration 13, with foreign keys enforced
+    /// exactly as `open_conn` configures the real writer connection — the
+    /// state every deployed instance upgrades into migration 14 from.
+    fn v13_conn() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        runs_migrations().to_version(&mut conn, 13).unwrap();
+        conn
+    }
+
+    /// A runs database at the latest migration, reached through the same
+    /// [`migrate_runs`] the server's own open path uses.
+    fn latest_conn() -> Connection {
+        let mut conn = v13_conn();
+        migrate_runs(&mut conn).unwrap();
+        conn
+    }
+
+    fn seed_user(conn: &Connection, id: &str, username: &str, role: &str) {
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash, role, disabled, created_at, email)
+             VALUES (?1, ?2, 'phc', ?3, 0, 1700000000000, ?4)",
+            params![id, username, role, format!("{username}@example.com")],
+        )
+        .unwrap();
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// The `users` rebuild is the risky half of migration 14: SQLite cannot
+    /// widen a CHECK in place, and a naive rebuild drops every session, API
+    /// key and SSO identity on the floor via `ON DELETE CASCADE`.
+    #[test]
+    fn migration_14_rebuilds_users_without_losing_rows_or_their_children() {
+        let mut conn = v13_conn();
+        seed_user(&conn, "u1", "root", "admin");
+        seed_user(&conn, "u2", "dana", "member");
+        conn.execute_batch(
+            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_used_at)
+                 VALUES ('sh', 'u2', 1, 2, 3);
+             INSERT INTO api_keys (id, user_id, name, prefix, key_hash, scope, created_at)
+                 VALUES ('k1', 'u2', 'ci', 'domarinn_ab', 'kh', 'write', 1);
+             INSERT INTO user_identities
+                 (id, user_id, provider, kind, subject, email, display_name, created_at)
+                 VALUES ('i1', 'u2', 'oidc:corp', 'oidc', 'sub-1', 'd@example.com', 'Dana', 1);",
+        )
+        .unwrap();
+
+        migrate_runs(&mut conn).unwrap();
+
+        // Every user column survives the rebuild, values included.
+        let (username, role, email, disabled, created_at): (String, String, String, i64, i64) =
+            conn.query_row(
+                "SELECT username, role, email, disabled, created_at FROM users WHERE id = 'u2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(username, "dana");
+        assert_eq!(role, "member");
+        assert_eq!(email, "dana@example.com");
+        assert_eq!(disabled, 0);
+        assert_eq!(created_at, 1_700_000_000_000);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM users"), 2);
+
+        // The children the FKs point at are still there.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sessions"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM api_keys"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM user_identities"), 1);
+
+        // `username` is still unique.
+        assert!(conn
+            .execute(
+                "INSERT INTO users (id, username, password_hash, role, disabled, created_at)
+                 VALUES ('u3', 'dana', 'phc', 'member', 0, 1)",
+                [],
+            )
+            .is_err());
+
+        // And the cascade still fires, so the FKs point at the new table.
+        conn.execute("DELETE FROM users WHERE id = 'u2'", [])
+            .unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sessions"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM api_keys"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM user_identities"), 0);
+    }
+
+    #[test]
+    fn migration_14_admits_viewer_and_still_rejects_unknown_roles() {
+        let conn = latest_conn();
+        seed_user(&conn, "u1", "reader", "viewer");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM users WHERE role = 'viewer'"),
+            1
+        );
+        assert!(conn
+            .execute(
+                "INSERT INTO users (id, username, password_hash, role, disabled, created_at)
+                 VALUES ('u2', 'sneaky', 'phc', 'superadmin', 0, 1)",
+                [],
+            )
+            .is_err());
+    }
+
+    /// A project-level restriction is one row, not many: plain `UNIQUE` would
+    /// treat every NULL suite as distinct and let duplicates through.
+    #[test]
+    fn a_project_level_restriction_can_only_be_recorded_once() {
+        let conn = latest_conn();
+        let insert = |suite: Option<&str>| {
+            conn.execute(
+                "INSERT INTO run_set_restrictions (project, suite, created_at, created_by)
+                 VALUES ('checkout', ?1, 1, 'root')",
+                params![suite],
+            )
+        };
+        assert!(insert(None).is_ok());
+        assert!(insert(None).is_err(), "NULL suites must collide");
+        assert!(insert(Some("smoke")).is_ok());
+        assert!(insert(Some("smoke")).is_err());
+    }
+
+    #[test]
+    fn a_grant_is_unique_per_scope_and_dies_with_its_user() {
+        let conn = latest_conn();
+        seed_user(&conn, "u1", "reader", "viewer");
+        let insert = |id: &str, suite: Option<&str>, level: &str| {
+            conn.execute(
+                "INSERT INTO run_set_grants
+                     (id, project, suite, user_id, level, created_at, created_by)
+                 VALUES (?1, 'checkout', ?2, 'u1', ?3, 1, 'root')",
+                params![id, suite, level],
+            )
+        };
+        assert!(insert("g1", None, "view").is_ok());
+        assert!(
+            insert("g2", None, "manage").is_err(),
+            "one grant per project/suite/user, whatever its level"
+        );
+        assert!(insert("g3", Some("smoke"), "upload").is_ok());
+        assert!(insert("g4", Some("smoke"), "upload").is_err());
+        assert!(
+            insert("g5", Some("other"), "owner").is_err(),
+            "unknown level"
+        );
+
+        conn.execute("DELETE FROM users WHERE id = 'u1'", [])
+            .unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM run_set_grants"), 0);
+    }
 }

@@ -213,9 +213,7 @@ impl Storage {
 
         let runs_path = dir.join("domarinn.db");
         let mut runs_writer = open_conn(&runs_path)?;
-        schema::runs_migrations()
-            .to_latest(&mut runs_writer)
-            .context("applying runs migrations")?;
+        schema::migrate_runs(&mut runs_writer).context("applying runs migrations")?;
         // Populate the migration-3 columns for any rows written before the
         // migration (fresh DBs and already-backfilled DBs select 0 rows).
         backfill::run(&mut runs_writer).context("backfilling runs database")?;

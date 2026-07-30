@@ -106,7 +106,7 @@ Each comma-separated entry is `scope:secret`, where scope is `read`, `write`, or
 **2. Local user accounts** — real username/password logins stored in SQLite.
 
 - Passwords are **argon2**-hashed (minimum 8 characters).
-- Two roles: **`admin`** and **`member`**. Role maps to a scope ceiling: `admin → admin`, `member → write`.
+- Three roles: **`admin`**, **`member`**, and **`viewer`**. Role maps to a scope ceiling: `admin → admin`, `member → write`, `viewer → read`.
 - Logging in mints a **session** (token prefix `mses_`, 30-day lifetime). The browser UI uses sessions; `POST /auth/logout` revokes the presenting one.
 - Each account can mint **API keys** (prefix `domarinn_`, 256 bits of entropy). The secret is shown **exactly once** on creation, is revocable, and carries a **scope ceiling** — a key may be created at or below the creator's own scope, never above it.
 
@@ -143,6 +143,7 @@ domarinn can delegate login to one or more external identity providers — any O
 | Variable | Default | Purpose |
 |---|---|---|
 | `DOMARINN_SSO_CLOCK_SKEW_SECS` | `60` | Tolerance for OIDC `exp`/`iat` and SAML `NotBefore`/`NotOnOrAfter`. |
+| `DOMARINN_SSO_DEFAULT_ROLE` | `member` | Role for an SSO login that matches no admin rule — set `viewer` to provision read-only accounts. `admin` is not accepted; use the per-provider admin groups/emails below. |
 
 ### OIDC providers
 

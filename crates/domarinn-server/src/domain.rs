@@ -100,6 +100,8 @@ string_id!(
 pub enum Role {
     Admin,
     Member,
+    /// Read-only: sees runs and cases, writes nothing.
+    Viewer,
 }
 
 impl Role {
@@ -107,6 +109,7 @@ impl Role {
         match self {
             Role::Admin => "admin",
             Role::Member => "member",
+            Role::Viewer => "viewer",
         }
     }
 }
@@ -124,8 +127,9 @@ impl std::str::FromStr for Role {
         match s {
             "admin" => Ok(Role::Admin),
             "member" => Ok(Role::Member),
+            "viewer" => Ok(Role::Viewer),
             other => Err(format!(
-                "invalid role '{other}'; expected one of: admin, member"
+                "invalid role '{other}'; expected one of: admin, member, viewer"
             )),
         }
     }
@@ -401,5 +405,31 @@ mod tests {
         assert!(err.contains("superadmin"));
         assert!(err.contains("admin"));
         assert!(err.contains("member"));
+        assert!(err.contains("viewer"));
+    }
+
+    /// Every representation of a role has to agree, or a role stored by one
+    /// path becomes unreadable by another: `viewer` is the third variant and
+    /// the first added after the impls were written.
+    #[test]
+    fn every_role_agrees_across_sql_serde_and_from_str() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (role TEXT NOT NULL)")
+            .unwrap();
+        for role in [Role::Admin, Role::Member, Role::Viewer] {
+            conn.execute("DELETE FROM t", []).unwrap();
+            conn.execute("INSERT INTO t (role) VALUES (?1)", rusqlite::params![role])
+                .unwrap();
+            let got: Role = conn
+                .query_row("SELECT role FROM t", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(got, role);
+            assert_eq!(
+                serde_json::to_value(role).unwrap(),
+                serde_json::json!(role.as_str())
+            );
+            assert_eq!(role.as_str().parse::<Role>().unwrap(), role);
+            assert_eq!(role.to_string(), role.as_str());
+        }
     }
 }

@@ -3,4 +3,4 @@
 /**
  * A local account's role.
  */
-export type Role = "admin" | "member";
+export type Role = "admin" | "member" | "viewer";

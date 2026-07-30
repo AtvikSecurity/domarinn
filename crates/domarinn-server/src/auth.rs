@@ -114,6 +114,7 @@ impl Scope {
         match role {
             Role::Admin => Scope::Admin,
             Role::Member => Scope::Write,
+            Role::Viewer => Scope::Read,
         }
     }
 }
@@ -721,6 +722,7 @@ mod tests {
     fn role_scope_mapping() {
         assert_eq!(Scope::for_role(Role::Admin), Scope::Admin);
         assert_eq!(Scope::for_role(Role::Member), Scope::Write);
+        assert_eq!(Scope::for_role(Role::Viewer), Scope::Read);
     }
 
     #[test]

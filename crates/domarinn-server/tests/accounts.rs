@@ -522,6 +522,22 @@ async fn patch_cannot_remove_the_last_admin() {
         demote.json()
     );
 
+    // Demoting to the read-only role is refused for the same reason: the
+    // guard counts enabled admins, so a third role must not open a hole.
+    let to_viewer = patch(
+        &app,
+        &format!("/api/v1/users/{root_id}"),
+        Some(&admin),
+        &json!({ "role": "viewer" }),
+    )
+    .await;
+    assert_eq!(
+        to_viewer.status,
+        StatusCode::CONFLICT,
+        "body: {:?}",
+        to_viewer.json()
+    );
+
     // Disabling the only admin is refused too.
     let disable = patch(
         &app,
@@ -555,6 +571,85 @@ async fn patch_cannot_remove_the_last_admin() {
     .await;
     assert_eq!(ok.status, StatusCode::OK, "body: {:?}", ok.json());
     assert_eq!(ok.json()["role"], "member");
+}
+
+/// A `viewer` account is a real login that buys read access and nothing more:
+/// it sees the data, cannot write it, and cannot reach the admin API.
+#[tokio::test]
+async fn a_viewer_account_can_read_and_nothing_else() {
+    let (app, _dir) =
+        test_app_with_mode(Settings::default(), domarinn_server::AuthMode::Closed).await;
+    let admin = setup_admin(&app).await;
+    let viewer = create_and_login(&app, &admin, "vera", "viewer").await;
+
+    let me = get_auth(&app, "/api/v1/auth/me", Some(&viewer)).await;
+    assert_eq!(me.json()["scope"], "read");
+    assert_eq!(me.json()["user"]["role"], "viewer");
+
+    // Reads are granted — the whole point of the role, and in closed mode
+    // they are refused to anonymous callers.
+    assert_eq!(
+        get(&app, "/api/v1/runs").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        get_auth(&app, "/api/v1/runs", Some(&viewer)).await.status,
+        StatusCode::OK
+    );
+
+    // Writes and admin are not.
+    assert_eq!(
+        post_json(
+            &app,
+            "/api/v1/apikeys",
+            Some(&viewer),
+            &json!({ "name": "k" })
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        get_auth(&app, "/api/v1/users", Some(&viewer)).await.status,
+        StatusCode::FORBIDDEN
+    );
+}
+
+/// The key-minting ceiling is the caller's own scope. In open mode the write
+/// extractor waves a viewer through, so the ceiling is the only thing left
+/// standing between a read-only account and a write-scoped key.
+#[tokio::test]
+async fn a_viewer_can_only_mint_read_keys() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let admin = setup_admin(&app).await;
+    let viewer = create_and_login(&app, &admin, "vera", "viewer").await;
+
+    for over in ["write", "admin"] {
+        let denied = post_json(
+            &app,
+            "/api/v1/apikeys",
+            Some(&viewer),
+            &json!({ "name": "over", "scope": over }),
+        )
+        .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN, "scope {over}");
+    }
+
+    // The implicit default is the caller's own scope, which is read.
+    let minted = post_json(
+        &app,
+        "/api/v1/apikeys",
+        Some(&viewer),
+        &json!({ "name": "readonly" }),
+    )
+    .await;
+    assert_eq!(
+        minted.status,
+        StatusCode::CREATED,
+        "body: {:?}",
+        minted.json()
+    );
+    assert_eq!(minted.json()["scope"], "read");
 }
 
 /// Regression: the DELETE last-admin guard must count only *enabled* admins.
