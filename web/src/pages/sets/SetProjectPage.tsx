@@ -178,6 +178,9 @@ export function SetProjectPage() {
       <AccessPanel
         project={project}
         suite={null}
+        // The panel's own payload is exact-scope; only the browse detail knows
+        // whether anything covers the set.
+        coveringRestricted={detail.restricted}
         open={accessOpen}
         onClose={() => setAccessOpen(false)}
       />

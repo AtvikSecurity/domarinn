@@ -14,7 +14,15 @@ beforeEach(() => {
   fx.resetSets();
 });
 
-function renderPanel() {
+/**
+ * `support-bot` is restricted at the PROJECT level, so the project panel sees
+ * covering and exact agree — which is exactly why the suite variant below
+ * matters: `faq-accuracy` is covered by that lock and owns no row of its own.
+ * `coveringRestricted` is what the browse pages pass down.
+ */
+function renderPanel(
+  { suite, coveringRestricted }: { suite?: string | null; coveringRestricted?: boolean } = {},
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -25,7 +33,8 @@ function renderPanel() {
           <MemoryRouter>
             <AccessPanel
               project="support-bot"
-              suite={null}
+              suite={suite ?? null}
+              coveringRestricted={coveringRestricted ?? true}
               open
               onClose={() => {}}
             />
@@ -106,7 +115,7 @@ describe("AccessPanel", () => {
     const dialog = await screen.findByRole("dialog");
     await within(dialog).findByRole("combobox", { name: "Level for member" });
     expect(
-      within(dialog).queryByRole("button", { name: /Unlock set|Restrict set/ }),
+      within(dialog).queryByRole("button", { name: /Unlock|Restrict/ }),
     ).toBeNull();
   });
 
@@ -127,10 +136,12 @@ describe("AccessPanel", () => {
     const user = userEvent.setup();
     renderPanel();
     const dialog = await screen.findByRole("dialog");
-    await user.click(await within(dialog).findByRole("button", { name: "Unlock set" }));
+    await user.click(
+      await within(dialog).findByRole("button", { name: "Unlock project" }),
+    );
     // The confirm is a step inside this modal, not a second dialog stacked on it.
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
-    await user.click(within(dialog).getByRole("button", { name: "Unlock set" }));
+    await user.click(within(dialog).getByRole("button", { name: "Unlock project" }));
 
     await waitFor(() => {
       expect(fx.setAccess("support-bot", null).restricted).toBe(false);
@@ -150,5 +161,38 @@ describe("AccessPanel", () => {
     expect(within(dialog).queryByRole("button", { name: "Remove member" })).toBeNull();
     // The list itself is still readable — that is the point of loading it.
     expect(within(dialog).getByText("member")).toBeInTheDocument();
+  });
+
+  it("states the covering visibility, not the row this suite happens to own", async () => {
+    // `faq-accuracy` sits inside a locked project and owns no restriction row.
+    // Reading the panel's own exact-scope flag would print "anyone who can read
+    // this server can see this set's runs" over a set nobody outside the
+    // project's grants can see.
+    renderPanel({ suite: "faq-accuracy" });
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("restricted");
+    expect(
+      within(dialog).getByText(/inherited from support-bot/i),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByText(/Anyone who can read this server/i),
+    ).toBeNull();
+
+    // The toggle still describes the row it would write: this suite has none,
+    // so the verb is "Restrict", not "Unlock".
+    expect(
+      within(dialog).getByRole("button", { name: "Restrict suite" }),
+    ).toBeInTheDocument();
+  });
+
+  it("says an unrestricted set is open", async () => {
+    // The other side of the same wire: an open project must not inherit the
+    // amber chip from a stale default.
+    renderPanel({ coveringRestricted: false });
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByText(/Anyone who can read this server/i),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/inherited from/i)).toBeNull();
   });
 });

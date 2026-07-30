@@ -67,6 +67,26 @@ test.describe("Run sets", () => {
     );
   });
 
+  test("states the inherited restriction on a suite inside a locked project", async ({
+    page,
+  }) => {
+    // The suite owns no restriction row, so the panel's own payload says
+    // "open". What the reader needs to know is that the project's lock already
+    // hides it — and that pressing the toggle would add a second lock.
+    await page.goto("/sets/support-bot/faq-accuracy");
+    await page.getByRole("button", { name: "Access" }).click();
+    const panel = page.getByRole("dialog");
+
+    await expect(panel).toContainText("restricted");
+    await expect(panel.getByText(/inherited from support-bot/)).toBeVisible();
+    await expect(
+      panel.getByText(/Anyone who can read this server/),
+    ).toHaveCount(0);
+    await expect(
+      panel.getByRole("button", { name: "Restrict suite" }),
+    ).toBeVisible();
+  });
+
   test("adds, re-levels and removes a grant", async ({ page }) => {
     await page.goto("/sets/checkout-agent");
     await page.getByRole("button", { name: "Access" }).click();
@@ -96,14 +116,14 @@ test.describe("Run sets", () => {
     await page.getByRole("button", { name: "Access" }).click();
     const panel = page.getByRole("dialog");
 
-    await panel.getByRole("button", { name: "Restrict set" }).click();
+    await panel.getByRole("button", { name: "Restrict project" }).click();
     // The confirm is a step inside the same modal, not a second dialog.
     await expect(page.getByRole("dialog")).toHaveCount(1);
-    await expect(panel.getByText(/Restricting hides this set/)).toBeVisible();
-    await panel.getByRole("button", { name: "Restrict set" }).click();
+    await expect(panel.getByText(/Restricting hides this project/)).toBeVisible();
+    await panel.getByRole("button", { name: "Restrict project" }).click();
 
     // The toggle now offers the opposite action — the set is locked.
-    await expect(panel.getByRole("button", { name: "Unlock set" })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Unlock project" })).toBeVisible();
     await page.keyboard.press("Escape");
 
     // The listing reflects it too, because the whole ["sets"] subtree is
@@ -131,7 +151,7 @@ test.describe("Run sets as a non-admin", () => {
     const panel = page.getByRole("dialog");
     await expect(panel.getByLabel("Level for member")).toBeVisible();
     await expect(
-      panel.getByRole("button", { name: /Unlock set|Restrict set/ }),
+      panel.getByRole("button", { name: /Unlock|Restrict/ }),
     ).toHaveCount(0);
     await expect(panel.getByText(/Ask an admin to add new people/)).toBeVisible();
     await page.keyboard.press("Escape");

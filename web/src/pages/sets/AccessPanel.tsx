@@ -45,27 +45,36 @@ function errorMessage(err: unknown, fallback: string): string {
 /**
  * Who may reach one set, and whether it is restricted at all.
  *
- * Two things are deliberately narrow here. The `restricted` flag this panel
- * shows and toggles is the EXACT-scope one: the restriction row this set owns,
- * not whether one covers it — a suite inside a locked project is restricted and
- * still has no row of its own, so the browse pages draw their chips from the
- * browse payload, never from this one.
+ * The two `restricted` answers are both here, and they are not interchangeable.
+ * `coveringRestricted` (from the browse payload, passed in) is whether ANY
+ * restriction reaches this set, so it is what the status chip and the sentence
+ * under it must say — a suite inside a locked project is hidden, and a panel
+ * reading its own exact-scope flag would tell its reader "anyone who can read
+ * this server can see this set's runs", which is false. `access.data.restricted`
+ * is the EXACT-scope row this panel's toggle owns, so it drives only the
+ * toggle's verb and the confirm copy: what pressing the button would write.
  *
- * And the affordances are gated on TWO independent things, because the server
- * is: holding `manage` is what lets you read this list (read scope), and write
- * scope is what lets you change it. A viewer-role account with a manage grant
- * can open this panel and would be 403'd by every mutation in it, so it renders
- * read-only rather than offering controls that cannot work.
+ * The affordances are gated on TWO independent things, because the server is:
+ * holding `manage` is what lets you read this list (read scope), and write scope
+ * is what lets you change it. A viewer-role account with a manage grant can open
+ * this panel and would be 403'd by every mutation in it, so it renders read-only
+ * rather than offering controls that cannot work.
  */
 export function AccessPanel({
   project,
   suite,
+  coveringRestricted,
   open,
   onClose,
 }: {
   project: string;
   /** `null` for the project-wide list. */
   suite: string | null;
+  /**
+   * Whether any restriction reaches this set — the COVERING answer, which only
+   * the browse payload knows. Both call sites already hold it.
+   */
+  coveringRestricted: boolean;
   open: boolean;
   onClose: () => void;
 }) {
@@ -83,7 +92,11 @@ export function AccessPanel({
   const [newLevel, setNewLevel] = useState<GrantLevel>("view");
 
   const label = suite === null ? project : `${project} / ${suite}`;
-  const restricted = access.data?.restricted ?? false;
+  // What this set's OWN row says — the only thing the toggle can write.
+  const restrictedHere = access.data?.restricted ?? false;
+  // Hidden, but by somebody else's row: a suite under a locked project.
+  const inherited = coveringRestricted && !restrictedHere;
+  const scope = suite === null ? "project" : "suite";
   const grants = access.data?.grants ?? [];
   const granted = new Set(grants.map((g) => g.user_id));
   const addable = (users.data ?? []).filter((u) => !granted.has(u.id));
@@ -129,7 +142,7 @@ export function AccessPanel({
   async function toggleRestriction() {
     setBanner(null);
     try {
-      await restrictionMutation.mutateAsync(!restricted);
+      await restrictionMutation.mutateAsync(!restrictedHere);
       setConfirming(false);
     } catch (err) {
       setConfirming(false);
@@ -152,7 +165,9 @@ export function AccessPanel({
         confirming ? (
           <ModalActions
             onCancel={() => setConfirming(false)}
-            confirmLabel={restricted ? "Unlock set" : "Restrict set"}
+            confirmLabel={
+              restrictedHere ? `Unlock ${scope}` : `Restrict ${scope}`
+            }
             confirmVariant="danger"
             pending={restrictionMutation.isPending}
             onConfirm={() => void toggleRestriction()}
@@ -181,8 +196,10 @@ export function AccessPanel({
                 {/* "Visibility" rather than repeating the chip's word in
                     bold beside it — the chip IS the status. */}
                 <span className="text-sm font-medium">Visibility</span>
-                <Chip tone={restricted ? "amber" : "neutral"} size="xs">
-                  {restricted ? "restricted" : "open"}
+                {/* The COVERING answer: whether this set is hidden at all. Its
+                    own row is a different question, answered one line down. */}
+                <Chip tone={coveringRestricted ? "amber" : "neutral"} size="xs">
+                  {coveringRestricted ? "restricted" : "open"}
                 </Chip>
                 {view.canAdmin && !confirming ? (
                   <Button
@@ -191,20 +208,30 @@ export function AccessPanel({
                     size="sm"
                     onClick={() => setConfirming(true)}
                   >
-                    {restricted ? "Unlock set" : "Restrict set"}
+                    {restrictedHere ? `Unlock ${scope}` : `Restrict ${scope}`}
                   </Button>
                 ) : null}
               </div>
               <p className="mt-1 text-xs text-muted">
-                {restricted
+                {coveringRestricted
                   ? "Only the people below can see this set's runs."
                   : "Anyone who can read this server can see this set's runs."}
               </p>
+              {inherited ? (
+                <p className="mt-1 text-xs text-muted">
+                  The restriction is inherited from {project}; this suite has
+                  none of its own, and grants on the project count too.
+                </p>
+              ) : null}
               {confirming ? (
                 <p className="mt-2 rounded-md border border-amber/30 bg-amber/5 px-2.5 py-1.5 text-xs text-amber">
-                  {restricted
-                    ? "Unlocking makes every run in this set visible to anyone who can read this server. The grants below are kept, but stop gating anything."
-                    : "Restricting hides this set from everyone except the people below — including anyone whose page is open right now."}
+                  {/* Exact scope: this describes the row the button writes,
+                      not what covers the set afterwards. */}
+                  {restrictedHere
+                    ? `Unlocking removes this ${scope}'s own restriction. The grants below are kept.`
+                    : inherited
+                      ? `${suite} is already hidden by ${project}'s restriction. Adding its own keeps it hidden even if ${project} is unlocked.`
+                      : `Restricting hides this ${scope} from everyone except the people below — including anyone whose page is open right now.`}
                 </p>
               ) : null}
             </section>
@@ -221,7 +248,7 @@ export function AccessPanel({
               {grants.length === 0 ? (
                 <p className="mt-2 text-sm text-muted">
                   Nobody has been granted this set yet.
-                  {restricted
+                  {coveringRestricted && !inherited
                     ? " While it is restricted, only admins can reach it."
                     : null}
                 </p>
@@ -283,10 +310,14 @@ export function AccessPanel({
                                 variant="ghost"
                                 size="sm"
                                 className="text-fail hover:bg-fail/10 hover:text-fail"
+                                // Bare verb in the row, the person's name only
+                                // in the label — the app's convention (see the
+                                // admin page's per-row actions).
+                                aria-label={`Remove ${g.username}`}
                                 disabled={removeMutation.isPending}
                                 onClick={() => void remove(g.user_id)}
                               >
-                                Remove {g.username}
+                                Remove
                               </Button>
                             ) : null}
                           </td>

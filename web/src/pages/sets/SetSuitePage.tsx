@@ -361,6 +361,9 @@ export function SetSuitePage() {
       <AccessPanel
         project={project}
         suite={suite}
+        // Covering: true for a suite inside a locked project, which owns no
+        // restriction row of its own.
+        coveringRestricted={detail.restricted}
         open={accessOpen}
         onClose={() => setAccessOpen(false)}
       />
