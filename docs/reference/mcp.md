@@ -40,6 +40,12 @@ the moment a server advertises OAuth.
 against memory and touches no database, whereas account API keys and sessions read (and
 periodically refresh) a row per request.
 
+**Every tool sees only what its caller may see.** Runs in a [restricted run set](rest-api.md#run-sets-access-control)
+are filtered out of `find_runs` — including the project/suite catalog its `group_by` returns — and
+out of `search`, and every tool addressed by run id answers "not found" for a run it may not read. That is the one reason to hand an agent an
+account API key instead of a static token: a static token has no owning user, so it holds no
+grants and can never reach a restricted set.
+
 ## Tools
 
 Eight read-only tools. None can start a run, mutate a baseline, or delete anything.

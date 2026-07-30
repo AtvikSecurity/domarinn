@@ -62,7 +62,7 @@ The scope gate is `read` rather than `write` so a `viewer` account can mint the 
 | Method | Path                    | Scope   | Notes |
 |--------|-------------------------|---------|-------|
 | GET    | `/api/v1/users`         | `admin` | List all accounts. |
-| POST   | `/api/v1/users`         | `admin` | Create an account: `{username, password, role}` (`role` = `admin`\|`member`). |
+| POST   | `/api/v1/users`         | `admin` | Create an account: `{username, password, role}` (`role` = `admin`\|`member`\|`viewer`). |
 | PATCH  | `/api/v1/users/{id}`    | `admin` | Update `role`, `disabled`, and/or `password` (any subset). |
 | DELETE | `/api/v1/users/{id}`    | `admin` | Delete an account. Refuses the **last admin** (`409`). |
 
@@ -70,7 +70,7 @@ The scope gate is `read` rather than `write` so a `viewer` account can mint the 
 
 | Method | Path                                    | Scope   | Notes |
 |--------|-----------------------------------------|---------|-------|
-| POST   | `/api/v1/runs`                          | `write` | Ingest a run document. See [ingest](#run-ingest). |
+| POST   | `/api/v1/runs`                          | `write` | Ingest a run document. See [ingest](#run-ingest). Uploading into a **restricted** run set additionally needs an `upload` grant (`403`); see [run sets](#run-sets-access-control). |
 | GET    | `/api/v1/runs`                          | `read`  | List runs (filterable, paginated). Filters: `project`, `suite`, `tag`, `branch`, `since`, `until`, `status`, `cached`, `origin` (`ci`\|`local`), `actor`. |
 | GET    | `/api/v1/runs/{id}`                      | `read`  | Full run detail. `404` if unknown. |
 | GET    | `/api/v1/runs/{id}/cases`               | `read`  | Lean list of the run's cases (filterable, paginated). |
@@ -80,6 +80,8 @@ The scope gate is `read` rather than `write` so a `viewer` account can mint the 
 | GET    | `/api/v1/runs/{id}/config`              | `read`  | The run's config digest + snapshot (no full export). |
 | GET    | `/api/v1/runs/{id}/compare/{other}`     | `read`  | Diff two runs (regressions/improvements per case). |
 | DELETE | `/api/v1/runs/{id}`                      | `admin` | Delete a run. `204` on success. |
+
+**Every read above is filtered by what the caller may see.** A run in a restricted set is omitted from the list (and from the `cached_hidden` count beside it), and addressing it by id is a `404` rather than a `403` — the same answer a run that never existed gets. See [run sets](#run-sets-access-control).
 
 `GET /runs/{id}` reports two cost figures, and they are never summed: `cost_usd` is what the systems under test cost, `grader_cost_usd` is what grading them cost. It also carries `cache_read_tokens`, `cache_write_tokens` and `cache_savings_usd`. All four are `null` for runs ingested before the columns existed — which is **not** the same as zero, and readers render it as unknown rather than as "no activity". There is no backfill; see the migration note in `storage/schema.rs` for why.
 
@@ -104,17 +106,102 @@ The `url` in the response is a browser link to the run. It is built from `DOMARI
 
 | Method | Path                | Scope  | Notes |
 |--------|---------------------|--------|-------|
-| GET    | `/api/v1/search`    | `read` | SQLite FTS5 across run metadata and case content — names, notes, tags, outputs, and assertion reasons. `q` (required, FTS5 syntax) and `limit`. Returns hits grouped by kind. Matched terms in snippets are wrapped in the private-use characters `U+E000`/`U+E001` for the web UI to split on. |
+| GET    | `/api/v1/search`    | `read` | SQLite FTS5 across run metadata and case content — names, notes, tags, outputs, and assertion reasons. `q` (required, FTS5 syntax) and `limit`. Returns hits grouped by kind, filtered to the runs the caller may see. Matched terms in snippets are wrapped in the private-use characters `U+E000`/`U+E001` for the web UI to split on. |
 
 ## Projects, suites, baselines
 
 | Method | Path                                                     | Scope   | Notes |
 |--------|----------------------------------------------------------|---------|-------|
-| GET    | `/api/v1/projects`                                       | `read`  | List known projects. |
-| GET    | `/api/v1/projects/{project}/suites`                      | `read`  | List a project's suites. |
-| PUT    | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Pin a baseline run: body `{ "run_id": "..." }`. `404` if the run is unknown. |
-| DELETE | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Unpin the baseline. `204` on success. |
+| GET    | `/api/v1/projects`                                       | `read`  | List known projects, restricted ones omitted. |
+| GET    | `/api/v1/projects/{project}/suites`                      | `read`  | List a project's suites, restricted ones omitted. |
+| PUT    | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Pin a baseline run: body `{ "run_id": "..." }`. Needs an `upload` grant when the suite is restricted (`403`). `404` if the run is unknown, invisible to the caller, or belongs to another suite. |
+| DELETE | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Unpin the baseline. Same `upload` gate. `204` on success. |
 | GET    | `/api/v1/projects/{project}/suites/{suite}/cases/{case_key}/history` | `read` | One case's status/score/output-hash across the suite's recent runs. `limit` (default `20`, max `100`). |
+
+A baseline is a claim about a suite, so it may only name a run **the caller can see, in that same suite**. All three failures — no such run, someone else's suite, restricted away — are one `404`, for the reason the [run-set section](#run-sets-access-control) gives.
+
+<a id="run-sets-access-control"></a>
+
+## Run sets & access control
+
+A **run set** is a `(project, suite)` pair — the grouping every run already declares. `/api/v1/sets*` browses those sets and edits who may reach them.
+
+The model is **default-open**: until someone restricts a set, it behaves exactly as it did before this surface existed. Restricting one hides its runs from everyone but the people granted it.
+
+| Method | Path | Scope | Notes |
+|--------|------|-------|-------|
+| GET | `/api/v1/sets` | `read` | Every project the caller may see, with per-project totals, one latest pass rate per suite, and the caller's own grant. Never paginated. |
+| GET | `/api/v1/sets/{project}` | `read` | One project's suites, each with totals, a pass-rate sparkline and its pinned baseline. `404` if it does not exist **or** is restricted away. |
+| GET | `/api/v1/sets/{project}/suites/{suite}` | `read` | The same aggregates for one suite, addressed directly. `404` on the same terms. |
+| GET | `/api/v1/sets/{project}/access` | `read` | The project's access list: `{ restricted, grants: [...] }`. Admin, or a covering `manage` grant — else `404`. |
+| GET | `/api/v1/sets/{project}/suites/{suite}/access` | `read` | The suite's own access list, on the same gate. |
+| PUT | `/api/v1/sets/{project}/restriction` | `admin` | Restrict the whole project. Idempotent; `204`. |
+| DELETE | `/api/v1/sets/{project}/restriction` | `admin` | Lift it, keeping the grants. `204`, or `404` if there was no such row. |
+| PUT | `/api/v1/sets/{project}/suites/{suite}/restriction` | `admin` | Restrict one suite. `204`. |
+| DELETE | `/api/v1/sets/{project}/suites/{suite}/restriction` | `admin` | Lift it. `204` / `404`. |
+| PUT | `/api/v1/sets/{project}/grants/{user_id}` | `write` | Grant or re-level a user on the project: body `{ "level": "view" \| "upload" \| "manage" }`. `204`. `404` for an unknown user. |
+| DELETE | `/api/v1/sets/{project}/grants/{user_id}` | `write` | Revoke it. `204`, or `404` if there was no such grant. |
+| PUT | `/api/v1/sets/{project}/suites/{suite}/grants/{user_id}` | `write` | The suite-scoped grant, same body. |
+| DELETE | `/api/v1/sets/{project}/suites/{suite}/grants/{user_id}` | `write` | Revoke it. |
+
+The literal `access` / `restriction` / `grants` segments sit where a suite name could otherwise go, which is why the suite forms spell `/suites/` out: `/sets/{project}/suites/{suite}` can never collide with `/sets/{project}/access`, whatever anyone calls a project or a suite.
+
+`GET /api/v1/sets` returns:
+
+```json
+{
+  "projects": [
+    {
+      "project": "checkout",
+      "suite_count": 2,
+      "run_count": 4,
+      "last_run_at": 1767225600000,
+      "pass_count": 4,
+      "fail_count": 3,
+      "error_count": 0,
+      "case_count": 7,
+      "recent_pass_rates": [0.5, 1.0],
+      "restricted": true,
+      "my_level": "manage"
+    }
+  ]
+}
+```
+
+Every timestamp on this surface is integer **epoch-ms** (not the RFC3339 strings `/api/v1/projects` emits), `recent_pass_rates` is one latest rate per suite rather than a time series, and `my_level` is `null` for callers that do not ride grants at all — admins, anonymous callers, static tokens.
+
+### Restrictions and grants
+
+- A **restriction** row covers either a whole project (`PUT /sets/{project}/restriction`) or a single suite. A project-level row covers every suite in it, including suites uploaded afterwards.
+- A **grant** names one user on one set at a level: `view` < `upload` < `manage`, each including the ones below it. A project-level grant covers every suite in the project.
+- Restricting a set is a fact about the `(project, suite)` pair, not about its runs — you may restrict and grant a set **before** its first run is ever uploaded.
+- Lifting a restriction keeps the grants, so re-restricting the set restores the access list it had.
+- A run with **no project** can never be restricted: no restriction row can name it, so it is always visible.
+
+`manage` is deliberately outside the default-open waiver. On an unrestricted set `view` and `upload` are free to everyone — that is what default-open means — but `manage` is the power to lock a set and hand out grants on it, including to yourself, so it always takes admin or an explicit covering `manage` grant. Such a grant is honoured whether or not the set is restricted, so it may sit dormant on an open set and count the moment the set is locked.
+
+### Two independent gates
+
+Every endpoint above passes through a **route scope** (the deployment's auth mode, the `Scope` column) and, where it touches policy, a **set gate** (the caller's grant over that set). They answer different questions — "is this credential strong enough" and "does this principal own this set" — and neither substitutes for the other, because a grant belongs to a *user* and every user-backed credential rides its owner's grants. Without the scope gate, the least privileged credential the product offers — a `read` API key — would inherit its owner's `manage` grant and be able to rewrite an access list.
+
+That is also why the refusals differ:
+
+- **The browse reads and the access lists refuse with `404`.** An access list names the people who can reach a restricted set, so "you may not see this" and "there is nothing here" have to be the same answer. Note that the gate on an access list is `manage`, which the default-open waiver never hands out: reading the access list of a set you do not manage is a `404` even when the set itself is wide open and you can browse it freely.
+- **The scope gate refuses with `403`.** By the time it can matter the caller has already proved they hold the grant, so the only thing left to say is that their credential is too weak. Reading an access list is `read`-scoped (a `viewer` who manages a set may look at it); `write` is what stops them — or any read-scoped key — from changing it.
+- **`POST /runs` and the baseline routes refuse with `403` too**, and say which level was missing. Unlike a run id, the `(project, suite)` there comes from the caller, so refusing it discloses nothing they did not already name — and a silent `404` on a legitimate upload would be a debugging trap for whoever runs the CI job.
+
+### Which credentials see what
+
+| Caller | Sees | Notes |
+|--------|------|-------|
+| `admin` role, via any credential | everything | Also manages every set. |
+| Static token at `admin` scope | everything | An operator credential. |
+| Session or API key (`member` or `viewer`) | unrestricted sets + whatever their user is granted | An API key rides its **owner's** grants, whatever scope the key was minted at. |
+| Anonymous, and static tokens at `read`/`write` | unrestricted sets only | |
+
+**Static tokens deliberately do not pierce restrictions.** They are shared, widely-copied secrets with no owning user and therefore no grants; if a `write` token could reach restricted sets, every CI job in the deployment could. To let CI upload into a restricted set, create a bot **user account**, grant it `upload` on the set, and give the job that account's API key.
+
+Restrictions apply to every surface that reads runs, not just the ones above: the runs list and run detail, cases, matrix, export, compare, search, case history, the projects and suites listings, the run links on a cache entry, and the [MCP tools](mcp.md). There is one derivation of a caller's access class in the server, and every one of those queries appends the same predicate to its SQL.
 
 ## Cache (shared provider cache)
 
@@ -243,6 +330,23 @@ curl -s "$BASE/api/v1/runs?project=demo&limit=20"
 
 # 6) Compare two runs.
 curl -s "$BASE/api/v1/runs/$HEAD/compare/$BASE_RUN"
+
+# 7) Lock a run set and let one account upload into it (admin session).
+#    Restricting is admin-only; granting needs write scope + manage on the set.
+curl -sX PUT "$BASE/api/v1/sets/checkout/suites/regression/restriction" \
+  -H "authorization: Bearer $SESSION"
+# -> 204
+
+curl -sX PUT "$BASE/api/v1/sets/checkout/suites/regression/grants/$USER_ID" \
+  -H "authorization: Bearer $SESSION" \
+  -H 'content-type: application/json' \
+  -d '{"level":"upload"}'
+# -> 204
+
+# 8) Read back who may reach it (admin, or a covering manage grant; else 404).
+curl -s "$BASE/api/v1/sets/checkout/suites/regression/access" \
+  -H "authorization: Bearer $SESSION"
+# -> { "restricted": true, "grants": [ { "username": "ci-bot", "level": "upload", ... } ] }
 ```
 
 In `closed` mode (the default) every call needs at least a `read` token. In `protect-writes` reads work anonymously but writes need a `write` token; in `open` mode you can drop the `Authorization` header entirely.
