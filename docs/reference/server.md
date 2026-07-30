@@ -130,11 +130,11 @@ The `Bearer ` prefix is recommended; a bare token value in the header is also ac
 
 ### Restricting a run set
 
-Scopes are instance-wide: they say how strong a credential is, not which projects it may touch. **Run sets** are the other axis. A run set is a `(project, suite)` pair, and the model is default-open — until an admin restricts one, everything behaves as it always has. Restrict a set and its runs disappear for everyone except the accounts granted it, at `view`, `upload` or `manage`.
+Scopes are instance-wide: they say how strong a credential is, not which projects it may touch. **Run sets** are the other axis. A run set is a `(project, suite)` pair, and the model is default-open — until an admin restricts one, everything behaves as it always has. Restrict a set and its runs disappear for everyone except the accounts granted it, at `view`, `upload` or `manage` — and admins, who are never filtered by a grant and can always see and manage every set.
 
 Two operator-facing consequences:
 
-- **A static token never pierces a restriction.** `DOMARINN_TOKENS` entries are shared secrets with no owning user, so they have no grants; if a `write` token could reach restricted sets, every CI job in the deployment could. For CI that uploads into a restricted set, create a bot **account**, grant it `upload` there, and give the job that account's API key.
+- **A `read` or `write` static token never pierces a restriction.** `DOMARINN_TOKENS` entries are shared secrets with no owning user, so they have no grants; if a `write` token could reach restricted sets, every CI job in the deployment could. For CI that uploads into a restricted set, create a bot **account**, grant it `upload` there, and give the job that account's API key. **An `admin:` static token is the exception, and it is not a subtle one:** admin scope resolves to the same total visibility an admin account has, so such a token reads and manages every restricted set on the instance. It is an operator credential — do not hand one to CI expecting run sets to contain it.
 - **An invisible run is a `404`, never a `403`.** Nothing in the API distinguishes "restricted away from you" from "never existed", which is also why an operator debugging a missing run should check the set's access list rather than the run id.
 
 The endpoints and the full model are in the [REST API reference](rest-api.md#run-sets-access-control); the browser is the [Sets page](web-ui.md#run-sets).

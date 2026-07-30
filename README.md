@@ -15,7 +15,7 @@ domarinn inverts that:
 - **Statistics built in** — Wilson confidence intervals, McNemar significance, and pass@k, not bare pass rates.
 - **Content-addressed caching** of every outgoing request — provider calls, grader verdicts, embeddings — under one rule, so it is safe to share between teammates over a server URL or an S3-compatible bucket.
 - **A self-hostable server + web UI** with real accounts — local logins or SSO, admin/member/viewer roles, and per-user API keys — plus run comparison and a shared cache.
-- **Access control per run set.** Every run declares a project and a suite; restrict that pair and it disappears for everyone but the accounts granted `view`, `upload` or `manage` on it. Default-open, so nothing changes until you lock something, and the **Sets** browser is where you see who can reach what.
+- **Access control per run set.** Every run declares a project and a suite; restrict that pair and it disappears for everyone but admins and the accounts granted `view`, `upload` or `manage` on it. Default-open, so nothing changes until you lock something, and the **Sets** browser is where you see who can reach what.
 - **Structured logging** — human-readable on a terminal, JSON one-object-per-line in a container (or when requested), with per-request ids on the server.
 
 ## Install

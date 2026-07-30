@@ -114,7 +114,7 @@ The `url` in the response is a browser link to the run. It is built from `DOMARI
 |--------|----------------------------------------------------------|---------|-------|
 | GET    | `/api/v1/projects`                                       | `read`  | List known projects, restricted ones omitted. |
 | GET    | `/api/v1/projects/{project}/suites`                      | `read`  | List a project's suites, restricted ones omitted. |
-| PUT    | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Pin a baseline run: body `{ "run_id": "..." }`. Needs an `upload` grant when the suite is restricted (`403`). `404` if the run is unknown, invisible to the caller, or belongs to another suite. |
+| PUT    | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Pin a baseline run: body `{ "run_id": "..." }`. `200` with `{project, suite, run_id}` on success. Needs an `upload` grant when the suite is restricted (`403`). `404` if the run is unknown, invisible to the caller, or belongs to another suite. |
 | DELETE | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Unpin the baseline. Same `upload` gate. `204` on success. |
 | GET    | `/api/v1/projects/{project}/suites/{suite}/cases/{case_key}/history` | `read` | One case's status/score/output-hash across the suite's recent runs. `limit` (default `20`, max `100`). |
 
@@ -168,7 +168,29 @@ The literal `access` / `restriction` / `grants` segments sit where a suite name 
 }
 ```
 
-Every timestamp on this surface is integer **epoch-ms** (not the RFC3339 strings `/api/v1/projects` emits), `recent_pass_rates` is one latest rate per suite rather than a time series, and `my_level` is `null` for callers that do not ride grants at all — admins, anonymous callers, static tokens.
+Four fields on that body are easy to misread:
+
+- `last_run_at` — and every other timestamp on this surface — is integer **epoch-ms**, not the RFC3339 strings `/api/v1/projects` emits.
+- `recent_pass_rates` is one latest rate per suite, suites in name order and capped: the spread across the project, not a time series. The per-suite `sparkline` on the detail endpoints is the time series.
+- `my_level` is `null` both for callers that do not ride grants at all — admins, anonymous callers, static tokens — and for a user who simply holds none, which are indistinguishable on the wire. On a `/sets` row (and on `ProjectSetDetail` itself) it reports only **project-scoped** grants, so a user whose only grant is on one suite reads `null` here and sees their level on that suite's row instead.
+- `restricted` does not mean the same thing everywhere. See below.
+
+### Two meanings of `restricted`
+
+The browse views answer "is this set locked for me right now", and the access endpoint answers "does this set carry a restriction row of its own". Those differ exactly when a project-level row covers a suite:
+
+| Field | Scope | A suite inside a restricted project |
+|---|---|---|
+| `ProjectSetView.restricted` (`GET /sets`) and `ProjectSetDetailResponse.restricted` | The project's own row — the only thing that can cover a project | n/a |
+| `SuiteSetView.restricted` and `SuiteSetDetailResponse.restricted` | **Covering**: its own row *or* the project's | `true` |
+| `SetAccessResponse.restricted` (`GET .../access`) | **Exact**: the row this scope's `PUT`/`DELETE .../restriction` writes and removes | `false` |
+
+Two consequences worth stating outright, because both look like bugs:
+
+- **A project whose suites are individually locked reports `restricted: false`.** The project row is what that field is about; the locked suites say so on their own rows. Only a project-level restriction makes the project itself read `true`.
+- **A suite's access endpoint reports `restricted: false` while the suite is unreachable.** Its restriction lives on the project, and the project's access endpoint is where it is lifted — which is precisely what that field is for: it drives the toggle beside it, and a toggle here would delete a row that does not exist. Ask the browse endpoints, not the access endpoint, whether a set is hidden.
+
+`GET .../access` is likewise **exact-scope in its `grants`**: it lists the grants recorded at that scope, not the project-level grants that also cover the suite. A caller's *effective* level always covers; an access list never does.
 
 ### Restrictions and grants
 
@@ -178,7 +200,9 @@ Every timestamp on this surface is integer **epoch-ms** (not the RFC3339 strings
 - Lifting a restriction keeps the grants, so re-restricting the set restores the access list it had.
 - A run with **no project** can never be restricted: no restriction row can name it, so it is always visible.
 
-`manage` is deliberately outside the default-open waiver. On an unrestricted set `view` and `upload` are free to everyone — that is what default-open means — but `manage` is the power to lock a set and hand out grants on it, including to yourself, so it always takes admin or an explicit covering `manage` grant. Such a grant is honoured whether or not the set is restricted, so it may sit dormant on an open set and count the moment the set is locked.
+`manage` is deliberately outside the default-open waiver. On an unrestricted set `view` and `upload` are free to everyone — that is what default-open means — but `manage` is the power to hand out grants on a set, including to yourself, so it always takes admin or an explicit covering `manage` grant. Without that carve-out, any caller who could reach a write endpoint could seize a project nobody had restricted yet, which on a fresh instance is every project.
+
+A `manage` grant is honoured whether or not the set is restricted, and that is not a dormant technicality: on an open set its holder can already read and rewrite that set's access list today, and every grant they add is live the moment an admin locks the set. Treat handing out `manage` on an unrestricted set as the delegation it is.
 
 ### Two independent gates
 
@@ -199,7 +223,9 @@ That is also why the refusals differ:
 | Session or API key (`member` or `viewer`) | unrestricted sets + whatever their user is granted | An API key rides its **owner's** grants, whatever scope the key was minted at. |
 | Anonymous, and static tokens at `read`/`write` | unrestricted sets only | |
 
-**Static tokens deliberately do not pierce restrictions.** They are shared, widely-copied secrets with no owning user and therefore no grants; if a `write` token could reach restricted sets, every CI job in the deployment could. To let CI upload into a restricted set, create a bot **user account**, grant it `upload` on the set, and give the job that account's API key.
+**A `read` or `write` static token deliberately does not pierce restrictions.** Those are shared, widely-copied secrets with no owning user and therefore no grants; if a `write` token could reach restricted sets, every CI job in the deployment could. To let CI upload into a restricted set, create a bot **user account**, grant it `upload` on the set, and give the job that account's API key.
+
+**An `admin:` static token is not contained by any of this**, as the table above says: admin scope resolves to full visibility, so such a token reads and manages every restricted set on the instance. That is intended — it is the operator credential — but it means "we gave CI a static token" is only a containment argument for the `read` and `write` ones.
 
 Restrictions apply to every surface that reads runs, not just the ones above: the runs list and run detail, cases, matrix, export, compare, search, case history, the projects and suites listings, the run links on a cache entry, and the [MCP tools](mcp.md). There is one derivation of a caller's access class in the server, and every one of those queries appends the same predicate to its SQL.
 
@@ -337,6 +363,9 @@ curl -sX PUT "$BASE/api/v1/sets/checkout/suites/regression/restriction" \
   -H "authorization: Bearer $SESSION"
 # -> 204
 
+# $USER_ID is the `id` of the account to grant, from `GET /api/v1/users`
+# (admin scope) or from the body `POST /api/v1/users` returned when you
+# created the bot account. It is never the username.
 curl -sX PUT "$BASE/api/v1/sets/checkout/suites/regression/grants/$USER_ID" \
   -H "authorization: Bearer $SESSION" \
   -H 'content-type: application/json' \

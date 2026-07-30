@@ -159,7 +159,7 @@ The `restricted` chip beside the heading, and the `Access` button opposite it, a
 ![The access panel over a restricted suite](../assets/screenshots/set-access-light.png#only-light)
 ![The access panel over a restricted suite](../assets/screenshots/set-access-dark.png#only-dark)
 
-The model is **default-open**: until someone restricts a set, anyone who can read this server can read its runs, exactly as before this page existed. Restrict one and it disappears — from the runs list, from search, from compare, from the [MCP tools](mcp.md), and from this browser — for everyone except the accounts on this list. Addressing one of its runs directly by id answers `404`, not `403`: "you may not see this" and "there is nothing here" are deliberately the same answer.
+The model is **default-open**: until someone restricts a set, anyone who can read this server can read its runs, exactly as before this page existed. Restrict one and it disappears — from the runs list, from search, from compare, from the [MCP tools](mcp.md), and from this browser — for everyone except the accounts on this list and any admin, who is never filtered by a grant. Addressing one of its runs directly by id answers `404`, not `403`: "you may not see this" and "there is nothing here" are deliberately the same answer.
 
 `Visibility` states which of the two this set is, and `Restrict suite` / `Unlock suite` flips it. That button is **admin-only** — administering a set's access list is delegated, locking and unlocking is not — and unlocking keeps the grants, so re-locking the set restores the list it had. Grants come at three levels, each including the ones below it:
 
@@ -177,7 +177,7 @@ Three things are worth knowing before you plan around this panel:
 - **A read-only credential renders the panel read-only.** Reading the list needs `read` scope, changing it needs `write`, so a `viewer` account that holds `manage` can see who is on the list and change nothing. The panel says so rather than offering controls that would be refused.
 - **A set with no runs yet is not in this browser at all.** Restrictions and grants may be created before a set's first upload — that is how you lock a project down in advance — but until a run arrives the set has nothing to list, so `/sets` omits it and its page `404`s. Manage it through the [REST API](rest-api.md#run-sets-access-control) until then.
 
-Static tokens are the other thing this page cannot show you: they have no owning user, so they hold no grants and never pierce a restriction, whatever scope they carry. For CI that uploads into a restricted set, give the job an API key belonging to an account you granted `upload` — see [Server](server.md#restricting-a-run-set).
+Static tokens are the other thing this page cannot show you, and they split in two. A `read` or `write` `DOMARINN_TOKENS` entry has no owning user, so it holds no grants and never pierces a restriction — for CI that uploads into a restricted set, give the job an API key belonging to an account you granted `upload` instead. An `admin:` entry is the opposite: admin scope sees and manages every set on the instance, exactly like an admin account. See [Server](server.md#restricting-a-run-set).
 
 ---
 
@@ -258,7 +258,7 @@ The scope selector is capped at your own: a `member` cannot mint an `admin` key,
 ![The user administration page](../assets/screenshots/admin-light.png#only-light)
 ![The user administration page](../assets/screenshots/admin-dark.png#only-dark)
 
-Account management, admin-only, and short by design: create a user with a role, or change a role, disable an account, reset a password, delete. Three roles exist — `viewer`, `member` and `admin` — and each maps to a scope ceiling rather than to a list of permissions: `viewer → read`, `member → write`, `admin → admin`. A `viewer` browses, mints read-only API keys of its own, and cannot upload a run or change policy; give one a [run-set grant](#who-may-reach-a-set) and it can reach a restricted set, still read-only.
+Account management, admin-only, and short by design: create a user with a role, or change a role, disable an account, reset a password, delete. Three roles exist — `viewer`, `member` and `admin` — and each maps to a scope ceiling rather than to a list of permissions: `viewer → read`, `member → write`, `admin → admin`. A `viewer` browses, mints read-only API keys of its own, and cannot upload a run or change policy; give one a [run-set grant](#who-may-reach-a-set) and it can reach a restricted set, still read-only. The three accounts under `admin` in this shot are the seed's, one per grant level on the [access list](#who-may-reach-a-set) above — which is why one of them is a `viewer`.
 
 Static bearer tokens never appear here. They are configured in the environment and are not tied to a user, which is exactly why they cannot mint API keys or be revoked from a web page — pull them from the environment and restart. Accounts provisioned by SSO do appear, with their role re-synced from the identity provider on every login — which means a role you set here does not stick for them, and that `DOMARINN_SSO_DEFAULT_ROLE` re-applies to accounts provisioned long ago (see [Server](server.md#global-sso-settings)). The one thing that sync will not do is auto-demote your last enabled admin.
 

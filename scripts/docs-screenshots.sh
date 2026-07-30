@@ -11,10 +11,14 @@
 #                      (implies SEED_OFFLINE_ONLY=1 for the seed script)
 #   SEED_EMBEDDINGS=1 also seed example 30 (pulls $OLLAMA_EMBED_MODEL too)
 #   KEEP_SERVER=1     skip teardown: leave the seeded server running afterwards
-#   SHOTS=<regex>     capture only the shots whose test title matches (passed to
-#                      Playwright as --grep). Every other committed PNG is left
-#                      exactly as it is — which is what you want when one page
-#                      changed and the rest would only churn run ids and dates.
+#   SHOTS=<regex>     capture only the shots whose test title matches. Read from
+#                      the environment by playwright.screenshots.config.ts, which
+#                      applies it to the capture project alone — deliberately NOT
+#                      the --grep flag, which would also filter the `setup`
+#                      project the capture depends on for its session. Every
+#                      other committed PNG is left exactly as it is, which is
+#                      what you want when one page changed and the rest would
+#                      only churn run ids and dates.
 #   OLLAMA_URL, OLLAMA_MODEL, OLLAMA_EMBED_MODEL — see scripts/seed-docs-runs.sh
 set -euo pipefail
 
