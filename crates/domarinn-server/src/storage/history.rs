@@ -7,7 +7,7 @@
 
 use std::str::FromStr;
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
@@ -111,19 +111,13 @@ fn case_history(
         point.output_changed = changed;
     }
 
-    let baseline_run_id: Option<String> = conn
-        .query_row(
-            "SELECT run_id FROM baselines WHERE project = ?1 AND suite = ?2",
-            params![project, suite],
-            |row| row.get(0),
-        )
-        .ok();
+    let baseline_run_id = super::projects::read_baseline(conn, project, suite, vis)?;
 
     Ok(Some(CaseHistoryResponse {
         project: project.to_string(),
         suite: suite.to_string(),
         case_key: case_key.clone(),
-        baseline_run_id: baseline_run_id.map(RunId::new),
+        baseline_run_id,
         points,
     }))
 }

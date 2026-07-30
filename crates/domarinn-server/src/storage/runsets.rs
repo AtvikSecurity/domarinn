@@ -191,17 +191,26 @@ impl Storage {
     /// Whether this caller may act on `(project, suite)` at `needed`.
     ///
     /// The single-resource counterpart of
-    /// [`crate::runsets::visibility_predicate`], used by the write paths (and,
-    /// from the access endpoints, to guard the policy itself):
+    /// [`crate::runsets::visibility_predicate`], used by the write paths.
     ///
     /// * [`RunVisibility::Full`] — always.
-    /// * [`RunVisibility::Public`] — only while the set is unrestricted. Note
-    ///   that this is level-blind on purpose: an unrestricted set behaves
-    ///   exactly as it did before run sets existed (an anonymous upload in
-    ///   `open` mode still works), and a restricted one is closed to `Public` at
-    ///   every level, because a shared token has no grants to hold.
-    /// * [`RunVisibility::User`] — unrestricted, or holding a covering grant of
-    ///   at least `needed`.
+    /// * Anyone else — an explicit covering grant of at least `needed`, **or**
+    ///   the default-open waiver below.
+    ///
+    /// # The default-open waiver stops at `upload`
+    ///
+    /// On an *unrestricted* set, `View` and `Upload` are free to every class:
+    /// that is what default-open means, and it is why an anonymous upload in
+    /// `open` mode still works exactly as it did before run sets existed.
+    ///
+    /// [`GrantLevel::Manage`] is deliberately outside the waiver. Managing a
+    /// set is the power to restrict it and to hand out grants on it — including
+    /// to yourself — so a level-blind waiver would mean any caller who can
+    /// reach a write endpoint could seize a project that nobody had restricted
+    /// yet, which is every project on a fresh instance. Bootstrapping a
+    /// restriction is therefore admin-only, and afterwards it takes a covering
+    /// `manage` grant. Such a grant is honoured whether or not the set is
+    /// restricted, so it may sit dormant on an open set and still count.
     pub async fn set_access(
         &self,
         vis: RunVisibility,
@@ -214,7 +223,9 @@ impl Storage {
         }
         self.runs
             .read(move |conn| {
-                if !restricted(conn, project.as_deref(), suite.as_deref())? {
+                if needed <= GrantLevel::Upload
+                    && !restricted(conn, project.as_deref(), suite.as_deref())?
+                {
                     return Ok(true);
                 }
                 let RunVisibility::User(user_id) = &vis else {

@@ -753,7 +753,12 @@ async fn put_baseline(
     require_set_access(&state, &scope.identity, Some(&project), Some(&suite)).await?;
     if state
         .storage
-        .set_baseline(project.clone(), suite.clone(), body.run_id.clone())
+        .set_baseline(
+            project.clone(),
+            suite.clone(),
+            body.run_id.clone(),
+            RunVisibility::of(&scope.identity),
+        )
         .await?
     {
         Ok(Json(json!({

@@ -28,21 +28,43 @@ impl Storage {
             .await
     }
 
+    /// Point `(project, suite)`'s baseline at `run_id`.
+    ///
+    /// `false` — a 404 at the handler — when the run does not exist, is not
+    /// visible to this caller, or is not a run *of this suite*. All three
+    /// collapse into one answer on purpose:
+    ///
+    /// * Visibility, because a baseline is a read of the named run as much as a
+    ///   write to the suite. Without it, anyone who may write into any
+    ///   unrestricted suite could probe arbitrary run ids and read 200-vs-404
+    ///   to confirm a restricted run exists.
+    /// * Membership, because it is what makes that probe pointless rather than
+    ///   merely awkward, and because a baseline drawn from another suite is
+    ///   meaningless anyway — every reader of this suite would be handed an id
+    ///   that does not belong to it. `IS` rather than `=` so the comparison is
+    ///   NULL-safe against a run that has no project or suite.
     pub async fn set_baseline(
         &self,
         project: String,
         suite: String,
         run_id: RunId,
+        vis: RunVisibility,
     ) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let mut args: Vec<rusqlite::types::Value> = vec![
+                    run_id.as_str().to_string().into(),
+                    project.clone().into(),
+                    suite.clone().into(),
+                ];
+                let visible = visibility_predicate("runs", &vis, &mut args);
+                let sql = format!(
+                    "SELECT 1 FROM runs
+                      WHERE id = ?1 AND project IS ?2 AND suite IS ?3 AND {visible}"
+                );
                 let exists = tx
-                    .query_row(
-                        "SELECT 1 FROM runs WHERE id = ?1",
-                        params![run_id.as_str()],
-                        |_| Ok(()),
-                    )
+                    .query_row(&sql, rusqlite::params_from_iter(args.iter()), |_| Ok(()))
                     .is_ok();
                 if !exists {
                     return Ok(false);
@@ -98,6 +120,35 @@ fn list_projects(conn: &Connection, vis: &RunVisibility) -> anyhow::Result<Proje
     Ok(ProjectsResponse { projects })
 }
 
+/// The suite's baseline run id, filtered by visibility.
+///
+/// `set_baseline` now refuses to record a run that is not of this suite, so on
+/// a database written by this version the join can only ever confirm what the
+/// caller already sees. It is unconditional anyway because `baselines` has no
+/// constraint tying a row to its run's `(project, suite)` and earlier versions
+/// never checked — an upgraded database can hold a row pointing outside the
+/// set, and that row must not publish an invisible run's id on a visible suite.
+pub(super) fn read_baseline(
+    conn: &Connection,
+    project: &str,
+    suite: &str,
+    vis: &RunVisibility,
+) -> anyhow::Result<Option<RunId>> {
+    let mut args: Vec<rusqlite::types::Value> =
+        vec![project.to_string().into(), suite.to_string().into()];
+    let visible = visibility_predicate("runs", vis, &mut args);
+    let sql = format!(
+        "SELECT b.run_id FROM baselines b JOIN runs ON runs.id = b.run_id
+          WHERE b.project = ?1 AND b.suite = ?2 AND {visible}"
+    );
+    Ok(conn
+        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
+            row.get::<_, String>(0)
+        })
+        .ok()
+        .map(RunId::new))
+}
+
 fn list_suites(
     conn: &Connection,
     project: &str,
@@ -146,13 +197,7 @@ fn list_suites(
             })?
             .collect::<Result<_, _>>()?;
 
-        let baseline_run_id: Option<String> = conn
-            .query_row(
-                "SELECT run_id FROM baselines WHERE project = ?1 AND suite = ?2",
-                params![project, suite],
-                |row| row.get(0),
-            )
-            .ok();
+        let baseline_run_id = read_baseline(conn, project, &suite, vis)?;
 
         let last_run_at = series.first().map(|s| s.created_at.clone());
 
@@ -160,7 +205,7 @@ fn list_suites(
             suite,
             run_count: series.len() as i64,
             last_run_at,
-            baseline_run_id: baseline_run_id.map(RunId::new),
+            baseline_run_id,
             series,
         });
     }
