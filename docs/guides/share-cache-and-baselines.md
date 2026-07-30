@@ -63,8 +63,8 @@ The theory — why a salt is a version pin rather than an entry ticket, and how 
 
 - **One entry per key, immutable.** First write wins, on every backend — so concurrent writers are race-free by construction.
 - **Errors are never cached.** Only successful responses.
-- **Grader calls are cached too**, as requests like any other: the judge's HTTP call, an embedding, an `exec` grader's round-trip. A warm run re-pays neither the provider nor the judge. `--no-grader-cache` re-grades while still replaying provider responses, which is what you want while iterating on a rubric.
-- **A `threshold` is not in the key.** It is applied on read, so editing a threshold re-scores instantly instead of re-paying the judge.
+- **Grader calls are cached too**, as requests like any other: the grader's HTTP call, an embedding, an `exec` grader's round-trip. A warm run re-pays neither the provider nor the grader. `--no-grader-cache` re-grades while still replaying provider responses, which is what you want while iterating on a rubric.
+- **A `threshold` is not in the key.** It is applied on read, so editing a threshold re-scores instantly instead of re-paying the grader.
 - **Pricing is not in the key either.** `cost_usd` is recomputed on every hit, so correcting a rate re-prices history rather than discarding it.
 - **`latency` assertions bypass the cache entirely** — a replayed response has no honest latency — and under `--cache-only` the case is refused rather than called live.
 

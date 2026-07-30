@@ -4,7 +4,7 @@ domarinn caches every call it makes, so re-running a suite is fast, cheap, and d
 
 ## The rule {#the-rule}
 
-**One rule.** Every outgoing request — a provider call, the LLM judge, an embeddings call, an `exec` grader — is cached under one key: the SHA-256 of the redacted request itself, plus the trial index, plus any `cache_salt` in scope. Nothing about your machine, your binary, or your credentials is in it.
+**One rule.** Every outgoing request — a provider call, the LLM grader, an embeddings call, an `exec` grader — is cached under one key: the SHA-256 of the redacted request itself, plus the trial index, plus any `cache_salt` in scope. Nothing about your machine, your binary, or your credentials is in it.
 
 **Hash what is sent.** There is no second rule for graders, no separate key space for verdicts, and no ingredient that describes *where* a request was made from. Two calls that would put the same bytes on the wire are the same call, and they share one entry.
 
@@ -40,11 +40,11 @@ That is the complete list. Every other page links here rather than re-deriving i
 
 - **One entry per key, immutable.** The first write wins, on every backend. Two writers who agree on a key agree on the *answer* — though not on the bytes, since an entry also records when the call happened, how many attempts it took, which version wrote it, and the request it answers.
 - **Errors are never cached.** Only successful responses are stored.
-- **Grader calls are requests like any other.** The judge's HTTP call, an embedding, and an `exec` assertion's protocol round-trip all go through the same key function as a provider call. An LLM-graded suite used to re-pay its judge on every run even when every provider response was a hit, which is the dominant recurring cost of running one. `--no-grader-cache` turns just those off.
+- **Grader calls are requests like any other.** The grader's HTTP call, an embedding, and an `exec` assertion's protocol round-trip all go through the same key function as a provider call. An LLM-graded suite used to re-pay its grader on every run even when every provider response was a hit, which is the dominant recurring cost of running one. `--no-grader-cache` turns just those off.
 - **What is stored for a grading is the response, not the verdict.** The verdict is re-derived on read, by the same parser a live call uses — so a replay can never produce a shape today's code would reject, and a parser fix applies retroactively to everything already stored. A stored payload that no longer parses is a **miss**, never an error: it is re-asked, and warned about, because an immutable entry could otherwise fail the same assertion forever.
-- **A `threshold` is not in the key.** The threshold is applied on read, so editing a `threshold:` re-scores every case instantly instead of re-paying the judge for an answer it already gave.
+- **A `threshold` is not in the key.** The threshold is applied on read, so editing a `threshold:` re-scores every case instantly instead of re-paying the grader for an answer it already gave.
 - **Neither is pricing.** `cost_usd` is recomputed on every hit from the stored token counts and the current rate sheet, so editing `pricing:` re-costs a warm suite without re-running it. Keying pricing would discard every entry the day a vendor changed a price. (`exec` children report their own cost, which domarinn cannot re-derive, so theirs is replayed as stored.)
-- **`--repeat` still samples the judge.** The trial index is in the key, so N repeats produce N independent verdicts on the first run and replay those N afterwards. Without that, two trials whose provider responses were byte-identical — common at temperature 0 — would collapse into one verdict and erase exactly the variance `--repeat` exists to measure.
+- **`--repeat` still samples the grader.** The trial index is in the key, so N repeats produce N independent verdicts on the first run and replay those N afterwards. Without that, two trials whose provider responses were byte-identical — common at temperature 0 — would collapse into one verdict and erase exactly the variance `--repeat` exists to measure.
 - **`similar` caches two embeddings, not a similarity.** Each side is keyed on its own embedding request, which names the model — so switching embedders re-embeds, and an output measured against a second reference re-embeds only the reference.
 - **The model a provider *reports* having used is not in the key.** It cannot be: the key is derived from a request, and a reported model only exists on a response. The *requested* model is already in the body. Hashing the reported one would silently discard every cached entry the day a vendor rolls a snapshot; `CaseResult.model` makes that drift visible and diffable instead, which is the useful lever.
 - **Test ids and tags are not in the key.** Identity is not what makes two calls interchangeable — the request is. Two cases with identical vars and no prompt therefore share an entry by design; a per-case [`cache_salt`](#per-case-salts) is the supported way to separate them.
@@ -56,13 +56,13 @@ That is the complete list. Every other page links here rather than re-deriving i
 
 ### Per-case salts {#per-case-salts}
 
-A test case may carry its own `cache_salt`. It joins that case's key and nothing else, so changing it re-runs exactly one case:
+A test may carry its own `cache_salt`. It joins the key of every case that test produces and nothing else, so changing it re-runs only those:
 
 ```yaml
 tests:
   - id: refuses-out-of-scope
     vars: {prompt_id: pentest-session, user_message: "scan 10.0.0.1"}
-    cache_salt: "a91f3c…"      # digest of the prompt THIS case exercises
+    cache_salt: "a91f3c…"      # digest of the prompt THIS test exercises
   - id: severity-reasoning
     vars: {prompt_id: triage, user_message: "rate this finding"}
     cache_salt: "77b0de…"      # a different prompt, a different digest
@@ -164,7 +164,7 @@ The split is deliberate. A credential must *not* separate two teammates' entries
 
 `--cache-only` really is offline: the pre-run credential check is skipped, so the run needs no API keys in the environment for providers it will only replay. Two consequences follow from that promise:
 
-- **`--cache-only` with grader caching off fails every graded assertion.** There is no cache to consult and no live call permitted, so the assertion errors rather than quietly reaching the judge.
+- **`--cache-only` with grader caching off fails every graded assertion.** There is no cache to consult and no live call permitted, so the assertion errors rather than quietly reaching the grader.
 - **A case with a `latency` assertion is refused outright**, per case, with `there is nothing honest to replay`. A `latency` assert always measures a live call, so honoring both the bypass and the offline promise is impossible. The rest of the suite still replays.
 
 `cache.grader: false` in a suite is the deprecated spelling of `--no-grader-cache` and is accepted with a warning. Prefer the flag: whether to re-grade is a property of one run, not of the suite.
@@ -237,7 +237,7 @@ So domarinn migrates instead of re-paying. Things worth knowing before the first
 - **Adoption happens on a miss.** domarinn re-derives the key from each shape it used to publish, adopts the first hit, serves it, and re-files it under the current key — with the request it answers attached this time — so the next run finds it directly. It is self-limiting: a store with nothing to adopt stops being probed after a handful of cases, so the cost is a few extra lookups once rather than a permanent tax. `--no-cache-migration` skips it entirely, which is worth doing only against a high-latency remote you know has nothing to adopt. The machinery ships in 0.5.0, stays through 0.6.x, and is **deleted in 0.7.0**.
 - **`similar` verdicts are not adopted.** A 0.4.x entry holds one cosine value, which decomposes into neither of the two embedding vectors 0.5.0 caches — there is nothing to adopt it *into*. Re-embedding two short strings costs a fraction of a cent once, and the assertion is warm from then on. The exception is offline: under `--cache-only` a store warmed by 0.4.x **hard-errors on every `similar` assertion** until the suite has been run once in read-write mode to lay the vectors down.
 - **Entries now record the request they answer**, resolved URL or command included, so an entry is legible on its own. A request too large for the entry cap keeps a slim envelope — the address (`transport`, `method`, `url`, `command`, `args`) and nothing else.
-- **Entries got bigger.** A grader entry now carries the judge's whole response rather than a three-field verdict, and an embedding is tens of kilobytes of floats. The boundary is the shared store's: the server rejects anything over `DOMARINN_CACHE_MAX_ENTRY_BYTES` (4 MiB by default) with a `413`, which the client logs and continues past — so an oversized payload is re-paid every run rather than failing one.
+- **Entries got bigger.** A grader entry now carries the grading model's whole response rather than a three-field verdict, and an embedding is tens of kilobytes of floats. The boundary is the shared store's: the server rejects anything over `DOMARINN_CACHE_MAX_ENTRY_BYTES` (4 MiB by default) with a `413`, which the client logs and continues past — so an oversized payload is re-paid every run rather than failing one.
 - **Suites with a `cache:` block see one `config_digest` change.** An unset `cache.grader` no longer serializes, where the old boolean always wrote `true`. `config_digest` is a hash of the serialized suite, so exactly one `--against` comparison across the upgrade reports config drift. No cache entry is affected — the digest is not a key ingredient.
 - **A future `exec` protocol bump is a deliberate cache flag day.** The `domarinn` envelope is inside the stdin document the key hashes, because it is genuinely sent and a child may answer a v2 request differently. Bumping `PROTOCOL_VERSION` therefore re-keys every `exec` entry in every store at once. A test asserts the current version so that decision is made on purpose, with a legacy generation frozen first — see [protocol.md](../reference/protocol.md#versioning).
 

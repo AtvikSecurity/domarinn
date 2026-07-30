@@ -49,7 +49,7 @@ The exit code is a **contract for CI** — it distinguishes "the model got worse
 |------|------|---------|
 | `0` | OK | Everything passed. |
 | `1` | assertion | An assertion failed, or a run regressed against a `--against` baseline. |
-| `2` | config/usage | Bad config or flags, a suite that fails to load or validate, a run that resolved to **zero test cases**, or a missing / wrong-shaped provider credential. |
+| `2` | config/usage | Bad config or flags, a suite that fails to load or validate, a run that resolved to **zero cases**, or a missing / wrong-shaped provider credential. |
 | `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, the server was unreachable, or a `--cache-only` run could not answer honestly (a miss, or a case whose `latency` assertion always needs a live call). |
 
 ---
@@ -68,7 +68,7 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--prompt <ID>` | Only run this prompt (repeatable). |
 | `--no-cache` | Never read or write the cache. |
 | `--cache-only` | Read cache only; a miss is an infrastructure error (offline CI). The credential preflight is skipped, and a case carrying a `latency` assertion is refused rather than called live — see [caching.md](../concepts/caching.md#cache-modes). |
-| `--no-grader-cache` | Grader-originated requests (the LLM judge, `exec` graders, embeddings) bypass the cache; responses of the systems under test are still replayed. Use it to measure judge variance deliberately. Replaces the deprecated suite key `cache.grader: false`. |
+| `--no-grader-cache` | Grader-originated requests (the LLM grader, `exec` graders, embeddings) bypass the cache; responses of the systems under test are still replayed. Use it to measure grader variance deliberately. Replaces the deprecated suite key `cache.grader: false`. |
 | `--cache-dir DIR` | Where the local cache lives. Defaults to `.domarinn/cache` beside the suite, so the same suite hits the same cache from any directory. `DOMARINN_CACHE_DIR` sets the same thing; the flag wins. |
 | `--no-cache-migration` | Skip looking for entries written under an older cache-key shape. domarinn probes for those on a miss so an upgrade does not discard a warm cache, and stops once it is clear there is nothing to find. |
 | `--repeat <N>` | Run each cell N times (variance / pass@k). |
@@ -77,7 +77,7 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--out <FILE>` | Write the primary output to a file instead of stdout. |
 | `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |
 | `--no-progress` | Disable the live progress bar (see below). |
-| `--allow-empty` | Succeed even if the run resolves to zero test cases. Without it that is exit 2, because a green result over no cells is indistinguishable from a green result over every cell. Pass it for a sharded matrix where a shard legitimately has no work. |
+| `--allow-empty` | Succeed even if the run resolves to zero cases. Without it that is exit 2, because a green result over no cells is indistinguishable from a green result over every cell. Pass it for a sharded matrix where a shard legitimately has no work. |
 | `--against <REF>` | Compare against a baseline run. `server:baseline` uses the baseline pinned for this suite on the results server (the only reference that works in CI); `latest` uses the newest local run *of the same suite*; also accepts a run id or a `result.json` path. A regression sets exit code `1`; a baseline that was requested but could not be resolved sets exit code `2`. |
 | `--summary-md <FILE>` | Write a Markdown summary (headline metrics table, failing cases, and any baseline comparison). Identical to what [`ci-summary`](#domarinn-ci-summary-run-flags) writes, minus the step outputs. |
 | `--share` | Upload the completed run to the configured server, and record the returned URL on the stored run. |

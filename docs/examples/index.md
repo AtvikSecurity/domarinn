@@ -10,9 +10,9 @@ The YAML on the example pages is not a transcription. It is pulled at build time
 
 /// tip | The mental model
 
-A run is a grid. domarinn takes the **providers** (the systems under test), the **prompts** (optional — a provider may build its own input), and the **tests** (the cases), and evaluates one **cell** per combination. Each cell calls its provider once and grades the answer against that case's **assertions**.
+A run is a grid. domarinn takes the **providers** (the systems under test), the **prompts** (optional — a provider may build its own input), and the **tests** (the units you author), and evaluates one **cell** per combination. Each cell calls its provider once and grades the answer against that test's **assertions**.
 
-Deterministic assertions run first and can short-circuit the expensive ones, so a case that fails `contains` never pays for an LLM grader. A cell's status is `pass`, `fail`, `error` (the harness broke — never counted as an assertion failure), or `skip`.
+Deterministic assertions run first and can short-circuit the expensive ones, so a case that fails `contains` never pays for an LLM grader. Each evaluated cell is a case, and a case ends `pass`, `fail`, `error` (the harness broke — never counted as an assertion failure), or `skip`.
 
 ///
 
@@ -57,11 +57,11 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 26  | [An OpenAI-compatible endpoint](models-grading-and-budgets.md#example-26--an-openai-compatible-endpoint) | The lingua franca: OpenAI, Ollama, vLLM, LiteLLM, a gateway. |
 | 27  | [Anthropic, and what it costs](models-grading-and-budgets.md#example-27--anthropic-and-what-it-costs) | `pricing`, and why a `cost:` budget can be green and enforce nothing. |
 | 28  | [A service you already run](models-grading-and-budgets.md#example-28--a-service-you-already-run) | The `http` provider and `output_expr`. |
-| 29  | [LLM-rubric grading](models-grading-and-budgets.md#example-29--llm-rubric-grading) | A structured, fail-closed judge — and how to write its rubric. |
+| 29  | [LLM-rubric grading](models-grading-and-budgets.md#example-29--llm-rubric-grading) | A structured, fail-closed grader — and how to write its rubric. |
 | 30  | [Similarity](models-grading-and-budgets.md#example-30--similarity) | Cosine distance, for when many wordings are right. |
 | 31  | [Budgets](models-grading-and-budgets.md#example-31--budgets) | Cost, tokens, latency — and how each can enforce nothing. |
 | 32  | [A live endpoint](models-grading-and-budgets.md#example-32--a-live-endpoint) | Point a suite at your own OpenAI-compatible endpoint. |
-| 33  | [An OpenAI-shaped judge](models-grading-and-budgets.md#example-33--an-openai-shaped-judge) | An `llm-rubric` grader that is `type: openai` — any compatible endpoint, including a local Ollama. |
+| 33  | [An OpenAI-shaped grader](models-grading-and-budgets.md#example-33--an-openai-shaped-grader) | An `llm-rubric` grader that is `type: openai` — any compatible endpoint, including a local Ollama. |
 | 34  | [A multi-turn conversation](templates-and-test-data.md#example-34--a-multi-turn-conversation) | A `messages:` prompt carrying real history, not just the newest line. |
 | 35  | [Anthropic tools, natively](models-grading-and-budgets.md#example-35--anthropic-tools-natively) | Tool-call grading over the native API — the sibling of example 15's `exec` version. |
 | 36  | [`output_expr`, sliced two ways](models-grading-and-budgets.md#example-36--output_expr-sliced-two-ways) | Pulling more than one shape — including a non-string one — out of the same response. |

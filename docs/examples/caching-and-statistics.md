@@ -12,7 +12,7 @@ Every outgoing request is cached, content-addressed, on by default. Run this sui
 --8<-- "examples/21-caching-basics/domarinn.yaml"
 ```
 
-The rule the key follows is one sentence: **hash what is sent.** A provider call, the LLM judge, an embedding and an `exec` grader are all keyed the same way — the SHA-256 of the redacted request, plus the trial index, plus any `cache_salt` in scope. Nothing about your machine, your binary, or your credentials.
+The rule the key follows is one sentence: **hash what is sent.** A provider call, the LLM grader, an embedding and an `exec` grader are all keyed the same way — the SHA-256 of the redacted request, plus the trial index, plus any `cache_salt` in scope. Nothing about your machine, your binary, or your credentials.
 
 That is what makes a cache shareable. A key that varied by machine could not be reused by anyone else, which quietly turns a shared cache into an expensive local disk.
 

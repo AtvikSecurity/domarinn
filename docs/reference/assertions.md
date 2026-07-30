@@ -1,6 +1,6 @@
 # Assertions
 
-An **assertion** grades one provider output. A test case carries a list of assertions under `assert:`; each produces a score in `[0, 1]` and a pass/fail flag, and the case's own verdict is derived from them (see [Scoring](#scoring)).
+An **assertion** grades one provider output. A test carries a list of assertions under `assert:`; each produces a score in `[0, 1]` and a pass/fail flag, and the case's own verdict is derived from them (see [Scoring](#scoring)).
 
 Assertions come in two families:
 
@@ -109,7 +109,7 @@ tests:
         weight: 1
 ```
 
-`threshold` can be set per test case, or in `defaults.threshold` to apply to every case in the suite. See [domarinn.yaml](./domarinn-yaml.md).
+`threshold` can be set per test, or in `defaults.threshold` to apply to every case in the suite. See [domarinn.yaml](./domarinn-yaml.md).
 
 ---
 
@@ -374,7 +374,7 @@ See [protocol.md](./protocol.md) for the full `assert` request/response wire for
 
 ### `llm-rubric`
 
-Grades the output against a natural-language rubric using an LLM judge that returns a **structured** verdict (never parsed from prose).
+Grades the output against a natural-language rubric using an LLM grader that returns a **structured** verdict (never parsed from prose).
 
 ```yaml
 --8<-- "examples/29-llm-rubric-grading/domarinn.yaml:assert"

@@ -108,7 +108,7 @@ tests:
     vars:
       user_input: "How long do I have to send a jacket back?"
     assert:
-      # Deterministic asserts run first and short-circuit the judge, so a case
+      # Deterministic asserts run first and short-circuit the grader, so a case
       # that already failed never pays for a grader call.
       #   docs/reference/assertions.md
       - type: contains
@@ -117,9 +117,9 @@ tests:
       # rather than decorative. Writing a rubric is example 29's subject.
       #
       # The system under test is the echo provider, which mirrors its input, so
-      # what the judge actually reads here is the RENDERED PROMPT (the same
-      # trick example 02 explains). Point `command` at your own program and the
-      # judge grades a real answer instead.
+      # what the grader actually reads here is the RENDERED PROMPT (the same
+      # trick example 02 explains). Point `command` at your own program and it
+      # reads a real answer instead.
       - type: llm-rubric
         value: |
           THIS RUBRIC MEASURES ONE THING: whether the text names the product
@@ -163,7 +163,7 @@ defaults:
     - type: length
       max: 400
 
-# `grader` — the default judge for `llm-rubric` assertions. A grader is a
+# `grader` — the default grader for `llm-rubric` assertions. A grader is a
 # provider like any other, so any OpenAI-compatible endpoint can judge, a local
 # Ollama included; the verdict is structured and fails closed on truncation
 # rather than scoring zero.

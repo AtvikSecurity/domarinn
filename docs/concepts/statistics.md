@@ -19,7 +19,7 @@ Small `n` does not mean domarinn refuses to report a rate — it means the inter
 
 ## Repeat trials
 
-`--repeat N` adds a fourth axis to [the provider × prompt × test grid](how-a-run-works.md#a-run-is-a-grid): every cell runs N times. Each trial is a distinct result — the [trial index is part of the cache key](caching.md#what-is-in-the-key) and of the case identity — so you get a distribution, not a coin flip. That applies to the judge too: N repeats produce N independent verdicts rather than collapsing into one.
+`--repeat N` adds a fourth axis to [the provider × prompt × test grid](how-a-run-works.md#a-run-is-a-grid): every cell runs N times. Each trial is a distinct result — the [trial index is part of the cache key](caching.md#what-is-in-the-key) and of the case identity — so you get a distribution, not a coin flip. That applies to the grader too: N repeats produce N independent verdicts rather than collapsing into one.
 
 Two cases, each run five times:
 
@@ -31,7 +31,7 @@ Two cases, each run five times:
 domarinn run examples/23-repeat-and-confidence --repeat 5
 ```
 
-Because responses are cached, repeats of a deterministic provider are cheap; for genuine sampling variance, disable caching or vary sampling params. The run summary then counts all trials, and the pass rate is measured over them. To measure *judge* variance specifically, keep provider responses warm and pass `--no-grader-cache` — you re-pay only the judge, N times, and can see how often it disagrees with itself.
+Because responses are cached, repeats of a deterministic provider are cheap; for genuine sampling variance, disable caching or vary sampling params. The run summary then counts all trials, and the pass rate is measured over them. To measure *grader* variance specifically, keep provider responses warm and pass `--no-grader-cache` — you re-pay only the grader, N times, and can see how often it disagrees with itself.
 
 ## The Wilson interval
 

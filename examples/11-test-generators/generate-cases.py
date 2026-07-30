@@ -2,7 +2,7 @@
 """A domarinn test generator: computes cases instead of listing them.
 
 Reads one JSON request on stdin and writes {"tests": [...]} on stdout. Each
-entry is an ordinary test case — the same shape you would have written inline.
+entry is an ordinary test — the same shape you would have written inline.
 
 The point of a generator is that coverage cannot drift. Add a locale or a banned
 phrase to the suite's `config` and the matching cases appear on the next run,

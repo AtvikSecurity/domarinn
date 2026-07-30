@@ -6,7 +6,7 @@ Each one is built from suites on the Examples page, so everything here is runnab
 
 /// tip | Read this first if you are new
 
-domarinn evaluates a **grid**: every provider against every prompt against every test, one call per cell. Assertions grade the answer; cheap ones run first and can short-circuit the expensive ones; a cell ends `pass`, `fail`, `error` or `skip`.
+domarinn evaluates a **grid**: every provider against every prompt against every test, one call per cell. Assertions grade the answer; cheap ones run first and can short-circuit the expensive ones; the case that cell produces ends `pass`, `fail`, `error` or `skip`.
 
 The load-bearing distinction in most of these guides is **`fail` versus `error`**. A failure means the system under test got worse. An error means you learned nothing. They gate differently — exit `1` and exit `3` — and a pipeline that conflates them is a pipeline people stop reading.
 
@@ -24,8 +24,8 @@ The first four answer "what am I pointing domarinn at"; the rest are what you do
 | 04 | [Local LLMs with Ollama](local-llms.md) | Iterate on prompts and rubrics with no key and no spend. | Free |
 | 05 | [A zero-cost gate on every PR](render-gate.md) | Catch template and formatting regressions with no key and no spend. | Free |
 | 06 | [Gate a PR in CI](gate-in-ci.md) | Block a merge that makes things worse, without demanding perfection. | Per run |
-| 07 | [Grade an assistant against a policy](grade-against-policy.md) | Scope enforcement, refusals, and rubrics that grade one thing. | Judge only |
-| 08 | [Evaluate structured output](structured-output.md) | An agent that must emit a parseable object with correct field semantics. | Judge only |
+| 07 | [Grade an assistant against a policy](grade-against-policy.md) | Scope enforcement, refusals, and rubrics that grade one thing. | Grader only |
+| 08 | [Evaluate structured output](structured-output.md) | An agent that must emit a parseable object with correct field semantics. | Grader only |
 | 09 | [Share a cache across a team](share-cache-and-baselines.md) | Stop everyone paying separately for the same answers. | Saves money |
 | 10 | [Self-host the server](self-host.md) | Run the results server yourself: Docker, compose, Kubernetes, backups. | Self-hosted |
 | 11 | [Migrate from promptfoo](migrate-promptfoo.md) | Convert an existing promptfoo config and see exactly what changes. | Free |

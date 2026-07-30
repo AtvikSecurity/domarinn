@@ -3,7 +3,7 @@
 # Not paying twice for the same answer.
 #
 # Every outgoing request is cached, content-addressed, on by default — a
-# provider call, the LLM judge, an embedding, an exec grader alike. Run this
+# provider call, the LLM grader, an embedding, an exec grader alike. Run this
 # suite twice and the second run does no work at all: it prints the same report
 # from the cache, instantly and for free.
 #
@@ -32,7 +32,7 @@
 #   domarinn run examples/21-caching-basics     # every cell a cache hit
 #
 # To force real work:      --no-cache
-# To re-ask only the judge: --no-grader-cache
+# To re-ask only the grader: --no-grader-cache
 # To require the cache:    --cache-only   (a miss becomes an infra error, exit 3)
 version: 1
 project: examples

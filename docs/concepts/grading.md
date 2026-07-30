@@ -1,6 +1,6 @@
 # LLM-rubric grading
 
-The `llm-rubric` assertion grades a provider's output against a natural-language **rubric** using an LLM as the judge. Unlike ad-hoc "ask the model and read the answer" grading, domarinn's grader **never parses a verdict out of prose**: it forces the model to return a *structured* verdict and treats anything less as an error.
+The `llm-rubric` assertion grades a provider's output against a natural-language **rubric** using an LLM as the **grader** — an LLM judge, in the usual phrasing. Unlike ad-hoc "ask the model and read the answer" grading, domarinn's grader **never parses a verdict out of prose**: it forces the model to return a *structured* verdict and treats anything less as an error.
 
 > Source of truth: `crates/domarinn-core/src/grader.rs` and the `Grader` /
 > `AssertKind::LlmRubric` types in `config.rs`. This assertion is introduced in
@@ -69,8 +69,8 @@ The `grader:` block wraps a provider plus grading options:
 
 | Field          | Type          | Default    | Meaning |
 |----------------|---------------|------------|---------|
-| `provider`     | provider spec | –          | The judge model. Only `anthropic` and `openai` are supported for grading. |
-| `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template, relative to the suite directory. It renders into the prompt the judge reads, and [the request is the key](./caching.md#the-rule) — so editing it re-grades. (An `exec` assertion's *program* is named by `command` and pinned by `cache_salt`, for the opposite reason: it receives the question rather than being part of it.) |
+| `provider`     | provider spec | –          | The grader model. Only `anthropic` and `openai` are supported for grading. |
+| `template`     | string        | built-in   | Optional `file://` override of the grading-prompt template, relative to the suite directory. It renders into the prompt the grader reads, and [the request is the key](./caching.md#the-rule) — so editing it re-grades. (An `exec` assertion's *program* is named by `command` and pinned by `cache_salt`, for the opposite reason: it receives the question rather than being part of it.) |
 | `verdict_mode` | string        | `forced`   | How the structured verdict is obtained: `forced` (default) or `auto` (rejected at load — not implemented). |
 
 The `provider` is a standard [`ProviderKind`](../reference/providers.md) — but only the `anthropic` and `openai` shapes are valid graders. Any other provider type errors with `grader provider type … is not supported for llm-rubric`.
@@ -82,7 +82,7 @@ The `provider` is a standard [`ProviderKind`](../reference/providers.md) — but
 
 ### Suite-level grader with a per-assert override
 
-A suite-level `grader:` block, straight from a shipped example — the judge is a
+A suite-level `grader:` block, straight from a shipped example — the grader is a
 different model family than the system under test, `max_tokens` is raised well
 above the default, and the credential is read only by the grader (see
 [Provider-specific mechanics](#provider-specific-mechanics)):
@@ -91,7 +91,7 @@ above the default, and the credential is read only by the grader (see
 --8<-- "examples/29-llm-rubric-grading/domarinn.yaml:grader"
 ```
 
-Wired into a suite that uses it as the default judge, plus a per-assert
+Wired into a suite that uses it as the default grader, plus a per-assert
 override:
 
 ```yaml
@@ -152,9 +152,9 @@ The grader calls chat completions (`POST {base_url}/chat/completions`) with a **
 
 - `response_format` is `{ "type": "json_schema", "json_schema": { "name": "verdict", "strict": true, "schema": <verdict schema> } }`.
 - The verdict is parsed from `choices[0].message.content` (guaranteed to match the schema by strict mode).
-- The API key comes from `api_key_env` (default `OPENAI_API_KEY`); the base URL defaults to `https://api.openai.com/v1`, so any OpenAI-compatible gateway works as a judge via `base_url`.
+- The API key comes from `api_key_env` (default `OPENAI_API_KEY`); the base URL defaults to `https://api.openai.com/v1`, so any OpenAI-compatible gateway works as a grader via `base_url`.
 
-A suite-level grader in this shape, from a shipped example — any OpenAI-compatible endpoint can be the judge, a local Ollama included (see [example 33](../examples/models-grading-and-budgets.md#example-33--an-openai-shaped-judge)):
+A suite-level grader in this shape, from a shipped example — any OpenAI-compatible endpoint can be the grader, a local Ollama included (see [example 33](../examples/models-grading-and-budgets.md#example-33--an-openai-shaped-grader)):
 
 ```yaml
 --8<-- "examples/33-openai-grader-rubric/domarinn.yaml:grader"
@@ -200,7 +200,7 @@ The reported assertion score is always the verdict's `score` (clamped to `[0, 1]
 | Default grader `max_tokens`| 4096  |
 | Default verdict mode       | `forced` |
 
-`grader.timeout_ms` covers `exec` assertions as well as the HTTP judges — the ceiling belongs to grading, not to a transport.
+`grader.timeout_ms` covers `exec` assertions as well as the HTTP graders — the ceiling belongs to grading, not to a transport.
 
 Non-2xx responses, transport errors, missing `tool_use`/content, and truncated verdicts all surface as grader **errors** (fail-closed), recorded as `grader error: …`.
 
@@ -208,7 +208,7 @@ Non-2xx responses, transport errors, missing `tool_use`/content, and truncated v
 
 ## What grading costs
 
-Judge calls are priced from the same built-in rate table as the systems under test, and a `grader.provider` accepts the same [`pricing:` override](../reference/providers.md#pricing). The same applies to the embeddings provider behind `similar`, which spends two calls per assertion (the output and the reference).
+Grader calls are priced from the same built-in rate table as the systems under test, and a `grader.provider` accepts the same [`pricing:` override](../reference/providers.md#pricing). The same applies to the embeddings provider behind `similar`, which spends two calls per assertion (the output and the reference).
 
 The figure is reported **separately** from the run's cost:
 
@@ -218,9 +218,9 @@ The figure is reported **separately** from the run's cost:
 | Run summary | `grader_cost_usd` | What grading them cost. |
 | Each assertion | `cost_usd` | What that one verdict cost. |
 
-They are not added together on purpose. `cost_usd` is what a `cost:` assertion budgets, and a judge's price must not move a budget gate on the model being judged. It also stays honest about the common case where the judge is the more expensive model: a merged number would bury that.
+They are not added together on purpose. `cost_usd` is what a `cost:` assertion budgets, and a grader's price must not move a budget gate on the model being judged. It also stays honest about the common case where the grader is the more expensive model: a merged number would bury that.
 
-A judge call is cached like any other request, and its cost is recorded with it — so a fully-cached run still reports what its grading is worth rather than dropping to zero, re-priced at today's rate. Which calls were actually paid for this time is visible per assertion, via `cached`. `--no-grader-cache` re-asks the judge while still replaying provider responses; see [caching.md](./caching.md#cache-modes).
+A grader call is cached like any other request, and its cost is recorded with it — so a fully-cached run still reports what its grading is worth rather than dropping to zero, re-priced at today's rate. Which calls were actually paid for this time is visible per assertion, via `cached`. `--no-grader-cache` re-asks the grader while still replaying provider responses; see [caching.md](./caching.md#cache-modes).
 
 An `exec` grader reports nothing: the child spends against whatever endpoint it chose, and the protocol gives it no way to say so. A zero would claim custom grading is free.
 

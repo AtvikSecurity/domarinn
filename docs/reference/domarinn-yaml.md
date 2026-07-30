@@ -171,8 +171,8 @@ Omit `prompts` entirely when a provider builds its own input from the test `vars
 
 The `tests:` list accepts **three item shapes**, freely mixed:
 
-1. **A `file://` glob string** — loads test cases from YAML / JSON / CSV / JSONL files.
-2. **A generator object** — `{ generator: { command: [...], config?, timeout_ms? } }` runs an external command (over the exec protocol) that emits test cases.
+1. **A `file://` glob string** — loads tests from YAML / JSON / CSV / JSONL files.
+2. **A generator object** — `{ generator: { command: [...], config?, timeout_ms? } }` runs an external command (over the exec protocol) that emits tests.
 3. **An inline test object** — the test written directly in the suite.
 
 ```yaml
@@ -328,7 +328,7 @@ The `!file "path"` YAML tag and the format-agnostic `{$file: "path"}` object for
 
 ### Generators
 
-A generator defers to an external command at run time. It speaks the exec protocol and emits test cases as JSON.
+A generator defers to an external command at run time. It speaks the exec protocol and emits tests as JSON.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -370,7 +370,7 @@ Supported by `exec`, `anthropic` and `openai` providers. The declarations reach 
 
 ## `defaults`
 
-Values merged into **every** resolved test case, so you don't repeat yourself.
+Values merged into **every** resolved test, so you don't repeat yourself.
 
 | Field | Type | Merge behavior |
 |-------|------|----------------|
@@ -405,7 +405,7 @@ The default LLM grader for [`llm-rubric`](../concepts/grading.md) assertions. A 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `provider` | provider-kind object | **yes** | The grading model. A provider **kind** (`{type, model, ...}`) with **no `id`** — not an entry from the `providers:` list. Prefer a different model family than the systems under test. |
-| `template` | string (`file://`) | no | Override the built-in grading-prompt template. Resolved relative to the suite directory and sandboxed to it, like every other `file://`. It renders into the prompt the judge reads, and the judge's request is its cache key — so editing the judging prompt re-grades rather than replaying the old verdict. |
+| `template` | string (`file://`) | no | Override the built-in grading-prompt template. Resolved relative to the suite directory and sandboxed to it, like every other `file://`. It renders into the prompt the grader reads, and the grader's request is its cache key — so editing the grading prompt re-grades rather than replaying the old verdict. |
 | `verdict_mode` | string | no | How the structured verdict is obtained: `forced` (default) or `auto`. |
 
 ```yaml

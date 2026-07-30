@@ -97,7 +97,7 @@ Below it, one row per case: status, the case id and its stable case key, a previ
 
 The `List / Matrix` toggle pivots the same run into the grid it actually is: one row per test, one column per provider, one dot per cell. This is the view for "which of these two systems is better, and on what" — the run above declares providers `fast` and `careful`, and reading down a column tells you something a pass rate cannot.
 
-The blanks matter as much as the dots. `safety/cites-policy` has a `—` under `fast` because that case declares `only_providers: [careful]`, so the cell was never evaluated — which is why this run's seven cases are not the eight a full 4 × 2 grid would give. A cell that is missing and a cell that failed look nothing alike here, deliberately.
+The blanks matter as much as the dots. `safety/cites-policy` has a `—` under `fast` because that case declares `only_providers: [careful]`, so the cell was never evaluated — which is why this run's seven cases are not the eight a full 4 × 2 grid would give. A cell that was never evaluated and a case that failed look nothing alike here, deliberately.
 
 The matrix pivots on providers and prompts, so it needs more than one of them to be interesting; a single-provider run stays on the list view even if you deep-link `?view=matrix`. Status filters and the search box apply to the list view only, as the hint next to the toggle says.
 
@@ -108,7 +108,7 @@ The matrix pivots on providers and prompts, so it needs more than one of them to
 ![The case drawer over the matrix, showing one cell in full](../assets/screenshots/case-drawer-light.png#only-light)
 ![The case drawer over the matrix, showing one cell in full](../assets/screenshots/case-drawer-dark.png#only-dark)
 
-Click any case row or matrix cell and the drawer slides in with everything recorded about that one cell. It is the answer to "why did this pass?", and it is where an eval stops being a number.
+Click any case row or matrix cell and the drawer slides in with everything recorded about that one case. It is the answer to "why did this pass?", and it is where an eval stops being a number.
 
 Top to bottom: the verdict and score, with the case's suite tags and a `cached` marker when the answer was replayed; the tokens, cost and latency for this cell alone; a **history rail** across previous runs of the same case key, with a window selector (`20 / 50 / 100 / All runs`) and a choice of metric to plot — that rail is how you tell a genuine regression from a case that has always been flaky. Then `ASSERTIONS`, one card per assertion, each showing the criteria **as authored in your suite** alongside the result sentence the engine produced; here an `icontains` looking for `refund`, and the reason `output contains "refund" (case-insensitive)`.
 

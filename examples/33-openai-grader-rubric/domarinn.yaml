@@ -1,14 +1,14 @@
 # yaml-language-server: $schema=../../domarinn.schema.json
 #
-# The judge does not have to be Anthropic.
+# The grader does not have to be Anthropic.
 #
 # Example 29 built its grader from `type: anthropic`. This one is `type:
 # openai` instead — which means ANY OpenAI-compatible endpoint can grade:
 # OpenAI itself, a gateway, or a local Ollama serving the chat-completions API.
 # The system under test below is the offline echo provider, so the only thing
-# that reaches a network here is the judge.
+# that reaches a network here is the grader.
 #
-# ONE VARIABLE MOVES THE JUDGE, the same variable that moves a provider in
+# ONE VARIABLE MOVES THE GRADER, the same variable that moves a provider in
 # example 26:
 #
 #   domarinn run examples/33-openai-grader-rubric
@@ -22,7 +22,7 @@
 # The model and base_url resolve at load time like any other provider field,
 # which means grader identity is part of the cache key: judge a case with
 # gpt-4o-mini, then again with qwen3:4b, and the second run asks fresh rather
-# than replaying the first judge's verdict.
+# than replaying the first grader's verdict.
 #
 # The verdict shape itself — structured, and fail-closed on truncation — is
 # the subject of example 29; this one is only about which vendor is asking.
@@ -43,12 +43,12 @@ grader:
   provider:
     type: openai
     # Redirects with the same variable OpenAI's own SDK honours, and the same
-    # one example 26 uses for a provider — here it moves the JUDGE instead.
+    # one example 26 uses for a provider — here it moves the GRADER instead.
     model: "${env:OPENAI_MODEL:-gpt-4o-mini}"
     base_url: "${env:OPENAI_BASE_URL:-https://api.openai.com/v1}"
     api_key_env: OPENAI_API_KEY
     params:
-      # See example 29: a thinking-capable judge can truncate a structured
+      # See example 29: a thinking-capable grader can truncate a structured
       # verdict at a small ceiling, which is a fail-closed error, not a
       # silent pass. Generous costs nothing extra — you are billed for
       # tokens actually generated.
@@ -62,7 +62,7 @@ tests:
     vars:
       user_input: "Our policy allows returns within 30 days of delivery. I'm not able to make exceptions beyond that window, but I can check whether a partial credit applies to your order."
     assert:
-      # Cheap and first. If this fails, the judge is never called.
+      # Cheap and first. If this fails, the grader is never called.
       - type: contains
         value: "30 days"
       # --8<-- [start:assert]

@@ -10,15 +10,15 @@ An `exec` command or an `http` endpoint is a normal provider, on equal footing w
 
 ## Deterministic assertions run first
 
-A substring check costs nothing and a judge costs money, so the cheap ones run first and can [short-circuit](how-a-run-works.md#cheap-assertions-run-first-and-can-stop-the-expensive-ones) the expensive ones. A case whose `contains` already failed never spawns a subprocess or calls a model.
+A substring check costs nothing and a grader costs money, so the cheap ones run first and can [short-circuit](how-a-run-works.md#cheap-assertions-run-first-and-can-stop-the-expensive-ones) the expensive ones. A case whose `contains` already failed never spawns a subprocess or calls a model.
 
-This is not only a cost argument. Ordering the assertions by cost also orders them by *specificity*, and a failure report that leads with "did not contain the order number" is more useful than one that leads with a paragraph of judge reasoning.
+This is not only a cost argument. Ordering the assertions by cost also orders them by *specificity*, and a failure report that leads with "did not contain the order number" is more useful than one that leads with a paragraph of grader reasoning.
 
 ## The grader is structured and fails closed
 
 domarinn never asks a model for prose and greps it. Verdicts arrive as a forced tool call or a JSON-schema response carrying `pass`, `score` and `reasoning`, and anything missing, malformed or truncated is an **error**.
 
-The alternative is worse in a specific, hard-to-notice way. Under a parse-the-prose scheme, a judge that ran out of tokens mid-sentence scores `0` — indistinguishable from a genuine failure of the thing under test. You go and debug a prompt that was fine. Failing closed turns a silent wrong answer into a loud one.
+The alternative is worse in a specific, hard-to-notice way. Under a parse-the-prose scheme, a grader that ran out of tokens mid-sentence scores `0` — indistinguishable from a genuine failure of the thing under test. You go and debug a prompt that was fine. Failing closed turns a silent wrong answer into a loud one.
 
 ## Errors are not failures
 

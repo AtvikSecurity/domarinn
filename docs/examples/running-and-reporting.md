@@ -76,7 +76,7 @@ The third case demonstrates **short-circuiting**. Its deterministic `icontains` 
 
 ## Example 19 — Errors and retries
 
-A failed assertion means the system under test got worse. An **error** means you learned nothing — the call never produced a gradeable answer. Conflating the two is how a gate starts lying, so domarinn keeps them apart end to end: separate cell status, separate tally, separate exit code.
+A failed assertion means the system under test got worse. An **error** means you learned nothing — the call never produced a gradeable answer. Conflating the two is how a gate starts lying, so domarinn keeps them apart end to end: separate case status, separate tally, separate exit code.
 
 ```yaml
 --8<-- "examples/19-errors-and-retries/domarinn.yaml"

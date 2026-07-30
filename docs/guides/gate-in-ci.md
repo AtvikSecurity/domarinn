@@ -64,7 +64,7 @@ jobs:
 | `fail-on-regression` | `"true"`            | If `true`, exit 1 (assertion/regression) fails the check. If `false`, exit 1 is a warning only. Exit 2 and 3 **always** fail. |
 | `comment`            | `"true"`            | Post/update the summary comment on the PR. |
 | `artifact-name`      | `"domarinn-results"` | Name of the uploaded artifact holding `results.xml` + `summary.md`. |
-| `allow-empty`        | `"false"`           | If `true`, succeed when the run resolves to zero test cases (becomes `--allow-empty`). Off by default: a green result over no cells is indistinguishable from a green result over every cell. Turn it on for a sharded matrix where a shard legitimately has no work. |
+| `allow-empty`        | `"false"`           | If `true`, succeed when the run resolves to zero cases (becomes `--allow-empty`). Off by default: a green result over no cells is indistinguishable from a green result over every cell. Turn it on for a sharded matrix where a shard legitimately has no work. |
 | `cache-dir`          | `""`                | Directory for the local cache — typically the path `actions/cache` restored (becomes `--cache-dir`). Empty uses `.domarinn/cache` beside the suite, which a cache step rarely saves. See [Shared cache for CI](#uploading-ci-runs-to-a-shared-server). |
 
 ### Outputs
@@ -300,7 +300,7 @@ CI logs are deterministic: domarinn detects that its output is captured (not a t
 
 ## Uploading CI runs to a shared server
 
-Point CI at a shared [server](../reference/server.md) so every eval is browsable and each PR gets a durable link, and so runs can share a cache of every request they make — provider calls, judge verdicts, embeddings.
+Point CI at a shared [server](../reference/server.md) so every eval is browsable and each PR gets a durable link, and so runs can share a cache of every request they make — provider calls, grader verdicts, embeddings.
 
 - **`server-url` / `DOMARINN_SERVER_URL`** — the server base URL. Setting it makes the run upload with **`--share`**.
 - **`DOMARINN_TOKEN`** (the action's `token` input) — a bearer token sent on upload. Unless the server is explicitly in `open` mode, this needs **`write`** scope (a static `write:` token or an `domarinn_` API key). Always pass it from a secret.
@@ -308,7 +308,7 @@ Point CI at a shared [server](../reference/server.md) so every eval is browsable
 
 On GitHub Actions the CLI automatically enriches the uploaded run with git (branch, commit, dirty flag) and CI (provider + run URL) metadata, so shared runs are traceable back to the workflow.
 
-**Shared cache for CI.** Multiple CI jobs can share every request domarinn makes — provider responses, judge verdicts, embeddings — through the server's content-addressed cache (`/api/v1/cache/*`), which cuts cost and time on reruns. The client side is `cache.backend: layered` plus `DOMARINN_SERVER_URL`, documented in [`caching.md`](../concepts/caching.md#backends).
+**Shared cache for CI.** Multiple CI jobs can share every request domarinn makes — provider responses, grader verdicts, embeddings — through the server's content-addressed cache (`/api/v1/cache/*`), which cuts cost and time on reruns. The client side is `cache.backend: layered` plus `DOMARINN_SERVER_URL`, documented in [`caching.md`](../concepts/caching.md#backends).
 
 A key is a hash of the request and nothing else, so a fresh checkout on a fresh runner reuses whatever another job wrote. Two things are worth setting up deliberately:
 

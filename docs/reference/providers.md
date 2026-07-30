@@ -38,7 +38,7 @@ The flagship provider, and the escape hatch for testing anything you can run as 
 | `command`    | `[string]`          | –          | The command and its argv. Elements may contain [`${env:VAR}`](#environment-driven-config) placeholders. |
 | `env`        | `{string: string}`  | `{}`       | Extra environment variables for the child. Values may contain `${env:VAR}` placeholders too. |
 | `timeout_ms` | integer             | `60000`    | Per-call timeout in milliseconds. |
-| `cache_salt` | string              | *(none)*   | **Provider-level** version pin for the program — set it when a rebuild should discard cached answers. See below. Distinct from a test case's own [`cache_salt`](./domarinn-yaml.md#inline-and-loaded-test-fields), which keys a single case instead; see [caching.md](../concepts/caching.md#the-rule). |
+| `cache_salt` | string              | *(none)*   | **Provider-level** version pin for the program — set it when a rebuild should discard cached answers. See below. Distinct from a test's own [`cache_salt`](./domarinn-yaml.md#inline-and-loaded-test-fields), which keys that test's cases instead; see [caching.md](../concepts/caching.md#the-rule). |
 
 ### Wire behavior
 
@@ -157,7 +157,7 @@ An `exec` provider that reports its own `cost_usd` always wins: it is the only p
 
 `pricing` also works on a `grader.provider` block and on the `embeddings` provider, so the models doing the *scoring* are priced by the same table and the same override. What they cost is reported as `grader_cost_usd`, next to `cost_usd` rather than added to it:
 
-- `cost_usd` is what the **systems under test** cost. That is the number a `cost:` assertion budgets, and the one a model-selection decision turns on. A judge's price must not move a budget gate on the model being judged.
+- `cost_usd` is what the **systems under test** cost. That is the number a `cost:` assertion budgets, and the one a model-selection decision turns on. A grader's price must not move a budget gate on the model being judged.
 - `grader_cost_usd` is what **measuring them** cost. On a suite scored by a larger model than it tests, this is the bigger of the two; merging them would hide that rather than report it.
 
 Per-assertion, the same figure appears as `AssertResult.cost_usd`. An `exec` grader reports nothing — the child spends against whatever endpoint it chose and the protocol gives it no way to say so, and a zero there would claim custom grading is free.

@@ -79,15 +79,15 @@ The cache key is the request this provider would send: the rendered `method`, `u
 
 /// success | The verdict is structured, and fails closed
 
-domarinn does not ask a judge for prose and grep it. It forces a tool call (or a JSON-schema response) carrying `pass`, `score` and `reasoning`. A missing, malformed or **truncated** verdict is an `error` — never a silent pass.
+domarinn does not ask a grader for prose and grep it. It forces a tool call (or a JSON-schema response) carrying `pass`, `score` and `reasoning`. A missing, malformed or **truncated** verdict is an `error` — never a silent pass.
 
-That matters more than it sounds. A judge that ran out of tokens mid-sentence would otherwise score `0` and read as a genuine failure of the thing under test, sending you to debug a prompt that was fine.
+That matters more than it sounds. A grader that ran out of tokens mid-sentence would otherwise score `0` and read as a genuine failure of the thing under test, sending you to debug a prompt that was fine.
 
 ///
 
 Three things about the grader block are deliberate. It names a **different model** from the one under test, because a model grading its own output is not an independent measurement. It raises `max_tokens` well above the default, because a thinking model can truncate a verdict at 1024 — and a generous ceiling costs nothing, since you are billed for tokens actually generated. And its `api_key_env` is read **only** by the grader: it does not inherit the provider's credential resolution, which fails asymmetrically and confusingly — completions succeed while every grade dies on 401, so the run looks like an infra fault rather than a credential one.
 
-**Writing the rubric is the hard part.** Grade one axis; a rubric asking about correctness *and* tone *and* format returns one number that means none of them. Name the score-0 condition explicitly. And say what *not* to penalise — judges are eager, and without a "do not penalise verbosity or ordering" clause you are measuring the judge's taste.
+**Writing the rubric is the hard part.** Grade one axis; a rubric asking about correctness *and* tone *and* format returns one number that means none of them. Name the score-0 condition explicitly. And say what *not* to penalise — graders are eager, and without a "do not penalise verbosity or ordering" clause you are measuring the grader's taste.
 
 ---
 
@@ -147,7 +147,7 @@ Note that `api_key_env` names the *variable*, never the key. Nothing secret is c
 
 ---
 
-## Example 33 — An OpenAI-shaped judge
+## Example 33 — An OpenAI-shaped grader
 
 Example 29's grader was `type: anthropic`. A grader is a provider like any other, so it can just as easily be `type: openai` — which means any OpenAI-compatible endpoint can judge, a local Ollama included.
 
@@ -155,7 +155,7 @@ Example 29's grader was `type: anthropic`. A grader is a provider like any other
 --8<-- "examples/33-openai-grader-rubric/domarinn.yaml"
 ```
 
-The system under test here is the offline echo provider, so the only thing that reaches a network is the judge — and the same one variable that redirects a *provider* in example 26 redirects this *grader* instead:
+The system under test here is the offline echo provider, so the only thing that reaches a network is the grader — and the same one variable that redirects a *provider* in example 26 redirects this *grader* instead:
 
 ```
 OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=qwen3:4b domarinn run examples/33-openai-grader-rubric
@@ -163,7 +163,7 @@ OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=qwen3:4b domarinn run exa
 
 /// tip | Grader identity is part of the cache key
 
-The model and `base_url` resolve at load time like any other provider field. Judge a case with `gpt-4o-mini`, then again with `qwen3:4b`, and the second run asks fresh rather than replaying the first judge's verdict — two judges are two different questions, never one cache entry.
+The model and `base_url` resolve at load time like any other provider field. Judge a case with `gpt-4o-mini`, then again with `qwen3:4b`, and the second run asks fresh rather than replaying the first grader's verdict — two graders are two different questions, never one cache entry.
 
 ///
 
@@ -215,7 +215,7 @@ It composes, so two smaller files ship beside it — the `extends` base and the 
 --8<-- "examples/38-annotated-reference-suite/house-rules.yaml"
 ```
 
-Read it as a map, not as a recommendation. A real suite sets a fraction of these keys, and the three cells here exist only so the file is a suite that runs rather than a listing — the `grader` block is example 33's env-parameterized form, which is how the judge is pointed at a stub in CI.
+Read it as a map, not as a recommendation. A real suite sets a fraction of these keys, and the three cells here exist only so the file is a suite that runs rather than a listing — the `grader` block is example 33's env-parameterized form, which is how the grader is pointed at a stub in CI.
 
 /// info | "Every key" is checked, not claimed
 

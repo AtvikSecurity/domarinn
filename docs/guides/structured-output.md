@@ -47,7 +47,7 @@ Schema validation cannot tell you that an item was marked `TESTED` when the evid
     any additional field the object carries.
 ```
 
-Note the ordering: `contains-json` runs first and short-circuits, so a model that emitted nothing parseable never reaches the judge.
+Note the ordering: `contains-json` runs first and short-circuits, so a model that emitted nothing parseable never reaches the grader.
 
 ## 3. Include the negative case
 

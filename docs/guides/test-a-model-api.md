@@ -117,7 +117,7 @@ See [Pricing](../reference/providers.md#pricing) for what is priced (graders inc
 
 ## 5. Grade what a substring cannot
 
-Deterministic assertions get you further than people expect, and they should always run first — they are free and they short-circuit the expensive ones. When the property you care about genuinely needs judgment, add an `llm-rubric` and pin the judge separately from the system under test:
+Deterministic assertions get you further than people expect, and they should always run first — they are free and they short-circuit the expensive ones. When the property you care about genuinely needs judgment, add an `llm-rubric` and pin the grader separately from the system under test:
 
 ```yaml
 grader:

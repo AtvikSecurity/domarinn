@@ -45,7 +45,7 @@ Whatever the expression returns becomes the output **as-is**. A string stays tex
 
 Its second provider is the same URL and body with `output_expr: "response.json.result.confidence"` — a bare number — and a case scoped to it with `only_providers` asserts on that instead of the prose. Two slices of one response, graded independently.
 
-`output_expr` only ever sees a **successful** response: a non-2xx status is a transport error before the expression runs, the same as any other provider's failure. That means an error cell reads as `error`, not as a failed assertion — see [how a run works](../concepts/how-a-run-works.md) for why that distinction is worth keeping. The full field list, and how each part lands in the cache key, is in [Providers → `http`](../reference/providers.md#http).
+`output_expr` only ever sees a **successful** response: a non-2xx status is a transport error before the expression runs, the same as any other provider's failure. That means the case reads as `error`, not as a failed assertion — see [how a run works](../concepts/how-a-run-works.md) for why that distinction is worth keeping. The full field list, and how each part lands in the cache key, is in [Providers → `http`](../reference/providers.md#http).
 
 ## 3. Authenticate without committing a secret
 

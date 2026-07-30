@@ -15,7 +15,7 @@ A single wire protocol carries three kinds of request, distinguished by the enve
 |------------------|-------------------|--------------------------------|
 | `provider`       | System under test | "What does the model output?"  |
 | `assert`         | Grader            | "Did the output pass?"         |
-| `generate_tests` | Test source       | "What test cases should run?"  |
+| `generate_tests` | Test source       | "Which tests should run?"      |
 
 ## Transport: one-shot stdin -> stdout
 
@@ -75,7 +75,7 @@ Runs the system under test. Prompts are **optional** — when a suite has no pro
 | Field    | Type            | Notes |
 |----------|-----------------|-------|
 | `prompt` | any JSON        | **Optional.** The rendered prompt. Absent when the suite has no prompts. |
-| `vars`   | any JSON object | Template variables for this test case. Defaults to `{}`. |
+| `vars`   | any JSON object | Template variables for this test. Defaults to `{}`. |
 | `params` | any JSON object | Provider parameters from the suite (model, temperature, ...). Defaults to `{}`. |
 | `test`   | object          | `{ "id": string, "tags": string[] }`. `tags` defaults to `[]`. Correlation metadata: it is sent, but [stripped out of the keyed request](../concepts/caching.md#what-is-in-the-key), so renaming a test does not re-run it. |
 | `tools`  | array           | Optional. Tools the suite declared. **Absent when it declared none**, so a tool-free request is exactly what it always was. See [Tools](#tools). |
@@ -265,7 +265,7 @@ A failing assert is a **normal result** (`"pass": false`), not an error — exit
 
 ## Kind: `generate_tests`
 
-Produces test cases programmatically (e.g. from a dataset, an API, or an LLM).
+Produces tests programmatically (e.g. from a dataset, an API, or an LLM).
 
 ### Request
 
@@ -295,9 +295,9 @@ Two accepted forms:
 }
 ```
 
-**JSONL form** — one test case JSON object per line (no wrapper). Convenient for streaming large generators.
+**JSONL form** — one test JSON object per line (no wrapper). Convenient for streaming large generators.
 
-Each emitted test object follows the suite's test-case schema (see `domarinn schema config`).
+Each emitted test object follows the suite's test schema (see `domarinn schema config`).
 
 ---
 
@@ -335,7 +335,7 @@ providers:
     cache_salt: "v1"
 ```
 
-A test case may also set its own `cache_salt`. That one is purely a cache-keying concern and is deliberately **not** part of the wire payload — do not look for it in the request. Use it when your program resolves content domarinn cannot see (its own prompt files, say), so that editing that content busts only the affected cases. See [caching.md](../concepts/caching.md#per-case-salts).
+A test may also set its own `cache_salt`. That one is purely a cache-keying concern and is deliberately **not** part of the wire payload — do not look for it in the request. Use it when your program resolves content domarinn cannot see (its own prompt files, say), so that editing that content busts only the affected cases. See [caching.md](../concepts/caching.md#per-case-salts).
 
 ## Versioning
 

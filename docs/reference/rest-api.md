@@ -116,7 +116,7 @@ The `url` in the response is a browser link to the run. It is built from `DOMARI
 
 ## Cache (shared provider cache)
 
-The content-addressed cache lets many CI runs share every request domarinn makes — provider responses, judge verdicts, embeddings. Keys are `sha256:<64 hex>`; anything else is a `400`. See [`../concepts/caching.md`](../concepts/caching.md) for the client side.
+The content-addressed cache lets many CI runs share every request domarinn makes — provider responses, grader verdicts, embeddings. Keys are `sha256:<64 hex>`; anything else is a `400`. See [`../concepts/caching.md`](../concepts/caching.md) for the client side.
 
 | Method | Path                       | Scope   | Notes |
 |--------|----------------------------|---------|-------|
