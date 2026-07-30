@@ -7,7 +7,7 @@ use super::*;
 use crate::cache::{CacheEntry, CacheError, CacheStats, PurgeFilter};
 use crate::provider::{ProviderError, ProviderResponse};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// A cache that never hits and never fails — the retry path under test uses
 /// `CacheMode::Disabled`, so these are inert, but the signature requires one.
@@ -255,40 +255,162 @@ fn legacy_cache_entries_without_raw_still_parse() {
     assert_eq!(entry_to_response(entry, &provider).raw, None);
 }
 
-/// A `MakeWriter` that appends every line into a shared buffer.
-#[derive(Clone)]
-struct BufWriter(Arc<Mutex<Vec<u8>>>);
+// ── Tracing capture ─────────────────────────────────────────────────────────
 
-impl std::io::Write for BufWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+/// One recorded event: its level and the NAMES of the fields it carried.
+///
+/// Field names rather than a rendered line, because the assertion below is
+/// specifically that these are *structured fields* and not text interpolated
+/// into the message — and a substring match over rendered JSON is satisfied by
+/// either.
+#[derive(Debug, Clone)]
+struct CapturedEvent {
+    level: tracing::Level,
+    fields: Vec<&'static str>,
+}
+
+thread_local! {
+    /// `Some` only on a thread currently inside [`capture`].
+    static CAPTURED: std::cell::RefCell<Option<Vec<CapturedEvent>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+struct FieldNames(Vec<&'static str>);
+
+impl tracing::field::Visit for FieldNames {
+    // Every other `record_*` defaults to delegating here.
+    fn record_debug(&mut self, field: &tracing::field::Field, _: &dyn std::fmt::Debug) {
+        self.0.push(field.name());
     }
 }
 
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufWriter {
-    type Writer = BufWriter;
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
+struct Capture;
+
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
     }
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::TRACE)
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        // Ids must be non-zero; nothing here ever interprets one.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        tracing::span::Id::from_u64(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        CAPTURED.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            // Not capturing on this thread: leave before visiting anything, so
+            // an unrelated test never pays to format a field value.
+            let Some(buf) = slot.as_mut() else { return };
+            let mut names = FieldNames(Vec::new());
+            event.record(&mut names);
+            buf.push(CapturedEvent {
+                level: *event.metadata().level(),
+                fields: names.0,
+            });
+        });
+    }
+}
+
+/// Run `f`, returning its value alongside every event it emitted on this thread.
+///
+/// The subscriber is installed **globally, once** — deliberately, and not the
+/// obvious `tracing::subscriber::with_default`, which is what this replaces
+/// after that scoped form flaked in CI twice (2026-07-28, 2026-07-30) with an
+/// empty buffer while the logic under test ran perfectly.
+///
+/// The cause is the process-global *callsite interest cache*, not the level
+/// filter. `warn!` consults a cached `Interest` for its callsite, and any
+/// thread registering a callsite triggers a rebuild that recomputes that cache
+/// from the dispatchers it can see. A scoped dispatcher is installed for one
+/// thread for the length of one scope, so a rebuild racing that window can
+/// cache `Interest::never()` and the macro then drops the event before ever
+/// reaching our subscriber. Measured directly: under concurrent dispatcher
+/// churn the scoped form lost **5,786–12,553 of 20,000** events across runs;
+/// this global form lost 0 of 20,000, three runs in a row. (It is specifically
+/// not the max-level hint — of those misses, zero had it below `WARN`.)
+///
+/// A permanently-registered global dispatcher that is interested in everything
+/// leaves no window: every rebuild can see it, so `never` is unreachable.
+/// Threads that are not capturing pay one thread-local load per event —
+/// [`Capture::event`] returns before visiting, so no field is ever formatted
+/// for an unrelated test.
+fn capture<T>(f: impl FnOnce() -> T) -> (T, Vec<CapturedEvent>) {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        tracing::subscriber::set_global_default(Capture)
+            .expect("no other test in this binary may install a global subscriber");
+    });
+    CAPTURED.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+    let value = f();
+    let events = CAPTURED
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_default();
+    (value, events)
+}
+
+/// Guard on the guard: capture must survive the conditions that broke it.
+///
+/// This reproduces what a loaded CI runner does to a 425-test binary — threads
+/// entering and leaving their own dispatchers and forcing interest rebuilds
+/// while one thread captures. Restore [`capture`] to `with_default` and this
+/// fails on roughly a third to two thirds of its iterations; the whole point is
+/// that it is a *reproduction*, since the original flake never reproduced
+/// locally in any amount of plain re-running.
+#[test]
+fn capture_survives_concurrent_dispatcher_churn() {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut threads = Vec::new();
+    for _ in 0..6 {
+        let stop = stop.clone();
+        threads.push(std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let noop = tracing::subscriber::NoSubscriber::default();
+                tracing::subscriber::with_default(noop, || tracing::warn!(noise = 1, "noise"));
+            }
+        }));
+    }
+    for _ in 0..2 {
+        let stop = stop.clone();
+        threads.push(std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                tracing::callsite::rebuild_interest_cache();
+            }
+        }));
+    }
+
+    let mut missed = 0;
+    let rounds = 2_000;
+    for _ in 0..rounds {
+        let (_, events) = capture(|| tracing::warn!(attempt = 1u32, delay_ms = 5u64, "retrying"));
+        if !events.iter().any(|e| e.fields.contains(&"attempt")) {
+            missed += 1;
+        }
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert_eq!(missed, 0, "capture dropped {missed} of {rounds} events");
 }
 
 /// The retry warning must carry `attempt` and `delay_ms` as structured
 /// fields (not just interpolated into the message), so a `-vv` / JSON log can
-/// filter on them. Scoped capture subscriber; inert for every other test.
+/// filter on them.
 #[test]
 fn retry_warn_carries_structured_attempt_and_delay_fields() {
-    let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_writer(BufWriter(buf.clone()))
-        .finish();
-
-    tracing::subscriber::with_default(subscriber, || {
+    let (outcome, events) = capture(|| {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
@@ -315,7 +437,7 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
                 ..Default::default()
             };
             let state = crate::runner::runner_cache::CacheRunState::default();
-            let outcome = call_with_cache(
+            call_with_cache(
                 &provider,
                 &req,
                 &ctx,
@@ -328,20 +450,28 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
                 &retry_cfg,
             )
             .await
-            .expect("second attempt succeeds");
-            assert!(!outcome.cached);
-            assert_eq!(outcome.attempts, Some(2));
-        });
+            .expect("second attempt succeeds")
+        })
     });
 
-    let logged = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    // The logic first: if these fail, the retry itself regressed. Only the
+    // field assertions below are about logging.
+    assert!(!outcome.cached);
+    assert_eq!(outcome.attempts, Some(2));
+
+    let warn = events
+        .iter()
+        .find(|e| e.level == tracing::Level::WARN)
+        .unwrap_or_else(|| panic!("the retry path must warn; captured {events:?}"));
     assert!(
-        logged.contains("\"attempt\""),
-        "retry warn must record an `attempt` field; got: {logged}"
+        warn.fields.contains(&"attempt"),
+        "retry warn must record `attempt` as a field; got {:?}",
+        warn.fields
     );
     assert!(
-        logged.contains("\"delay_ms\""),
-        "retry warn must record a `delay_ms` field; got: {logged}"
+        warn.fields.contains(&"delay_ms"),
+        "retry warn must record `delay_ms` as a field; got {:?}",
+        warn.fields
     );
 }
 
