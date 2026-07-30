@@ -31,13 +31,14 @@
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, Value, ValueRef};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::auth::{Identity, IdentitySource, Scope};
 use crate::domain::{Role, UserId};
 
 /// What a grant lets its holder do with a restricted run set. Ordered:
 /// `View < Upload < Manage`, and a higher level includes everything below it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum GrantLevel {
     /// Read the set's runs.

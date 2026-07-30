@@ -238,7 +238,7 @@ impl Storage {
     }
 }
 
-fn restricted(
+pub(super) fn restricted(
     conn: &Connection,
     project: Option<&str>,
     suite: Option<&str>,
@@ -258,7 +258,7 @@ fn restricted(
 /// Ordered in Rust rather than SQL: the stored levels are words, and `MAX()`
 /// over them would order them alphabetically — `manage` < `upload` < `view` —
 /// i.e. exactly backwards.
-fn covering_level(
+pub(super) fn covering_level(
     conn: &Connection,
     project: Option<&str>,
     suite: Option<&str>,
