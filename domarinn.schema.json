@@ -1083,6 +1083,13 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "include_tool_calls": {
+          "description": "Whether the judge is shown the tool calls the model made. Default false.\n\nOpt-in rather than automatic because the grading prompt *is* the judge's\ncache key: turning this on for everyone would re-grade every warm entry\nin every store, and pay for it, the first time a suite reported a call.\nLeft unset, the prompt — and therefore the key — is byte-identical to\nwhat it was before this field existed.\n\nSet it on the `grader:` block the assertion actually resolves to. A\nper-assert `grader:` replaces the suite-level block whole rather than\nmerging field by field, so an assertion that overrides the grader at all\nmust restate this to keep it.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
