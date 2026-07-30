@@ -88,6 +88,7 @@ mod tests {
 
     fn sample_entry() -> CacheEntry {
         CacheEntry {
+            kind: None,
             tool_calls: Vec::new(),
             created_at: chrono::Utc::now(),
             provider_fingerprint: Some(json!({"type": "exec"})),
@@ -183,6 +184,40 @@ mod tests {
         assert_eq!(remote.gets.load(Ordering::SeqCst), 1);
         // ...and local is now populated for the next read.
         assert!(local.map.lock().unwrap().contains_key(&key.0));
+    }
+
+    /// Promotion must not rewrite a kind this binary has never heard of.
+    ///
+    /// This is the concrete hazard [`domarinn_core::cache::EntryKind`] is an
+    /// open newtype to avoid. Promotion deserializes a remote entry and `put`s
+    /// the *deserialized value*, so with a closed enum plus `#[serde(other)]` an
+    /// older binary would collapse a newer kind to its catch-all and then write
+    /// that back — corrupting the local tier of every machine that read through
+    /// it. The local tier here is a real `LocalDiskCache` rather than the
+    /// in-memory double, because `MemCache` clones entries and would never
+    /// exercise the serialization step where the loss would happen.
+    #[tokio::test]
+    async fn promoting_a_remote_hit_preserves_an_unknown_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = Arc::new(crate::LocalDiskCache::new(dir.path()));
+        let remote = Arc::new(MemCache::default());
+        let key = CacheKey::compute(&json!({"a": 1}));
+
+        let mut entry = sample_entry();
+        entry.kind = Some(domarinn_core::cache::EntryKind::new("distillation"));
+        remote.put(&key, &entry).await.unwrap();
+
+        let layered = LayeredCache::new(local.clone(), remote.clone());
+        layered.get(&key).await.unwrap().unwrap();
+
+        // Read back through the disk tier alone: this is the copy a later run
+        // finds, and the only one that went through serialization.
+        let promoted = local.get(&key).await.unwrap().unwrap();
+        assert_eq!(
+            promoted.kind.as_ref().map(|k| k.as_str()),
+            Some("distillation"),
+            "promotion rewrote a kind it did not recognize"
+        );
     }
 
     #[tokio::test]

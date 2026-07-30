@@ -225,10 +225,69 @@ impl Graded {
     }
 }
 
+/// What kind of call an entry answers.
+///
+/// ## Open by construction
+///
+/// An open string newtype rather than an enum, for
+/// [`crate::error_class::ErrorClass`]'s general reason and one that is specific
+/// — and decisive — here:
+/// `LayeredCache` promotes a remote hit into the local tier by calling `put`
+/// with the *deserialized* entry, which re-serializes it. `#[serde(other)]`
+/// would collapse a kind written by a newer binary to a catch-all variant and
+/// then write that back, silently rewriting a 0.7 entry's kind to garbage in
+/// every local cache a 0.6 binary touched. A newtype round-trips an unknown
+/// value untouched.
+///
+/// ## Why the writer records it rather than the reader inferring it
+///
+/// The persisted request cannot tell you: an `llm-rubric` judge and an OpenAI
+/// provider call both serialize to
+/// [`crate::provider::http_request_preview`]`("POST", url, body)`, with nothing
+/// to tell them apart. Only the caller knows what it was calling, and there are
+/// exactly two places that build an entry — so recording it costs two lines and
+/// guessing it would cost correctness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EntryKind(pub String);
+
+impl EntryKind {
+    /// A response from the system under test.
+    pub const PROVIDER: &'static str = "provider";
+    /// An `llm-rubric` judge exchange.
+    pub const JUDGE: &'static str = "judge";
+    /// One half of a `similar` assertion's embedding pair.
+    pub const EMBEDDING: &'static str = "embedding";
+    /// An `exec` assertion's protocol round-trip.
+    pub const EXEC_ASSERT: &'static str = "exec_assert";
+
+    pub fn new(value: impl Into<String>) -> Self {
+        EntryKind(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for EntryKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A cached provider response, plus provenance for stats/debugging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub created_at: DateTime<Utc>,
+    /// What kind of call this entry answers. See [`EntryKind`].
+    ///
+    /// `None` on entries written before this field existed. Left as `None`
+    /// rather than defaulted to `provider`, because a reader that wants a kind
+    /// for those has to *infer* one, and inference must be able to tell "the
+    /// writer said nothing" from "the writer said provider".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<EntryKind>,
     /// What *selected* the provider that answered.
     ///
     /// Optional in both directions: entries in the wild carry it, so it must
@@ -438,5 +497,68 @@ mod tests {
     fn canonical_json_sorts_nested_keys() {
         let s = canonical_json(&json!({"z": {"y": 1, "x": 2}, "a": [3, 2]}));
         assert_eq!(s, r#"{"a":[3,2],"z":{"x":2,"y":1}}"#);
+    }
+
+    /// Every entry in every store predates this field. Reading one must not
+    /// become an error, and absence must stay distinguishable from `provider`:
+    /// the server's backfill infers a kind for `None` and adopts a `Some`
+    /// verbatim, so collapsing the two would make it adopt a guess.
+    #[test]
+    fn an_entry_written_before_kind_existed_still_deserializes() {
+        let legacy: CacheEntry = serde_json::from_value(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "provider_fingerprint": {"type": "exec"},
+            "output": "hi",
+            "domarinn_version": "0.4.0",
+        }))
+        .unwrap();
+        assert!(legacy.kind.is_none());
+    }
+
+    /// The reason this is an open newtype and not an enum with
+    /// `#[serde(other)]`. `LayeredCache` promotes a remote hit into the local
+    /// tier by calling `put` with the *deserialized* entry, which re-serializes
+    /// it — so a lossy round trip would rewrite a newer binary's kind to a
+    /// catch-all in every local cache it touched.
+    #[test]
+    fn an_unknown_kind_survives_a_round_trip_byte_for_byte() {
+        let raw = json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "domarinn_version": "9.9.9",
+            "kind": "distillation",
+        });
+        let entry: CacheEntry = serde_json::from_value(raw).unwrap();
+        assert_eq!(entry.kind, Some(EntryKind::new("distillation")));
+        let written = serde_json::to_value(&entry).unwrap();
+        assert_eq!(written["kind"], json!("distillation"));
+    }
+
+    #[test]
+    fn kind_is_absent_from_the_wire_when_unset() {
+        let entry: CacheEntry = serde_json::from_value(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "domarinn_version": "0.5.0",
+        }))
+        .unwrap();
+        let written = serde_json::to_value(&entry).unwrap();
+        assert!(written.get("kind").is_none(), "{written}");
+    }
+
+    #[test]
+    fn entry_kind_constants_round_trip() {
+        for name in [
+            EntryKind::PROVIDER,
+            EntryKind::JUDGE,
+            EntryKind::EMBEDDING,
+            EntryKind::EXEC_ASSERT,
+        ] {
+            let kind = EntryKind::new(name);
+            let wire = serde_json::to_value(&kind).unwrap();
+            assert_eq!(wire, json!(name));
+            let back: EntryKind = serde_json::from_value(wire).unwrap();
+            assert_eq!(back.as_str(), name);
+        }
     }
 }

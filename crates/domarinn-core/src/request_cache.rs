@@ -41,7 +41,7 @@ use std::future::Future;
 
 use serde_json::Value as Json;
 
-use crate::cache::{CacheBackend, CacheEntry, CacheKey, CacheMode, Graded};
+use crate::cache::{CacheBackend, CacheEntry, CacheKey, CacheMode, EntryKind, Graded};
 use crate::cache_key::request_cache_key;
 use crate::cache_migrate::{legacy_grader_verdict_key, MigrationProbe};
 use crate::errors::GraderError;
@@ -88,6 +88,13 @@ pub(crate) struct Exchange<'a> {
     /// envelope shapes ([`crate::provider::http_request_preview`],
     /// [`crate::provider::exec_request_preview`]).
     pub canonical: Json,
+    /// What kind of call this is.
+    ///
+    /// Here rather than on [`EntryMeta`] because a kind is a property of the
+    /// *call*, known before the cache is consulted — where `EntryMeta` describes
+    /// a fresh payload and is produced by a closure that runs only on the miss
+    /// path. The legacy-adoption path needs it on a hit, so it has to be here.
+    pub kind: EntryKind,
     /// The assert's own `cache_salt`, when it has one.
     pub case_salt: Option<&'a str>,
     /// What to probe on a miss, for a call type with a ≤0.4.x key space.
@@ -227,6 +234,10 @@ where
             // *about*, and re-filing without it would put a ≤0.4-era entry into
             // the new era half-formed.
             entry.request = Some(request_to_persist(&exchange.canonical));
+            // ...and the kind, for the same reason. A ≤0.4.x entry's `verdict`
+            // does say which grader wrote it, but only a reader that knows to
+            // look; stamping it here means every path agrees on one field.
+            entry.kind = Some(exchange.kind.clone());
             if let Err(e) = cache.backend.put(&key, &entry).await {
                 tracing::warn!(error = %e, "adopting a legacy verdict entry: write failed");
             }
@@ -251,7 +262,12 @@ where
     let payload = live.await?;
     let value = parse(&payload)?;
     if cache.mode == CacheMode::ReadWrite {
-        let entry = fresh_entry(&exchange.canonical, payload, meta(&value));
+        let entry = fresh_entry(
+            &exchange.canonical,
+            exchange.kind.clone(),
+            payload,
+            meta(&value),
+        );
         // A cache write failure must not fail the run.
         if let Err(e) = cache.backend.put(&key, &entry).await {
             tracing::warn!(error = %e, "grader cache write failed");
@@ -361,9 +377,10 @@ async fn adopt_legacy(cache: &RequestCache<'_>, exchange: &Exchange<'_>) -> Opti
 /// a payload over that limit is re-paid on every run rather than failing one.
 /// That is the right place for the limit, because it is the only place that
 /// knows what the store will accept.
-fn fresh_entry(canonical: &Json, payload: Json, meta: EntryMeta) -> CacheEntry {
+fn fresh_entry(canonical: &Json, kind: EntryKind, payload: Json, meta: EntryMeta) -> CacheEntry {
     CacheEntry {
         created_at: chrono::Utc::now(),
+        kind: Some(kind),
         // The request replaces the fingerprint, exactly as on the provider side.
         provider_fingerprint: None,
         request: Some(request_to_persist(canonical)),

@@ -14,7 +14,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
-use crate::cache::{Graded, GradedVerdict};
+use crate::cache::{EntryKind, Graded, GradedVerdict};
 use crate::config::{Assert, AssertKind, Grader, ProviderKind};
 use crate::errors::GraderError;
 use crate::exec::run_exec_json;
@@ -300,6 +300,7 @@ impl DefaultGrader {
             ctx.cache.as_ref(),
             Exchange {
                 canonical: exec_assert_canonical(command, &request),
+                kind: EntryKind::new(EntryKind::EXEC_ASSERT),
                 case_salt: cache_salt.as_deref(),
                 legacy: legacy_verdict(
                     assert,
@@ -440,6 +441,7 @@ impl DefaultGrader {
             ctx.cache.as_ref(),
             Exchange {
                 canonical: crate::provider::http_request_preview("POST", &url, body.clone()),
+                kind: EntryKind::new(EntryKind::EMBEDDING),
                 case_salt: None,
                 legacy: None,
             },
@@ -553,6 +555,7 @@ impl DefaultGrader {
                 // bytes. Credentials are headers, so the envelope excludes them
                 // structurally.
                 canonical: crate::provider::http_request_preview("POST", &url, body.clone()),
+                kind: EntryKind::new(EntryKind::JUDGE),
                 case_salt: None,
                 legacy: legacy_verdict(
                     assert,

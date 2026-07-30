@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use chrono::Utc;
 use serde_json::Value as Json;
 
-use crate::cache::{CacheBackend, CacheEntry, CacheKey, CacheMode};
+use crate::cache::{CacheBackend, CacheEntry, CacheKey, CacheMode, EntryKind};
 use crate::cache_key::request_cache_key;
 use crate::cache_migrate::{legacy_provider_key, MigrationProbe};
 use crate::error_class::ErrorClass;
@@ -169,6 +169,11 @@ pub(super) async fn call_with_cache(
                         // `provider_fingerprint` is left as written — it is the
                         // provenance of the call that actually happened.
                         entry.request = Some(request_to_persist(canonical));
+                        // Same argument as the request: this path knows what it
+                        // called, and re-filing is the only chance a ≤0.4-era
+                        // entry gets to say so — the store is immutable, so a
+                        // later write under this key is a no-op.
+                        entry.kind = Some(EntryKind::new(EntryKind::PROVIDER));
                         if let Err(e) = cache.put(key, &entry).await {
                             tracing::warn!(error = %e, "adopting a legacy cache entry: write failed");
                         }
@@ -411,6 +416,7 @@ pub(super) fn response_to_entry(
 ) -> CacheEntry {
     CacheEntry {
         created_at: Utc::now(),
+        kind: Some(EntryKind::new(EntryKind::PROVIDER)),
         // The request replaces the fingerprint rather than joining it: the key
         // is derived from the request now, so the fingerprint would be
         // provenance for a key nothing computes. Entries in the wild still carry

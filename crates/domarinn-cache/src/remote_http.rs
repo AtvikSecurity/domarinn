@@ -190,6 +190,7 @@ mod tests {
 
     fn sample_entry() -> CacheEntry {
         CacheEntry {
+            kind: None,
             tool_calls: Vec::new(),
             created_at: "2026-07-19T00:00:00Z".parse().unwrap(),
             provider_fingerprint: Some(json!({"type": "exec"})),
