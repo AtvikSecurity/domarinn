@@ -25,7 +25,7 @@ A salt joins the hash **only when it is set**, which is what keeps every key wri
 | Knob | Where | Scope |
 |---|---|---|
 | `providers[].cache_salt` | suite | every request that provider answers |
-| `tests[].cache_salt` (a reserved CSV/TSV column) | suite / dataset | one case's provider requests |
+| `tests[].cache_salt` (a reserved CSV/TSV column) | suite / dataset | the provider requests of every case that test produces |
 | `defaults.cache_salt` | suite | cases that set none, generator-produced included |
 | an `exec` assertion's `cache_salt` | suite | that assertion's grading requests |
 | `cache.backend: disk \| layered` | suite | which store (`http` and `s3` are deprecated aliases) |

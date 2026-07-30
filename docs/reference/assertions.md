@@ -109,7 +109,7 @@ tests:
         weight: 1
 ```
 
-`threshold` can be set per test, or in `defaults.threshold` to apply to every case in the suite. See [domarinn.yaml](domarinn-yaml.md).
+`threshold` can be set per test, or in `defaults.threshold`, which fills it for every test that does not set its own. See [domarinn.yaml](domarinn-yaml.md).
 
 ---
 

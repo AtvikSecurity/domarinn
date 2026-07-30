@@ -53,8 +53,9 @@ grader:
       # silent pass. Generous costs nothing extra — you are billed for
       # tokens actually generated.
       max_tokens: 4096
-  # `forced` (the default) requires the tool call. `auto` lets the model choose,
-  # which is only worth it for a model that cannot be forced.
+  # `forced` is the default and the only value the loader accepts. `auto` is in
+  # the schema but was never implemented, so `domarinn validate` rejects it
+  # rather than quietly forcing anyway.
   verdict_mode: forced
   timeout_ms: 120000
 # --8<-- [end:grader]

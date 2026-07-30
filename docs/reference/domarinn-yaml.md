@@ -207,7 +207,7 @@ Inline tests, and every test loaded from a file, share the same shape:
 | `matrix_id` | string | no | minijinja template for a matrix cell's id, rendered against the axis values. See [Matrix / parameter sweeps](#matrix--parameter-sweeps). |
 | `assert` | list | no | Assertions to run against the output. See [`assertions.md`](assertions.md). |
 | `threshold` | float | no | If set, the case **passes when its weighted-mean assertion score ≥ `threshold`**. If unset, the case passes only when **every** assertion passes. |
-| `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of **this case's** provider requests only. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](../concepts/caching.md#per-case-salts). |
+| `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of the provider requests of **every case this test produces**, and nothing else. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](../concepts/caching.md#per-case-salts). |
 | `only_providers` | list of provider ids | no | Restrict this case to these providers. |
 | `skip_providers` | list of provider ids | no | Exclude these providers from this case. |
 
@@ -406,7 +406,7 @@ The default LLM grader for [`llm-rubric`](../concepts/grading.md) assertions. A 
 |-------|------|----------|-------|
 | `provider` | provider-kind object | **yes** | The grading model. A provider **kind** (`{type, model, ...}`) with **no `id`** — not an entry from the `providers:` list. Prefer a different model family than the systems under test. |
 | `template` | string (`file://`) | no | Override the built-in grading-prompt template. Resolved relative to the suite directory and sandboxed to it, like every other `file://`. It renders into the prompt the grader reads, and the grader's request is its cache key — so editing the grading prompt re-grades rather than replaying the old verdict. |
-| `verdict_mode` | string | no | How the structured verdict is obtained: `forced` (default) or `auto`. |
+| `verdict_mode` | string | no | How the structured verdict is obtained: `forced` (default) or `auto` — which is in the schema but not implemented, and rejected at load. See [grading.md](../concepts/grading.md#grader-configuration). |
 
 ```yaml
 grader:
@@ -630,7 +630,7 @@ A suite is validated structurally before any provider is contacted — both by `
 
 The [minimal suite](#a-minimal-complete-suite) at the top of this page is where a suite starts. The other end of the range ships as a runnable example: [Example 38 — Every key, once](../examples/models-grading-and-budgets.md#example-38--every-key-once) sets every top-level key documented above exactly once, and annotates each with what it is and where its full story lives — including the `extends` base and `imports` fragment it composes from.
 
-Read it as a map of this page rather than as a suite to copy. It is linked rather than reproduced here so there stays one copy of those bytes — the file, the page that transcludes it, and the CI run that executes it all read the same suite. A guard in `crates/domarinn-cli/tests/examples.rs` fails if the config grows a top-level key that example stops setting, so "every key" stays true on both pages.
+Read it as a map of this page rather than as a suite to copy. It is linked rather than reproduced here so there stays one copy of those bytes — the file, the page that transcludes it, and the CI run that executes it all read the same suite. A guard in `crates/domarinn-cli/tests/examples/docs_guards.rs` fails if the config grows a top-level key that example stops setting, so "every key" stays true on both pages.
 
 ---
 
