@@ -25,7 +25,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | [Your own system](your-own-system.md) | The `exec` provider, a custom assertion, tool-call grading, and the protocol itself in bash. |
 | [Running & reporting](running-and-reporting.md) | Tags and filters, composition, exit codes, errors and retries, runner tuning, output formats, and importing a promptfoo config. |
 | [Caching & statistics](caching-and-statistics.md) | The one cache-key rule, salts, repeat and confidence, baselines and diff. |
-| [Models, grading & budgets](models-grading-and-budgets.md) | OpenAI-compatible and Anthropic providers (native tool calls included), HTTP and `output_expr`, LLM-rubric grading judged by either vendor, similarity, budgets — and every top-level key at once, annotated. |
+| [Models, grading & budgets](models-grading-and-budgets.md) | OpenAI-compatible and Anthropic providers (native tool calls included), HTTP and `output_expr`, LLM-rubric grading judged by either vendor, a rubric that sees the tool calls, similarity, budgets — and every top-level key at once, annotated. |
 
 | #   | Example | Demonstrates |
 | --- | ------- | ------------ |

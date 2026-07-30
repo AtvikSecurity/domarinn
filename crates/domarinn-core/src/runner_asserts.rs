@@ -41,7 +41,10 @@ pub(super) struct AssertCtx<'a> {
     pub grader: Option<&'a dyn AssertGrader>,
     pub base_dir: &'a Path,
     pub schemas: &'a crate::jsonschema_cache::SchemaCache,
-    /// This cell's reported tool calls, for `tool-call` assertions.
+    /// This cell's reported tool calls. Read by `tool-call` assertions, and —
+    /// since a graded assertion may be judging behaviour rather than prose —
+    /// handed on through [`super::GradeCtx`] to the `llm-rubric` judge and to
+    /// `exec` assert children.
     pub tool_calls: &'a [crate::result::ToolCall],
     pub cache: &'a dyn CacheBackend,
     pub cache_mode: CacheMode,

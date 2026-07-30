@@ -181,7 +181,7 @@ tests:
 - Flag **off** and the template contains `{{tool_calls}}` — an error. The placeholder would go to the judge verbatim, as a section nothing ever fills.
 - Flag **on** and the template omits `{{tool_calls}}` — an error. The flag would silently do nothing.
 
-The check runs **when the template is read, at grading time** — not at load. A suite holding the contradiction validates clean and then fails the first graded cell that reaches it, as a fail-closed `grader error: …` on that assertion: the case is promoted to `error` and the run exits `3`. (A missing `{{rubric}}` or `{{output}}` stays tolerated; a template is allowed to grade on less than everything.)
+The check runs **when the template is read, at grading time** — not at load. A suite holding the contradiction validates clean and then fails the first graded cell that reaches it, as a fail-closed `grader misconfigured: …` on that assertion: the case is promoted to `error` and the run exits `3`. (A missing `{{rubric}}` or `{{output}}` stays tolerated; a template is allowed to grade on less than everything.)
 
 **Do not combine it with `runner.skip_on_empty_reason: [tool_use_only]`.** That setting skips tool-only cells *before* grading, so exactly the cells this flag exists for never reach the judge. Pick one: skip them, or show them to the grader.
 

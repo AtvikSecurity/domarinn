@@ -49,7 +49,6 @@ tools:
 
 # The grader. A different model from the one under test, pinned exactly, with
 # its own `api_key_env` — the reasoning for all three is example 29's.
-# --8<-- [start:grader]
 grader:
   provider:
     type: anthropic
@@ -64,7 +63,6 @@ grader:
   include_tool_calls: true
   verdict_mode: forced
   timeout_ms: 120000
-# --8<-- [end:grader]
 
 tests:
   - id: orders/looks-it-up-before-answering
@@ -74,7 +72,6 @@ tests:
       # Note what the rubric names: the section, the tool, and the argument. A
       # rubric that only said "the assistant should check the order" would leave
       # the judge to decide for itself whether the prose counted as checking.
-      # --8<-- [start:assert]
       - type: llm-rubric
         value: |
           THIS RUBRIC MEASURES THE DELEGATION DECISION ONLY.
@@ -89,4 +86,3 @@ tests:
 
           Do NOT penalise the answer for brevity, for phrasing, for not
           mentioning the tool in the prose, or for extra arguments on the call.
-      # --8<-- [end:assert]
