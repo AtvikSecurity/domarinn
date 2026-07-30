@@ -384,6 +384,80 @@ pub struct CacheEntry {
     pub domarinn_version: String,
 }
 
+impl CacheEntry {
+    /// A `similar` assertion's ≤0.4.x cosine verdict.
+    ///
+    /// Not [`EntryKind::EMBEDDING`]: an embedding entry holds one vector, where
+    /// this holds the comparison of two. Different things that happen to come
+    /// from the same assertion, and collapsing them would make a kind filter
+    /// return entries that cannot answer the same question.
+    pub const SIMILAR_VERDICT: &'static str = "similar_verdict";
+
+    /// What kind of call this entry answers, first match wins.
+    ///
+    /// The rungs are ordered by how much they are *claiming*. An explicit kind is a
+    /// statement the writer made; everything below it is a reader's guess, and a
+    /// guess must never overrule a statement — including a kind string this build
+    /// has never heard of, which is exactly the case an open
+    /// [`EntryKind`] exists to carry.
+    pub fn inferred_kind(&self) -> Option<String> {
+        // 1. The writer said so.
+        if let Some(kind) = &self.kind {
+            return Some(kind.as_str().to_string());
+        }
+
+        // 2. A ≤0.4.x verdict entry self-identifies: `GradedVerdict` is
+        //    `#[serde(tag = "kind")]`, so the stored shape names its own grader.
+        if let Some(verdict) = &self.verdict {
+            return Some(
+                match verdict {
+                    GradedVerdict::Rubric { .. } => EntryKind::JUDGE,
+                    GradedVerdict::Exec { .. } => EntryKind::EXEC_ASSERT,
+                    GradedVerdict::Similarity { .. } => CacheEntry::SIMILAR_VERDICT,
+                }
+                .to_string(),
+            );
+        }
+
+        // 3. An `exec` request carries the protocol envelope it wrote to the
+        //    child's stdin, and that envelope names the call kind.
+        if let Some(request) = &self.request {
+            if request.get("transport").and_then(Json::as_str) == Some("exec") {
+                match request
+                    .pointer("/stdin/domarinn/kind")
+                    .and_then(Json::as_str)
+                {
+                    Some("provider") => return Some(EntryKind::PROVIDER.to_string()),
+                    Some("assert") => return Some(EntryKind::EXEC_ASSERT.to_string()),
+                    _ => {}
+                }
+            }
+        }
+
+        // 4. An embedding's output is a dimension count and nothing else — the
+        //    grader writes that shape deliberately so an entry is legible.
+        if let Output::Json(value) = &self.output {
+            if let Some(map) = value.as_object() {
+                if map.len() == 1 && map.contains_key("dims") {
+                    return Some(EntryKind::EMBEDDING.to_string());
+                }
+            }
+        }
+
+        // 5. Only the provider path goes through `with_retry`, so only it has an
+        //    attempt count or an in-flight measurement to record. The grader path
+        //    sets both to `None` and says why.
+        if self.attempts.is_some() || self.provider_latency_ms.is_some() {
+            return Some(EntryKind::PROVIDER.to_string());
+        }
+
+        // 6. Nothing distinguishes an old HTTP judge call from an old HTTP provider
+        //    call. No kind is the honest answer; a default would be a fabrication
+        //    that a filter would then treat as fact.
+        None
+    }
+}
+
 /// How the runner should interact with the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheMode {

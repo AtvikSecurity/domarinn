@@ -20,18 +20,10 @@ use anyhow::Context;
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde_json::Value as Json;
 
-use domarinn_core::cache::{CacheEntry, EntryKind, GradedVerdict};
+use domarinn_core::cache::CacheEntry;
 use domarinn_core::types::Output;
 
 use super::{now_ms, to_microusd, Storage};
-
-/// A `similar` assertion's ≤0.4.x cosine verdict.
-///
-/// Not [`EntryKind::EMBEDDING`]: an embedding entry holds one vector, where
-/// this holds the comparison of two. They are different things that happen to
-/// come from the same assertion, and collapsing them would make a `kind` filter
-/// return entries that cannot answer the same question.
-pub(crate) const SIMILAR_VERDICT: &str = "similar_verdict";
 
 /// Characters of request/output text handed to FTS per entry.
 ///
@@ -87,7 +79,7 @@ impl EntryIndex {
             .unwrap_or_default();
 
         EntryIndex {
-            kind: infer_kind(entry),
+            kind: entry.inferred_kind(),
             model: entry.model.clone(),
             cost_microusd: to_microusd(entry.cost_usd),
             input_tokens: entry.usage.as_ref().map(|u| u.input_tokens as i64),
@@ -99,70 +91,6 @@ impl EntryIndex {
             fts_output: truncate(&output_text, FTS_TEXT_MAX),
         }
     }
-}
-
-/// What kind of call an entry answers, first match wins.
-///
-/// The rungs are ordered by how much they are *claiming*. An explicit kind is a
-/// statement the writer made; everything below it is a reader's guess, and a
-/// guess must never overrule a statement — including a kind string this build
-/// has never heard of, which is exactly the case an open
-/// [`EntryKind`] exists to carry.
-fn infer_kind(entry: &CacheEntry) -> Option<String> {
-    // 1. The writer said so.
-    if let Some(kind) = &entry.kind {
-        return Some(kind.as_str().to_string());
-    }
-
-    // 2. A ≤0.4.x verdict entry self-identifies: `GradedVerdict` is
-    //    `#[serde(tag = "kind")]`, so the stored shape names its own grader.
-    if let Some(verdict) = &entry.verdict {
-        return Some(
-            match verdict {
-                GradedVerdict::Rubric { .. } => EntryKind::JUDGE,
-                GradedVerdict::Exec { .. } => EntryKind::EXEC_ASSERT,
-                GradedVerdict::Similarity { .. } => SIMILAR_VERDICT,
-            }
-            .to_string(),
-        );
-    }
-
-    // 3. An `exec` request carries the protocol envelope it wrote to the
-    //    child's stdin, and that envelope names the call kind.
-    if let Some(request) = &entry.request {
-        if request.get("transport").and_then(Json::as_str) == Some("exec") {
-            match request
-                .pointer("/stdin/domarinn/kind")
-                .and_then(Json::as_str)
-            {
-                Some("provider") => return Some(EntryKind::PROVIDER.to_string()),
-                Some("assert") => return Some(EntryKind::EXEC_ASSERT.to_string()),
-                _ => {}
-            }
-        }
-    }
-
-    // 4. An embedding's output is a dimension count and nothing else — the
-    //    grader writes that shape deliberately so an entry is legible.
-    if let Output::Json(value) = &entry.output {
-        if let Some(map) = value.as_object() {
-            if map.len() == 1 && map.contains_key("dims") {
-                return Some(EntryKind::EMBEDDING.to_string());
-            }
-        }
-    }
-
-    // 5. Only the provider path goes through `with_retry`, so only it has an
-    //    attempt count or an in-flight measurement to record. The grader path
-    //    sets both to `None` and says why.
-    if entry.attempts.is_some() || entry.provider_latency_ms.is_some() {
-        return Some(EntryKind::PROVIDER.to_string());
-    }
-
-    // 6. Nothing distinguishes an old HTTP judge call from an old HTTP provider
-    //    call. No kind is the honest answer; a default would be a fabrication
-    //    that a filter would then treat as fact.
-    None
 }
 
 /// A one-line description of where the request went.

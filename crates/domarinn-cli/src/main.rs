@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand};
 mod baseline;
 mod cachecfg;
 mod cachecmd;
+mod cachels;
 mod casedetail;
 mod cisummary;
 mod diffcmd;

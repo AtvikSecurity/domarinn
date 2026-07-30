@@ -209,12 +209,20 @@ domarinn ci-summary --against server:baseline --out summary.md
 
 ## `domarinn cache <stats|path|gc|clear>`
 
-Manage the **local** content-addressed cache. All four take a suite path (default `.`) and the same `--cache-dir` a run does, so they inspect the directory that run would actually use.
+Manage the **local** content-addressed cache. All of these take a suite path (default `.`) and the same `--cache-dir` a run does, so they inspect the directory that run would actually use.
 
 - `cache stats` — entry count and total size.
 - `cache path` — print the cache directory (`.domarinn/cache` beside the suite).
 - `cache gc --older-than <30d|12h|45m|90s>` — remove entries older than a duration. `--older-than` is **required**: a bare `gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so.
 - `cache clear` — remove all entries.
+- `cache ls [--kind K] [--model M] [--limit N] [--json]` — list entries: key, kind, model, size, and where the request went.
+- `cache show <KEY> [--raw] [--json]` — one entry in full: the request it answers, the response it returned, tokens and cost. `--raw` adds the provider's raw metadata, which is withheld by default because it is the largest part of an entry and the least often wanted.
+
+`ls` and `show` answer the question a browser cannot reach: *why did this case replay a stale answer?* That question is asked at a terminal, in a repo, with a warm `.domarinn/cache` and no server running. They are also what makes the rebuilt-program warning actionable — domarinn tells you it is replaying answers produced by a different build of a provider's program, and `cache show` is how you look at one.
+
+`--json` emits one object per line, so it composes with `jq`, `grep` and `head`. Both commands read the same tiers a run does, including the read-only legacy tier: an `ls` that omitted a tier a run can still hit would be an `ls` that lies.
+
+`show` distinguishes its failures: a malformed key is a usage error (exit `2`), a well-formed key that is simply not present is exit `3` — the caller asked a sensible question and the answer is no.
 
 Two scope rules worth knowing:
 
