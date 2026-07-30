@@ -132,7 +132,7 @@ The estimator is `1 − C(n−passed, k) / C(n, k)` — the chance every one of 
 
 A few worked values (from `stats.rs`'s own test suite): with 1 of 4 trials passing, `pass_at_k(4, 1, 1) = 0.25` — asking for one shot, you get the raw rate. `pass_at_k(4, 1, 4) = 1.0` — sample all 4 trials and you are guaranteed to hit the one that passed. Between those extremes, `pass_at_k(5, 1, 2) = 0.40` and `pass_at_k(5, 1, 3) = 0.60`: each extra retry recovers real ground from a rate that looks bad at `k=1`.
 
-The gap can be large. A hard case that succeeds on only 3 of 10 independent attempts looks like a 30% pass rate, but that same `n=3, passed=3` climbs fast as `k` grows:
+The gap can be large. A hard case that succeeds on only 3 of 10 independent attempts looks like a 30% pass rate, but that same `n=10, passed=3` climbs fast as `k` grows:
 
 | `k` | `pass_at_k(10, 3, k)` |
 |----:|----------------------:|

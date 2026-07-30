@@ -70,13 +70,14 @@ Two of the gates catch _generated_ files drifting from their sources, which is t
 
 A third gate catches documentation drifting from the examples it shows:
 
-- **the examples harness** (`crates/domarinn-cli/tests/examples.rs`) — every directory under `examples/` is run end to end against the real binary, and must both appear in `crates/domarinn-cli/tests/examples/table.rs` _and_ be transcluded by some page under `docs/`.
+- **the examples harness** (`crates/domarinn-cli/tests/examples.rs`) — every directory under `examples/` is run end to end against the real binary, and must appear in `crates/domarinn-cli/tests/examples/table.rs`, be transcluded by some page under `docs/`, _and_ be listed in the examples index.
 
-**Adding an example is three steps, and CI names whichever one you missed:**
+**Adding an example is four steps, and CI names whichever one you missed:**
 
 1. Create `examples/NN-kebab-name/domarinn.yaml`.
 2. Add a row to `crates/domarinn-cli/tests/examples/table.rs` stating its exit code, cell tallies and case ids.
 3. Transclude it from a page: `--8<-- "examples/NN-kebab-name/domarinn.yaml"`.
+4. Add a numbered row to the table in `docs/examples/index.md`, linking the anchor on the page that transcludes it — the docs' front door, which the transclusion guard cannot see because the index transcludes nothing itself.
 
 The point is that a documentation page and its test read the _same bytes_, so a page cannot describe a suite that no longer works. Docs never contain a copy of a full example — only the transclusion.
 

@@ -196,7 +196,7 @@ The wire types live in `domarinn-protocol` — a crate whose only dependencies a
 
 ```toml
 [dependencies]
-domarinn-protocol = { git = "https://github.com/AtvikSecurity/domarinn", tag = "0.3.0" }
+domarinn-protocol = { git = "https://github.com/AtvikSecurity/domarinn", tag = "0.4.0" }
 ```
 
 ```rust
@@ -229,7 +229,8 @@ A custom grader. Receives the provider's output plus context and returns a `Grad
   "test": { "id": "greeting/basic", "tags": ["smoke"] },
   "prompt": { "role": "user", "content": "..." },
   "provider": { "id": "renderer" },
-  "config": { "value": "hello" }
+  "config": { "value": "hello" },
+  "vars": { "user_input": "hello world" }
 }
 ```
 
@@ -240,6 +241,7 @@ A custom grader. Receives the provider's output plus context and returns a `Grad
 | `prompt`   | any JSON        | **Optional.** The prompt that produced the output. |
 | `provider` | object          | `{ "id": string }` — which provider produced the output. |
 | `config`   | any JSON        | The assertion's own config block from the suite. Defaults to `{}`. |
+| `vars`     | any JSON object | The case's rendered variables — the inputs the output is being judged against, so a grader can check it against an expected value rather than in isolation. Defaults to `{}`. |
 
 ### Response
 
