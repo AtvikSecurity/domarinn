@@ -7,7 +7,7 @@ clients — Claude Code, Claude Desktop, or any other MCP-speaking agent — so 
 It is **opt-in**. Start the server with `DOMARINN_MCP_ENABLED=true`; without it the route is never
 mounted and requests fall through to the ordinary JSON `404`.
 
-```bash
+```sh
 DOMARINN_MCP_ENABLED=true DOMARINN_TOKENS="read:domarinn_agent" domarinn server
 
 claude mcp add --transport http domarinn http://localhost:8321/api/v1/mcp \
@@ -29,7 +29,7 @@ method**, not per route:
 Discovery is deliberately open: a client sends `server/discover` *before* it has credentials, and
 a `401` there reads as a broken server rather than one that needs a token. The catalogs are
 compiled in and identical for every caller, so they leak nothing. `tools/call` honors the usual
-[`AuthMode`](./server.md#accounts--auth-model) — anonymous reads work in `open` and `protect-writes`.
+[`AuthMode`](server.md#accounts--auth-model) — anonymous reads work in `open` and `protect-writes`.
 
 A `401` carries `WWW-Authenticate: Bearer realm="domarinn"` with **no** `resource_metadata`
 parameter. This server is not an OAuth resource server, and `/.well-known/oauth-protected-resource`
@@ -110,7 +110,7 @@ and the endpoint cannot become a CSRF vector.
 There is also a [Claude Code plugin](https://github.com/AtvikSecurity/domarinn/blob/main/plugin/README.md) that bundles this endpoint's
 configuration along with skills for authoring and triaging suites.
 
-```bash
+```sh
 claude plugin marketplace add AtvikSecurity/domarinn
 claude plugin install domarinn@domarinn
 ```

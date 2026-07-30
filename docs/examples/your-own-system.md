@@ -90,7 +90,7 @@ Every other provider in this ladder is Python, because it ships with the fewest 
 --8<-- "examples/37-exec-provider-bash/domarinn.yaml"
 ```
 
-```bash
+```sh
 --8<-- "examples/37-exec-provider-bash/provider.sh"
 ```
 

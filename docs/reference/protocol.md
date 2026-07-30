@@ -188,7 +188,7 @@ Two rules worth stating plainly:
 - **`arguments` is decoded, not a string.** OpenAI-compatible endpoints send `function.arguments` as a JSON string; parse it before reporting. Forwarding the string hands every assertion a parsing problem instead of an argument.
 - **Report calls even when there is also text.** A case whose right answer is a tool call has no gradeable prose, and returning `""` alone scores it zero against every assertion for a reason unrelated to the prompt. Set `empty_reason: "tool_use_only"` alongside the calls when that is what happened.
 
-Suite-side, these are graded by [`tool-call` assertions](./assertions.md#tool-call).
+Suite-side, these are graded by [`tool-call` assertions](assertions.md#tool-call).
 
 ## Writing a provider in Rust
 
@@ -307,7 +307,7 @@ Each emitted test object follows the suite's test schema (see `domarinn schema c
 
 A full, runnable version — [example 37](../examples/your-own-system.md#example-37--the-exec-protocol-in-bash) — reads `DOMARINN_PROTOCOL`, extracts both `vars.user_input` and `test.id` with `jq`, and reports `usage`:
 
-```bash
+```sh
 --8<-- "examples/37-exec-provider-bash/provider.sh"
 ```
 

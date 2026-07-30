@@ -7,9 +7,9 @@ The env-var table exists ONLY in reference/server.md. -->
 # The domarinn server & accounts
 
 /// info | This page split
-The REST API moved to [REST API](./rest-api.md), the MCP endpoint moved to
-[MCP endpoint](./mcp.md), and the UI walkthrough moved to
-[The web UI](./web-ui.md). This page keeps operating the server itself: accounts, auth,
+The REST API moved to [REST API](rest-api.md), the MCP endpoint moved to
+[MCP endpoint](mcp.md), and the UI walkthrough moved to
+[The web UI](web-ui.md). This page keeps operating the server itself: accounts, auth,
 environment variables, logging, and storage. For Docker/Kubernetes/backups, see
 [Self-hosting](../guides/self-host.md).
 
@@ -26,7 +26,7 @@ domarinn server [--port 8321] [--data-dir /data]
 | `--port`     | `8321`  | Listen port. The server always binds `0.0.0.0`. |
 | `--data-dir` | `/data` | State directory (also `DOMARINN_DATA_DIR`). Holds the SQLite databases. |
 
-The server runs until Ctrl-C (graceful shutdown). Health is exposed at both `/health` and `/api/v1/health`. See [`cli.md`](./cli.md) for the rest of the binary's subcommands and [Self-hosting](../guides/self-host.md) for Docker/Kubernetes hosting.
+The server runs until Ctrl-C (graceful shutdown). Health is exposed at both `/health` and `/api/v1/health`. See [`cli.md`](cli.md) for the rest of the binary's subcommands and [Self-hosting](../guides/self-host.md) for Docker/Kubernetes hosting.
 
 - [Quick start](#quick-start)
 - [Accounts & auth model](#accounts--auth-model)
@@ -196,7 +196,7 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 
 - **Unknown query parameters, and unparseable filter values, are `400`.** An unrecognized value for `?status=` on `GET /runs` or `GET /runs/{id}/cases` is a `400`, and so is a query string carrying a parameter the endpoint does not define. The two `status` filters are deliberately different: the case filter accepts `pass | fail | error | skip`, but the **run-level** filter accepts only `pass | fail | error`. A skipped case never moves a run's pass/fail/error counters, so `GET /runs?status=skip` is a `400` — not an empty result set. Likewise, `POST /cache/prune` takes `older_than_days` and `target_bytes` as **query** parameters, so an unknown param there is a `400` as well.
 - **Unknown fields in a JSON request body are `422`.** A misspelled or stray key (in a user, API-key, or baseline body) is rejected rather than dropped — as is a value of the wrong type or an unrecognized enum value (any body that parses as JSON but does not match the target shape). Syntactically invalid JSON, or a missing/incorrect `Content-Type`, is a `400`.
-- **An unrecognized assertion `kind` in an ingested run document is `422`.** `POST /api/v1/runs` deserializes the body into the strict `RunResult` schema, so an unknown assert kind — or any other unknown field or out-of-range value — fails validation instead of being stored as-is. (A body outside the supported `schema_version` window is also `422`; see [ingest](./rest-api.md#run-ingest).)
+- **An unrecognized assertion `kind` in an ingested run document is `422`.** `POST /api/v1/runs` deserializes the body into the strict `RunResult` schema, so an unknown assert kind — or any other unknown field or out-of-range value — fails validation instead of being stored as-is. (A body outside the supported `schema_version` window is also `422`; see [ingest](rest-api.md#run-ingest).)
 
 ---
 
@@ -217,7 +217,7 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 | `DOMARINN_CACHE_MAX_BYTES`    | `1073741824` (1 GiB) | Total cache size target for retention. |
 | `DOMARINN_CACHE_MAX_AGE_DAYS` | `30`           | Cache entry max age for retention. |
 | `DOMARINN_RUN_MAX_AGE_DAYS`   | *(unset)*      | Delete runs older than this many days. **Unset means never delete** — eval history is expensive to produce and impossible to recreate, so retention is opt-in. Two runs are exempt at any age: a pinned baseline (deleting it breaks `--against server:baseline`) and the newest run of each `(project, suite, branch)` (a suite that has not run in a while must go stale, not vanish). Swept hourly, alongside cache retention. |
-| `DOMARINN_MCP_ENABLED`        | `false`        | Mount the [MCP endpoint](./mcp.md) at `POST /api/v1/mcp`. Opt-in. A value other than `true`\|`false`\|`1`\|`0`\|`yes`\|`no` is a startup error, not a silent `false`. |
+| `DOMARINN_MCP_ENABLED`        | `false`        | Mount the [MCP endpoint](mcp.md) at `POST /api/v1/mcp`. Opt-in. A value other than `true`\|`false`\|`1`\|`0`\|`yes`\|`no` is a startup error, not a silent `false`. |
 | `DOMARINN_MCP_ALLOWED_ORIGINS`| (unset)        | Extra origins allowed to reach the MCP endpoint, comma-separated. Accepts full origins (`https://app.example`) or bare `host[:port]`; an entry without a port matches any port. Drives both the `Origin` check and the route's CORS layer. With this and `DOMARINN_PUBLIC_URL` both unset, only loopback origins are allowed. |
 | `DOMARINN_LOG_FORMAT`         | (auto)         | Log rendering: `pretty` \| `compact` \| `json`. Auto-selected from the terminal when unset — see [Logging & observability](#logging--observability). |
 | `RUST_LOG`                      | (unset)        | Overrides the default log filter wholesale, e.g. `RUST_LOG=domarinn=debug,tower_http=off`. When unset the server logs at `info`. Logs go to stderr. |
@@ -229,7 +229,7 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 | `DOMARINN_SERVER_URL` | Target server base URL for `domarinn run --share` / `share` (or the `--server-url` flag). |
 | `DOMARINN_TOKEN`      | A single bearer token the CLI sends when uploading a run or using the HTTP cache backend. |
 
-See [`cli.md`](./cli.md) and [`../concepts/caching.md`](../concepts/caching.md) for the client side.
+See [`cli.md`](cli.md) and [`../concepts/caching.md`](../concepts/caching.md) for the client side.
 
 ---
 
@@ -277,5 +277,5 @@ SQLite is a **single writer**: run exactly one instance against a given data dir
 
 The UI is a single-page app served at the web root out of this same binary (client-side routing; give the service its own hostname, not a path prefix).
 
-Its routes, and a screenshot walkthrough of every view, are [The web UI](./web-ui.md).
+Its routes, and a screenshot walkthrough of every view, are [The web UI](web-ui.md).
 

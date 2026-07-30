@@ -35,7 +35,7 @@ Request-body size is capped at **64 MiB**; request bodies may be gzip/deflate co
 | POST   | `/api/v1/auth/logout`   | (authenticated) | Revoke the presenting session + clear the cookie. No-op `200` for token/API-key callers; `401` for anonymous. |
 | GET    | `/api/v1/auth/me`       | —     | Report the current identity: `{authenticated, user, source, scope}`. `source` is `anonymous` \| `static` \| `apikey` \| `session`. |
 
-## SSO (only present when configured — see [Single sign-on](./server.md#single-sign-on-oidc--saml))
+## SSO (only present when configured — see [Single sign-on](server.md#single-sign-on-oidc--saml))
 
 | Method | Path                    | Scope | Notes |
 |--------|-------------------------|-------|-------|
@@ -82,7 +82,7 @@ These require an **account-backed** identity (session or API key). A static toke
 `GET /runs/{id}` reports two cost figures, and they are never summed: `cost_usd` is what the systems under test cost, `grader_cost_usd` is what grading them cost. It also carries `cache_read_tokens`, `cache_write_tokens` and `cache_savings_usd`. All four are `null` for runs ingested before the columns existed — which is **not** the same as zero, and readers render it as unknown rather than as "no activity". There is no backfill; see the migration note in `storage/schema.rs` for why.
 
 <a id="run-ingest"></a>**Ingest** (`POST /api/v1/runs`) accepts a `RunResult`
-JSON document (see [`protocol.md`](./protocol.md) and `domarinn schema result`). The body must carry a `schema_version` within the supported window (`result_schema_version - 1 ..= result_schema_version`), else `422`. Ingest is **idempotent by content**:
+JSON document (see [`protocol.md`](protocol.md) and `domarinn schema result`). The body must carry a `schema_version` within the supported window (`result_schema_version - 1 ..= result_schema_version`), else `422`. Ingest is **idempotent by content**:
 
 | Status | Meaning |
 |--------|---------|

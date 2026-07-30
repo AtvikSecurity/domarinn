@@ -109,7 +109,7 @@ tests:
         weight: 1
 ```
 
-`threshold` can be set per test, or in `defaults.threshold` to apply to every case in the suite. See [domarinn.yaml](./domarinn-yaml.md).
+`threshold` can be set per test, or in `defaults.threshold` to apply to every case in the suite. See [domarinn.yaml](domarinn-yaml.md).
 
 ---
 
@@ -171,7 +171,7 @@ The distinction drives the process exit code:
 | A graded/deterministic **failure**   | `fail`      | `1` (assertion) |
 | Any assertion **errored**            | `error`     | `3` (infra) |
 
-An errored assertion promotes the whole case to `error`, and `3` (infra) wins over `1` (assertion) at the process level. In CI, `1` means "the model got worse — block the PR"; `3` means "the harness broke — retry or page an operator." See [cli.md](./cli.md#exit-codes).
+An errored assertion promotes the whole case to `error`, and `3` (infra) wins over `1` (assertion) at the process level. In CI, `1` means "the model got worse — block the PR"; `3` means "the harness broke — retry or page an operator." See [cli.md](cli.md#exit-codes).
 
 ---
 
@@ -236,7 +236,7 @@ Exact-match against an expected value. The expected `value` is a templatable `va
   value: !raw "{{7*7}}"
 ```
 
-`!raw` (or its format-agnostic form `{$raw: "…"}`) marks a value as never-rendered; see [domarinn.yaml](./domarinn-yaml.md) for the `Val` rules.
+`!raw` (or its format-agnostic form `{$raw: "…"}`) marks a value as never-rendered; see [domarinn.yaml](domarinn-yaml.md) for the `Val` rules.
 
 ### `starts-with`
 
@@ -370,7 +370,7 @@ Runs an external command as a custom grader over the **exec assert protocol**. T
 - A failing assert (`pass: false`) is a normal `fail`, not an `error` — the command should still exit `0`. A **non-zero exit**, a timeout, or unparseable stdout is an infrastructure `error`.
 - The round-trip is cached like any other request, keyed on the command and what it is sent. An optional `cache_salt` on the assertion is a version pin for the grader program, scoped to that assertion's gradings; see [caching.md](../concepts/caching.md#every-knob-once).
 
-See [protocol.md](./protocol.md) for the full `assert` request/response wire format.
+See [protocol.md](protocol.md) for the full `assert` request/response wire format.
 
 ### `llm-rubric`
 
@@ -387,7 +387,7 @@ Everything about grader configuration, the forced-tool / strict-JSON verdict, tr
 
 ### `similar`
 
-Passes when the embedding **cosine similarity** between the output and a reference meets a threshold. Requires a `type: embeddings` provider in the suite (see [providers.md](./providers.md#embeddings)).
+Passes when the embedding **cosine similarity** between the output and a reference meets a threshold. Requires a `type: embeddings` provider in the suite (see [providers.md](providers.md#embeddings)).
 
 ```yaml
 --8<-- "examples/30-similar-embeddings/domarinn.yaml:assert"
@@ -402,9 +402,9 @@ Passes when the embedding **cosine similarity** between the output and a referen
 
 ## `tool-call`
 
-Passes when the model **decided to call** a tool. domarinn never runs one — see [the protocol's Tools section](./protocol.md#tools) for why a single turn is enough to grade the decision.
+Passes when the model **decided to call** a tool. domarinn never runs one — see [the protocol's Tools section](protocol.md#tools) for why a single turn is enough to grade the decision.
 
-Declare the tools at suite level (see [`tools`](./domarinn-yaml.md#tools)), then assert on what the model did with them:
+Declare the tools at suite level (see [`tools`](domarinn-yaml.md#tools)), then assert on what the model did with them:
 
 ```yaml
 --8<-- "examples/15-tool-call-asserts/domarinn.yaml:assert"

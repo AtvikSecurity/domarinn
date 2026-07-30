@@ -117,7 +117,7 @@ Set the environment variable in the image or on the machine when this is an orga
 
 **Live progress.** When stderr is a terminal, `run` draws a single progress bar on **stderr** — elapsed time, a bar, `done/total`, and a running pass/fail/error tally. It is purely cosmetic: it never touches **stdout**, so piping or redirecting results (`domarinn run --format json > out.json`) is byte-identical with or without it. The bar is suppressed automatically when stderr is not a terminal (e.g. captured CI logs), under `-vv`+ (so it never clobbers streamed diagnostics), and with `--no-progress`.
 
-See [domarinn.yaml](./domarinn-yaml.md) for the suite file and [statistics.md](../concepts/statistics.md) for `--repeat`/`--against`.
+See [domarinn.yaml](domarinn-yaml.md) for the suite file and [statistics.md](../concepts/statistics.md) for `--repeat`/`--against`.
 
 ## `domarinn validate [PATH]`
 

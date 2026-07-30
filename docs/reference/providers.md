@@ -15,7 +15,7 @@ A provider is selected by its `type`. Five types exist:
 | `anthropic`  | Native Anthropic Messages API client. | yes |
 | `openai`     | OpenAI-compatible chat-completions client (OpenAI + any compatible gateway). | yes |
 | `http`       | An arbitrary templated HTTP endpoint. | yes |
-| `embeddings` | An OpenAI-compatible `/embeddings` client. | no — it powers the [`similar`](./assertions.md#similar) assertion |
+| `embeddings` | An OpenAI-compatible `/embeddings` client. | no — it powers the [`similar`](assertions.md#similar) assertion |
 
 Every provider has an `id` (used in results and cache keys) and an optional `label`. The remaining fields depend on `type`.
 
@@ -25,7 +25,7 @@ Every provider has an `id` (used in results and cache keys) and an optional `lab
 
 ### Environment-driven config
 
-Any string in a provider's configuration — including elements of an `exec` provider's `command` argv and `env` map — may contain a `${env:VAR}` placeholder, resolved once at load time — handy for a per-developer endpoint or a per-environment gateway that shouldn't be committed. The full rules (`:-default`, the `$${...}` escape, and exactly which parts of the suite this covers) are documented once, in [domarinn.yaml → Environment interpolation](./domarinn-yaml.md#environment-interpolation-envvar).
+Any string in a provider's configuration — including elements of an `exec` provider's `command` argv and `env` map — may contain a `${env:VAR}` placeholder, resolved once at load time — handy for a per-developer endpoint or a per-environment gateway that shouldn't be committed. The full rules (`:-default`, the `$${...}` escape, and exactly which parts of the suite this covers) are documented once, in [domarinn.yaml → Environment interpolation](domarinn-yaml.md#environment-interpolation-envvar).
 
 ---
 
@@ -38,17 +38,17 @@ The flagship provider, and the escape hatch for testing anything you can run as 
 | `command`    | `[string]`          | –          | The command and its argv. Elements may contain [`${env:VAR}`](#environment-driven-config) placeholders. |
 | `env`        | `{string: string}`  | `{}`       | Extra environment variables for the child. Values may contain `${env:VAR}` placeholders too. |
 | `timeout_ms` | integer             | `60000`    | Per-call timeout in milliseconds. |
-| `cache_salt` | string              | *(none)*   | **Provider-level** version pin for the program — set it when a rebuild should discard cached answers. See below. Distinct from a test's own [`cache_salt`](./domarinn-yaml.md#inline-and-loaded-test-fields), which keys that test's cases instead; see [caching.md](../concepts/caching.md#the-rule). |
+| `cache_salt` | string              | *(none)*   | **Provider-level** version pin for the program — set it when a rebuild should discard cached answers. See below. Distinct from a test's own [`cache_salt`](domarinn-yaml.md#inline-and-loaded-test-fields), which keys that test's cases instead; see [caching.md](../concepts/caching.md#the-rule). |
 
 ### Wire behavior
 
 For each call the provider writes one `provider` request to the child's stdin and closes it, then reads one JSON response from stdout:
 
 - **Request** (domarinn → child stdin): `{ "domarinn": {"protocol": 1, "kind": "provider"}, "prompt"?, "vars", "params", "test": {"id", "tags"} }`. `prompt` is **null / omitted** when the suite has no prompts (the "self-input" case) — the provider works from `vars` alone. A text prompt is sent as `{ "text": "…" }`; a chat prompt as `{ "messages": [...] }`.
-- **Response** (child stdout → domarinn): `output` is the only required field; see [the protocol reference](./protocol.md#response) for the full set. A string `output` becomes text; any other JSON becomes a structured output. `usage` fills token counts, `cost_usd` feeds the [`cost`](./assertions.md#budget-assertions-cost-latency-tokens) assertion, and `metadata` is retained as the raw payload.
+- **Response** (child stdout → domarinn): `output` is the only required field; see [the protocol reference](protocol.md#response) for the full set. A string `output` becomes text; any other JSON becomes a structured output. `usage` fills token counts, `cost_usd` feeds the [`cost`](assertions.md#budget-assertions-cost-latency-tokens) assertion, and `metadata` is retained as the raw payload.
 - Worth reporting even though all of it is optional: `empty_reason` (so a refusal is diagnosed instead of scoring zero against every assertion), `error.class` (so a rejected credential is distinguishable from a crash), `error.details` (structured diagnostics that survive to the stored case), and `model` (so an alias that silently repointed is visible).
 
-The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus your `env`. The full wire contract, exit-code rules, and minimal Bash/Python examples live in **[protocol.md](./protocol.md)**.
+The child **always** receives `DOMARINN_PROTOCOL=1` in its environment, plus your `env`. The full wire contract, exit-code rules, and minimal Bash/Python examples live in **[protocol.md](protocol.md)**.
 
 ### Caching, and when you need `cache_salt`
 
@@ -137,7 +137,7 @@ providers:
 
 ## Pricing
 
-`anthropic` and `openai` providers cost each call from a built-in per-model rate table, so [`cost`](./assertions.md#budget-assertions-cost-latency-tokens) assertions and the run-level cost figure mean something without configuration.
+`anthropic` and `openai` providers cost each call from a built-in per-model rate table, so [`cost`](assertions.md#budget-assertions-cost-latency-tokens) assertions and the run-level cost figure mean something without configuration.
 
 A model the table does not know reports **no cost at all** rather than a guessed one — the `cost` assertion keeps honestly saying "not reported", and the run warns once naming the id. A made-up number that silently passes or fails a budget is worse than a loud no-op.
 
@@ -209,7 +209,7 @@ One input can still change what happens without changing the key, and it is wort
 
 ## `embeddings`
 
-An OpenAI-compatible embeddings client. It is **not** a system under test — the runner filters it out of the graded matrix. Instead it powers the [`similar`](./assertions.md#similar) assertion: the **first** `type: embeddings` provider in the suite is handed to the grader.
+An OpenAI-compatible embeddings client. It is **not** a system under test — the runner filters it out of the graded matrix. Instead it powers the [`similar`](assertions.md#similar) assertion: the **first** `type: embeddings` provider in the suite is handed to the grader.
 
 | Field         | Type      | Default                      | Meaning |
 |---------------|-----------|------------------------------|---------|
@@ -230,7 +230,7 @@ Behavior:
 --8<-- "examples/30-similar-embeddings/domarinn.yaml:provider"
 ```
 
-See [`similar`](./assertions.md#similar) for the assertion this provider exists to serve.
+See [`similar`](assertions.md#similar) for the assertion this provider exists to serve.
 
 ---
 
@@ -260,8 +260,8 @@ The two failure classes map to `ProviderError::Retriable { retry_after }` and `P
 
 ## See also
 
-- **[protocol.md](./protocol.md)** — the exec JSON protocol wire format for `exec` providers, asserts, and generators.
+- **[protocol.md](protocol.md)** — the exec JSON protocol wire format for `exec` providers, asserts, and generators.
 - **[caching.md](../concepts/caching.md)** — the one key rule, every cache knob in one table, and when `cache_salt` is needed.
-- **[assertions.md](./assertions.md)** — how provider outputs are graded, and the budget assertions that read `usage` / `cost_usd`.
+- **[assertions.md](assertions.md)** — how provider outputs are graded, and the budget assertions that read `usage` / `cost_usd`.
 - **[grading.md](../concepts/grading.md)** — using `anthropic` / `openai` providers as the LLM-rubric grader.
-- **[domarinn.yaml](./domarinn-yaml.md)** — the full suite schema (`prompts`, `tests`, `defaults`, `runner`, `cache`).
+- **[domarinn.yaml](domarinn-yaml.md)** — the full suite schema (`prompts`, `tests`, `defaults`, `runner`, `cache`).

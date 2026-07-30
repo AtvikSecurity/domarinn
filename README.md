@@ -106,7 +106,7 @@ Also the [Claude Code plugin](plugin/README.md), which bundles the MCP endpoint 
 The server can expose your eval history to MCP clients, read-only, so an agent can answer "which
 cases regressed between these two runs, and why" directly against the data:
 
-```bash
+```sh
 DOMARINN_MCP_ENABLED=true domarinn server
 
 claude mcp add --transport http domarinn http://localhost:8321/api/v1/mcp \

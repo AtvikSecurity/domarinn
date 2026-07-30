@@ -109,6 +109,8 @@ echo "==> checking redirect stubs against mkdocs.yml's redirect_maps"
 # verify exactly as written. What the plugin does NOT guard, this adds: an
 # old side whose output path collides with a page that still builds would be
 # silently overwritten by the stub in on_post_build, so that is an error.
+# `OUT=` is a plain shell variable, so the quoted heredoc — which cannot expand
+# it — only sees it if it is placed in this command's environment.
 OUT="$OUT" uv run python - <<'PYEOF'
 import os, pathlib, sys, yaml
 
@@ -202,27 +204,45 @@ if errors:
 print(f"    {verified} redirects verified")
 PYEOF
 
-echo "==> style gates (docs/ link + fence conventions; report-only for now)"
-# TODO(docs-overhaul): flip both gates to blocking once the docs restructure
-# normalizes the patterns they report across docs/.
+echo "==> style gates (docs/ link + fence conventions)"
+# Blocking. Both conventions hold across docs/ as of the documentation
+# restructure, so a fresh violation is a slip in review rather than a backlog
+# item — and each is invisible in the rendered page, which is exactly the kind
+# of drift a human reviewer stops noticing.
 #
 # awk, not `head`: under pipefail, `printf … | head -5` dies of SIGPIPE the
-# moment the match list outgrows the pipe buffer — turning a report-only gate
-# into a build-killer exactly when violations are most numerous. awk reads
-# its whole input, so the pipeline always exits 0.
-report_gate() {
-  local pattern="$1" label="$2" matches
+# moment the match list outgrows the pipe buffer — which would replace the
+# gate's own diagnosis with a broken-pipe failure exactly when the violations
+# are most numerous. awk reads its whole input, so the pipeline always exits 0.
+#
+# Every violation is printed, not a sample: the caller has to fix all of them,
+# and a truncated list makes that two build cycles instead of one.
+style_gate() {
+  local pattern="$1" label="$2" fix="$3" matches
   matches="$(grep -rn "$pattern" docs || true)"
   if [ -z "$matches" ]; then
     echo "    0 ${label} in docs/"
-  else
-    echo "    $(printf '%s\n' "$matches" | wc -l) ${label} in docs/ (sample, up to 5):"
-    printf '%s\n' "$matches" | awk 'NR <= 5 { print "      " $0 }'
+    return 0
   fi
+  {
+    echo "style gate FAILED: $(printf '%s\n' "$matches" | wc -l) ${label} in docs/"
+    echo "  fix: ${fix}"
+    printf '%s\n' "$matches" | awk '{ print "    " $0 }'
+  } >&2
+  return 1
 }
 
-report_gate '](\./' "'./'-relative link(s)"
-report_gate '^```bash' "'\`\`\`bash' fenced block(s)"
+# `|| violations=…` keeps each call in a condition context, so `set -e` does not
+# abort on the first failing gate — one build reports both.
+style_violations=0
+style_gate '](\./' "'./'-relative link(s)" \
+  'write [text](sibling.md), not [text](./sibling.md)' || style_violations=$((style_violations + 1))
+style_gate '^```bash' "'\`\`\`bash' fenced block(s)" \
+  "use \`\`\`sh for a script, or \`\`\`console for a session with prompts" || style_violations=$((style_violations + 1))
+if [ "$style_violations" -gt 0 ]; then
+  echo "style gates FAILED: ${style_violations} convention(s) violated under docs/" >&2
+  exit 1
+fi
 
 echo "==> nesting rustdoc under ${OUT}/rustdoc"
 rm -rf "${OUT}/rustdoc"

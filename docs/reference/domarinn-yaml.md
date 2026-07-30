@@ -51,7 +51,7 @@ version: 1
 # ...
 ```
 
-The schema is regenerated from the config structs, so it never drifts from what the loader accepts. See [`cli.md`](./cli.md) for `domarinn validate`, which reports structural issues (unknown version, empty providers, duplicate ids, a prompt that sets both `template` and `messages`, and so on).
+The schema is regenerated from the config structs, so it never drifts from what the loader accepts. See [`cli.md`](cli.md) for `domarinn validate`, which reports structural issues (unknown version, empty providers, duplicate ids, a prompt that sets both `template` and `messages`, and so on).
 
 ## Top-level fields
 
@@ -83,7 +83,7 @@ description: Checks that the assistant declines out-of-scope requests.
 
 ## `providers`
 
-Each provider is one system under test. Every provider has an `id` (unique within the suite), an optional human-friendly `label`, and a `type` discriminator that selects one of five kinds. Fields other than `id`, `label`, and `type` belong to the chosen kind — and because their meaning varies by `type`, they are documented once, in [`providers.md`](./providers.md), rather than here.
+Each provider is one system under test. Every provider has an `id` (unique within the suite), an optional human-friendly `label`, and a `type` discriminator that selects one of five kinds. Fields other than `id`, `label`, and `type` belong to the chosen kind — and because their meaning varies by `type`, they are documented once, in [`providers.md`](providers.md), rather than here.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -93,11 +93,11 @@ Each provider is one system under test. Every provider has an `id` (unique withi
 
 | `type` | Selects |
 |--------|---------|
-| [`exec`](./providers.md#exec) | An external command speaking the exec JSON protocol — the escape hatch for testing anything you can run as a process. |
-| [`anthropic`](./providers.md#anthropic) | A native Anthropic Messages API client. |
-| [`openai`](./providers.md#openai) | An OpenAI-compatible chat-completions client — OpenAI itself, or any compatible gateway. |
-| [`http`](./providers.md#http) | An arbitrary HTTP endpoint, templated with the test context. |
-| [`embeddings`](./providers.md#embeddings) | An embeddings endpoint that powers the [`similar`](./assertions.md#similar) assertion. **Not** a system under test. |
+| [`exec`](providers.md#exec) | An external command speaking the exec JSON protocol — the escape hatch for testing anything you can run as a process. |
+| [`anthropic`](providers.md#anthropic) | A native Anthropic Messages API client. |
+| [`openai`](providers.md#openai) | An OpenAI-compatible chat-completions client — OpenAI itself, or any compatible gateway. |
+| [`http`](providers.md#http) | An arbitrary HTTP endpoint, templated with the test context. |
+| [`embeddings`](providers.md#embeddings) | An embeddings endpoint that powers the [`similar`](assertions.md#similar) assertion. **Not** a system under test. |
 
 > API keys and other secrets are **never** written in the suite. Every provider
 > type names the *environment variable* to read (`api_key_env`); the value
@@ -205,7 +205,7 @@ Inline tests, and every test loaded from a file, share the same shape:
 | `vars` | map name→value | no | Values substituted into prompts. Each value is a templatable [`Val`](#templating-and-the-raw-escape-hatch). |
 | `matrix` | map name→list | no | Parameter sweep: the case fans out over the cartesian product of its axes. See [Matrix / parameter sweeps](#matrix--parameter-sweeps). |
 | `matrix_id` | string | no | minijinja template for a matrix cell's id, rendered against the axis values. See [Matrix / parameter sweeps](#matrix--parameter-sweeps). |
-| `assert` | list | no | Assertions to run against the output. See [`assertions.md`](./assertions.md). |
+| `assert` | list | no | Assertions to run against the output. See [`assertions.md`](assertions.md). |
 | `threshold` | float | no | If set, the case **passes when its weighted-mean assertion score ≥ `threshold`**. If unset, the case passes only when **every** assertion passes. |
 | `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of **this case's** provider requests only. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](../concepts/caching.md#per-case-salts). |
 | `only_providers` | list of provider ids | no | Restrict this case to these providers. |
@@ -224,7 +224,7 @@ tests:
     skip_providers: [embed]
 ```
 
-Assertions carry two common controls in addition to their `type`: `weight` (default `1.0`, used for the weighted mean when a `threshold` is set) and `negate` (default `false`, inverts the result). The `type: not-<kind>` spelling is sugar for `negate: true` — e.g. `type: not-contains` is exactly `type: contains` with `negate: true`. Full assertion reference: [`assertions.md`](./assertions.md).
+Assertions carry two common controls in addition to their `type`: `weight` (default `1.0`, used for the weighted mean when a `threshold` is set) and `negate` (default `false`, inverts the result). The `type: not-<kind>` spelling is sugar for `negate: true` — e.g. `type: not-contains` is exactly `type: contains` with `negate: true`. Full assertion reference: [`assertions.md`](assertions.md).
 
 ### Matrix / parameter sweeps
 
@@ -262,7 +262,7 @@ A test with no `id` is assigned one automatically:
 
 That last rule is worth knowing before you migrate a `file://` glob to a generator: the ids all change, and every case collapses into a single group, so `--filter` patterns and per-provider baselines written against the old ids stop matching. Have the generator emit its own `id` on each case if you want ids that survive the move.
 
-`domarinn list tests --generators` runs the generators and prints the ids they produce, which is how you preview `--filter` targets on a generator-driven suite. See [cli.md](./cli.md).
+`domarinn list tests --generators` runs the generators and prints the ids they produce, which is how you preview `--filter` targets on a generator-driven suite. See [cli.md](cli.md).
 
 ### File formats for `file://` globs
 
@@ -348,7 +348,7 @@ tests:
 
 ## `tools`
 
-Tools every provider in this suite may offer the model, graded by [`tool-call`](./assertions.md#tool-call) assertions.
+Tools every provider in this suite may offer the model, graded by [`tool-call`](assertions.md#tool-call) assertions.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -360,7 +360,7 @@ Tools every provider in this suite may offer the model, graded by [`tool-call`](
 --8<-- "examples/15-tool-call-asserts/domarinn.yaml:tools"
 ```
 
-Declaring a tool does **not** make domarinn run one — it never executes a tool and never feeds a result back. What it wants is the model's *decision*, which is fully observable in a single turn. See [protocol.md](./protocol.md#tools).
+Declaring a tool does **not** make domarinn run one — it never executes a tool and never feeds a result back. What it wants is the model's *decision*, which is fully observable in a single turn. See [protocol.md](protocol.md#tools).
 
 Suite-level rather than per-test on purpose: the tool surface is a property of the system being evaluated, and varying it per case would make two cases incomparable while still looking like one suite.
 
@@ -636,8 +636,8 @@ Read it as a map of this page rather than as a suite to copy. It is linked rathe
 
 ## See also
 
-- [`assertions.md`](./assertions.md) — every assertion `type` and its options.
+- [`assertions.md`](assertions.md) — every assertion `type` and its options.
 - [`grading.md`](../concepts/grading.md) — the `llm-rubric` grader, rubrics, verdict modes.
-- [`providers.md`](./providers.md) — provider behavior and the exec protocol.
+- [`providers.md`](providers.md) — provider behavior and the exec protocol.
 - [`caching.md`](../concepts/caching.md) — cache backends, keys, and invalidation.
-- [`cli.md`](./cli.md) — `run`, `validate`, `schema`, `list`, and exit codes.
+- [`cli.md`](cli.md) — `run`, `validate`, `schema`, `list`, and exit codes.
