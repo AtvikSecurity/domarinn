@@ -237,6 +237,7 @@ async fn graded_verdict(
                 provider_id: ctx.provider_id,
                 test_id: ctx.test_id,
                 test_tags: ctx.test_tags,
+                tool_calls: ctx.tool_calls,
                 cache,
             },
         )

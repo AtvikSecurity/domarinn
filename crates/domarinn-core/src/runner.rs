@@ -218,6 +218,14 @@ pub struct GradeCtx<'a> {
     pub provider_id: &'a str,
     pub test_id: &'a str,
     pub test_tags: &'a [String],
+    /// This cell's reported tool calls, in the order the model made them.
+    ///
+    /// A graded assertion that can only read `output` cannot judge behaviour —
+    /// whether the model reached for a tool at all, or reached for the right
+    /// one with the right arguments — and a cell whose right answer *is* a tool
+    /// call has no prose to read. Both graded paths are told; what they do with
+    /// it differs, because only one of them has a cache key made of a prompt.
+    pub tool_calls: &'a [crate::result::ToolCall],
     /// The cache this grader's own requests go through, or `None` to bypass it
     /// entirely — no read, no write.
     ///

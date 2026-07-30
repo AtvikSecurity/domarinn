@@ -355,6 +355,7 @@ fn judge() -> Grader {
         template: None,
         verdict_mode: None,
         timeout_ms: None,
+        include_tool_calls: None,
     }
 }
 

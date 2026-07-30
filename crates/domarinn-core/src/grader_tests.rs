@@ -17,6 +17,16 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// `cache: None` — these exercise the grading itself, so every call goes live.
 /// What the cache does with those calls is `tests/grader_request_cache.rs`.
 fn grade_ctx<'a>(vars: &'a Json, engine: &'a TemplateEngine) -> GradeCtx<'a> {
+    grade_ctx_with_calls(vars, engine, &[])
+}
+
+/// The same cell, with tool calls attached. Separate from [`grade_ctx`] so the
+/// dozen tests that grade prose keep reading as prose.
+fn grade_ctx_with_calls<'a>(
+    vars: &'a Json,
+    engine: &'a TemplateEngine,
+    tool_calls: &'a [crate::result::ToolCall],
+) -> GradeCtx<'a> {
     GradeCtx {
         vars,
         engine,
@@ -24,8 +34,19 @@ fn grade_ctx<'a>(vars: &'a Json, engine: &'a TemplateEngine) -> GradeCtx<'a> {
         provider_id: "p",
         test_id: "t",
         test_tags: &[],
+        tool_calls,
         cache: None,
     }
+}
+
+/// One call with a vendor id on it, so every test that asserts the id is
+/// *absent* is asserting against something that was actually there.
+fn one_tool_call() -> Vec<crate::result::ToolCall> {
+    vec![crate::result::ToolCall {
+        id: Some("toolu_01ABCDEF".into()),
+        name: "get_weather".into(),
+        arguments: json!({"city": "Reykjavik"}),
+    }]
 }
 
 fn anthropic_grader(uri: &str) -> Grader {
@@ -40,6 +61,7 @@ fn anthropic_grader(uri: &str) -> Grader {
         template: None,
         verdict_mode: None,
         timeout_ms: None,
+        include_tool_calls: None,
     }
 }
 
@@ -231,6 +253,7 @@ async fn thinking_params_are_rejected() {
         template: None,
         verdict_mode: None,
         timeout_ms: None,
+        include_tool_calls: None,
     };
     let outcome = DefaultGrader::new(Some(grader))
         .grade(
@@ -326,6 +349,7 @@ fn a_grader_template_substitutes_both_placeholders() {
         Some(dir.path()),
         "be concise",
         "a model answer",
+        None,
     )
     .unwrap();
     assert!(rendered.contains("<r>be concise</r>"));
@@ -340,13 +364,13 @@ fn a_grader_template_does_not_evaluate_the_output() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("t.txt"), "{{output}}").unwrap();
     let rendered =
-        render_grader_template("file://t.txt", Some(dir.path()), "r", "{{ 7 * 7 }}").unwrap();
+        render_grader_template("file://t.txt", Some(dir.path()), "r", "{{ 7 * 7 }}", None).unwrap();
     assert_eq!(rendered, "{{ 7 * 7 }}", "must not evaluate to 49");
 }
 
 #[test]
 fn a_non_file_template_is_a_config_error() {
-    let err = render_grader_template("./relative.txt", None, "r", "o").unwrap_err();
+    let err = render_grader_template("./relative.txt", None, "r", "o", None).unwrap_err();
     assert!(err.to_string().contains("file://"));
 }
 
@@ -360,7 +384,8 @@ fn a_grader_template_resolves_against_the_suite_directory() {
     std::fs::create_dir(dir.path().join("prompts")).unwrap();
     std::fs::write(dir.path().join("prompts/judge.md"), "J:{{rubric}}").unwrap();
     assert_eq!(
-        render_grader_template("file://prompts/judge.md", Some(dir.path()), "r", "o").unwrap(),
+        render_grader_template("file://prompts/judge.md", Some(dir.path()), "r", "o", None)
+            .unwrap(),
         "J:r"
     );
 }
@@ -373,7 +398,8 @@ fn a_traversing_grader_template_is_rejected() {
     std::fs::write(parent.path().join("secret.txt"), "TOP SECRET").unwrap();
     let base = parent.path().join("suite");
     std::fs::create_dir(&base).unwrap();
-    let err = render_grader_template("file://../secret.txt", Some(&base), "r", "o").unwrap_err();
+    let err =
+        render_grader_template("file://../secret.txt", Some(&base), "r", "o", None).unwrap_err();
     assert!(err.to_string().contains("refuses to read outside"), "{err}");
 }
 
@@ -391,9 +417,14 @@ fn editing_a_grader_template_moves_the_judge_request() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("judge.md");
     let body = || {
-        let user =
-            render_grader_template("file://judge.md", Some(dir.path()), "be good", "an answer")
-                .unwrap();
+        let user = render_grader_template(
+            "file://judge.md",
+            Some(dir.path()),
+            "be good",
+            "an answer",
+            None,
+        )
+        .unwrap();
         Judge::Anthropic.request("judge", None, None, &user).1
     };
 
@@ -439,4 +470,288 @@ fn the_judge_request_separates_what_the_fingerprint_used_to() {
         "{:?}",
         reference.1
     );
+}
+
+/// The opt-in's whole point: with the flag unset, a cell that made tool calls
+/// produces the same prompt bytes it produced before the flag existed. The
+/// judge's request body *is* the cache key, so anything else would re-grade
+/// every warm entry in every store the first time a suite reported a call.
+#[test]
+fn the_grading_prompt_is_unchanged_when_tool_calls_are_not_opted_into() {
+    let expected = format!(
+        "RUBRIC:\n{}\n\nASSISTANT OUTPUT:\n{}",
+        "be good", "an answer"
+    );
+    let mut grader = anthropic_grader("http://judge.test");
+    for flag in [None, Some(false)] {
+        grader.include_tool_calls = flag;
+        let user =
+            grading_user_message(&grader, None, "be good", "an answer", &one_tool_call()).unwrap();
+        assert_eq!(user, expected, "flag {flag:?} must not touch the prompt");
+    }
+}
+
+/// The id is a random per-response vendor token (`toolu_…`). Including it
+/// would put a fresh string in every judge request body — and therefore a
+/// fresh cache key — for a decision the model made identically twice.
+#[test]
+fn opting_in_shows_the_judge_the_calls_but_never_the_vendor_call_id() {
+    let mut grader = anthropic_grader("http://judge.test");
+    grader.include_tool_calls = Some(true);
+    let user =
+        grading_user_message(&grader, None, "be good", "an answer", &one_tool_call()).unwrap();
+    assert!(
+        user.starts_with("RUBRIC:\nbe good\n\nASSISTANT OUTPUT:\nan answer\n\nTOOL CALLS (the tool calls the assistant made, in order, as JSON):\n"),
+        "{user}"
+    );
+    assert!(user.contains("get_weather"), "{user}");
+    assert!(user.contains("Reykjavik"), "{user}");
+    assert!(
+        !user.contains("toolu"),
+        "the vendor id must not be sent: {user}"
+    );
+    assert!(
+        !user.contains("\"id\""),
+        "the vendor id must not be sent: {user}"
+    );
+}
+
+/// Absence is a gradeable fact: a rubric that says "must call `search`" can
+/// only fail the cell if the section is there to be empty.
+#[test]
+fn the_tool_calls_section_is_present_even_when_the_model_called_nothing() {
+    let mut grader = anthropic_grader("http://judge.test");
+    grader.include_tool_calls = Some(true);
+    let user = grading_user_message(&grader, None, "be good", "an answer", &[]).unwrap();
+    assert!(user.ends_with("as JSON):\n[]"), "{user}");
+}
+
+#[test]
+fn a_grader_template_substitutes_the_tool_calls_placeholder_when_opted_in() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("t.txt"),
+        "<r>{{rubric}}</r>\n<o>{{output}}</o>\n<t>{{tool_calls}}</t>",
+    )
+    .unwrap();
+    let rendered = render_grader_template(
+        "file://t.txt",
+        Some(dir.path()),
+        "be concise",
+        "a model answer",
+        Some("[]"),
+    )
+    .unwrap();
+    assert!(rendered.contains("<r>be concise</r>"), "{rendered}");
+    assert!(rendered.contains("<o>a model answer</o>"), "{rendered}");
+    assert!(rendered.contains("<t>[]</t>"), "{rendered}");
+}
+
+/// Both settings come out of the same authored `grader:` block, so either
+/// direction of disagreement is a contradiction the author can fix — and
+/// silently dropping the placeholder (or silently omitting the calls) would
+/// hand the judge a prompt nobody asked for.
+#[test]
+fn a_tool_calls_placeholder_without_the_opt_in_is_a_config_error() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("t.txt"), "{{rubric}} {{tool_calls}}").unwrap();
+    let err = render_grader_template("file://t.txt", Some(dir.path()), "r", "o", None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("include_tool_calls"), "{msg}");
+    assert!(msg.contains("{{tool_calls}}"), "{msg}");
+}
+
+#[test]
+fn opting_in_without_a_tool_calls_placeholder_is_a_config_error() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("t.txt"), "{{rubric}} {{output}}").unwrap();
+    let err =
+        render_grader_template("file://t.txt", Some(dir.path()), "r", "o", Some("[]")).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("include_tool_calls"), "{msg}");
+    assert!(msg.contains("{{tool_calls}}"), "{msg}");
+}
+
+/// One left-to-right pass, and what a placeholder expands to is never scanned
+/// again. Chained `str::replace` calls rescan: a rubric containing the literal
+/// `{{output}}` had the model's answer spliced into it, which is the rubric
+/// author losing control of the rubric.
+#[test]
+fn a_substituted_value_is_never_rescanned_for_placeholders() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("t.txt"), "{{rubric}}|{{output}}").unwrap();
+    let rendered = render_grader_template(
+        "file://t.txt",
+        Some(dir.path()),
+        "grade against {{output}}",
+        "ANSWER",
+        None,
+    )
+    .unwrap();
+    assert_eq!(rendered, "grade against {{output}}|ANSWER");
+}
+
+/// The same rule pointed at the untrusted half: model text that happens to
+/// contain `{{tool_calls}}` is prose, not a placeholder.
+#[test]
+fn an_output_containing_the_tool_calls_placeholder_is_not_expanded() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("t.txt"), "{{output}}{{tool_calls}}").unwrap();
+    let rendered = render_grader_template(
+        "file://t.txt",
+        Some(dir.path()),
+        "r",
+        "{{tool_calls}}",
+        Some("[1]"),
+    )
+    .unwrap();
+    assert_eq!(rendered, "{{tool_calls}}[1]");
+}
+
+/// The flag and the calls are both in the judge's body, so both separate two
+/// gradings — while the vendor call id, which is not in the body, does not.
+#[test]
+fn the_judge_request_separates_gradings_that_saw_different_tool_calls() {
+    let body = |grader: &Grader, calls: &[crate::result::ToolCall]| {
+        let user = grading_user_message(grader, None, "be good", "an answer", calls).unwrap();
+        Judge::Anthropic.request("judge", None, None, &user).1
+    };
+    let off = anthropic_grader("http://judge.test");
+    let mut on = off.clone();
+    on.include_tool_calls = Some(true);
+
+    let calls = one_tool_call();
+    let elsewhere = vec![crate::result::ToolCall {
+        id: Some("toolu_01ABCDEF".into()),
+        name: "get_weather".into(),
+        arguments: json!({"city": "Vancouver"}),
+    }];
+    assert_ne!(
+        body(&off, &calls),
+        body(&on, &calls),
+        "the flag is in the body"
+    );
+    assert_ne!(
+        body(&on, &calls),
+        body(&on, &elsewhere),
+        "the calls are too"
+    );
+    assert_ne!(body(&on, &calls), body(&on, &[]), "so is their absence");
+
+    // The same decision reported with a fresh vendor id is the same grading,
+    // and must stay one cache entry across live provider runs.
+    let same_decision = vec![crate::result::ToolCall {
+        id: Some("toolu_99ZZZZZZ".into()),
+        ..calls[0].clone()
+    }];
+    assert_eq!(body(&on, &calls), body(&on, &same_decision));
+    assert_eq!(body(&on, &calls)["system"], json!(SYSTEM_PROMPT));
+}
+
+/// End to end against a judge: what the section promises has to survive the
+/// whole path, not just the formatter.
+#[tokio::test]
+async fn the_judge_sees_the_tool_calls_only_when_the_suite_opts_in() {
+    for (include, expect_section) in [(Some(true), true), (None, false)] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "stop_reason": "tool_use",
+                "content": [{
+                    "type": "tool_use", "name": "submit_verdict",
+                    "input": {"reasoning": "it called it", "pass": true, "score": 1.0}
+                }]
+            })))
+            .mount(&server)
+            .await;
+        std::env::set_var("GRADER_TEST_KEY", "sk-test");
+        let mut cfg = anthropic_grader(&server.uri());
+        cfg.include_tool_calls = include;
+        let calls = one_tool_call();
+        DefaultGrader::new(Some(cfg))
+            .grade(
+                &rubric_assert(),
+                &Output::Text("".into()),
+                &grade_ctx_with_calls(&json!({}), &TemplateEngine::new(), &calls),
+            )
+            .await
+            .unwrap();
+
+        let sent = server.received_requests().await.unwrap();
+        let body = String::from_utf8(sent[0].body.clone()).unwrap();
+        assert_eq!(body.contains("TOOL CALLS"), expect_section, "{body}");
+        assert_eq!(body.contains("get_weather"), expect_section, "{body}");
+        assert_eq!(body.contains("Reykjavik"), expect_section, "{body}");
+    }
+}
+
+/// The child gets the calls with no flag to set: the exec protocol adds fields
+/// additively, and a child that does not read them is unaffected.
+#[tokio::test]
+async fn an_exec_assert_is_told_the_cells_tool_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = dir.path().join("stdin.json");
+    let calls = one_tool_call();
+    let outcome = DefaultGrader::new(None)
+        .grade(
+            &exec_assert_capturing_stdin(&seen),
+            &Output::Text("x".into()),
+            &grade_ctx_with_calls(&json!({}), &TemplateEngine::new(), &calls),
+        )
+        .await
+        .unwrap()
+        .verdict
+        .to_outcome(None);
+    assert!(outcome.passed);
+
+    let request: Json = serde_json::from_str(&std::fs::read_to_string(&seen).unwrap()).unwrap();
+    assert_eq!(request["tool_calls"][0]["name"], json!("get_weather"));
+    assert_eq!(
+        request["tool_calls"][0]["arguments"]["city"],
+        json!("Reykjavik")
+    );
+}
+
+/// The other half of "additive": a tool-less cell's stdin — and therefore its
+/// cache key — is byte-identical to what a pre-0.6 domarinn wrote.
+#[tokio::test]
+async fn an_exec_assert_request_omits_tool_calls_when_there_were_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = dir.path().join("stdin.json");
+    DefaultGrader::new(None)
+        .grade(
+            &exec_assert_capturing_stdin(&seen),
+            &Output::Text("x".into()),
+            &grade_ctx(&json!({}), &TemplateEngine::new()),
+        )
+        .await
+        .unwrap();
+
+    let request: Json = serde_json::from_str(&std::fs::read_to_string(&seen).unwrap()).unwrap();
+    assert!(
+        request.get("tool_calls").is_none(),
+        "an empty list must not appear on the wire: {request}"
+    );
+}
+
+/// A shell judge that keeps what it was sent, so a test can read the request
+/// the child actually received rather than the struct domarinn built.
+fn exec_assert_capturing_stdin(seen: &std::path::Path) -> Assert {
+    Assert {
+        weight: 1.0,
+        negate: false,
+        kind: AssertKind::Exec {
+            command: vec![
+                "sh".into(),
+                "-c".into(),
+                format!(
+                    "cat >'{}'; printf '{{\"pass\":true,\"score\":1.0,\"reason\":\"ok\"}}'",
+                    seen.display()
+                ),
+            ],
+            config: None,
+            cache_salt: None,
+        },
+    }
 }
