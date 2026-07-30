@@ -584,3 +584,44 @@ describe("CaseDrawer schema-v2 sections", () => {
     expect(screen.getAllByText(/\$0\.0042/)).toHaveLength(1);
   });
 });
+
+describe("case -> cache entry link", () => {
+  /** A detail whose provider call recorded the key it was addressed by. */
+  function detailWithKey(key: string | undefined, cached: boolean): CaseDetail {
+    const base = currentDetail();
+    return {
+      ...base,
+      data: { ...(base.data as object), cache_key: key, cached },
+    } as unknown as CaseDetail;
+  }
+
+  it("links a cached case to the entry that answered it", () => {
+    // The other half of the runs <-> cache link: the browser can already name
+    // the runs that used an entry, and this is the way back.
+    setCaseDetail(currentDetail(), detailWithKey(`sha256:${"ab".repeat(32)}`, true));
+    renderDrawer();
+    expect(screen.getByRole("link", { name: /cached/i })).toHaveAttribute(
+      "href",
+      `/cache/entries?entry=sha256%3A${"ab".repeat(32)}`,
+    );
+  });
+
+  it("links a MISSED case too, because the key belongs to the request", () => {
+    // A miss writes the entry a later hit reads, so both address the same key.
+    // Offering the link only on hits would make "the entry that answered this"
+    // quietly mean "this was a cache hit".
+    setCaseDetail(currentDetail(), detailWithKey(`sha256:${"cd".repeat(32)}`, false));
+    renderDrawer();
+    expect(screen.getByRole("link", { name: /cache entry/i })).toBeInTheDocument();
+  });
+
+  it("shows a plain chip, not a broken link, when no key was recorded", () => {
+    // Every run from before the field existed, plus --no-cache and providers
+    // that decline caching. Absence means "this run never wrote it down", not
+    // "no cache was used" — so there is nothing to link to.
+    setCaseDetail(currentDetail(), detailWithKey(undefined, true));
+    renderDrawer();
+    expect(screen.queryByRole("link", { name: /cach/i })).not.toBeInTheDocument();
+    expect(screen.getByText("cached")).toBeInTheDocument();
+  });
+});

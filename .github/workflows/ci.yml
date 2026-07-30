@@ -100,12 +100,53 @@ jobs:
       - run: cargo clippy -p domarinn-server --features saml --all-targets -- -D warnings
       - run: cargo test -p domarinn-server --features saml
 
-  web:
-    name: web (lint + build + vitest)
+  commit-messages:
+    name: commit messages parse for release-please
+    # A message release-please cannot parse is SKIPPED by it rather than
+    # reported, so the work it carries never reaches a changelog — and when it
+    # is the only commit since the last release, no release pull request is
+    # created at all. This is the gate; the lefthook commit-msg hook is the
+    # same checker run earlier, and skips when node deps are absent.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    # The suite takes seconds; anything approaching this is a hang, not slowness.
-    # Without a bound a wedged run burned ~14 minutes and still produced no logs,
-    # which is the worst of both — slow *and* undiagnosable.
+    timeout-minutes: 5
+    env:
+      MISE_DISABLE_TOOLS: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+          # Every commit in the pull request, not just the tip.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-web
+      # Guard on the guard: if the checker itself is wrong, the messages it
+      # blesses mean nothing.
+      # Both invocation paths on purpose: the first failure of this job was the
+      # pnpm wrapper forwarding a bare `--` as the filename, not the checker.
+      - name: Self-test the checker
+        run: |
+          node web/scripts/check-commit-msg.mjs --self-test
+          pnpm -C web run check-commit-msg -- --self-test
+      - name: Check every commit in this pull request
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          failed=0
+          msg="$(mktemp)"
+          for sha in $(git rev-list "$BASE..$HEAD"); do
+            git log -1 --format=%B "$sha" > "$msg"
+            if ! node web/scripts/check-commit-msg.mjs "$msg"; then
+              echo "::error::commit $sha has a message release-please cannot parse"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+  web-lint:
+    name: web lint
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       # `mise run` auto-installs every tool in .mise/config.toml, which would
@@ -115,24 +156,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
-        with:
-          install_args: node pnpm
-      # Cache pnpm's content-addressable store (mise provides pnpm; this
-      # replaces the store cache that actions/setup-node used to give us).
-      - name: Locate pnpm store
-        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0 # pin to SHA
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: pnpm-store-${{ hashFiles('web/pnpm-lock.yaml') }}
-          restore-keys: pnpm-store-
-      - run: mise run web-install
-      # Type-checked lint (--max-warnings=0). The `web-build` task runs
-      # `tsc -b`, which already fails the job on any type error, so no separate
-      # typecheck step is needed.
+      - uses: ./.github/actions/setup-web
+      # Type-checked lint (--max-warnings=0).
       - run: mise run web-lint
+
+  web-build:
+    name: web build (typecheck)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      MISE_DISABLE_TOOLS: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-web
+      # This IS the typecheck gate: the task runs `tsc -b` before vite, so any
+      # type error fails here rather than in a separate step.
       - run: mise run web-build
+
+  web-test:
+    name: web unit tests (vitest)
+    runs-on: ubuntu-24.04
+    # The suite takes seconds; anything approaching this is a hang, not
+    # slowness. Without a bound a wedged run burned ~14 minutes and still
+    # produced no logs, which is the worst of both — slow *and* undiagnosable.
+    timeout-minutes: 10
+    env:
+      MISE_DISABLE_TOOLS: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-web
       - run: mise run web-test
 
   e2e:
@@ -150,17 +206,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
-        with:
-          install_args: node pnpm
-      - name: Locate pnpm store
-        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0 # pin to SHA
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: pnpm-store-${{ hashFiles('web/pnpm-lock.yaml') }}
-          restore-keys: pnpm-store-
-      - run: mise run web-install
+      - uses: ./.github/actions/setup-web
       # Only chromium: playwright.config.ts declares a single chromium project.
       # `--with-deps` pulls the system shared libraries the CDN build needs.
       - name: Install Playwright chromium

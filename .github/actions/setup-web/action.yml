@@ -1,0 +1,43 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+#
+# The node toolchain every web job needs: mise-provided node + pnpm, a warm
+# pnpm store, and the workspace installed.
+#
+# Extracted when the `web` job was split into one job per gate. Five jobs
+# (web-lint, web-build, web-test, web-e2e, commit-messages) were each carrying
+# the same four steps, and four copies of a cache key is four places for it to
+# drift — the whole point of the key being `hashFiles('web/pnpm-lock.yaml')` is
+# that every job agrees on it.
+#
+# Deliberately does NOT check out the repository: a composite action runs after
+# the job's own `actions/checkout`, and hiding that step would make the pinned
+# checkout SHA invisible at the call site.
+name: Set up the web toolchain
+description: Install node + pnpm via mise, restore the pnpm store, and install web/ dependencies.
+
+runs:
+  using: composite
+  steps:
+    - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+      with:
+        install_args: node pnpm
+    # Cache pnpm's content-addressable store (mise provides pnpm; this replaces
+    # the store cache that actions/setup-node used to give us).
+    #
+    # A step OUTPUT, not $GITHUB_ENV. The workflow wrote this to the environment
+    # file, which zizmor auto-suppresses there but rates HIGH in a composite
+    # action — and rightly: a composite's environment writes leak into every
+    # workflow that calls it, so one is a far broader lever than the same line
+    # inline. Exactly one later step reads this, which is what an output is for.
+    - name: Locate pnpm store
+      id: pnpm-store
+      shell: bash
+      run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0 # pin to SHA
+      with:
+        path: ${{ steps.pnpm-store.outputs.path }}
+        key: pnpm-store-${{ hashFiles('web/pnpm-lock.yaml') }}
+        restore-keys: pnpm-store-
+    - shell: bash
+      run: mise run web-install

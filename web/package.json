@@ -17,6 +17,7 @@
     "test:e2e:report": "playwright show-report",
     "screenshots": "playwright test --config playwright.screenshots.config.ts",
     "lint": "eslint . --max-warnings=0",
+    "check-commit-msg": "node scripts/check-commit-msg.mjs",
     "typecheck": "node ./node_modules/typescript-7/bin/tsc -b --noEmit"
   },
   "dependencies": {
@@ -37,6 +38,7 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
+    "@conventional-commits/parser": "^0.4.1",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "1.62.0",
     "@tailwindcss/vite": "^4.3.3",

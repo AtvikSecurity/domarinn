@@ -135,6 +135,13 @@ export function caseDetail(runId: string, caseKey: string): CaseResult | undefin
     cost_usd: row.cost_usd,
     latency_ms: row.latency_ms,
     cached: false,
+    // Recorded whether the call hit or missed, because the key belongs to the
+    // request — which is what makes the case <-> cache-entry link work in both
+    // directions. Errored cases keep it null: those never reached a provider.
+    cache_key:
+      row.status === "error"
+        ? undefined
+        : `sha256:${hash("cache-key", row.case_key).toString(16).padStart(8, "0").repeat(8).slice(0, 64)}`,
     attempts: row.status === "error" ? 3 : 1,
     error:
       row.status === "error"
