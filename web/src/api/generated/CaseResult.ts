@@ -80,7 +80,28 @@ latency_ms: number,
  * Total wall time for the cell, *including* retry backoff and cache I/O.
  * Absent on blobs written before this field existed.
  */
-wall_ms?: number, cached: boolean, attempts: number, 
+wall_ms?: number, cached: boolean, 
+/**
+ * The cache key this case's provider call was addressed by, when it had
+ * one.
+ *
+ * Recorded whether the call hit or missed. The key is a property of the
+ * *request*, so a miss that wrote an entry and a hit that read one carry
+ * the same value — which is what makes "which runs used this entry"
+ * answerable at all, rather than only "which runs were cache hits".
+ *
+ * `None` is a real and common state, not just a legacy one: `--no-cache`,
+ * a provider that declines caching, a call with no stable canonical
+ * request, and every run recorded before this field existed.
+ *
+ * A `String`, not a `CacheKey`: that type lives in `domarinn-core`, which
+ * `tests/boundary.rs` forbids this crate from depending on.
+ *
+ * Grader keys are deliberately absent. One case makes up to three graded
+ * calls, each with its own key; if those are ever wanted they belong on
+ * [`AssertResult`], not folded into one field here.
+ */
+cache_key?: string, attempts: number, 
 /**
  * Identity of what this case asked the model — rendered prompt, rendered
  * vars, params, cache salt. Deliberately excludes the provider (that is

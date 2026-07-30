@@ -17,6 +17,7 @@
 import type {
   CacheEntryDetail,
   CacheEntryListItem,
+  CacheEntryRunsResponse,
   CacheFacetsResponse,
 } from "@/api";
 import { hash, rand } from "./rng";
@@ -267,6 +268,32 @@ export function cacheEntryDetail(
         ? deepRaw()
         : { id: `msg_${index}`, role: "assistant", stop_reason: "end_turn" }
       : null,
+  };
+}
+
+/**
+ * Runs that used an entry.
+ *
+ * Most entries link to nothing, which is the honest common case: the key is
+ * only recorded by runs from a version that knew to write one, and older runs
+ * cannot be backfilled.
+ */
+export function cacheEntryRuns(key: string): CacheEntryRunsResponse {
+  const index = cacheEntryList().findIndex((e) => e.key === key);
+  if (index < 0 || index % 3 !== 0) return { cases: [], next_cursor: null };
+  const count = 1 + (index % 3);
+  return {
+    cases: Array.from({ length: count }, (_, i) => ({
+      run_id: `checkout-agent-regression-${12 - i}`,
+      project: "checkout-agent",
+      suite: "regression",
+      created_at: toIso(NOW - (i + 1) * DAY),
+      case_key: `case-${index}-${i}`,
+      name: `refund policy #${index}`,
+      status: i === 0 ? "pass" : "fail",
+      cached: i > 0,
+    })),
+    next_cursor: null,
   };
 }
 

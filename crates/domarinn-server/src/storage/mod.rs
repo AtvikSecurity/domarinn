@@ -47,6 +47,7 @@ mod backfill;
 mod cache;
 mod cachebrowse;
 pub(crate) mod cacheindex;
+pub(crate) mod cachelink;
 mod cases;
 mod compare;
 mod history;
@@ -62,6 +63,7 @@ pub use auth::{
     ApiKeyAuth, ApiKeyInfo, DeleteUserOutcome, SessionUser, UpdateUserOutcome, UserRow,
 };
 pub use cachebrowse::{decode_entry_cursor, encode_entry_cursor, CacheListFilter};
+pub use cachelink::decode_run_cursor;
 pub use cases::CaseListFilter;
 pub use matrix::MatrixFilter;
 pub use runs::{RunListFilter, RunListPage};

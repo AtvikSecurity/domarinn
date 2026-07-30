@@ -854,6 +854,7 @@ async fn run_cell(
         cached,
         attempts,
         provider_latency_ms,
+        cache_key,
     } = outcome;
     let attempts = attempts.unwrap_or(0);
     let wall_ms = start.elapsed().as_millis() as u64;
@@ -928,6 +929,7 @@ async fn run_cell(
         status,
         score: verdict.score,
         output: Some(response.output),
+        cache_key: cache_key.map(|k| k.0),
         prompt: rendered_prompt,
         request,
         stop_reason: response.stop_reason,

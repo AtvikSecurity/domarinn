@@ -1,7 +1,8 @@
 import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import type { CacheEntryDetail } from "@/api";
-import { useCacheEntry } from "@/api/queries";
+import { Link } from "react-router";
+import { useCacheEntry, useCacheEntryRuns } from "@/api/queries";
 import { JsonTree, OutputViewer, RawText } from "@/components/output";
 import { ErrorState } from "@/components/States";
 import { Chip } from "@/components/ui/Chip";
@@ -124,6 +125,7 @@ export function CacheEntryDrawer({ entryKey, size, onClose }: CacheEntryDrawerPr
             ) : entry ? (
               <EntryBody
                 entry={entry}
+                entryKey={entryKey}
                 compact={compact}
                 withRaw={withRaw}
                 onRequestRaw={() => setWithRaw(true)}
@@ -138,11 +140,13 @@ export function CacheEntryDrawer({ entryKey, size, onClose }: CacheEntryDrawerPr
 
 function EntryBody({
   entry,
+  entryKey,
   compact,
   withRaw,
   onRequestRaw,
 }: {
   entry: CacheEntryDetail;
+  entryKey?: string;
   compact: boolean;
   withRaw: boolean;
   onRequestRaw: () => void;
@@ -245,6 +249,8 @@ function EntryBody({
         </CollapsibleSection>
       ) : null}
 
+      <UsedByRuns entryKey={entryKey} />
+
       <CollapsibleSection title="Provider metadata" defaultOpen={false}>
         {withRaw ? (
           entry.raw === null ? (
@@ -273,6 +279,66 @@ function EntryBody({
         <Payload value={entry} />
       </CollapsibleSection>
     </>
+  );
+}
+
+/**
+ * Which runs used this entry.
+ *
+ * Controlled rather than `defaultOpen`, so the query only fires when someone
+ * asks: it is the one section whose answer costs a lookup against the runs
+ * database, and most drawer opens never expand it.
+ */
+function UsedByRuns({ entryKey }: { entryKey?: string }) {
+  const [open, setOpen] = useState(false);
+  const runs = useCacheEntryRuns(entryKey, { enabled: open });
+  const cases = runs.data?.cases ?? [];
+
+  return (
+    <CollapsibleSection
+      title="Used by runs"
+      open={open}
+      onOpenChange={setOpen}
+      meta={runs.data ? String(cases.length) : undefined}
+    >
+      {runs.isPending ? (
+        <CenteredSpinner label="Looking up runs…" />
+      ) : runs.isError ? (
+        <ErrorState error={runs.error} onRetry={() => runs.refetch()} />
+      ) : cases.length === 0 ? (
+        // Not "this entry is unused". A run only carries the key if it was
+        // recorded by a version that wrote one, and older runs cannot be
+        // backfilled — the key is derived from ingredients a stored run
+        // document does not contain.
+        <p className="text-sm text-muted">
+          No run on this server records having used this entry. Runs recorded
+          before cache keys were tracked cannot be linked, so this is not
+          evidence that the entry is unused.
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {cases.map((c) => (
+            <li key={`${c.run_id}:${c.case_key}`} className="text-sm">
+              <Link
+                to={`/runs/${encodeURIComponent(c.run_id)}?case=${encodeURIComponent(c.case_key)}`}
+                className="text-accent hover:underline"
+              >
+                {c.name ?? c.case_key}
+              </Link>
+              <span className="text-muted">
+                {" · "}
+                {c.project ?? "—"}/{c.suite ?? "—"} · {formatRelative(c.created_at)}
+              </span>
+              {c.cached ? (
+                <Chip tone="neutral" size="xs" className="ml-2">
+                  cached
+                </Chip>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </CollapsibleSection>
   );
 }
 

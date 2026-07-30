@@ -523,6 +523,14 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       };
       return json(res);
     }
+    if (
+      method === "GET" &&
+      seg[1] === "entries" &&
+      seg.length === 4 &&
+      seg[3] === "runs"
+    ) {
+      return json(fx.cacheEntryRuns(decodeURIComponent(seg[2] as string)));
+    }
     if (method === "GET" && seg[1] === "entries" && seg.length === 3) {
       const key = decodeURIComponent(seg[2] as string);
       const detail = fx.cacheEntryDetail(key, p.get("raw") === "true");

@@ -131,6 +131,8 @@ export type { CacheEntryListResponse } from "./generated/CacheEntryListResponse"
 export type { CacheEntryDetail } from "./generated/CacheEntryDetail";
 export type { CacheFacet } from "./generated/CacheFacet";
 export type { CacheFacetsResponse } from "./generated/CacheFacetsResponse";
+export type { CacheEntryRunRef } from "./generated/CacheEntryRunRef";
+export type { CacheEntryRunsResponse } from "./generated/CacheEntryRunsResponse";
 export type { CacheTier } from "./generated/CacheTier";
 export type { CacheTierMeta } from "./generated/CacheTierMeta";
 export type { CacheSort } from "./generated/CacheSort";

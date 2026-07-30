@@ -630,3 +630,91 @@ async fn an_unusable_local_cache_path_is_not_fatal() {
         StatusCode::NOT_FOUND
     );
 }
+
+// ---------------------------------------------------------------------------
+// Runs ↔ cache cross-link
+// ---------------------------------------------------------------------------
+
+/// Upload a run whose first case was addressed by `key`.
+async fn upload_run_using(app: &axum::Router, run_id: &str, key: &str) {
+    let mut run = simple_run(run_id);
+    run.cases[0].cache_key = Some(key.to_string());
+    let reply = post_json(app, "/api/v1/runs", None, &run_value(&run)).await;
+    assert!(
+        reply.status.is_success(),
+        "seeding run {run_id}: {}",
+        reply.status
+    );
+}
+
+#[tokio::test]
+async fn an_entry_names_the_runs_that_used_it() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let key = store(&app, "linked", &entry()).await;
+    upload_run_using(&app, "r-linked-1", &key).await;
+    upload_run_using(&app, "r-linked-2", &key).await;
+    // A run that used a different entry must not appear.
+    upload_run_using(&app, "r-other", &key_for("elsewhere")).await;
+
+    let body: Value = get(&app, &format!("/api/v1/cache/entries/{key}/runs"))
+        .await
+        .json();
+    let cases = body["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 2);
+    let ids: Vec<&str> = cases
+        .iter()
+        .map(|c| c["run_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&"r-linked-1") && ids.contains(&"r-linked-2"),
+        "{ids:?}"
+    );
+}
+
+/// The state every reader has to render honestly. A run recorded before the
+/// column existed cannot be backfilled — the key is derived from ingredients a
+/// stored document does not contain — so an empty list means "nothing here
+/// says so", not "this entry is unused".
+#[tokio::test]
+async fn a_run_recorded_without_a_key_does_not_link() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let key = store(&app, "unlinked", &entry()).await;
+    let run = simple_run("r-legacy");
+    assert!(run.cases[0].cache_key.is_none());
+    post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+
+    let body: Value = get(&app, &format!("/api/v1/cache/entries/{key}/runs"))
+        .await
+        .json();
+    assert!(body["cases"].as_array().unwrap().is_empty());
+    assert!(body["next_cursor"].is_null());
+}
+
+#[tokio::test]
+async fn the_cross_link_is_readable_without_admin() {
+    // Addressed by a key you must already know, and the runs it names are
+    // already browsable at `read` — so it matches `detail`, not `list`.
+    let settings = Settings {
+        tokens: Some("admin:domarinn_ops,write:domarinn_ci".to_string()),
+        auth_mode: Some(AuthMode::ProtectWrites),
+        ..Default::default()
+    };
+    let (app, _dir) = test_app_with_mode(settings, AuthMode::ProtectWrites).await;
+    let key = store_as(&app, "scopedlink", &entry(), Some("domarinn_ci")).await;
+
+    assert_eq!(
+        get_auth(&app, &format!("/api/v1/cache/entries/{key}/runs"), None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn an_invalid_key_on_the_cross_link_is_a_400() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    assert_eq!(
+        get(&app, "/api/v1/cache/entries/nope/runs").await.status,
+        StatusCode::BAD_REQUEST
+    );
+}

@@ -125,6 +125,10 @@ pub fn router(state: AppState) -> Router {
             get(crate::cachebrowse::detail),
         )
         .route(
+            "/api/v1/cache/entries/{key}/runs",
+            get(crate::cachebrowse::entry_runs),
+        )
+        .route(
             "/api/v1/cache/{key}",
             get(cache_get).head(cache_head).put(cache_put),
         )

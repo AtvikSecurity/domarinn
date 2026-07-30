@@ -364,6 +364,43 @@ pub(super) fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE runs ADD COLUMN grader_cost_microusd   INTEGER;
         "#,
         ),
+        // Migration 13: promote the provider call's cache key, so a cached case
+        // links to the entry that answered it and an entry can name the runs
+        // that used it.
+        //
+        // No backfill, and no sentinel — migration 8's reason rather than
+        // migration 7's. `CaseResult.cache_key` is *new*: no run recorded
+        // before it can carry one, so NULL here means exactly "this case had no
+        // key" and always will.
+        //
+        // Worth being precise that a backfill is not merely expensive but
+        // impossible. The key is
+        // `request_cache_key(canonical_request, repeat, provider_salt,
+        // case_salt)`, and a stored run document holds none of those three
+        // ingredients: `CaseResult.request` is a *preview* envelope, not the
+        // canonical request (`exec`'s canonical strips `test`; `http` declines
+        // a preview outright to avoid persisting env-templated credentials;
+        // `--no-raw` drops it), and neither salt appears anywhere in the
+        // document. A backfill would produce wrong keys, not missing ones.
+        //
+        // So this is a contract, exactly as migration 9's is: cross-linking
+        // works between an entry and a run produced by this version or later,
+        // and every reader must render absence as unknown rather than as "no
+        // cache was used".
+        M::up(
+            r#"
+        ALTER TABLE cases ADD COLUMN cache_key TEXT;
+
+        -- Partial, matching the lookup's predicate exactly. `cache_key = ?1`
+        -- provably implies `cache_key IS NOT NULL`, so SQLite will use it — and
+        -- the NULL population here is every row ever written before this
+        -- migration, which a full index would carry forever for nothing. See
+        -- migration 11 for the matching rule, and for why no COALESCE may
+        -- appear on either side.
+        CREATE INDEX idx_cases_cache_key ON cases(cache_key)
+            WHERE cache_key IS NOT NULL;
+        "#,
+        ),
     ])
 }
 

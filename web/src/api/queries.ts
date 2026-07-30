@@ -12,6 +12,7 @@ import type {
   AuthScope,
   CacheEntryDetail,
   CacheEntryListResponse,
+  CacheEntryRunsResponse,
   CacheFacetsResponse,
   CacheStatsResponse,
   CaseHistoryResponse,
@@ -68,6 +69,7 @@ export const qk = {
   cacheEntry: (key: string, raw: boolean) =>
     ["cache", "entry", key, raw] as const,
   cacheFacets: ["cache", "facets"] as const,
+  cacheEntryRuns: (key: string) => ["cache", "entryRuns", key] as const,
 };
 
 export function useMeta() {
@@ -415,6 +417,30 @@ export function useCacheEntry(
       }),
     enabled: (opts.enabled ?? true) && !!key,
     staleTime: Infinity,
+  });
+}
+
+/**
+ * Which runs used an entry.
+ *
+ * Gated on the drawer section being open: this is the one section whose answer
+ * costs a query against the runs database, and most drawer opens never expand
+ * it.
+ */
+export function useCacheEntryRuns(
+  key: string | undefined,
+  opts: { enabled?: boolean } = {},
+) {
+  return useQuery({
+    queryKey: qk.cacheEntryRuns(key ?? ""),
+    queryFn: ({ signal }) =>
+      apiRequest<CacheEntryRunsResponse>(
+        `/cache/entries/${encodeURIComponent(key!)}/runs`,
+        { signal },
+      ),
+    enabled: (opts.enabled ?? true) && !!key,
+    // Runs can be added later, so this is not immutable the way an entry is.
+    staleTime: 60_000,
   });
 }
 

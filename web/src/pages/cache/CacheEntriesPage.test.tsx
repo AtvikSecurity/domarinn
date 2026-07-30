@@ -152,6 +152,38 @@ describe("CacheEntryDrawer", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not look up runs until the section is expanded", async () => {
+    // The one section whose answer costs a query against the runs database.
+    const user = userEvent.setup();
+    const linked = fx.cacheEntryList().find((e) => fx.cacheEntryRuns(e.key).cases.length > 0);
+    renderPage(`/cache/entries?entry=${encodeURIComponent(linked!.key)}`);
+
+    const dialog = await screen.findByRole("dialog");
+    const toggle = await within(dialog).findByRole("button", { name: /Used by runs/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(toggle);
+    expect(await within(dialog).findByRole("link", { name: /refund policy/i })).toBeInTheDocument();
+  });
+
+  it("says an empty run list is not evidence the entry is unused", async () => {
+    // A run only carries the key if it was recorded by a version that wrote
+    // one, and no backfill can supply it — so silence has to be explained.
+    const user = userEvent.setup();
+    const unlinked = fx
+      .cacheEntryList()
+      .find((e) => e.parseable === true && fx.cacheEntryRuns(e.key).cases.length === 0);
+    renderPage(`/cache/entries?entry=${encodeURIComponent(unlinked!.key)}`);
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      await within(dialog).findByRole("button", { name: /Used by runs/i }),
+    );
+    expect(
+      await within(dialog).findByText(/not evidence that the entry is unused/i),
+    ).toBeInTheDocument();
+  });
+
   it("keeps a large entry's output collapsed on open", async () => {
     // Decided from the row's `size`, before the detail request lands — a 4 MiB
     // entry is 4 MiB of output, and auto-expanding it would hang the tab.

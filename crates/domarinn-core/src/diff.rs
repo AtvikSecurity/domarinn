@@ -186,6 +186,7 @@ mod tests {
 
     fn case(key: &str, status: CaseStatus, output: &str) -> CaseResult {
         CaseResult {
+            cache_key: None,
             tool_calls: Vec::new(),
             cell: CellKey {
                 provider_id: "p".into(),

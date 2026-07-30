@@ -658,7 +658,9 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
         UserListResponse,
     };
     use crate::dto::cache::{CacheStatsResponse, PruneResponse};
-    use crate::dto::cacheentries::{CacheEntryDetail, CacheEntryListResponse, CacheFacetsResponse};
+    use crate::dto::cacheentries::{
+        CacheEntryDetail, CacheEntryListResponse, CacheEntryRunsResponse, CacheFacetsResponse,
+    };
     use crate::dto::cases::CaseListResponse;
     use crate::dto::compare::CompareResponse;
     use crate::dto::config::RunConfigResponse;
@@ -687,6 +689,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     CacheEntryListResponse::export_all(&cfg)?;
     CacheEntryDetail::export_all(&cfg)?;
     CacheFacetsResponse::export_all(&cfg)?;
+    CacheEntryRunsResponse::export_all(&cfg)?;
     // Query-string enums: `Deserialize`-only, so unreachable from any response
     // graph, and listed as their own roots for the same reason
     // `RunStatusFilter` is — the browse UI imports them to build its controls.

@@ -256,6 +256,27 @@ pub struct CaseResult {
     pub wall_ms: Option<u64>,
     #[serde(default)]
     pub cached: bool,
+    /// The cache key this case's provider call was addressed by, when it had
+    /// one.
+    ///
+    /// Recorded whether the call hit or missed. The key is a property of the
+    /// *request*, so a miss that wrote an entry and a hit that read one carry
+    /// the same value — which is what makes "which runs used this entry"
+    /// answerable at all, rather than only "which runs were cache hits".
+    ///
+    /// `None` is a real and common state, not just a legacy one: `--no-cache`,
+    /// a provider that declines caching, a call with no stable canonical
+    /// request, and every run recorded before this field existed.
+    ///
+    /// A `String`, not a `CacheKey`: that type lives in `domarinn-core`, which
+    /// `tests/boundary.rs` forbids this crate from depending on.
+    ///
+    /// Grader keys are deliberately absent. One case makes up to three graded
+    /// calls, each with its own key; if those are ever wanted they belong on
+    /// [`AssertResult`], not folded into one field here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cache_key: Option<String>,
     #[serde(default)]
     pub attempts: u32,
     /// Identity of what this case asked the model — rendered prompt, rendered
@@ -671,5 +692,58 @@ mod tests {
             assert_eq!(status.as_str().parse::<CaseStatus>().unwrap(), status);
         }
         assert!("bogus".parse::<CaseStatus>().is_err());
+    }
+
+    /// The smallest document the current `CaseResult` accepts.
+    fn minimal_case() -> &'static str {
+        r#"{
+            "cell": {"provider_id": "p", "test_id": "t"},
+            "case_key": "0011223344556677",
+            "status": "pass",
+            "score": 1.0,
+            "output": "hello",
+            "asserts": [],
+            "latency_ms": 12
+        }"#
+    }
+
+    /// The compatibility contract that makes `cache_key` additive rather than a
+    /// schema-version bump: a document written before the field existed still
+    /// parses, and one written by a client that has no key omits it entirely.
+    ///
+    /// This holds because nothing in this crate uses `deny_unknown_fields` —
+    /// which is also why `docs/reference/server.md`'s claim that an unknown
+    /// field fails ingest validation is wrong.
+    #[test]
+    fn a_case_recorded_before_cache_key_existed_still_parses() {
+        let case: CaseResult = serde_json::from_str(minimal_case()).expect("parses");
+        assert!(case.cache_key.is_none());
+    }
+
+    #[test]
+    fn an_unknown_field_does_not_fail_a_case_document() {
+        let mut doc: serde_json::Value = serde_json::from_str(minimal_case()).unwrap();
+        doc["a_field_from_a_newer_domarinn"] = serde_json::json!(42);
+        assert!(serde_json::from_value::<CaseResult>(doc).is_ok());
+    }
+
+    #[test]
+    fn a_case_with_no_key_omits_it_from_the_wire() {
+        let case: CaseResult = serde_json::from_str(minimal_case()).unwrap();
+        let wire = serde_json::to_value(&case).unwrap();
+        assert!(wire.get("cache_key").is_none(), "{wire}");
+    }
+
+    #[test]
+    fn a_recorded_cache_key_round_trips() {
+        let key = "sha256:".to_string() + &"ab".repeat(32);
+        let mut doc: serde_json::Value = serde_json::from_str(minimal_case()).unwrap();
+        doc["cache_key"] = serde_json::json!(key);
+        let case: CaseResult = serde_json::from_value(doc).unwrap();
+        assert_eq!(case.cache_key.as_deref(), Some(key.as_str()));
+        assert_eq!(
+            serde_json::to_value(&case).unwrap()["cache_key"],
+            serde_json::json!(key)
+        );
     }
 }

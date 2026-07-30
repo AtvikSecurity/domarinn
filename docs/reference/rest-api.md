@@ -136,6 +136,7 @@ The content-addressed cache lets many CI runs share every request domarinn makes
 |--------|------|-------|-------|
 | GET | `/api/v1/cache/entries` | `admin` | List entries. Filters: `kind`, `model`, `q`, `since`, `until`, `min_cost_microusd`, `max_cost_microusd`, `tier`. Sort: `sort=created\|last_access\|size\|cost` with `order=desc\|asc`. Paginates by opaque `cursor` (`limit` default `50`, max `200`). |
 | GET | `/api/v1/cache/entries/{key}` | `read` | One entry, parsed. `?raw=true` also returns the provider's raw metadata, which is withheld by default. |
+| GET | `/api/v1/cache/entries/{key}/runs` | `read` | Cases whose provider call was addressed by this key, newest run first. Cursor paginated. |
 | GET | `/api/v1/cache/facets` | `admin` | Values the `kind` and `model` filters can take, with counts, plus `total` / `unindexed` / `unparseable`. |
 
 **Listing is `admin`; reading one entry is `read`.** That asymmetry is deliberate.
@@ -169,6 +170,13 @@ wants to look at them.
 
 `sort=cost` lists only entries whose cost is known. Ordering by an unknown value
 is meaningless, and the NULL tail would also stop keyset pagination dead.
+
+**An empty `…/runs` list is ambiguous, and readers must say so.** A case carries
+its cache key only if it was recorded by a version that wrote one, and older
+runs cannot be backfilled: the key is derived from the canonical request plus
+the repeat index and salts, and a stored run document contains none of those —
+a backfill would produce *wrong* keys, not missing ones. So "no runs" means
+"nothing on this server records having used it", never "this entry is unused".
 
 ### Indexed metadata
 

@@ -30,6 +30,7 @@ export { compareRuns } from "./fixtures/compare";
 export {
   cacheEntryDetail,
   cacheEntryList,
+  cacheEntryRuns,
   cacheFacets,
 } from "./fixtures/cacheEntries";
 export {

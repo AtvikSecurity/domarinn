@@ -51,6 +51,7 @@ pub(super) fn error_case(
         // An errored cell never reached a response, so there is nothing to
         // report — not even an empty claim about what the model decided.
         tool_calls: Vec::new(),
+        cache_key: failure.cache_key.map(|k| k.0),
         cell,
         case_key,
         name,

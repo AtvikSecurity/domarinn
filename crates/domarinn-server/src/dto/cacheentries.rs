@@ -100,6 +100,33 @@ pub struct CacheEntryDetail {
     pub raw: Option<Json>,
 }
 
+/// One case that used an entry.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct CacheEntryRunRef {
+    pub run_id: String,
+    pub project: Option<String>,
+    pub suite: Option<String>,
+    pub created_at: String,
+    pub case_key: String,
+    pub name: Option<String>,
+    pub status: String,
+    /// Whether this particular case was served from cache. A miss that *wrote*
+    /// the entry is listed too — the key belongs to the request, so both are
+    /// runs that used this entry.
+    pub cached: bool,
+}
+
+/// `GET /cache/entries/{key}/runs` response.
+///
+/// An empty list is ambiguous and readers must say so: cross-linking only works
+/// for runs recorded by a version that wrote the key, and no backfill can
+/// supply it for older ones. "No runs" is not evidence that an entry is unused.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct CacheEntryRunsResponse {
+    pub cases: Vec<CacheEntryRunRef>,
+    pub next_cursor: Option<String>,
+}
+
 /// One value a filter can take, and how many entries carry it.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct CacheFacet {

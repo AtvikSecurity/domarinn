@@ -31,7 +31,7 @@ use crate::auth::{Admin, Read, Scoped};
 use crate::domain::{CacheSort, CacheTier, SortOrder};
 use crate::extract::ApiQuery;
 use crate::routes::{clamp_limit, not_found, validate_cache_key, ApiResult};
-use crate::storage::{decode_entry_cursor, parse_time_ms, CacheListFilter};
+use crate::storage::{decode_entry_cursor, decode_run_cursor, parse_time_ms, CacheListFilter};
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +61,13 @@ pub(crate) struct DetailQuery {
     /// Include the provider's raw metadata. Off by default: it is the largest
     /// member of an entry and the least often wanted.
     raw: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EntryRunsQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +133,29 @@ pub(crate) async fn detail(
         Some(detail) => Ok(Json(detail).into_response()),
         None => Err(not_found("cache entry")),
     }
+}
+
+/// Which runs used this entry.
+///
+/// `Scoped<Read>`, matching [`detail`] rather than [`list`]: it is addressed by
+/// a key you must already know, and the runs it names are already browsable at
+/// the same scope.
+pub(crate) async fn entry_runs(
+    _scope: Scoped<Read>,
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    ApiQuery(q): ApiQuery<EntryRunsQuery>,
+) -> ApiResult<Response> {
+    validate_cache_key(&key)?;
+    let page = state
+        .storage
+        .cache_entry_runs(
+            key,
+            clamp_limit(q.limit),
+            q.cursor.as_deref().and_then(decode_run_cursor),
+        )
+        .await?;
+    Ok(Json(page).into_response())
 }
 
 pub(crate) async fn facets(
