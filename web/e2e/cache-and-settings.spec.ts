@@ -17,6 +17,10 @@ test.describe("Cache stats page", () => {
     await expect(page.getByText("19,233")).toBeVisible();
 
     await expect(page.getByRole("heading", { name: "Prune cache" })).toBeVisible();
+
+    // The way into the browser. Hidden for a non-admin, since listing entries
+    // is admin-scoped on the server.
+    await expect(page.getByRole("link", { name: /Browse entries/ })).toBeVisible();
   });
 });
 

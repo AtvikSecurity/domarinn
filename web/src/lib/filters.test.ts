@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeCacheFilterCount,
   activeRunsFilterCount,
+  cacheRequestFilters,
   mergeParams,
   mergeParamsResetting,
   parseCaseFilters,
@@ -167,5 +169,53 @@ describe("origin + actor facets", () => {
       Object.fromEntries(RUNS_FILTER_KEYS.map((k) => [k, undefined])),
     );
     expect(activeRunsFilterCount(cleared)).toBe(0);
+  });
+});
+
+describe("cacheRequestFilters", () => {
+  it("defaults to newest first when the url says nothing", () => {
+    expect(cacheRequestFilters({})).toEqual({ sort: "created", order: "desc" });
+  });
+
+  it("keeps sort in the request — it is a server key on this page", () => {
+    const request = cacheRequestFilters({ sort: "-size", model: "gpt-4o" });
+    expect(request.sort).toBe("size");
+    expect(request.order).toBe("desc");
+    expect(request.model).toBe("gpt-4o");
+  });
+
+  it("splits an ascending sort into column and order", () => {
+    expect(cacheRequestFilters({ sort: "cost" })).toEqual({
+      sort: "cost",
+      order: "asc",
+    });
+  });
+
+  it("falls back to the default for a column the server would reject", () => {
+    // A junk value in a shared URL should render the page, not a 400.
+    expect(cacheRequestFilters({ sort: "-bogus" })).toEqual({
+      sort: "created",
+      order: "desc",
+    });
+  });
+
+  it("drops the drawer selection, which means nothing to the server", () => {
+    const request = cacheRequestFilters({ entry: "sha256:abc", kind: "judge" });
+    expect(request).not.toHaveProperty("entry");
+    expect(request.kind).toBe("judge");
+  });
+});
+
+describe("activeCacheFilterCount", () => {
+  it("ignores tier, sort and the open drawer", () => {
+    const sp = new URLSearchParams(
+      "tier=local&sort=-size&entry=sha256:abc",
+    );
+    expect(activeCacheFilterCount(sp)).toBe(0);
+  });
+
+  it("counts real narrowings", () => {
+    const sp = new URLSearchParams("kind=judge&model=gpt-4o&q=refund");
+    expect(activeCacheFilterCount(sp)).toBe(3);
   });
 });

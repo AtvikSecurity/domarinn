@@ -10,6 +10,8 @@
 import type {
   ApiKeyListResponse,
   AuthScope,
+  CacheEntryListItem,
+  CacheEntryListResponse,
   CaseListResponse,
   OkResponse,
   PruneResponse,
@@ -93,6 +95,71 @@ function derivedRunStatus(r: RunListItem): string {
   if (r.error_count > 0) return "error";
   if (r.fail_count > 0) return "fail";
   return "pass";
+}
+
+/**
+ * Mirrors `storage/cachebrowse.rs`. The sort matters as much as the filters:
+ * this is the first mock handler that orders anything, and the entries page
+ * sorts SERVER-side, so a mock that returned insertion order would let a green
+ * e2e hide a broken ordering.
+ *
+ * SQLite orders NULLs first ascending / last descending; `nullsLast` below
+ * reproduces that rather than letting a JS comparator put them wherever.
+ */
+function filterCacheEntries(
+  rows: CacheEntryListItem[],
+  p: URLSearchParams,
+): CacheEntryListItem[] {
+  const kind = p.get("kind");
+  const model = p.get("model");
+  const q = p.get("q")?.toLowerCase();
+  const since = p.get("since");
+  const until = p.get("until");
+
+  const matched = rows.filter((r) => {
+    // The two pseudo-values name a state rather than a kind.
+    if (kind === "unindexed") return !r.indexed;
+    if (kind === "unparseable") return r.parseable === false;
+    if (kind && r.kind !== kind) return false;
+    if (model && r.model !== model) return false;
+    if (since && parseTimestamp(r.created_at) < Number(since)) return false;
+    if (until && parseTimestamp(r.created_at) > Number(until)) return false;
+    if (q) {
+      const haystack = `${r.output_preview ?? ""} ${r.request_summary ?? ""}`;
+      if (!haystack.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+
+  const column = p.get("sort") ?? "created";
+  const desc = (p.get("order") ?? "desc") === "desc";
+  const value = (r: CacheEntryListItem): number | null => {
+    switch (column) {
+      case "size":
+        return r.size;
+      case "cost":
+        return r.cost_usd;
+      case "last_access":
+        return r.last_access_at ? parseTimestamp(r.last_access_at) : null;
+      default:
+        return parseTimestamp(r.created_at);
+    }
+  };
+  // The server excludes unknown cost outright when sorting by it, because
+  // ordering by an unknown value is meaningless and the NULL tail also stops
+  // its keyset pagination.
+  const sortable =
+    column === "cost" ? matched.filter((r) => r.cost_usd !== null) : matched;
+
+  return [...sortable].sort((a, b) => {
+    const av = value(a);
+    const bv = value(b);
+    if (av === null && bv === null) return a.key < b.key ? 1 : -1;
+    if (av === null) return desc ? 1 : -1;
+    if (bv === null) return desc ? -1 : 1;
+    if (av === bv) return (a.key < b.key ? 1 : -1) * (desc ? 1 : -1);
+    return desc ? bv - av : av - bv;
+  });
 }
 
 /** Mirrors the server's FULLY_CACHED predicate (storage/runs.rs). */
@@ -435,6 +502,24 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
   if (seg[0] === "cache") {
     if (method === "GET" && seg[1] === "stats") {
       return json(fx.cacheStats());
+    }
+    if (method === "GET" && seg[1] === "facets") {
+      return json(fx.cacheFacets());
+    }
+    if (method === "GET" && seg[1] === "entries" && seg.length === 2) {
+      const filtered = filterCacheEntries(fx.cacheEntryList(), p);
+      const { page, next_cursor } = paginate(filtered, p);
+      const res: CacheEntryListResponse = {
+        entries: page,
+        next_cursor: next_cursor ?? null,
+        truncated: false,
+      };
+      return json(res);
+    }
+    if (method === "GET" && seg[1] === "entries" && seg.length === 3) {
+      const key = decodeURIComponent(seg[2] as string);
+      const detail = fx.cacheEntryDetail(key, p.get("raw") === "true");
+      return detail ? json(detail) : notFound();
     }
     if (method === "POST" && seg[1] === "prune") {
       // Admin action: exercise the 401 -> /login redirect when unauthenticated.

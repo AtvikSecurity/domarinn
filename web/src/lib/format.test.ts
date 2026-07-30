@@ -8,6 +8,7 @@ import {
   formatTokens,
   parseTimestamp,
   passRate,
+  shortCacheKey,
 } from "./format";
 
 describe("formatTokens", () => {
@@ -93,5 +94,19 @@ describe("formatDate / formatRelative on RFC3339 strings", () => {
     expect(formatRelative(undefined)).toBe("-");
     expect(formatRelative(null)).toBe("-");
     expect(formatRelative("not-a-real-timestamp")).toBe("-");
+  });
+});
+
+describe("shortCacheKey", () => {
+  it("keeps both ends so two keys stay distinguishable", () => {
+    const key = `sha256:${"ab".repeat(32)}`;
+    expect(shortCacheKey(key)).toBe("ababab…abab");
+  });
+
+  it("returns anything that is not a well-formed key untouched", () => {
+    // Better to show the odd value than a tidy fiction about it.
+    expect(shortCacheKey("md5:abc")).toBe("md5:abc");
+    expect(shortCacheKey("sha256:short")).toBe("sha256:short");
+    expect(shortCacheKey("")).toBe("");
   });
 });

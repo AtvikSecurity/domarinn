@@ -153,6 +153,23 @@ The distinction is worth internalising because the two numbers get confused cons
 
 ---
 
+## Cache entries
+
+`Browse entries →` leads from the stats page to the entries table, which answers the question the tiles cannot: *what is actually in there*.
+
+Each row is one cached exchange — its key, what kind of call it answered (`provider`, `judge`, `embedding`, `exec_assert`), the model, where the request went, tokens, cost, size, and when it was created and last used. Filter by kind or model, narrow by date, or search the request and output text. Sorting is done by the server, not within the loaded page, so `Size` really does surface the largest entry in the cache rather than the largest one currently on screen — which is why only the four columns the database can order by are sortable.
+
+Clicking a row opens a drawer with the request beside the response it produced, plus reasoning, tool calls, and the provider's raw metadata on request. Two states are worth recognising:
+
+- **`indexing…`** — the entry is listed but its body has not been read yet, so its model, kind and cost are *unknown* rather than absent. Filters and search cannot reach it until the background pass catches up; the stats page reports how many are left.
+- **`opaque`** — this server could not parse the entry. It is stored and served to clients unchanged; most often it was written by a newer domarinn. Nothing is lost, there is simply nothing to describe.
+
+Entries written before 0.5 predate request capture, so their drawer shows the fingerprint of the provider that answered instead of the request itself.
+
+**Listing entries is an admin action**, and deliberately more restricted than reading one. A cache key is a hash of the exact request, so fetching one by key never revealed anything the caller did not already have. Enumerating does: it turns "you already know the prompt" into every prompt and response on the server, searchable. Since `read` is the anonymous scope under `protect-writes`, that belongs with `Prune cache…` rather than with the run views.
+
+---
+
 ## Settings
 
 ![Account, appearance, MCP, and server info](../assets/screenshots/settings-light.png#only-light)
