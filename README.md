@@ -48,7 +48,7 @@ docker run -p 8321:8321 -v domarinn-data:/data ghcr.io/atviksecurity/domarinn:ro
 > **not** — it builds the CLI only, so `domarinn server` will serve a placeholder
 > page. Build the UI first (`mise run install`) if you want it.
 
-See [docs/getting-started.md](docs/getting-started.md) for `aarch64`, checksum verification, pinned versions, and building from source.
+See [docs/start/install.md](docs/start/install.md) for `aarch64`, checksum verification, pinned versions, and building from source.
 
 ## Quick start
 
@@ -87,18 +87,18 @@ tests:
       - { type: icontains, value: "hello" }
 ```
 
-See **[docs/getting-started.md](docs/getting-started.md)** for a full walkthrough.
+See **[docs/start/first-eval.md](docs/start/first-eval.md)** for a full walkthrough.
 
 ## Documentation
 
 Full documentation is published at **<https://docs.domarinn.com/>** (source in [`docs/`](docs/)):
 
-- [Getting started](docs/getting-started.md) · [domarinn.yaml](docs/reference/domarinn-yaml.md) · [Assertions](docs/reference/assertions.md) · [Providers](docs/reference/providers.md)
+- [Start here](docs/start/install.md) · [domarinn.yaml](docs/reference/domarinn-yaml.md) · [Assertions](docs/reference/assertions.md) · [Providers](docs/reference/providers.md)
 - [Grading](docs/concepts/grading.md) · [Caching](docs/concepts/caching.md) · [Statistics](docs/concepts/statistics.md) · [CLI reference](docs/reference/cli.md)
-- [Server & accounts](docs/reference/server.md) · [Self-hosting](docs/guides/self-host.md) · [CI integration](docs/ci.md) · [Exec protocol](docs/reference/protocol.md)
+- [Server & accounts](docs/reference/server.md) · [Self-hosting](docs/guides/self-host.md) · [Gate a PR in CI](docs/guides/gate-in-ci.md) · [Exec protocol](docs/reference/protocol.md)
 - [MCP endpoint](docs/reference/mcp.md#mcp-endpoint) · [Claude Code plugin](plugin/README.md)
 - **[Examples](docs/examples/index.md)** — 32 runnable suites, one capability each, every one executed in CI
-- **[Scenarios](docs/scenarios/index.md)** · [How a run works](docs/concepts/how-a-run-works.md) · [Troubleshooting](docs/troubleshooting.md) · [Migrating from promptfoo](docs/migrate-promptfoo.md)
+- **[Guides](docs/guides/index.md)** · [How a run works](docs/concepts/how-a-run-works.md) · [Troubleshooting](docs/guides/troubleshooting.md) · [Migrating from promptfoo](docs/guides/migrate-promptfoo.md)
 
 ## For agents
 
@@ -158,7 +158,7 @@ Every source file is kept under 1000 lines (enforced by a ratchet test), and CI 
 
 Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) — it covers the setup, the single `mise run ci` gate, and the [Conventional Commit PR title](CONTRIBUTING.md#naming-a-pull-request) that drives releases. Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Releases are automated with [Release Please](https://github.com/googleapis/release-please): merging a `feat:` or `fix:` PR opens a release PR, and merging that publishes the tag, the binaries, and the container image. See [docs/ci.md](docs/ci.md#releases).
+Releases are automated with [Release Please](https://github.com/googleapis/release-please): merging a `feat:` or `fix:` PR opens a release PR, and merging that publishes the tag, the binaries, and the container image. See [CONTRIBUTING.md](CONTRIBUTING.md#releases).
 
 Found a security issue? Please report it privately — see [SECURITY.md](SECURITY.md).
 

@@ -64,7 +64,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 
 ## See also
 
-- [Getting started](../getting-started.md) — install, then write and run your first suite.
+- [Install](../start/install.md) / [Your first eval](../start/first-eval.md) — install, then write and run your first suite.
 - [domarinn.yaml](../reference/domarinn-yaml.md) — the complete `domarinn.yaml` reference.
 - [Assertions](../reference/assertions.md) — every assertion type, weights, thresholds, and short-circuiting.
 - [Providers](../reference/providers.md) — `exec`, `http`, `anthropic`, `openai`, and `embeddings`.

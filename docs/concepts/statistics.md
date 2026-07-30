@@ -161,7 +161,7 @@ A CI gate that only reads the plain pass rate is answering none of these — it 
 
 ## Baselines on the server
 
-The server can mark a run as the **baseline** for a project/suite, and the compare view defaults to it — a stable reference to gate against across CI runs without threading run ids by hand. `--against latest` resolves through a local, cwd-relative run store that a fresh CI checkout does not have; `--against server:baseline` is the one that survives a clean clone. See [CI integration](../ci.md#gating-a-pr-by-hand) for the exit-code contract and [Share a cache across a team](../scenarios/shared-cache.md) for running the server itself.
+The server can mark a run as the **baseline** for a project/suite, and the compare view defaults to it — a stable reference to gate against across CI runs without threading run ids by hand. `--against latest` resolves through a local, cwd-relative run store that a fresh CI checkout does not have; `--against server:baseline` is the one that survives a clean clone. See [CI integration](../guides/gate-in-ci.md#gating-a-pr-by-hand) for the exit-code contract and [Share a cache across a team](../guides/share-cache-and-baselines.md) for running the server itself.
 
 ## A CI-ready pattern
 
@@ -174,4 +174,4 @@ domarinn run \
 # exit 0 pass · 1 regression (block the PR) · 2 unresolvable baseline · 3 the harness broke (retry)
 ```
 
-The reusable GitHub Action wraps exactly this and posts the summary as a PR comment — see [CI integration](../ci.md). `--repeat 5` is what gives McNemar's pairing enough trials to be worth reading and lets pass@k mean something; `--against server:baseline` is what gives the diff a base that survives a fresh checkout; the exit codes are what let a CI job tell "the model regressed" apart from "the harness broke" without a human reading the log.
+The reusable GitHub Action wraps exactly this and posts the summary as a PR comment — see [CI integration](../guides/gate-in-ci.md). `--repeat 5` is what gives McNemar's pairing enough trials to be worth reading and lets pass@k mean something; `--against server:baseline` is what gives the diff a base that survives a fresh checkout; the exit codes are what let a CI job tell "the model regressed" apart from "the harness broke" without a human reading the log.

@@ -191,7 +191,7 @@ DOMARINN_SERVER_URL=https://evals.example domarinn share 01JD3V9GQ8 --strict
 
 ## `domarinn ci-summary [RUN] [flags]`
 
-Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as GitHub Actions step outputs. See [`ci.md`](../ci.md#the-ci-summary-command).
+Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as GitHub Actions step outputs. See [`gate-in-ci.md`](../guides/gate-in-ci.md#the-ci-summary-command).
 
 | Flag | Meaning |
 |---|---|
@@ -273,6 +273,6 @@ Probe **this binary's own** server health and exit `0`/non-zero accordingly. Des
 ## CI usage
 
 - **Validate on every push:** `domarinn validate` (fast, no provider calls).
-- **Gate PRs on eval quality:** `domarinn run --against server:baseline` (exit `1` on regression), or use the reusable action at `.github/actions/domarinn-eval`. See [ci.md](../ci.md).
+- **Gate PRs on eval quality:** `domarinn run --against server:baseline` (exit `1` on regression), or use the reusable action at `.github/actions/domarinn-eval`. See [gate-in-ci.md](../guides/gate-in-ci.md).
 - **Contract-test the schema:** regenerate `domarinn schema config` and fail on drift (wired in `ci.yml`).
 - **Read the exit code**, not just stdout: `1` = the model regressed (block the PR), `3` = the harness broke (retry / page an operator, don't blame the PR).

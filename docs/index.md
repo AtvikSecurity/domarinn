@@ -18,10 +18,10 @@ Read [How a run works](concepts/how-a-run-works.md) first — four ideas that ex
 
 ///
 
-- **[Getting started](getting-started.md)** — install, write and run your first suite offline, add a model and an LLM grader, view and share results.
+- **[Start here](start/install.md)** — install, write and run your first suite offline, add a model and an LLM grader, view and share results.
 - **[Examples](examples/index.md)** — 32 runnable suites, one capability each.
-- **[Scenarios](scenarios/index.md)** — end-to-end walkthroughs for a real situation.
-- **[Migrating from promptfoo](migrate-promptfoo.md)** — `domarinn import promptfoo`, and what changes.
+- **[Guides](guides/index.md)** — end-to-end walkthroughs for a real situation.
+- **[Migrating from promptfoo](guides/migrate-promptfoo.md)** — `domarinn import promptfoo`, and what changes.
 
 ## Guides
 
@@ -30,7 +30,7 @@ Read [How a run works](concepts/how-a-run-works.md) first — four ideas that ex
 | [Grading](concepts/grading.md) | The LLM-rubric grader: structured tool-use / JSON-schema verdicts, fail-closed, grader selection. |
 | [Caching](concepts/caching.md) | The one key rule, every cache knob, salts, backends, and sharing a cache between teammates. |
 | [Statistics](concepts/statistics.md) | `--repeat`, Wilson confidence intervals, McNemar significance, pass@k, and baselines. |
-| [Troubleshooting](troubleshooting.md) | Symptom, cause, fix — including the several ways a gate can be green and check nothing. |
+| [Troubleshooting](guides/troubleshooting.md) | Symptom, cause, fix — including the several ways a gate can be green and check nothing. |
 
 ## Reference
 
@@ -46,7 +46,7 @@ Read [How a run works](concepts/how-a-run-works.md) first — four ideas that ex
 
 | Doc | What it covers |
 | --- | -------------- |
-| [CI integration](ci.md) | Gating pull requests, the reusable GitHub Action, PR comments, and a shared cache in CI. |
+| [Gate a PR in CI](guides/gate-in-ci.md) | Gating pull requests, the reusable GitHub Action, PR comments, and a shared cache in CI. |
 | [Server](reference/server.md) | The results server, the web UI, and accounts: local logins, roles, API keys, admin, auth modes. |
 | [Self-hosting](guides/self-host.md) | Docker, docker-compose, Kubernetes, backups, and reverse-proxy notes. |
 

@@ -28,7 +28,7 @@ That is not just an implementation detail — it is exactly what [the cache can 
 
 ## Why a process, not a plugin
 
-The alternative to a process boundary is an embedded interpreter or a dynamic plugin: load your code into domarinn's own address space and call it directly. domarinn does not do this, for the reason [the promptfoo migration guide](../migrate-promptfoo.md#what-changes-and-why) states plainly: a process boundary "costs a spawn and buys you a checker you can run and test on its own." Your provider or custom assertion is a normal program in whatever language you already use, runnable and testable without domarinn in the loop at all, immune to a crash taking the harness down with it, and requiring no shared ABI, runtime, or SDK version to line up with domarinn's own.
+The alternative to a process boundary is an embedded interpreter or a dynamic plugin: load your code into domarinn's own address space and call it directly. domarinn does not do this, for the reason [the promptfoo migration guide](../guides/migrate-promptfoo.md#what-changes-and-why) states plainly: a process boundary "costs a spawn and buys you a checker you can run and test on its own." Your provider or custom assertion is a normal program in whatever language you already use, runnable and testable without domarinn in the loop at all, immune to a crash taking the harness down with it, and requiring no shared ABI, runtime, or SDK version to line up with domarinn's own.
 
 ## The consequence: `cache_salt`
 

@@ -53,5 +53,5 @@ The CLI, the engine, the results server and the web UI are one static executable
 - [How a run works](how-a-run-works.md) — the mechanics.
 - [Architecture — one binary](architecture.md) — the crates, the data, the versioned boundaries.
 - [Providers & the exec boundary](exec-boundary.md) — the exec-boundary decision, in full.
-- [Migrating from promptfoo](../migrate-promptfoo.md) — what changes, concretely.
+- [Migrating from promptfoo](../guides/migrate-promptfoo.md) — what changes, concretely.
 - [Examples](../examples/index.md) — each decision above, as something you can run.
