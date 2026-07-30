@@ -1,13 +1,15 @@
 <!-- Ownership: operating semantics (auth model, credential kinds, env vars,
 storage, logging) live in reference/server.md. Procedures (getting it running:
 Docker, compose, Kubernetes, proxies, backups, upgrades, first admin) live in
-guides/self-host.md. The env-var table exists ONLY in reference/server.md. -->
+guides/self-host.md. The per-view UI walkthrough lives in reference/web-ui.md.
+The env-var table exists ONLY in reference/server.md. -->
 
 # The domarinn server & accounts
 
 /// info | This page split
-The REST API moved to [REST API](./rest-api.md), and the MCP endpoint moved to
-[MCP endpoint](./mcp.md). This page keeps operating the server itself: accounts, auth,
+The REST API moved to [REST API](./rest-api.md), the MCP endpoint moved to
+[MCP endpoint](./mcp.md), and the UI walkthrough moved to
+[The web UI](./web-ui.md). This page keeps operating the server itself: accounts, auth,
 environment variables, logging, and storage. For Docker/Kubernetes/backups, see
 [Self-hosting](../guides/self-host.md).
 
@@ -33,7 +35,7 @@ The server runs until Ctrl-C (graceful shutdown). Health is exposed at both `/he
 - [Environment variables](#environment-variables)
 - [Logging & observability](#logging--observability)
 - [Storage](#storage)
-- [Web UI tour](#web-ui-tour)
+- [Web UI](#web-ui)
 
 ---
 
@@ -271,20 +273,9 @@ SQLite is a **single writer**: run exactly one instance against a given data dir
 
 ---
 
-## Web UI tour
+## Web UI
 
-The UI is a single-page app served at the web root (client-side routing; give the service its own hostname, not a path prefix).
+The UI is a single-page app served at the web root out of this same binary (client-side routing; give the service its own hostname, not a path prefix).
 
-| Path                          | Page | What it does |
-|-------------------------------|------|--------------|
-| `/`                           | Overview  | Per-suite status: the latest CI run, its trend, and staleness. Sorted by severity, never by recency. |
-| `/runs`                       | Runs list | Browse and filter runs (project, suite, tag, branch, status, origin, actor). |
-| `/runs/:id`                   | Run detail | The **cases × asserts grid**; click a cell to open the **detail drawer** with the case's output and assertion evidence. |
-| `/runs/:id/compare[/:other]`  | Compare | Base/head run pickers with **regression highlighting** (newly failing cases stand out). |
-| `/cache`                      | Cache stats | Entry count, total size, hit/miss counters. |
-| `/settings`                   | Settings | Instance/account settings. |
-| `/login`                      | Login | Username/password sign-in (mints a session). |
-| `/setup`                      | Setup | First-run admin creation (only while `setup_required`). |
-| `/keys`                       | API keys | Create, view (once), and revoke your API keys. |
-| `/admin`                      | Admin users | Manage accounts (admin-only; guarded in the UI). |
+Its routes, and a screenshot walkthrough of every view, are [The web UI](./web-ui.md).
 
