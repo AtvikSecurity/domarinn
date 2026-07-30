@@ -27,7 +27,7 @@ use crate::dto::meta::{CacheTierMeta, MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
 use crate::dto::search::SearchResponse;
 use crate::extract::{ApiJson, ApiQuery};
-use crate::runsets::RunVisibility;
+use crate::runsets::{GrantLevel, RunVisibility};
 use crate::storage::{
     self, CachePutOutcome, CaseListFilter, IngestOutcome, MatrixFilter, RunListFilter,
 };
@@ -413,6 +413,17 @@ async fn post_run(
             format!("invalid run document: {e}"),
         )
     })?;
+    // The global `write` scope got us here; a restricted target needs an
+    // `upload` grant on top of it. Checked after parsing, because the target
+    // set is a property of the document rather than the URL.
+    require_set_access(
+        &state,
+        &scope.identity,
+        run.project.as_deref(),
+        run.suite.as_deref(),
+    )
+    .await?;
+
     let run_id = run.run_id.clone();
     let uploaded_by = scope.identity.label.clone();
 
@@ -734,11 +745,12 @@ pub(crate) struct BaselineBody {
 }
 
 async fn put_baseline(
-    _scope: Scoped<Write>,
+    scope: Scoped<Write>,
     State(state): State<AppState>,
     Path((project, suite)): Path<(String, String)>,
     ApiJson(body): ApiJson<BaselineBody>,
 ) -> ApiResult<Response> {
+    require_set_access(&state, &scope.identity, Some(&project), Some(&suite)).await?;
     if state
         .storage
         .set_baseline(project.clone(), suite.clone(), body.run_id.clone())
@@ -756,10 +768,11 @@ async fn put_baseline(
 }
 
 async fn delete_baseline(
-    _scope: Scoped<Write>,
+    scope: Scoped<Write>,
     State(state): State<AppState>,
     Path((project, suite)): Path<(String, String)>,
 ) -> ApiResult<Response> {
+    require_set_access(&state, &scope.identity, Some(&project), Some(&suite)).await?;
     if state.storage.delete_baseline(project, suite).await? {
         Ok(StatusCode::NO_CONTENT.into_response())
     } else {
@@ -904,6 +917,37 @@ async fn cache_prune(
 
 pub(crate) fn clamp_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
+}
+
+/// Gate a write on the target run set, on top of whatever global scope the
+/// route already demanded.
+///
+/// A 403 rather than a 404: unlike a run id, the `(project, suite)` pair here
+/// comes from the caller, so refusing it discloses nothing they did not already
+/// name — and a silent 404 on a legitimate upload would be a debugging trap for
+/// whoever runs the CI job.
+async fn require_set_access(
+    state: &AppState,
+    identity: &crate::auth::Identity,
+    project: Option<&str>,
+    suite: Option<&str>,
+) -> ApiResult<()> {
+    let allowed = state
+        .storage
+        .set_access(
+            RunVisibility::of(identity),
+            project.map(str::to_string),
+            suite.map(str::to_string),
+            GrantLevel::Upload,
+        )
+        .await?;
+    if allowed {
+        return Ok(());
+    }
+    Err(ApiError::status(
+        StatusCode::FORBIDDEN,
+        "this run set is restricted; you need an upload grant on it",
+    ))
 }
 
 pub(crate) fn not_found(what: &str) -> ApiError {

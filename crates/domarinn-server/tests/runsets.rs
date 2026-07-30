@@ -779,3 +779,168 @@ async fn the_cache_entry_run_list_is_filtered_too() {
         .unwrap();
     assert_eq!(listed(app, key).await, sorted(&["keyed_open"]));
 }
+
+// ---------------------------------------------------------------------------
+// Writes into a restricted set
+// ---------------------------------------------------------------------------
+
+/// Uploading into `locked` (restricted, project-wide). The global `write` scope
+/// is still required and unchanged; the grant check is an *additional* gate.
+#[tokio::test]
+async fn uploading_into_a_restricted_set_requires_an_upload_grant() {
+    let f = fixture().await;
+
+    let upload = |token: Option<String>, id: &'static str, project: &'static str| {
+        let app = f.app.clone();
+        async move {
+            let run = make_run(
+                id,
+                Some(project),
+                Some("s1"),
+                vec![],
+                Some("main"),
+                1,
+                &[CaseSpec::new("openai", "t1", CaseStatus::Pass)],
+            );
+            post_json(&app, "/api/v1/runs", token.as_deref(), &run_value(&run))
+                .await
+                .status
+        }
+    };
+
+    // The member holding `upload` on the whole project may write into it.
+    assert_eq!(
+        upload(Some(f.grantee.clone()), "up_grantee", "locked").await,
+        StatusCode::CREATED
+    );
+    // An admin is never gated.
+    assert_eq!(
+        upload(Some(f.admin.clone()), "up_admin", "locked").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        upload(Some(ADMIN_TOKEN.to_string()), "up_admin_tok", "locked").await,
+        StatusCode::CREATED
+    );
+
+    // A member with no grant at all.
+    assert_eq!(
+        upload(Some(f.stranger.clone()), "up_stranger", "locked").await,
+        StatusCode::FORBIDDEN
+    );
+    // A shared CI token carries `write` scope but holds no grants.
+    assert_eq!(
+        upload(Some(WRITE_TOKEN.to_string()), "up_ci", "locked").await,
+        StatusCode::FORBIDDEN
+    );
+
+    // Unrestricted sets are untouched: the same tokens still upload freely.
+    assert_eq!(
+        upload(Some(WRITE_TOKEN.to_string()), "up_ci_open", "elsewhere").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        upload(Some(f.stranger.clone()), "up_stranger_open", "elsewhere").await,
+        StatusCode::CREATED
+    );
+}
+
+/// A `view` grant reads; it does not write. The level ordering has to hold at
+/// the route, not just in the storage helper.
+#[tokio::test]
+async fn a_view_only_grant_cannot_upload_into_the_set_it_can_read() {
+    let f = fixture().await;
+    let run = make_run(
+        "up_watcher",
+        Some("open"),
+        Some("private"),
+        vec![],
+        Some("main"),
+        1,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Pass)],
+    );
+    // `watcher` is a viewer, so it lacks `write` scope entirely — grant that
+    // much by using a member who holds only `view` on the same set.
+    let created = post_json(
+        &f.app,
+        "/api/v1/users",
+        Some(&f.admin),
+        &json!({ "username": "viewgrant", "password": PW, "role": "member" }),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let user_id = created.json()["id"].as_str().unwrap().to_string();
+    f._storage
+        .upsert_run_set_grant(
+            "open".into(),
+            Some("private".into()),
+            user_id.into(),
+            GrantLevel::View,
+            None,
+        )
+        .await
+        .unwrap();
+    let token = login(&f.app, "viewgrant").await;
+
+    let r = post_json(&f.app, "/api/v1/runs", Some(&token), &run_value(&run)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.json());
+
+    // The same caller reading that set is fine.
+    let read = get_auth(&f.app, &format!("/api/v1/runs/{R_PRIVATE}"), Some(&token)).await;
+    assert_eq!(read.status, StatusCode::OK);
+}
+
+/// Setting or clearing a suite's baseline is a write into that set, and obeys
+/// the same gate as an upload.
+#[tokio::test]
+async fn setting_a_baseline_on_a_restricted_suite_needs_the_same_grant() {
+    let f = fixture().await;
+    let body = json!({ "run_id": R_LOCKED });
+    let put = |token: Option<String>| {
+        let app = f.app.clone();
+        let body = body.clone();
+        async move {
+            send(
+                &app,
+                "PUT",
+                "/api/v1/projects/locked/suites/s1/baseline",
+                token.as_deref(),
+                None,
+                serde_json::to_vec(&body).unwrap(),
+            )
+            .await
+            .status
+        }
+    };
+    assert_eq!(put(Some(f.stranger.clone())).await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        put(Some(WRITE_TOKEN.to_string())).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(put(Some(f.grantee.clone())).await, StatusCode::OK);
+    assert_eq!(put(Some(f.admin.clone())).await, StatusCode::OK);
+
+    let delete = |token: Option<String>| {
+        let app = f.app.clone();
+        async move {
+            send(
+                &app,
+                "DELETE",
+                "/api/v1/projects/locked/suites/s1/baseline",
+                token.as_deref(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .status
+        }
+    };
+    assert_eq!(
+        delete(Some(f.stranger.clone())).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        delete(Some(f.grantee.clone())).await,
+        StatusCode::NO_CONTENT
+    );
+}
