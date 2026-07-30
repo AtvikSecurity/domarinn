@@ -1,6 +1,6 @@
 # Models, grading & budgets
 
-Eleven suites about talking to a real model and judging what comes back. They cover the OpenAI-compatible and Anthropic providers (native tool calls included), a plain HTTP service you already run and the shapes `output_expr` can pull out of it, and a live endpoint of your own — then a structured LLM rubric judged by either vendor, embedding similarity for when many wordings are right, and the budgets that ask whether an answer was affordable, not just correct. The last one is a different kind of suite: every top-level key at once, annotated as a map of the reference. Read these once you are ready to spend real tokens.
+Twelve suites about talking to a real model and judging what comes back. They cover the OpenAI-compatible and Anthropic providers (native tool calls included), a plain HTTP service you already run and the shapes `output_expr` can pull out of it, and a live endpoint of your own — then a structured LLM rubric judged by either vendor, shown the tool calls when the decision is what you are grading, embedding similarity for when many wordings are right, and the budgets that ask whether an answer was affordable, not just correct. One of them is a different kind of suite: every top-level key at once, annotated as a map of the reference. Read these once you are ready to spend real tokens.
 
 ---
 
@@ -222,3 +222,33 @@ Read it as a map, not as a recommendation. A real suite sets a fraction of these
 A guard in `crates/domarinn-cli/tests/examples/docs_guards.rs` reads the top-level properties out of the committed JSON Schema — the same schema CI pins to the config structs — and fails if this file stops setting one of them. So a key added to the config cannot leave this page quietly incomplete.
 
 ///
+
+---
+
+## Example 40 — A rubric that sees the tool calls
+
+A rubric reads the assistant's **text**. So when the thing you actually care about is whether the assistant *looked something up* rather than answered from memory, the text is the one place that evidence is not — "Order 4471 shipped on Tuesday" reads identically whether it came from the order system or from a confident guess.
+
+`include_tool_calls: true` on the grader block puts the calls the model made into the judge's prompt, as a pretty-printed JSON array of `{"name", "arguments"}` in a `TOOL CALLS` section after `ASSISTANT OUTPUT`. The delegation decision becomes gradeable.
+
+```yaml
+--8<-- "examples/40-rubric-sees-tool-calls/domarinn.yaml"
+```
+
+The system under test is the offline exec provider below. It fills both channels — a call *and* a sentence — which is what makes the point visible: strip the call and the sentence is unchanged, while the rubric's verdict flips.
+
+```python
+--8<-- "examples/40-rubric-sees-tool-calls/agent.py"
+```
+
+/// warning | The rubric has to say it is reading them
+
+Turning the flag on only changes what the judge is *shown*. A rubric that still talks about "the response" grades the prose it always graded, and now pays for a `TOOL CALLS` section nobody asked it about — or, worse, the judge forms an opinion of its own and penalises a call that was perfectly correct.
+
+Name the section, the tool, and the argument, exactly as the rubric here does. Then say what not to penalise: extra arguments, the tool going unmentioned in the prose, brevity.
+
+///
+
+It is opt-in because it costs prompt tokens on every graded cell, and most rubrics have no use for the calls.
+
+**Prefer [`tool-call`](your-own-system.md#example-15--tool-call-assertions) when you can name the call.** It is deterministic, free, and short-circuits before the grader ever runs. A rubric earns its cost only when the question is whether the decision was *right* — which tool, which argument, and whether answering directly would have done just as well.

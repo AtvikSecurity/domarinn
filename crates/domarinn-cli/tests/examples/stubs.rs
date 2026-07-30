@@ -96,6 +96,32 @@ pub const ANTHROPIC_VERDICT_PARTIAL: &str = r#"{
   "usage": {"input_tokens": 176, "output_tokens": 51}
 }"#;
 
+/// An Anthropic `llm-rubric` verdict from a judge that was shown the tool
+/// calls — the counterpart to `include_tool_calls: true` on a grader block.
+///
+/// Same shape as [`ANTHROPIC_VERDICT_PASS`]; only the `reasoning` differs, and
+/// it differs on purpose. That string is what the run document carries and what
+/// a reader of example 40 sees, so a verdict citing only the prose would
+/// illustrate the opposite of the feature the page is about.
+pub const ANTHROPIC_VERDICT_TOOL_AWARE: &str = r#"{
+  "id": "msg_stub",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5",
+  "content": [{
+    "type": "tool_use",
+    "id": "toolu_stub",
+    "name": "submit_verdict",
+    "input": {
+      "reasoning": "TOOL CALLS shows lookup_order with order_id 4471, so the status was retrieved rather than recalled.",
+      "pass": true,
+      "score": 1.0
+    }
+  }],
+  "stop_reason": "tool_use",
+  "usage": {"input_tokens": 214, "output_tokens": 46}
+}"#;
+
 /// Anthropic Messages, calling a tool — the native-API sibling of example 15's
 /// exec `tool_calls`.
 ///
