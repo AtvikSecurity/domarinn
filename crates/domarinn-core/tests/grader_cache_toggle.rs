@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use domarinn_core::cache::{
@@ -155,13 +155,27 @@ async fn the_no_grader_cache_flag_wins_over_cache_grader_true() {
 
 // ── The deprecation warning ──────────────────────────────────────────────────
 
-/// A `MakeWriter` that appends every line into a shared buffer.
-#[derive(Clone)]
-struct BufWriter(Arc<Mutex<Vec<u8>>>);
+thread_local! {
+    /// `Some` only on a thread currently inside [`log_of_a_run`].
+    static CAPTURED: std::cell::RefCell<Option<Vec<u8>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A `MakeWriter` that appends every line into the *calling thread's* buffer.
+///
+/// Thread-local rather than a shared `Arc<Mutex<_>>` because the subscriber
+/// this feeds is installed globally — see [`log_of_a_run`]. A thread that is
+/// not capturing discards.
+#[derive(Clone, Default)]
+struct BufWriter;
 
 impl std::io::Write for BufWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        CAPTURED.with(|slot| {
+            if let Some(captured) = slot.borrow_mut().as_mut() {
+                captured.extend_from_slice(buf);
+            }
+        });
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -196,34 +210,51 @@ tests:
 "#;
 
 /// Run `TWO_CASE_SUITE` with `cache_block` spliced in and return everything it
-/// logged. The capture subscriber is scoped to this thread, and the run happens
-/// on a current-thread runtime inside that scope, so it stays inert for every
-/// other test.
+/// logged on this thread. The run happens on a current-thread runtime, so no
+/// other thread's events can land in this buffer.
+///
+/// The subscriber is installed **globally, once**, not per call via
+/// `tracing::subscriber::with_default`. A scoped dispatcher is visible to one
+/// thread for the length of one scope, and the process-global callsite interest
+/// cache — which `warn!` consults before doing anything else — is rebuilt by
+/// any thread registering a callsite. A rebuild racing that window caches
+/// `Interest::never()` and the event is dropped before reaching the subscriber,
+/// leaving an empty buffer while the run under test behaved perfectly. That is
+/// exactly how the runner's retry-warn test flaked in CI twice; the measurement
+/// and the reasoning are in `runner_tests.rs`'s `capture`, which this mirrors.
+/// The two tests here both call this concurrently, which is the churn that
+/// triggers it.
 fn log_of_a_run(cache_block: &str) -> String {
-    let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_ansi(false)
-        .with_writer(BufWriter(buf.clone()))
-        .finish();
-    let yaml = TWO_CASE_SUITE.replace("CACHE_BLOCK", cache_block);
-
-    tracing::subscriber::with_default(subscriber, || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            let suite = domarinn_core::load_str(&yaml).unwrap();
-            let cache = MemCache::default();
-            let result = run(&suite, Path::new("."), &cache, None, &RunOptions::default())
-                .await
-                .unwrap();
-            assert_eq!(result.cases.len(), 2);
-        });
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(BufWriter)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("no other test in this binary may install a global subscriber");
     });
 
-    let bytes = buf.lock().unwrap().clone();
+    let yaml = TWO_CASE_SUITE.replace("CACHE_BLOCK", cache_block);
+    CAPTURED.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let suite = domarinn_core::load_str(&yaml).unwrap();
+        let cache = MemCache::default();
+        let result = run(&suite, Path::new("."), &cache, None, &RunOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(result.cases.len(), 2);
+    });
+
+    let bytes = CAPTURED
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_default();
     String::from_utf8(bytes).unwrap()
 }
 
