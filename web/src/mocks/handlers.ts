@@ -295,10 +295,11 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
     }
   }
 
-  // /apikeys — write scope
+  // /apikeys — read scope; the real gate is the account check below plus the
+  // ceiling on the requested scope, so a viewer can mint its own read-only key.
   if (seg[0] === "apikeys") {
     const { me, userId } = auth.resolveAuth(bearer(init));
-    if (!scopeAtLeast(me.scope ?? undefined, "write")) return forbidden();
+    if (!scopeAtLeast(me.scope ?? undefined, "read")) return forbidden();
     if (method === "GET" && seg.length === 1) {
       const res: ApiKeyListResponse = { keys: auth.listApiKeys(userId) };
       return json(res);

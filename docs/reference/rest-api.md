@@ -49,11 +49,13 @@ Request-body size is capped at **64 MiB**; request bodies may be gzip/deflate co
 
 These require an **account-backed** identity (session or API key). A static token has no owning user and gets a `403` here.
 
+The scope gate is `read` rather than `write` so a `viewer` account can mint the read-only key its role exists for. Nothing is loosened by that: the account check above still applies, and a minted key can never exceed the caller's own scope.
+
 | Method | Path                    | Scope   | Notes |
 |--------|-------------------------|---------|-------|
-| GET    | `/api/v1/apikeys`       | `write` | List the caller's own keys (never the secret). |
-| POST   | `/api/v1/apikeys`       | `write` | Mint a key: `{name?, scope?}`. Scope defaults to the caller's own and may not exceed it (`403`). Returns the secret **once** as `key`. |
-| DELETE | `/api/v1/apikeys/{id}`  | `write` | Revoke a key. Allowed for its owner or any admin, else `403`. |
+| GET    | `/api/v1/apikeys`       | `read`  | List the caller's own keys (never the secret). |
+| POST   | `/api/v1/apikeys`       | `read`  | Mint a key: `{name?, scope?}`. Scope defaults to the caller's own and may not exceed it (`403`). Returns the secret **once** as `key`. |
+| DELETE | `/api/v1/apikeys/{id}`  | `read`  | Revoke a key. Allowed for its owner or any admin, else `403`. |
 
 ## Users administration
 
