@@ -23,7 +23,7 @@ use crate::ids::RunId;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::provider::{CallCtx, Provider, ProviderRequest, TestMeta};
 use crate::provider_factory::build_provider;
-use crate::render::{self, render_prompt};
+use crate::render::{self};
 use crate::resolve::expand_tests;
 use crate::result::{
     CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RESULT_SCHEMA_VERSION,
@@ -730,9 +730,12 @@ async fn run_cell(
     // because `rendered_vars` is moved into the provider request below.
     let case_vars = rendered_vars.clone();
     let var_ctx = render::context_with_env(&rendered_vars);
-    let rendered_prompt = match prompt {
-        Some(p) => match render_prompt(p, &var_ctx, engine, base_dir) {
-            Ok(rp) => Some(rp),
+    // The case's prior turns, rendered against the same context as the prompt.
+    // They reach the request only inside `rendered_prompt`, so they join
+    // `prompt_digest` and the cache key with no code of their own.
+    let history = match &test.history {
+        Some(spec) => match render::resolve_history(spec, &var_ctx, engine, base_dir) {
+            Ok(h) => h,
             Err(e) => {
                 return error_case(
                     cell,
@@ -741,7 +744,7 @@ async fn run_cell(
                     test,
                     CallFailure::before_any_attempt(
                         ErrorClass::RENDER_FAILED,
-                        format!("rendering prompt: {e}"),
+                        format!("rendering history: {e}"),
                     ),
                     0,
                     CaseInputs {
@@ -751,6 +754,33 @@ async fn run_cell(
                 )
             }
         },
+        None => Vec::new(),
+    };
+    let rendered_prompt = match prompt {
+        Some(p) => {
+            match render::render_prompt_with_history(p, &var_ctx, engine, base_dir, &history) {
+                Ok(rp) => Some(rp),
+                Err(e) => {
+                    return error_case(
+                        cell,
+                        case_key,
+                        name,
+                        test,
+                        CallFailure::before_any_attempt(
+                            ErrorClass::RENDER_FAILED,
+                            format!("rendering prompt: {e}"),
+                        ),
+                        0,
+                        CaseInputs {
+                            vars: case_vars,
+                            ..Default::default()
+                        },
+                    )
+                }
+            }
+        }
+        // No `prompts:` block: the history is the whole transcript.
+        None if !history.is_empty() => Some(crate::types::RenderedPrompt::Messages(history)),
         None => None,
     };
 
