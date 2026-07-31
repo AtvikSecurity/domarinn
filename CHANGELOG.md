@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.2](https://github.com/AtvikSecurity/domarinn/compare/0.6.1...0.6.2) (2026-07-31)
+
+
+### Features
+
+* per-case conversation history, spliced at a prompt `history` marker ([#47](https://github.com/AtvikSecurity/domarinn/issues/47)) ([1ad6829](https://github.com/AtvikSecurity/domarinn/commit/1ad682936daa93a7f516aefde1c7315bb6ab8e14))
+* **provenance:** read the branch from CI, not from a detached HEAD ([#44](https://github.com/AtvikSecurity/domarinn/issues/44)) ([68b7868](https://github.com/AtvikSecurity/domarinn/commit/68b78689586873e2d8319fd04cbac17d6d434237))
+
+
+### Bug Fixes
+
+* **ci:** stop `bash -e` aborting the eval action's binary and summary steps ([#46](https://github.com/AtvikSecurity/domarinn/issues/46)) ([046f7d7](https://github.com/AtvikSecurity/domarinn/commit/046f7d78c56ce825001b5d1511e4e296cb88ae02))
+
 ## [0.6.1](https://github.com/AtvikSecurity/domarinn/compare/0.6.0...0.6.1) (2026-07-31)
 
 
