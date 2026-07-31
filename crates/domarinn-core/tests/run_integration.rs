@@ -689,3 +689,110 @@ async fn oversized_raw_metadata_is_dropped_whole() {
     assert_eq!(case.status, CaseStatus::Pass);
     assert_eq!(case.stop_reason.as_deref(), Some("end_turn"));
 }
+
+#[tokio::test]
+async fn per_case_history_splices_into_the_prompt_and_keys_the_case() {
+    // The whole path: YAML `history` on a case -> loader -> runner splice at
+    // the prompt's `history` marker -> persisted `CaseResult.prompt`, with the
+    // history participating in `prompt_digest` (per-case cache identity).
+    let yaml = r#"
+version: 1
+project: test
+suite: s
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"ok\"}'"]
+prompts:
+  - id: support
+    messages:
+      - {role: system, content: "sys"}
+      - history
+      - {role: user, content: "{{ q }}"}
+tests:
+  - id: with-history
+    vars: {q: "next"}
+    history:
+      - {role: user, content: "hi"}
+      - {role: assistant, content: "hello"}
+  - id: without-history
+    vars: {q: "next"}
+"#;
+    let cache = MemCache::default();
+    let result = run_suite(yaml, RunOptions::default(), &cache).await;
+    assert_eq!(result.cases.len(), 2);
+    let by_id = |id: &str| {
+        result
+            .cases
+            .iter()
+            .find(|c| c.cell.test_id == id)
+            .unwrap_or_else(|| panic!("case {id} missing"))
+    };
+
+    let with = by_id("with-history");
+    match with.prompt.as_ref().unwrap() {
+        domarinn_core::types::RenderedPrompt::Messages(msgs) => {
+            let flat: Vec<_> = msgs
+                .iter()
+                .map(|m| (m.role.as_str(), m.content.as_str()))
+                .collect();
+            assert_eq!(
+                flat,
+                vec![
+                    ("system", "sys"),
+                    ("user", "hi"),
+                    ("assistant", "hello"),
+                    ("user", "next"),
+                ]
+            );
+        }
+        other => panic!("expected a spliced transcript, got {other:?}"),
+    }
+
+    let without = by_id("without-history");
+    match without.prompt.as_ref().unwrap() {
+        domarinn_core::types::RenderedPrompt::Messages(msgs) => {
+            let roles: Vec<_> = msgs.iter().map(|m| m.role.as_str()).collect();
+            assert_eq!(roles, vec!["system", "user"]);
+        }
+        other => panic!("expected messages, got {other:?}"),
+    }
+
+    assert_ne!(
+        by_id("with-history").prompt_digest,
+        without.prompt_digest,
+        "history must be part of the case's request identity"
+    );
+}
+
+#[tokio::test]
+async fn a_history_only_suite_needs_no_prompts_block() {
+    // A suite with no `prompts:` at all: each case's history IS the transcript,
+    // newest user turn included — a JSONL/YAML file of transcripts is runnable
+    // as-is.
+    let yaml = r#"
+version: 1
+project: test
+suite: s
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"ok\"}'"]
+tests:
+  - id: transcript
+    history:
+      - {role: user, content: "hi"}
+      - {role: assistant, content: "hello"}
+      - {role: user, content: "and now?"}
+"#;
+    let cache = MemCache::default();
+    let result = run_suite(yaml, RunOptions::default(), &cache).await;
+    assert_eq!(result.cases.len(), 1);
+    match result.cases[0].prompt.as_ref().unwrap() {
+        domarinn_core::types::RenderedPrompt::Messages(msgs) => {
+            assert_eq!(msgs.len(), 3);
+            assert_eq!(msgs[2].content, "and now?");
+        }
+        other => panic!("expected the history as the whole transcript, got {other:?}"),
+    }
+}

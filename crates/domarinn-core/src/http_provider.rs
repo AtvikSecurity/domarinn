@@ -485,6 +485,27 @@ fn render_context(req: &ProviderRequest, env: &Json) -> Json {
                 .join("\n"),
         };
         obj.insert("prompt".into(), Json::String(text));
+        // The same turns, structurally: `{{ messages | tojson }}` or a
+        // `{% for %}` loop lets a body template forward a real conversation. A
+        // `Text` prompt appears as the single user turn it becomes on the wire
+        // (the shape `openai::to_messages` produces).
+        //
+        // A test var named `messages` wins: this key arrived after suites that
+        // forwarded hand-rolled conversations under that very name, and
+        // overwriting the var would change their rendered request — and move
+        // its cache key — on upgrade. (`prompt` overwrites vars, but it has
+        // done so since this provider existed; that ship has sailed.)
+        if !obj.contains_key("messages") {
+            let messages = match prompt {
+                RenderedPrompt::Text(t) => {
+                    serde_json::json!([{"role": "user", "content": t}])
+                }
+                RenderedPrompt::Messages(msgs) => {
+                    serde_json::to_value(msgs).unwrap_or(Json::Array(Vec::new()))
+                }
+            };
+            obj.insert("messages".into(), messages);
+        }
     }
     Json::Object(obj)
 }
@@ -535,6 +556,90 @@ mod tests {
             test: TestMeta::default(),
             case_salt: None,
         }
+    }
+
+    /// Body templates get the turns structurally as `{{ messages }}`, not just
+    /// the flattened `{{ prompt }}` string — the only way a caller-authored
+    /// HTTP body can forward a real conversation to an OpenAI-shaped API.
+    #[test]
+    fn body_templates_get_structured_messages() {
+        use crate::types::{ChatMessage, ChatRole};
+        let p = HttpProvider::new(
+            "h",
+            "https://sut.example/v1",
+            None,
+            BTreeMap::new(),
+            Some(json!({"transcript": "{{ messages | tojson }}", "flat": "{{ prompt }}"})),
+            None,
+        );
+        let mut req = request_with_var("doc", "hi");
+        req.prompt = Some(RenderedPrompt::Messages(vec![
+            ChatMessage {
+                role: ChatRole::User,
+                content: "hi".into(),
+            },
+            ChatMessage {
+                role: ChatRole::Assistant,
+                content: "hello".into(),
+            },
+        ]));
+        let canonical = p.canonical_request(&req).unwrap();
+        let transcript: Json =
+            serde_json::from_str(canonical["body"]["transcript"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            transcript,
+            json!([
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+            ])
+        );
+        // `{{ prompt }}` keeps its documented flattening, unchanged.
+        assert_eq!(
+            canonical["body"]["flat"],
+            json!("user: hi\nassistant: hello")
+        );
+    }
+
+    /// A suite that already had a var named `messages` (say, a hand-rolled
+    /// conversation forwarded as JSON text — exactly the workaround the
+    /// structured context supersedes) must keep rendering the var: anything
+    /// else silently changes the request sent to the SUT and moves its cache
+    /// key on upgrade.
+    #[test]
+    fn a_var_named_messages_is_not_clobbered() {
+        let p = HttpProvider::new(
+            "h",
+            "https://sut.example/v1",
+            None,
+            BTreeMap::new(),
+            Some(json!({"payload": "{{ messages }}"})),
+            None,
+        );
+        let req = request_with_var("messages", "[hand-rolled json]");
+        let canonical = p.canonical_request(&req).unwrap();
+        assert_eq!(canonical["body"]["payload"], json!("[hand-rolled json]"));
+    }
+
+    /// A `template:` prompt reaches `{{ messages }}` as the single user turn it
+    /// becomes on the wire — the same shape `openai::to_messages` produces.
+    #[test]
+    fn a_text_prompt_is_a_single_user_turn_in_messages() {
+        let p = HttpProvider::new(
+            "h",
+            "https://sut.example/v1",
+            None,
+            BTreeMap::new(),
+            Some(json!({"transcript": "{{ messages | tojson }}"})),
+            None,
+        );
+        let req = request_with_var("doc", "hi");
+        let canonical = p.canonical_request(&req).unwrap();
+        let transcript: Json =
+            serde_json::from_str(canonical["body"]["transcript"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            transcript,
+            json!([{"role": "user", "content": "summarize this"}])
+        );
     }
 
     /// The redaction pass this provider's preview was withheld for. `env` is the

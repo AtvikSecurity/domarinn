@@ -123,3 +123,29 @@ Example 02 already used a `messages:` prompt — system, then one user turn. Thi
 Every turn is a template, so a fixed turn simply has nothing in it to substitute — only the last one varies per case. Both cases above share the first three turns byte for byte and differ only in the follow-up, which is the thing under test.
 
 The echo provider makes this observable: an exec provider receives a `messages:` prompt as `{"messages": [...]}` (see [the protocol](../reference/protocol.md)), and echoing it back is what lets a `contains` assertion prove the whole rendered history — not just the last var — actually reached the provider.
+
+---
+
+## Example 41 — Per-case conversation history
+
+Example 34 fixes the transcript in the prompt: every case shares the same prior turns. This one moves the history to the cases — each brings its own prior turns, different lengths and roles included, and the prompt names where they splice in with the bare `history` marker entry:
+
+```yaml
+--8<-- "examples/41-per-case-history/domarinn.yaml"
+```
+
+The `history/escalation` case points at a transcript file instead of inlining it — the same shape, a YAML list of turns:
+
+```yaml
+--8<-- "examples/41-per-case-history/convos/escalation.yaml"
+```
+
+And the CSV rows carry theirs in the reserved `__history` column, JSON-encoded (or a `file://` path). An empty cell means *unset* — with a `defaults.history` in play it would inherit the default; a literal `[]` cell is the opt-out:
+
+```csv
+--8<-- "examples/41-per-case-history/cases.csv"
+```
+
+Three details worth knowing. A prompt may hold at most one marker, and a prompt *without* one still works: each case's history lands right after the prompt's leading system turn(s), and a `template:` prompt becomes the transcript's newest user turn. Second, history joins each case's request identity — two cases differing only in their prior turns key, and cache, separately. Third, the `not-contains` assertions above are the point: each case's transcript is its own, and nothing from another case's conversation leaks in.
+
+See [per-case history in the reference](../reference/domarinn-yaml.md#per-case-history) for the full splice rules.

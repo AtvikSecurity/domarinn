@@ -10,6 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
+pub use crate::config_history::{HistoryMarker, HistorySpec, PromptEntry};
 use crate::types::ChatRole;
 use crate::val::Val;
 
@@ -110,6 +111,10 @@ pub struct Defaults {
     /// fallback, not the granularity mechanism.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_salt: Option<String>,
+    /// Suite-wide fallback for [`TestCase::history`], used only by cases that
+    /// do not set their own (fill-if-unset, never concatenated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistorySpec>,
 }
 
 /// A system under test.
@@ -293,6 +298,11 @@ pub enum ProviderKind {
 }
 
 /// A prompt template. Exactly one of `template` / `messages` must be set.
+///
+/// A `messages:` entry is either a `{role, content}` turn or the bare-string
+/// `history` marker naming where each case's [`TestCase::history`] turns
+/// splice in (at most one marker; without one, history lands after the
+/// leading run of `system` turns). See [`crate::config_history`].
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Prompt {
@@ -300,7 +310,7 @@ pub struct Prompt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages: Option<Vec<Message>>,
+    pub messages: Option<Vec<PromptEntry>>,
 }
 
 /// A chat message; `content` may be `file://path` to load from disk.
@@ -426,6 +436,13 @@ pub struct TestCase {
     pub only_providers: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_providers: Vec<String>,
+    /// This case's prior conversation, spliced into the prompt at its
+    /// `history` marker (or after the leading `system` turns when the prompt
+    /// has no marker). Inline turns or `file://transcript.yaml`; each turn's
+    /// `content` is templated against the case's vars like a prompt turn.
+    /// Kept out of the serialized config when unset (digest stability).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistorySpec>,
 }
 
 /// A single assertion with its common controls. `type: not-<kind>` is sugar for

@@ -10,8 +10,9 @@ use std::path::Path;
 
 use serde_json::Value as Json;
 
-use crate::config::Prompt;
+use crate::config::{HistorySpec, Message, Prompt, PromptEntry};
 use crate::template::{TemplateEngine, TemplateError};
+use crate::types::ChatRole;
 use crate::types::{ChatMessage, RenderedPrompt};
 use crate::val::Val;
 
@@ -31,6 +32,23 @@ pub enum RenderError {
     Sandbox(#[from] crate::sandbox::SandboxError),
     #[error("prompt '{0}' must set exactly one of 'template' or 'messages'")]
     BadPrompt(String),
+    /// A `history: file://…` transcript that loaded but did not parse as a
+    /// list of `{role, content}` turns.
+    #[error("history transcript {path}: {message}")]
+    BadTranscript { path: String, message: String },
+    /// Enforced here as well as in the loader's `validate()` diagnostics,
+    /// because only the CLI runs `validate()` — an embedder calling
+    /// `runner::run` directly must not get silent first-marker-wins.
+    #[error("prompt '{0}' has more than one `history` marker; a prompt may have at most one")]
+    DuplicateMarker(String),
+    /// A `messages:` prompt whose final transcript came out empty — no turns
+    /// of its own and no case history to splice. Sent as-is, an empty
+    /// `messages` array draws a provider 400 that never names the cause.
+    #[error(
+        "prompt '{0}' rendered to an empty transcript: it has no turns and \
+         the case supplied no history"
+    )]
+    EmptyTranscript(String),
 }
 
 /// Render a test's vars to a plain map.
@@ -108,30 +126,131 @@ pub fn env_placeholder_object() -> Json {
 }
 
 /// Render a prompt against a context, loading `file://` content relative to
-/// `base_dir`.
+/// `base_dir`. The no-history path: see [`render_prompt_with_history`].
 pub fn render_prompt(
     prompt: &Prompt,
     ctx: &Json,
     engine: &TemplateEngine,
     base_dir: &Path,
 ) -> Result<RenderedPrompt, RenderError> {
+    render_prompt_with_history(prompt, ctx, engine, base_dir, &[])
+}
+
+/// Render a prompt and splice a case's (already rendered) history turns in.
+///
+/// Splice position, in order of precedence:
+/// - a `history` marker entry in a `messages:` prompt names it explicitly;
+/// - otherwise after the leading run of `system` turns, so the dominant
+///   `[system, user-template]` prompt shape stays a well-formed transcript;
+/// - a `template:` prompt becomes the transcript's newest `user` turn — but
+///   with no history it stays [`RenderedPrompt::Text`], byte-identical to
+///   before this feature existed (requests, cache keys, http `{{ prompt }}`).
+///
+/// An empty history makes any marker simply disappear.
+pub fn render_prompt_with_history(
+    prompt: &Prompt,
+    ctx: &Json,
+    engine: &TemplateEngine,
+    base_dir: &Path,
+    history: &[ChatMessage],
+) -> Result<RenderedPrompt, RenderError> {
     match (&prompt.template, &prompt.messages) {
         (Some(template), None) => {
             let source = load_content(template, base_dir)?;
-            Ok(RenderedPrompt::Text(engine.render_str(&source, ctx)?))
+            let text = engine.render_str(&source, ctx)?;
+            if history.is_empty() {
+                return Ok(RenderedPrompt::Text(text));
+            }
+            let mut msgs = history.to_vec();
+            msgs.push(ChatMessage {
+                role: ChatRole::User,
+                content: text,
+            });
+            Ok(RenderedPrompt::Messages(msgs))
         }
-        (None, Some(messages)) => {
-            let mut rendered = Vec::with_capacity(messages.len());
-            for message in messages {
-                let source = load_content(&message.content, base_dir)?;
-                rendered.push(ChatMessage {
-                    role: message.role,
-                    content: engine.render_str(&source, ctx)?,
-                });
+        (None, Some(entries)) => {
+            let mut rendered = Vec::with_capacity(entries.len() + history.len());
+            let mut marker_at = None;
+            for entry in entries {
+                match entry {
+                    PromptEntry::Turn(message) => {
+                        rendered.push(render_message(message, ctx, engine, base_dir)?);
+                    }
+                    // Position indexes the rendered turns; the marker itself
+                    // never appears in the output.
+                    PromptEntry::Marker(_) => {
+                        if marker_at.is_some() {
+                            return Err(RenderError::DuplicateMarker(prompt.id.clone()));
+                        }
+                        marker_at = Some(rendered.len());
+                    }
+                }
+            }
+            let at = marker_at.unwrap_or_else(|| {
+                rendered
+                    .iter()
+                    .take_while(|m| m.role == ChatRole::System)
+                    .count()
+            });
+            rendered.splice(at..at, history.iter().cloned());
+            if rendered.is_empty() {
+                return Err(RenderError::EmptyTranscript(prompt.id.clone()));
             }
             Ok(RenderedPrompt::Messages(rendered))
         }
         _ => Err(RenderError::BadPrompt(prompt.id.clone())),
+    }
+}
+
+/// Render one config turn: its `content` may be `file://path`, then is
+/// rendered as a template against `ctx`. The single per-turn contract, shared
+/// by `messages:` prompt turns and history turns.
+fn render_message(
+    message: &Message,
+    ctx: &Json,
+    engine: &TemplateEngine,
+    base_dir: &Path,
+) -> Result<ChatMessage, RenderError> {
+    let source = load_content(&message.content, base_dir)?;
+    Ok(ChatMessage {
+        role: message.role,
+        content: engine.render_str(&source, ctx)?,
+    })
+}
+
+/// [`render_message`] over a list.
+pub fn render_messages(
+    messages: &[Message],
+    ctx: &Json,
+    engine: &TemplateEngine,
+    base_dir: &Path,
+) -> Result<Vec<ChatMessage>, RenderError> {
+    messages
+        .iter()
+        .map(|message| render_message(message, ctx, engine, base_dir))
+        .collect()
+}
+
+/// Resolve a case's `history` to rendered turns: inline turns render directly;
+/// a `file://` transcript loads (sandboxed, like all `file://` content), parses
+/// as a YAML/JSON list of `{role, content}`, then renders each turn.
+pub fn resolve_history(
+    spec: &HistorySpec,
+    ctx: &Json,
+    engine: &TemplateEngine,
+    base_dir: &Path,
+) -> Result<Vec<ChatMessage>, RenderError> {
+    match spec {
+        HistorySpec::Inline(turns) => render_messages(turns, ctx, engine, base_dir),
+        HistorySpec::File(path) => {
+            let text = load_content(path, base_dir)?;
+            let turns: Vec<Message> =
+                serde_yaml_ng::from_str(&text).map_err(|e| RenderError::BadTranscript {
+                    path: path.clone(),
+                    message: e.to_string(),
+                })?;
+            render_messages(&turns, ctx, engine, base_dir)
+        }
     }
 }
 
@@ -221,14 +340,14 @@ mod tests {
             id: "p".into(),
             template: None,
             messages: Some(vec![
-                Message {
+                PromptEntry::Turn(Message {
                     role: ChatRole::System,
                     content: "You are helpful".into(),
-                },
-                Message {
+                }),
+                PromptEntry::Turn(Message {
                     role: ChatRole::User,
                     content: "{{ request }}".into(),
-                },
+                }),
             ]),
         };
         let ctx = serde_json::json!({ "request": "hi" });
@@ -288,5 +407,332 @@ mod tests {
             messages: Some(vec![]),
         };
         assert!(render_prompt(&prompt, &serde_json::json!({}), &engine, Path::new(".")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use crate::config::{HistoryMarker, HistorySpec, Message, Prompt, PromptEntry};
+    use crate::types::ChatRole;
+
+    fn turn(role: ChatRole, content: &str) -> ChatMessage {
+        ChatMessage {
+            role,
+            content: content.into(),
+        }
+    }
+
+    fn cfg_turn(role: ChatRole, content: &str) -> PromptEntry {
+        PromptEntry::Turn(Message {
+            role,
+            content: content.into(),
+        })
+    }
+
+    fn marker_prompt() -> Prompt {
+        Prompt {
+            id: "support".into(),
+            template: None,
+            messages: Some(vec![
+                cfg_turn(ChatRole::System, "You are helpful"),
+                PromptEntry::Marker(HistoryMarker::History),
+                cfg_turn(ChatRole::User, "{{ q }}"),
+            ]),
+        }
+    }
+
+    fn short_history() -> Vec<ChatMessage> {
+        vec![
+            turn(ChatRole::User, "hi"),
+            turn(ChatRole::Assistant, "hello"),
+        ]
+    }
+
+    #[test]
+    fn history_splices_at_the_marker() {
+        let engine = TemplateEngine::new();
+        let ctx = serde_json::json!({ "q": "next" });
+        let rendered = render_prompt_with_history(
+            &marker_prompt(),
+            &ctx,
+            &engine,
+            Path::new("."),
+            &short_history(),
+        )
+        .unwrap();
+        match rendered {
+            RenderedPrompt::Messages(msgs) => {
+                let flat: Vec<_> = msgs
+                    .iter()
+                    .map(|m| (m.role.as_str(), m.content.as_str()))
+                    .collect();
+                assert_eq!(
+                    flat,
+                    vec![
+                        ("system", "You are helpful"),
+                        ("user", "hi"),
+                        ("assistant", "hello"),
+                        ("user", "next"),
+                    ]
+                );
+            }
+            other => panic!("expected messages, got {other:?}"),
+        }
+    }
+
+    /// Without a marker the history lands after the leading run of `system`
+    /// turns: the dominant prompt shape is `[system, user-template]`, and a
+    /// well-formed transcript keeps the system message first.
+    #[test]
+    fn without_a_marker_history_lands_after_the_leading_system_turns() {
+        let engine = TemplateEngine::new();
+        let prompt = Prompt {
+            id: "p".into(),
+            template: None,
+            messages: Some(vec![
+                cfg_turn(ChatRole::System, "sys"),
+                cfg_turn(ChatRole::User, "{{ q }}"),
+            ]),
+        };
+        let ctx = serde_json::json!({ "q": "next" });
+        let rendered =
+            render_prompt_with_history(&prompt, &ctx, &engine, Path::new("."), &short_history())
+                .unwrap();
+        match rendered {
+            RenderedPrompt::Messages(msgs) => {
+                let roles: Vec<_> = msgs.iter().map(|m| m.role.as_str()).collect();
+                assert_eq!(roles, vec!["system", "user", "assistant", "user"]);
+                assert_eq!(msgs[1].content, "hi");
+            }
+            other => panic!("expected messages, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn without_system_turns_history_is_prepended() {
+        let engine = TemplateEngine::new();
+        let prompt = Prompt {
+            id: "p".into(),
+            template: None,
+            messages: Some(vec![cfg_turn(ChatRole::User, "{{ q }}")]),
+        };
+        let ctx = serde_json::json!({ "q": "next" });
+        let rendered =
+            render_prompt_with_history(&prompt, &ctx, &engine, Path::new("."), &short_history())
+                .unwrap();
+        match rendered {
+            RenderedPrompt::Messages(msgs) => {
+                assert_eq!(msgs[0].content, "hi");
+                assert_eq!(msgs[2].content, "next");
+            }
+            other => panic!("expected messages, got {other:?}"),
+        }
+    }
+
+    /// A `template:` prompt with history becomes the transcript's newest user
+    /// turn — the only meaning a single text template can have mid-conversation.
+    #[test]
+    fn a_text_prompt_with_history_becomes_the_newest_user_turn() {
+        let engine = TemplateEngine::new();
+        let prompt = Prompt {
+            id: "p".into(),
+            template: Some("Q: {{ q }}".into()),
+            messages: None,
+        };
+        let ctx = serde_json::json!({ "q": "next" });
+        let rendered =
+            render_prompt_with_history(&prompt, &ctx, &engine, Path::new("."), &short_history())
+                .unwrap();
+        match rendered {
+            RenderedPrompt::Messages(msgs) => {
+                assert_eq!(msgs.len(), 3);
+                assert_eq!(msgs[2].role, ChatRole::User);
+                assert_eq!(msgs[2].content, "Q: next");
+            }
+            other => panic!("expected messages, got {other:?}"),
+        }
+    }
+
+    /// No history: a text prompt stays `Text` (byte-identical requests, cache
+    /// keys, and http `{{ prompt }}` for every existing suite).
+    #[test]
+    fn a_text_prompt_without_history_stays_text() {
+        let engine = TemplateEngine::new();
+        let prompt = Prompt {
+            id: "p".into(),
+            template: Some("Q: {{ q }}".into()),
+            messages: None,
+        };
+        let ctx = serde_json::json!({ "q": "next" });
+        let rendered =
+            render_prompt_with_history(&prompt, &ctx, &engine, Path::new("."), &[]).unwrap();
+        assert_eq!(rendered, RenderedPrompt::Text("Q: next".into()));
+    }
+
+    #[test]
+    fn an_empty_history_makes_the_marker_disappear() {
+        let engine = TemplateEngine::new();
+        let ctx = serde_json::json!({ "q": "next" });
+        let rendered =
+            render_prompt_with_history(&marker_prompt(), &ctx, &engine, Path::new("."), &[])
+                .unwrap();
+        match rendered {
+            RenderedPrompt::Messages(msgs) => {
+                let roles: Vec<_> = msgs.iter().map(|m| m.role.as_str()).collect();
+                assert_eq!(roles, vec!["system", "user"]);
+            }
+            other => panic!("expected messages, got {other:?}"),
+        }
+    }
+
+    /// `validate()` also flags this, but only the CLI runs `validate()` — the
+    /// embedder entry point (`runner::run`) does not, so the render path must
+    /// hold the line itself rather than silently splicing at the first marker.
+    #[test]
+    fn a_second_marker_is_a_render_error() {
+        let engine = TemplateEngine::new();
+        let prompt = Prompt {
+            id: "doubled".into(),
+            template: None,
+            messages: Some(vec![
+                PromptEntry::Marker(HistoryMarker::History),
+                cfg_turn(ChatRole::User, "hi"),
+                PromptEntry::Marker(HistoryMarker::History),
+            ]),
+        };
+        let err = render_prompt_with_history(
+            &prompt,
+            &serde_json::json!({}),
+            &engine,
+            Path::new("."),
+            &short_history(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("marker") && err.contains("doubled"),
+            "error must name the problem and the prompt: {err}"
+        );
+    }
+
+    /// A marker-only prompt is legal — it renders the case's history as the
+    /// whole transcript — but a case that then supplies no history would send
+    /// an empty `messages` array, which OpenAI- and Anthropic-shaped APIs
+    /// reject with a 400 that never names the real cause. Fail at render, with
+    /// the cause.
+    #[test]
+    fn an_empty_final_transcript_is_a_render_error() {
+        let engine = TemplateEngine::new();
+        let prompt = Prompt {
+            id: "marker-only".into(),
+            template: None,
+            messages: Some(vec![PromptEntry::Marker(HistoryMarker::History)]),
+        };
+        // With history: fine — the history is the transcript.
+        let ok = render_prompt_with_history(
+            &prompt,
+            &serde_json::json!({}),
+            &engine,
+            Path::new("."),
+            &short_history(),
+        )
+        .unwrap();
+        assert!(matches!(ok, RenderedPrompt::Messages(m) if m.len() == 2));
+        // Without: an error that names the empty transcript, not a provider 400.
+        let err = render_prompt_with_history(
+            &prompt,
+            &serde_json::json!({}),
+            &engine,
+            Path::new("."),
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("marker-only") && err.contains("no turns"),
+            "error must name the prompt and the cause: {err}"
+        );
+    }
+
+    #[test]
+    fn inline_history_turns_render_vars() {
+        let engine = TemplateEngine::new();
+        let spec = HistorySpec::Inline(vec![Message {
+            role: ChatRole::Assistant,
+            content: "{{ prior }}".into(),
+        }]);
+        let ctx = serde_json::json!({ "prior": "the earlier answer" });
+        let turns = resolve_history(&spec, &ctx, &engine, Path::new(".")).unwrap();
+        assert_eq!(turns[0].content, "the earlier answer");
+    }
+
+    #[test]
+    fn an_inline_history_turn_loads_file_content() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("turn.txt"), "from disk: {{ x }}").unwrap();
+        let engine = TemplateEngine::new();
+        let spec = HistorySpec::Inline(vec![Message {
+            role: ChatRole::User,
+            content: "file://turn.txt".into(),
+        }]);
+        let ctx = serde_json::json!({ "x": "ok" });
+        let turns = resolve_history(&spec, &ctx, &engine, dir.path()).unwrap();
+        assert_eq!(turns[0].content, "from disk: ok");
+    }
+
+    #[test]
+    fn a_file_history_loads_a_whole_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("convo.yaml"),
+            "- role: user\n  content: hi\n- role: assistant\n  content: \"{{ prior }}\"\n",
+        )
+        .unwrap();
+        let engine = TemplateEngine::new();
+        let spec = HistorySpec::File("file://convo.yaml".into());
+        let ctx = serde_json::json!({ "prior": "hello" });
+        let turns = resolve_history(&spec, &ctx, &engine, dir.path()).unwrap();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].content, "hi");
+        assert_eq!(turns[1].content, "hello");
+        assert_eq!(turns[1].role, ChatRole::Assistant);
+    }
+
+    /// Same security property as prompt `file://` content: a transcript path
+    /// must not read outside the suite directory.
+    #[test]
+    fn a_file_history_outside_the_suite_is_refused() {
+        let parent = tempfile::tempdir().unwrap();
+        std::fs::write(
+            parent.path().join("convo.yaml"),
+            "- role: user\n  content: x\n",
+        )
+        .unwrap();
+        let base = parent.path().join("suite");
+        std::fs::create_dir(&base).unwrap();
+
+        let engine = TemplateEngine::new();
+        let spec = HistorySpec::File("file://../convo.yaml".into());
+        let err = resolve_history(&spec, &serde_json::json!({}), &engine, &base).unwrap_err();
+        assert!(
+            matches!(err, RenderError::Sandbox(_)),
+            "traversal must be a sandbox error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_transcript_names_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("convo.yaml"), "not: a\nlist: here\n").unwrap();
+        let engine = TemplateEngine::new();
+        let spec = HistorySpec::File("file://convo.yaml".into());
+        let err = resolve_history(&spec, &serde_json::json!({}), &engine, dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("convo.yaml"),
+            "error must name the file: {err}"
+        );
     }
 }

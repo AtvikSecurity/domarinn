@@ -141,6 +141,12 @@ fn merge_defaults(tc: &mut TestCase, defaults: &Defaults) {
     if tc.cache_salt.is_none() {
         tc.cache_salt = defaults.cache_salt.clone();
     }
+    // Fill-if-unset, never concatenated: a case's own history is a complete
+    // transcript, and prepending a suite default to it would silently change
+    // what the case says it tests.
+    if tc.history.is_none() {
+        tc.history = defaults.history.clone();
+    }
 }
 
 /// Returns the loaded cases and how many files the glob matched — the two
@@ -278,7 +284,8 @@ fn parse_jsonl_tests(text: &str, path: &Path) -> Result<Vec<TestCase>, ResolveEr
 
 /// Delimited tables (CSV with `,`, TSV with `\t`): header names become var keys.
 /// Reserved columns: `id`, `description`, `tags` (comma-separated), `threshold`,
-/// `cache_salt`, `__assert` (a JSON assert list). `cache_salt` is reserved so a
+/// `cache_salt`, `__assert` (a JSON assert list), `__history` (a `file://` path
+/// or a JSON list of `{role, content}` turns). `cache_salt` is reserved so a
 /// digest column keys the cache instead of silently becoming a var (which would
 /// both mis-key the entry and leak the digest to the provider).
 fn parse_delimited_tests(
@@ -312,6 +319,25 @@ fn parse_delimited_tests(
                 "__assert" => {
                     if !field.trim().is_empty() {
                         tc.assert = serde_json::from_str(field).map_err(|e| parse_err(path, e))?;
+                    }
+                }
+                "__history" => {
+                    let cell = field.trim();
+                    if !cell.is_empty() {
+                        // A JSON list of turns, or a string form. Both funnel
+                        // through `HistorySpec`'s own deserializer so every
+                        // rule — including "a string must be `file://…`" and
+                        // its curated error — lives in one place; a bare path
+                        // must not die as a raw JSON tokenizer error.
+                        let value = if cell.starts_with('[') {
+                            serde_json::from_str(cell).map_err(|e| parse_err(path, e))?
+                        } else {
+                            Json::String(cell.to_string())
+                        };
+                        tc.history = Some(
+                            serde_json::from_value::<crate::config::HistorySpec>(value)
+                                .map_err(|e| parse_err(path, e))?,
+                        );
                     }
                 }
                 other => {
@@ -448,6 +474,119 @@ tests:
         let expanded = expand_tests(&suite, dir.path()).unwrap();
         assert_eq!(expanded.tests.len(), 2);
         assert_eq!(expanded.tests[0].id.as_deref(), Some("a/0"));
+    }
+
+    #[test]
+    fn defaults_history_fills_only_unset_cases() {
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+defaults:
+  history:
+    - {role: user, content: "default prior"}
+tests:
+  - id: keeps-own
+    history:
+      - {role: user, content: "own prior"}
+      - {role: assistant, content: "own answer"}
+  - id: takes-default
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, Path::new(".")).unwrap();
+        let by_id = |id: &str| {
+            expanded
+                .tests
+                .iter()
+                .find(|t| t.id.as_deref() == Some(id))
+                .unwrap()
+        };
+        match by_id("keeps-own").history.as_ref().unwrap() {
+            crate::config::HistorySpec::Inline(turns) => {
+                assert_eq!(turns.len(), 2, "a case's own history must win whole");
+            }
+            other => panic!("expected inline turns, got {other:?}"),
+        }
+        match by_id("takes-default").history.as_ref().unwrap() {
+            crate::config::HistorySpec::Inline(turns) => {
+                assert_eq!(turns[0].content, "default prior");
+            }
+            other => panic!("expected the default history, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yaml_test_files_carry_history() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "t.yaml",
+            "- id: c1\n  history:\n    - {role: user, content: hi}\n",
+        );
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests: ["file://t.yaml"]
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, dir.path()).unwrap();
+        assert!(
+            matches!(
+                expanded.tests[0].history,
+                Some(crate::config::HistorySpec::Inline(_))
+            ),
+            "history must ride through file-loaded cases"
+        );
+    }
+
+    #[test]
+    fn csv_history_column_takes_json_file_and_empty_forms() {
+        let text = concat!(
+            "id,__history,q\n",
+            "json,\"[{\"\"role\"\": \"\"user\"\", \"\"content\"\": \"\"hi\"\"}]\",next\n",
+            "file,file://convo.yaml,next\n",
+            "none,,next\n",
+        );
+        let tests = parse_delimited_tests(text, std::path::Path::new("t.csv"), b',').unwrap();
+        assert!(matches!(
+            tests[0].history,
+            Some(crate::config::HistorySpec::Inline(_))
+        ));
+        assert!(
+            matches!(&tests[1].history, Some(crate::config::HistorySpec::File(p)) if p == "file://convo.yaml")
+        );
+        assert!(tests[2].history.is_none(), "an empty cell means no history");
+        assert!(
+            !tests[0].vars.contains_key("__history"),
+            "__history is reserved, not a var"
+        );
+    }
+
+    /// The forgotten-`file://` case the `HistorySpec` deserializer exists to
+    /// catch: a bare path cell must get its curated "is not a file:// path"
+    /// message, not a raw JSON tokenizer error ("expected value at line 1
+    /// column 1") that points nowhere near the fix.
+    #[test]
+    fn csv_history_bare_path_gets_the_curated_file_error() {
+        let text = "id,__history\nforgot,convos/long.yaml\n";
+        let err = parse_delimited_tests(text, std::path::Path::new("cases.csv"), b',')
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("file://"),
+            "error must name the missing prefix: {err}"
+        );
+    }
+
+    #[test]
+    fn csv_bad_history_json_names_the_file() {
+        let text = "id,__history\nbroken,\"[{not json\"\n";
+        let err = parse_delimited_tests(text, std::path::Path::new("cases.csv"), b',').unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("cases.csv"), "error must name the file: {msg}");
     }
 
     #[test]

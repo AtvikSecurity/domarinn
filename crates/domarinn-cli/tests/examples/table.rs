@@ -955,4 +955,27 @@ pub const EXAMPLES: &[Example] = &[
             cache_hits: 0,
         }],
     },
+    Example {
+        dir: "41-per-case-history",
+        shows: "each case bringing its own prior turns, spliced at the prompt's \
+                `history` marker",
+        env: &[],
+        stub: &[],
+        stub_calls: 0,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(5),
+            case_ids: &[
+                "history/first-contact",
+                "history/follow-up",
+                "history/escalation",
+                "csv/with-history",
+                "csv/no-history",
+            ],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
 ];

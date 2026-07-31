@@ -182,7 +182,12 @@ A generic provider for black-box HTTP systems. The URL, headers, and body are **
 | `body`        | JSON (templated)    | *(none)*| Request body, sent as JSON. |
 | `output_expr` | string              | *(none)*| minijinja expression selecting the output from the response. **In the cache key**: an entry stores the projected output, so changing the expression re-asks. |
 
-Templating context for `url` / `headers` / `body`: every test var by name, plus `prompt` (the rendered prompt as a string).
+Templating context for `url` / `headers` / `body`: every test var by name, plus two views of the rendered prompt:
+
+- `prompt` — the prompt as one string. A multi-turn prompt (a `messages:` prompt, or a case with [history](domarinn-yaml.md#per-case-history)) is flattened to `role: content` lines joined by newlines.
+- `messages` — the same turns **structurally**, a list of `{role, content}` objects: `{{ messages | tojson }}` embeds the array JSON-encoded, and `{% for m in messages %}` iterates it — the way a body template forwards a real conversation to an OpenAI-shaped API. A `template:` prompt appears as the single user turn it becomes on the wire.
+
+A test var named `messages` takes precedence: the structural view is only added when no var of that name exists, so a suite that already forwarded a hand-rolled conversation under that name keeps rendering — and cache-keying — exactly as before. Existing templates that never reference `messages` render byte-identically either way.
 
 The response is exposed to `output_expr` as:
 

@@ -1,0 +1,3 @@
+id,__history,followup,__assert
+csv/with-history,"[{""role"": ""user"", ""content"": ""Do you ship to Iceland?""}, {""role"": ""assistant"", ""content"": ""We do — flat rate, 5 business days.""}]",How much is the flat rate?,"[{""type"": ""contains"", ""value"": ""5 business days""}, {""type"": ""contains"", ""value"": ""How much is the flat rate?""}]"
+csv/no-history,,Do you ship to Iceland?,"[{""type"": ""contains"", ""value"": ""Do you ship to Iceland?""}, {""type"": ""not-contains"", ""value"": ""flat rate""}]"

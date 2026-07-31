@@ -163,7 +163,9 @@ A `messages:` prompt is a full transcript, not one string — system, a prior us
 
 The provider sees the same array on every call; it is domarinn that fans a case out over `vars`, one rendering per case, not the shape of the messages.
 
-Omit `prompts` entirely when a provider builds its own input from the test `vars` — an `exec` provider, for instance, receives the vars directly over its protocol.
+When the *history itself* should vary per case, a `messages:` entry may also be the bare string `history` — a placeholder marker naming where each case's own prior turns splice in (at most one per prompt). See [Per-case history](#per-case-history).
+
+Omit `prompts` entirely when a provider builds its own input from the test `vars` — an `exec` provider, for instance, receives the vars directly over its protocol. A case that carries its own [`history`](#per-case-history) still works without a `prompts:` block: its history is the whole transcript.
 
 ---
 
@@ -210,6 +212,7 @@ Inline tests, and every test loaded from a file, share the same shape:
 | `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of the provider requests of **every case this test produces**, and nothing else. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](../concepts/caching.md#per-case-salts). |
 | `only_providers` | list of provider ids | no | Restrict this case to these providers. |
 | `skip_providers` | list of provider ids | no | Exclude these providers from this case. |
+| `history` | list of turns, or `file://` string | no | This case's prior conversation, spliced into the prompt. See [Per-case history](#per-case-history). |
 
 ```yaml
 tests:
@@ -225,6 +228,43 @@ tests:
 ```
 
 Assertions carry two common controls in addition to their `type`: `weight` (default `1.0`, used for the weighted mean when a `threshold` is set) and `negate` (default `false`, inverts the result). The `type: not-<kind>` spelling is sugar for `negate: true` — e.g. `type: not-contains` is exactly `type: contains` with `negate: true`. Full assertion reference: [`assertions.md`](assertions.md).
+
+### Per-case history
+
+A test's `history` is its prior conversation: the turns the model should see *before* the prompt's newest line. Where a `messages:` prompt fixes one transcript for every case ([example 34](../examples/templates-and-test-data.md#example-34--a-multi-turn-conversation)), `history` lets each case bring its own — different lengths and roles included ([example 41](../examples/templates-and-test-data.md#example-41--per-case-conversation-history)).
+
+Two forms, same shape. Inline turns, from the shipped [example 41](../examples/templates-and-test-data.md#example-41--per-case-conversation-history):
+
+```yaml
+--8<-- "examples/41-per-case-history/domarinn.yaml:inline"
+```
+
+Or a whole transcript from a file — a YAML/JSON list of `{role, content}`:
+
+```yaml
+history: file://convos/long.yaml
+```
+
+Each turn's `content` is a template rendered against the case's vars, and may itself be `file://path` — the same contract as a `messages:` prompt turn.
+
+**Where the history goes**, in order of precedence:
+
+1. At the prompt's `history` **marker** — a bare-string entry in `messages:`, at most one per prompt (a second is rejected: a `validate` issue at load, and a render error at run time):
+
+    ```yaml
+    --8<-- "examples/41-per-case-history/domarinn.yaml:marker"
+    ```
+2. No marker: **after the leading run of `system` turns**, so the usual `[system, user-template]` prompt stays a well-formed transcript.
+3. A `template:` prompt becomes the transcript's **newest user turn** — `history + [user: rendered template]`. With no history it stays a plain text prompt, byte-identical to before.
+4. **No `prompts:` block at all**: the history *is* the transcript, newest turn included — a file of transcripts is a runnable suite on its own.
+
+An empty or absent history makes the marker simply disappear.
+
+**Identity and caching.** History is part of the rendered prompt, so it joins the case's `prompt_digest` and cache key: two cases differing only in their prior turns key — and cache — separately. An existing suite that never uses `history` serializes byte-identically to before, so its `config_digest` does not move.
+
+**Provider notes.** Role ordering is deliberately not validated — it is the provider's contract. The `anthropic` provider hoists any `system` turns (history's included) into its top-level `system` field; `openai` and `exec` receive the array verbatim; the `http` provider flattens the transcript into the `{{ prompt }}` string but also exposes it structurally as [`{{ messages }}`](providers.md#http) for body templates. The [LLM-rubric grader](#grader) builds its own single-turn requests and does not see case history.
+
+`defaults.history` supplies a suite-wide fallback — **fill-if-unset**, never concatenated: a case's own history always wins whole. An explicit `history: []` (or a `[]` CSV cell) counts as set, so it is the way a case opts *out* of the default.
 
 ### Matrix / parameter sweeps
 
@@ -286,6 +326,7 @@ A glob string must start with `file://`; the remainder is a glob resolved relati
 | `threshold` | Parsed as a float (ignored if it doesn't parse). |
 | `cache_salt` | The case's [cache salt](../concepts/caching.md#per-case-salts) — reserved so a digest column keys the cache instead of becoming a var. |
 | `__assert` | A JSON array of assertions. |
+| `__history` | The case's [history](#per-case-history): a JSON array of `{role, content}` turns, or a `file://` transcript path. An empty cell means *unset* — like an absent YAML field, it falls back to `defaults.history`; a literal `[]` cell opts out of the default entirely. |
 
 ```yaml
 # YAML test file — a bare sequence
@@ -379,6 +420,7 @@ Values merged into **every** resolved test, so you don't repeat yourself.
 | `tags` | list | **Unioned** — added if not already present. |
 | `threshold` | float | **Fills** the test's threshold only if the test hasn't set one. |
 | `cache_salt` | string | **Fills** the test's [cache salt](../concepts/caching.md#per-case-salts) only if the test hasn't set one — generator-produced cases included. |
+| `history` | turns or `file://` string | **Fills** the test's [history](#per-case-history) only if the test hasn't set one. Never concatenated: a case's own transcript wins whole. |
 
 ```yaml
 defaults:
