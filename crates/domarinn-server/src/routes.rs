@@ -27,6 +27,7 @@ use crate::dto::meta::{CacheTierMeta, MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
 use crate::dto::search::SearchResponse;
 use crate::extract::{ApiJson, ApiQuery};
+use crate::runsets::{GrantLevel, RunVisibility};
 use crate::storage::{
     self, CachePutOutcome, CaseListFilter, IngestOutcome, MatrixFilter, RunListFilter,
 };
@@ -133,6 +134,8 @@ pub fn router(state: AppState) -> Router {
             get(cache_get).head(cache_head).put(cache_put),
         )
         .route("/assets/{*path}", get(serve_asset))
+        // The run-set browser and access management, from `crate::sets`.
+        .merge(crate::sets::routes())
         .fallback(spa_fallback);
 
     // The MCP endpoint, only when enabled. Merged before the layers below so
@@ -412,6 +415,18 @@ async fn post_run(
             format!("invalid run document: {e}"),
         )
     })?;
+    // The global `write` scope got us here; a restricted target needs an
+    // `upload` grant on top of it. Checked after parsing, because the target
+    // set is a property of the document rather than the URL.
+    require_set_access(
+        &state,
+        &scope.identity,
+        run.project.as_deref(),
+        run.suite.as_deref(),
+        GrantLevel::Upload,
+    )
+    .await?;
+
     let run_id = run.run_id.clone();
     let uploaded_by = scope.identity.label.clone();
 
@@ -480,11 +495,12 @@ struct RunQuery {
 }
 
 async fn list_runs(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     ApiQuery(q): ApiQuery<RunQuery>,
 ) -> ApiResult<Response> {
     let filter = RunListFilter {
+        visibility: RunVisibility::of(&scope.identity),
         project: q.project,
         suite: q.suite,
         tag: q.tag,
@@ -508,11 +524,17 @@ async fn list_runs(
 }
 
 async fn get_run(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
 ) -> ApiResult<Response> {
-    match state.storage.get_run(id).await? {
+    // An invisible run is `None` here, so it 404s through exactly the same path
+    // as one that never existed — no 403, no existence leak.
+    match state
+        .storage
+        .get_run(id, RunVisibility::of(&scope.identity))
+        .await?
+    {
         Some(detail) => Ok(Json(detail).into_response()),
         None => Err(not_found("run")),
     }
@@ -536,16 +558,22 @@ struct CaseQuery {
 }
 
 async fn list_cases(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
     ApiQuery(q): ApiQuery<CaseQuery>,
 ) -> ApiResult<Response> {
-    if !state.storage.run_exists(id.clone()).await? {
+    let visibility = RunVisibility::of(&scope.identity);
+    if !state
+        .storage
+        .run_exists(id.clone(), visibility.clone())
+        .await?
+    {
         return Err(not_found("run"));
     }
     let filter = CaseListFilter {
         run_id: id,
+        visibility,
         status: q.status,
         tag: q.tag,
         q: q.q,
@@ -563,22 +591,27 @@ async fn list_cases(
 }
 
 async fn get_case(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path((id, case_key)): Path<(RunId, CaseKey)>,
 ) -> ApiResult<Response> {
-    match state.storage.get_case(id, case_key).await? {
+    let visibility = RunVisibility::of(&scope.identity);
+    match state.storage.get_case(id, case_key, visibility).await? {
         Some(detail) => Ok(Json(detail).into_response()),
         None => Err(not_found("case")),
     }
 }
 
 async fn export_run(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
 ) -> ApiResult<Response> {
-    match state.storage.export_run(id).await? {
+    match state
+        .storage
+        .export_run(id, RunVisibility::of(&scope.identity))
+        .await?
+    {
         Some(doc) => Ok(Json(doc).into_response()),
         None => Err(not_found("run")),
     }
@@ -594,18 +627,24 @@ struct MatrixQuery {
 }
 
 async fn run_matrix(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
     ApiQuery(q): ApiQuery<MatrixQuery>,
 ) -> ApiResult<Response> {
-    // An unknown run is a 404; a known run whose cases all lack cell columns
-    // returns an empty matrix (handled by the aggregation), not an error.
-    if !state.storage.run_exists(id.clone()).await? {
+    // An unknown (or invisible) run is a 404; a known run whose cases all lack
+    // cell columns returns an empty matrix (handled by the aggregation).
+    let visibility = RunVisibility::of(&scope.identity);
+    if !state
+        .storage
+        .run_exists(id.clone(), visibility.clone())
+        .await?
+    {
         return Err(not_found("run"));
     }
     let filter = MatrixFilter {
         run_id: id,
+        visibility,
         limit: q
             .limit
             .unwrap_or(MATRIX_DEFAULT_LIMIT)
@@ -617,22 +656,30 @@ async fn run_matrix(
 }
 
 async fn get_run_config(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<RunId>,
 ) -> ApiResult<Response> {
-    match state.storage.get_run_config(id).await? {
+    match state
+        .storage
+        .get_run_config(id, RunVisibility::of(&scope.identity))
+        .await?
+    {
         Some(config) => Ok(Json(config).into_response()),
         None => Err(not_found("run")),
     }
 }
 
 async fn compare_runs(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path((id, other)): Path<(RunId, RunId)>,
 ) -> ApiResult<Response> {
-    match state.storage.compare_runs(id, other).await? {
+    match state
+        .storage
+        .compare_runs(id, other, RunVisibility::of(&scope.identity))
+        .await?
+    {
         Some(cmp) => Ok(Json(cmp).into_response()),
         None => Err(not_found("run")),
     }
@@ -646,12 +693,15 @@ struct SearchQuery {
 }
 
 async fn search(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     ApiQuery(q): ApiQuery<SearchQuery>,
 ) -> ApiResult<Response> {
     let limit = clamp_limit(q.limit);
-    let res: SearchResponse = state.storage.search(q.q, limit).await?;
+    let res: SearchResponse = state
+        .storage
+        .search(q.q, limit, RunVisibility::of(&scope.identity))
+        .await?;
     Ok(Json(res).into_response())
 }
 
@@ -671,16 +721,24 @@ async fn delete_run(
 // Projects, suites, baselines
 // ---------------------------------------------------------------------------
 
-async fn list_projects(_scope: Scoped<Read>, State(state): State<AppState>) -> ApiResult<Response> {
-    Ok(Json(state.storage.list_projects().await?).into_response())
+async fn list_projects(scope: Scoped<Read>, State(state): State<AppState>) -> ApiResult<Response> {
+    let projects = state
+        .storage
+        .list_projects(RunVisibility::of(&scope.identity))
+        .await?;
+    Ok(Json(projects).into_response())
 }
 
 async fn list_suites(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(project): Path<String>,
 ) -> ApiResult<Response> {
-    Ok(Json(state.storage.list_suites(project).await?).into_response())
+    let suites = state
+        .storage
+        .list_suites(project, RunVisibility::of(&scope.identity))
+        .await?;
+    Ok(Json(suites).into_response())
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -690,14 +748,27 @@ pub(crate) struct BaselineBody {
 }
 
 async fn put_baseline(
-    _scope: Scoped<Write>,
+    scope: Scoped<Write>,
     State(state): State<AppState>,
     Path((project, suite)): Path<(String, String)>,
     ApiJson(body): ApiJson<BaselineBody>,
 ) -> ApiResult<Response> {
+    require_set_access(
+        &state,
+        &scope.identity,
+        Some(&project),
+        Some(&suite),
+        GrantLevel::Upload,
+    )
+    .await?;
     if state
         .storage
-        .set_baseline(project.clone(), suite.clone(), body.run_id.clone())
+        .set_baseline(
+            project.clone(),
+            suite.clone(),
+            body.run_id.clone(),
+            RunVisibility::of(&scope.identity),
+        )
         .await?
     {
         Ok(Json(json!({
@@ -712,10 +783,18 @@ async fn put_baseline(
 }
 
 async fn delete_baseline(
-    _scope: Scoped<Write>,
+    scope: Scoped<Write>,
     State(state): State<AppState>,
     Path((project, suite)): Path<(String, String)>,
 ) -> ApiResult<Response> {
+    require_set_access(
+        &state,
+        &scope.identity,
+        Some(&project),
+        Some(&suite),
+        GrantLevel::Upload,
+    )
+    .await?;
     if state.storage.delete_baseline(project, suite).await? {
         Ok(StatusCode::NO_CONTENT.into_response())
     } else {
@@ -731,7 +810,7 @@ struct HistoryQuery {
 }
 
 async fn case_history(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path((project, suite, case_key)): Path<(String, String, CaseKey)>,
     ApiQuery(q): ApiQuery<HistoryQuery>,
@@ -742,7 +821,13 @@ async fn case_history(
         .clamp(1, HISTORY_MAX_LIMIT);
     match state
         .storage
-        .case_history(project, suite, case_key, limit)
+        .case_history(
+            project,
+            suite,
+            case_key,
+            limit,
+            RunVisibility::of(&scope.identity),
+        )
         .await?
     {
         Some(history) => Ok(Json(history).into_response()),
@@ -854,6 +939,45 @@ async fn cache_prune(
 
 pub(crate) fn clamp_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
+}
+
+/// Gate a write on the target run set at `needed`, on top of whatever global
+/// scope the route already demanded.
+///
+/// A 403 rather than a 404: unlike a run id, the `(project, suite)` pair here
+/// comes from the caller, so refusing it discloses only that the set they named
+/// is restricted — an accepted bit — and a silent 404 on a legitimate upload
+/// would be a debugging trap for whoever runs the CI job. The access endpoints
+/// in [`crate::sets`] make the opposite trade, and say why.
+async fn require_set_access(
+    state: &AppState,
+    identity: &crate::auth::Identity,
+    project: Option<&str>,
+    suite: Option<&str>,
+    needed: GrantLevel,
+) -> ApiResult<()> {
+    let allowed = state
+        .storage
+        .set_access(
+            RunVisibility::of(identity),
+            project.map(str::to_string),
+            suite.map(str::to_string),
+            needed,
+        )
+        .await?;
+    if allowed {
+        return Ok(());
+    }
+    // The article agrees with the level: this body is on the wire, in front of
+    // every CI log that hits a set it cannot write.
+    let article = match needed {
+        GrantLevel::Upload => "an",
+        GrantLevel::View | GrantLevel::Manage => "a",
+    };
+    Err(ApiError::status(
+        StatusCode::FORBIDDEN,
+        format!("this run set is restricted; you need {article} {needed} grant on it"),
+    ))
 }
 
 pub(crate) fn not_found(what: &str) -> ApiError {

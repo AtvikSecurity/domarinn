@@ -1,11 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { mockFetch } from "./handlers";
+import { resetMockAuth } from "./authState";
+import { resetSets } from "./fixtures";
 import type {
   CaseHistoryResponse,
   CaseListResponse,
   CompareResponse,
   MatrixResponse,
+  ProjectSetDetailResponse,
   RunConfigResponse,
+  SetAccessResponse,
+  SetsResponse,
+  SuiteSetDetailResponse,
 } from "@/api";
 
 const MATRIX_RUN = "search-rerank-ndcg-eval-10";
@@ -287,5 +293,186 @@ describe("mockFetch: GET /runs/:id/cases provider/prompt filters", () => {
       expect(c.provider_id).toBe("claude-sonnet");
       expect(c.prompt_id).toBe("cot-v2");
     }
+  });
+});
+
+// The run-set browser. These pin the two properties of `/sets*` that are easy
+// to get subtly wrong and impossible to see once wrong: which sets a caller may
+// see at all, and the covering-vs-exact split on `restricted`.
+describe("mockFetch: /sets", () => {
+  beforeEach(() => {
+    resetMockAuth();
+    resetSets();
+  });
+
+  /** Log in as the seeded non-admin who holds `manage` over `support-bot`. */
+  async function memberAuth(): Promise<RequestInit> {
+    const res = await mockFetch("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username: "member", password: "member" }),
+    });
+    const { token } = (await res.json()) as { token: string };
+    return { headers: { Authorization: `Bearer ${token}` } };
+  }
+
+  /** A caller with no account at all: a token nothing recognises. */
+  const ANON: RequestInit = { headers: { Authorization: "Bearer nope" } };
+
+  it("lists every project for an admin, restriction included", async () => {
+    const body = (await (await mockFetch("/api/v1/sets")).json()) as SetsResponse;
+    const names = body.projects.map((p) => p.project);
+    expect(names).toContain("support-bot");
+    expect(names).toEqual([...names].sort());
+    const locked = body.projects.find((p) => p.project === "support-bot");
+    expect(locked?.restricted).toBe(true);
+    // Admins are never filtered by a grant, so they never publish one.
+    expect(locked?.my_level).toBeNull();
+  });
+
+  it("hides a restricted project from a caller who holds no grant", async () => {
+    const body = (await (
+      await mockFetch("/api/v1/sets", ANON)
+    ).json()) as SetsResponse;
+    expect(body.projects.map((p) => p.project)).not.toContain("support-bot");
+
+    // And the detail route is a 404, not a 403: the same answer a project that
+    // never existed gives.
+    expect((await mockFetch("/api/v1/sets/support-bot", ANON)).status).toBe(404);
+  });
+
+  it("shows a granted user the set, and the level they hold", async () => {
+    const init = await memberAuth();
+    const body = (await (
+      await mockFetch("/api/v1/sets", init)
+    ).json()) as SetsResponse;
+    const locked = body.projects.find((p) => p.project === "support-bot");
+    expect(locked?.my_level).toBe("manage");
+  });
+
+  it("reports restricted as COVERING when browsing and EXACT on the access list", async () => {
+    // The trap this pins: a suite inside a locked project is restricted, but
+    // the restriction row its own toggle owns does not exist. Reading the panel
+    // payload to draw the browse chip would render the suite as unrestricted.
+    const suite = (await (
+      await mockFetch("/api/v1/sets/support-bot/suites/faq-accuracy")
+    ).json()) as SuiteSetDetailResponse;
+    expect(suite.restricted).toBe(true);
+
+    const access = (await (
+      await mockFetch("/api/v1/sets/support-bot/suites/faq-accuracy/access")
+    ).json()) as SetAccessResponse;
+    expect(access.restricted).toBe(false);
+    // The project's own row is where the lock actually lives.
+    const projectAccess = (await (
+      await mockFetch("/api/v1/sets/support-bot/access")
+    ).json()) as SetAccessResponse;
+    expect(projectAccess.restricted).toBe(true);
+    expect(projectAccess.grants.map((g) => g.username)).toEqual([
+      "member",
+      "sso.only",
+    ]);
+  });
+
+  it("keeps a suite-level lock off its project's row", async () => {
+    const body = (await (await mockFetch("/api/v1/sets")).json()) as SetsResponse;
+    expect(
+      body.projects.find((p) => p.project === "search-rerank")?.restricted,
+    ).toBe(false);
+    const detail = (await (
+      await mockFetch("/api/v1/sets/search-rerank")
+    ).json()) as ProjectSetDetailResponse;
+    expect(detail.restricted).toBe(false);
+    expect(detail.suites.find((s) => s.suite === "ndcg-eval")?.restricted).toBe(
+      true,
+    );
+  });
+
+  it("404s the access list for a caller without a manage grant", async () => {
+    // Not 403: the list names who can reach a restricted set.
+    expect(
+      (await mockFetch("/api/v1/sets/checkout-agent/access", ANON)).status,
+    ).toBe(404);
+  });
+
+  it("aggregates over every run of a suite, not just the newest", async () => {
+    const detail = (await (
+      await mockFetch("/api/v1/sets/checkout-agent")
+    ).json()) as ProjectSetDetailResponse;
+    const regression = detail.suites.find((s) => s.suite === "regression");
+    expect(regression?.run_count).toBe(12);
+    expect(regression?.sparkline).toHaveLength(12);
+    // `latest_pass_rate` is the last element of the sparkline, by contract.
+    expect(regression?.latest_pass_rate).toBe(
+      regression?.sparkline[regression.sparkline.length - 1],
+    );
+    expect(regression?.case_count).toBeGreaterThan(regression!.run_count);
+  });
+
+  it("writes and removes a grant, and rejects a write-less credential", async () => {
+    const put = await mockFetch("/api/v1/sets/checkout-agent/grants/u_member", {
+      method: "PUT",
+      body: JSON.stringify({ level: "upload" }),
+    });
+    expect(put.status).toBe(204);
+    const after = (await (
+      await mockFetch("/api/v1/sets/checkout-agent/access")
+    ).json()) as SetAccessResponse;
+    expect(after.grants.map((g) => [g.username, g.level])).toEqual([
+      ["member", "upload"],
+    ]);
+
+    // The grant is keyed by user, so a second PUT is an update, not a row.
+    await mockFetch("/api/v1/sets/checkout-agent/grants/u_member", {
+      method: "PUT",
+      body: JSON.stringify({ level: "manage" }),
+    });
+    const updated = (await (
+      await mockFetch("/api/v1/sets/checkout-agent/access")
+    ).json()) as SetAccessResponse;
+    expect(updated.grants).toHaveLength(1);
+    expect(updated.grants[0]?.level).toBe("manage");
+
+    const del = await mockFetch("/api/v1/sets/checkout-agent/grants/u_member", {
+      method: "DELETE",
+    });
+    expect(del.status).toBe(204);
+  });
+
+  it("refuses the restriction toggle to a manage-grant holder", async () => {
+    // 403, not 404: they have already proved they hold the grant, so the only
+    // thing left to tell them is that locking a set is the operator's call.
+    const init = await memberAuth();
+    const res = await mockFetch("/api/v1/sets/support-bot/restriction", {
+      ...init,
+      method: "DELETE",
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("locks and unlocks a set for an admin", async () => {
+    expect(
+      (await mockFetch("/api/v1/sets/checkout-agent/restriction", { method: "PUT" }))
+        .status,
+    ).toBe(204);
+    const locked = (await (
+      await mockFetch("/api/v1/sets/checkout-agent/access")
+    ).json()) as SetAccessResponse;
+    expect(locked.restricted).toBe(true);
+
+    expect(
+      (
+        await mockFetch("/api/v1/sets/checkout-agent/restriction", {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(204);
+    // Removing a restriction that is not there is a 404, like the server.
+    expect(
+      (
+        await mockFetch("/api/v1/sets/checkout-agent/restriction", {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(404);
   });
 });

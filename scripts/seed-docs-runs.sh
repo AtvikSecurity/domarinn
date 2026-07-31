@@ -21,6 +21,9 @@
 #                        docs-read-token); used for the data-at-rest assertion's
 #                        GETs, so that check runs least-privilege rather than
 #                        reusing the write token it doesn't need.
+#   DOMARINN_ADMIN_TOKEN an admin-scoped bearer token for the same server. Only
+#                        used by the run-set policy block at the very end, which
+#                        is skipped entirely when this is unset.
 #   SEED_OFFLINE_ONLY=1  skip the Ollama-backed block entirely (no Ollama needed)
 #   SEED_EMBEDDINGS=1    also seed example 30 (needs $OLLAMA_EMBED_MODEL pulled)
 set -euo pipefail
@@ -286,3 +289,81 @@ if [ "$violations" -gt 0 ]; then
   exit 1
 fi
 echo "    $checked run(s) checked, every base_url/url is localhost"
+
+# --- Run-set access policy ---------------------------------------------------
+#
+# The sets browser is a picture of POLICY, not of runs: with nothing restricted
+# and nobody granted, every shot of it is an empty table. So provision a small,
+# realistic policy here — one locked suite and one account at each grant level —
+# and let the capture spec stay read-only, like every other shot it takes.
+#
+# Deliberately AFTER the data-at-rest check above. That check reads with
+# $DOMARINN_READ_TOKEN, a non-admin static token, which by design cannot see a
+# restricted set — restricting first would silently shrink the set of runs it
+# examines, which is the one thing a hygiene assertion must never do.
+#
+# Needs an admin credential, which the write-scoped share token is not. Absent
+# one this block is skipped rather than failing: seeding a server for any other
+# purpose must not require an admin token.
+ADMIN_TOKEN="${DOMARINN_ADMIN_TOKEN:-}"
+if [ -z "$ADMIN_TOKEN" ]; then
+  echo "==> no DOMARINN_ADMIN_TOKEN: skipping the run-set policy block"
+else
+  echo "==> provisioning the run-set access policy (project 'examples')"
+  admin_header="Authorization: Bearer $ADMIN_TOKEN"
+
+  # The suite whose access list the docs show. It keeps its runs — an admin
+  # (which every screenshot session is) sees restricted sets like any other.
+  # A suite with more than one run, so the shot of it carries a trend and a
+  # comparison rather than a single row.
+  LOCKED_SUITE=baselines-and-diff
+
+  # ensure_user <username> <role> — id of that account, created if absent.
+  ensure_user() {
+    local username="$1" role="$2" id
+    id="$(curl -fsS -H "$admin_header" "$DOMARINN_SERVER_URL/api/v1/users" |
+      jq -r --arg u "$username" '.users[] | select(.username == $u) | .id')"
+    if [ -z "$id" ]; then
+      id="$(curl -fsS -X POST -H "$admin_header" -H 'content-type: application/json' \
+        -d "$(jq -nc --arg u "$username" --arg r "$role" \
+          '{username: $u, password: "screenshots", role: $r}')" \
+        "$DOMARINN_SERVER_URL/api/v1/users" | jq -r .id)"
+    fi
+    if [ -z "$id" ] || [ "$id" = "null" ]; then
+      echo "seed-docs-runs: could not resolve a user id for '$username'" >&2
+      exit 1
+    fi
+    printf '%s' "$id"
+  }
+
+  # grant <user-id> <level> on the locked suite.
+  grant() {
+    curl -fsS -o /dev/null -X PUT -H "$admin_header" -H 'content-type: application/json' \
+      -d "$(jq -nc --arg l "$2" '{level: $l}')" \
+      "$DOMARINN_SERVER_URL/api/v1/sets/examples/suites/$LOCKED_SUITE/grants/$1"
+  }
+
+  # One account per level, so the access list shows what each one means:
+  # a CI bot that uploads, a lead who administers the list, an auditor who
+  # only reads. The bot is a real account rather than a static token on
+  # purpose — a static token has no owning user, so it holds no grants.
+  grant "$(ensure_user ci-bot member)" upload
+  grant "$(ensure_user qa-lead member)" manage
+  grant "$(ensure_user auditor viewer)" view
+
+  curl -fsS -o /dev/null -X PUT -H "$admin_header" \
+    "$DOMARINN_SERVER_URL/api/v1/sets/examples/suites/$LOCKED_SUITE/restriction"
+  echo "    examples/$LOCKED_SUITE restricted; 3 grants recorded"
+
+  # A pinned baseline on a different suite, so the browser has one of each flag
+  # to show. Uses the admin token because pinning is `upload` on the target set
+  # and the share token is not account-backed.
+  baseline_run="$(curl -fsS -H "$admin_header" \
+    "$DOMARINN_SERVER_URL/api/v1/runs?suite=hello&limit=1" | jq -r '.runs[0].id // empty')"
+  if [ -n "$baseline_run" ]; then
+    curl -fsS -o /dev/null -X PUT -H "$admin_header" -H 'content-type: application/json' \
+      -d "$(jq -nc --arg r "$baseline_run" '{run_id: $r}')" \
+      "$DOMARINN_SERVER_URL/api/v1/projects/examples/suites/hello/baseline"
+    echo "    examples/hello baseline pinned to $baseline_run"
+  fi
+fi

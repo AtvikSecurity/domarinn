@@ -31,6 +31,7 @@ use crate::auth::{Admin, Read, Scoped};
 use crate::domain::{CacheSort, CacheTier, SortOrder};
 use crate::extract::ApiQuery;
 use crate::routes::{clamp_limit, not_found, validate_cache_key, ApiResult};
+use crate::runsets::RunVisibility;
 use crate::storage::{decode_entry_cursor, decode_run_cursor, parse_time_ms, CacheListFilter};
 use crate::AppState;
 
@@ -139,9 +140,10 @@ pub(crate) async fn detail(
 ///
 /// `Scoped<Read>`, matching [`detail`] rather than [`list`]: it is addressed by
 /// a key you must already know, and the runs it names are already browsable at
-/// the same scope.
+/// the same scope. Which is why the page is also filtered by run visibility —
+/// "already browsable" has to keep meaning what it says once run sets exist.
 pub(crate) async fn entry_runs(
-    _scope: Scoped<Read>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(key): Path<String>,
     ApiQuery(q): ApiQuery<EntryRunsQuery>,
@@ -153,6 +155,7 @@ pub(crate) async fn entry_runs(
             key,
             clamp_limit(q.limit),
             q.cursor.as_deref().and_then(decode_run_cursor),
+            RunVisibility::of(&scope.identity),
         )
         .await?;
     Ok(Json(page).into_response())

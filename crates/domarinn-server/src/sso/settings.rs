@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Context};
 
+use crate::domain::Role;
 use crate::sso::mapping::RoleMapping;
 
 /// Default `DOMARINN_SSO_CLOCK_SKEW_SECS`.
@@ -101,6 +102,20 @@ pub fn parse_sso_settings(vars: &HashMap<String, String>) -> anyhow::Result<SsoS
             .with_context(|| format!("invalid DOMARINN_SSO_CLOCK_SKEW_SECS '{raw}'"))?,
     };
 
+    // Instance-wide, not per-provider: "SSO users are read-only here" is a
+    // property of the deployment, and repeating it per provider would only
+    // create ways to forget one. `admin` is deliberately not accepted — a
+    // default that promotes every SSO login is a footgun, and the admin
+    // groups/emails are how an operator says who administers.
+    let default_role = match get("DOMARINN_SSO_DEFAULT_ROLE".to_string()) {
+        None => None,
+        Some("member") => Some(Role::Member),
+        Some("viewer") => Some(Role::Viewer),
+        Some(other) => {
+            bail!("invalid DOMARINN_SSO_DEFAULT_ROLE '{other}'; expected one of: member, viewer")
+        }
+    };
+
     let mut oidc = Vec::new();
     for name in provider_names(vars, "DOMARINN_OIDC_PROVIDERS")? {
         let stem = env_stem(&name);
@@ -123,7 +138,7 @@ pub fn parse_sso_settings(vars: &HashMap<String, String>) -> anyhow::Result<SsoS
             groups_claim: get(var("GROUPS_CLAIM"))
                 .map(str::to_string)
                 .unwrap_or_else(|| DEFAULT_GROUPS_KEY.to_string()),
-            mapping: parse_mapping(&get, &var),
+            mapping: parse_mapping(&get, &var, default_role),
             name,
         });
     }
@@ -186,7 +201,7 @@ pub fn parse_sso_settings(vars: &HashMap<String, String>) -> anyhow::Result<SsoS
                 .map(str::to_string)
                 .unwrap_or_else(|| DEFAULT_GROUPS_KEY.to_string()),
             allow_idp_initiated,
-            mapping: parse_mapping(&get, &var),
+            mapping: parse_mapping(&get, &var, default_role),
             name,
         });
     }
@@ -249,6 +264,7 @@ fn default_label(name: &str) -> String {
 fn parse_mapping<'a>(
     get: &impl Fn(String) -> Option<&'a str>,
     var: &impl Fn(&str) -> String,
+    default_role: Option<Role>,
 ) -> RoleMapping {
     let list = |suffix: &str| -> Vec<String> {
         get(var(suffix))
@@ -265,6 +281,7 @@ fn parse_mapping<'a>(
         admin_groups: list("ADMIN_GROUPS"),
         admin_emails: list("ADMIN_EMAILS"),
         allowed_email_domains: list("ALLOWED_EMAIL_DOMAINS"),
+        default_role,
     }
 }
 
@@ -391,6 +408,46 @@ mod tests {
         assert_eq!(okta.groups_attr, "groups");
         assert!(!okta.allow_idp_initiated);
         assert_eq!(okta.mapping.admin_groups, vec!["sec-ops"]);
+    }
+
+    /// The default role is one instance-wide setting, not a per-provider one:
+    /// every configured provider's mapping picks it up.
+    #[test]
+    fn sso_default_role_reaches_every_provider_mapping() {
+        let settings = parse_sso_settings(&vars(&[
+            ("DOMARINN_SSO_DEFAULT_ROLE", "viewer"),
+            ("DOMARINN_OIDC_PROVIDERS", "google"),
+            ("DOMARINN_OIDC_GOOGLE_ISSUER", "https://accounts.google.com"),
+            ("DOMARINN_OIDC_GOOGLE_CLIENT_ID", "cid"),
+            ("DOMARINN_OIDC_GOOGLE_CLIENT_SECRET", "sec"),
+            ("DOMARINN_SAML_PROVIDERS", "okta"),
+            ("DOMARINN_SAML_OKTA_IDP_METADATA_URL", "https://m"),
+        ]))
+        .unwrap();
+        assert_eq!(settings.oidc[0].mapping.default_role, Some(Role::Viewer));
+        assert_eq!(settings.saml[0].mapping.default_role, Some(Role::Viewer));
+
+        // Unset stays unset, which `role_for` reads as the historical member.
+        let settings = parse_sso_settings(&vars(&[
+            ("DOMARINN_SAML_PROVIDERS", "okta"),
+            ("DOMARINN_SAML_OKTA_IDP_METADATA_URL", "https://m"),
+        ]))
+        .unwrap();
+        assert_eq!(settings.saml[0].mapping.default_role, None);
+    }
+
+    /// `admin` is not offered: an instance-wide default that makes every SSO
+    /// login an administrator is a footgun, not a configuration.
+    #[test]
+    fn bad_sso_default_role_fails_loud() {
+        for bad in ["admin", "viewerr", "Viewer"] {
+            let err = parse_sso_settings(&vars(&[("DOMARINN_SSO_DEFAULT_ROLE", bad)])).unwrap_err();
+            assert!(
+                err.to_string().contains("DOMARINN_SSO_DEFAULT_ROLE"),
+                "{err}"
+            );
+            assert!(err.to_string().contains(bad), "{err}");
+        }
     }
 
     #[test]

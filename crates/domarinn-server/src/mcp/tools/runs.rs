@@ -7,6 +7,7 @@ use super::{clamp_limit, parse_args, read_only_annotations, ToolResult};
 use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
 use crate::mcp::budget::Budget;
 use crate::mcp::text;
+use crate::runsets::RunVisibility;
 use crate::storage::{self, MatrixFilter, RunListFilter};
 use crate::AppState;
 use domarinn_core::ids::RunId;
@@ -142,14 +143,14 @@ pub(super) fn definitions() -> Vec<Value> {
     ]
 }
 
-pub(super) async fn find_runs(state: &AppState, args: Value) -> ToolResult {
+pub(super) async fn find_runs(state: &AppState, vis: &RunVisibility, args: Value) -> ToolResult {
     let args: FindRunsArgs = match parse_args(args) {
         Ok(a) => a,
         Err(e) => return e,
     };
 
     match args.group_by {
-        Some(GroupBy::Project) => return list_projects(state).await,
+        Some(GroupBy::Project) => return list_projects(state, vis).await,
         Some(GroupBy::Suite) => {
             let Some(project) = args.project.clone() else {
                 return ToolResult::error(
@@ -157,7 +158,7 @@ pub(super) async fn find_runs(state: &AppState, args: Value) -> ToolResult {
                      see which projects exist.",
                 );
             };
-            return list_suites(state, project).await;
+            return list_suites(state, vis, project).await;
         }
         None => {}
     }
@@ -179,6 +180,7 @@ pub(super) async fn find_runs(state: &AppState, args: Value) -> ToolResult {
     };
 
     let filter = RunListFilter {
+        visibility: vis.clone(),
         project: args.project,
         suite: args.suite,
         tag: args.tag,
@@ -207,8 +209,8 @@ pub(super) async fn find_runs(state: &AppState, args: Value) -> ToolResult {
     finish(structured_with_budget(&mut structured), structured, text)
 }
 
-async fn list_projects(state: &AppState) -> ToolResult {
-    match state.storage.list_projects().await {
+async fn list_projects(state: &AppState, vis: &RunVisibility) -> ToolResult {
+    match state.storage.list_projects(vis.clone()).await {
         Ok(projects) => {
             let structured = json!(projects);
             let text = text::projects_table(&structured["projects"]);
@@ -218,8 +220,12 @@ async fn list_projects(state: &AppState) -> ToolResult {
     }
 }
 
-async fn list_suites(state: &AppState, project: String) -> ToolResult {
-    match state.storage.list_suites(project.clone()).await {
+async fn list_suites(state: &AppState, vis: &RunVisibility, project: String) -> ToolResult {
+    match state
+        .storage
+        .list_suites(project.clone(), vis.clone())
+        .await
+    {
         Ok(suites) => {
             let structured = json!(suites);
             let text = text::suites_table(&project, &structured["suites"]);
@@ -229,14 +235,14 @@ async fn list_suites(state: &AppState, project: String) -> ToolResult {
     }
 }
 
-pub(super) async fn get_run(state: &AppState, args: Value) -> ToolResult {
+pub(super) async fn get_run(state: &AppState, vis: &RunVisibility, args: Value) -> ToolResult {
     let args: GetRunArgs = match parse_args(args) {
         Ok(a) => a,
         Err(e) => return e,
     };
     let run_id = RunId::new(args.run_id.clone());
 
-    let detail = match state.storage.get_run(run_id.clone()).await {
+    let detail = match state.storage.get_run(run_id.clone(), vis.clone()).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             return ToolResult::error(format!(
@@ -253,6 +259,7 @@ pub(super) async fn get_run(state: &AppState, args: Value) -> ToolResult {
     if include.contains(&RunInclude::Matrix) {
         let filter = MatrixFilter {
             run_id: run_id.clone(),
+            visibility: vis.clone(),
             limit: clamp_limit(args.matrix_limit, MATRIX_DEFAULT_LIMIT, MATRIX_MAX_LIMIT),
             cursor: args.matrix_cursor,
         };
@@ -263,7 +270,7 @@ pub(super) async fn get_run(state: &AppState, args: Value) -> ToolResult {
     }
 
     if include.contains(&RunInclude::Config) {
-        match state.storage.get_run_config(run_id).await {
+        match state.storage.get_run_config(run_id, vis.clone()).await {
             Ok(Some(config)) => structured["config"] = json!(config),
             // A run always has a detail row; its config snapshot may predate
             // config capture. Absence is informative, not an error.

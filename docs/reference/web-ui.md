@@ -16,6 +16,9 @@ beside it discusses what the shot shows. -->
 | `/runs/:id`                   | [Run detail](#run-detail) | Every case with its assertions; click one for the [detail drawer](#the-case-drawer). |
 | `/runs/:id?view=matrix`       | [Matrix view](#matrix-view) | The same run pivoted to **prompt × provider**. |
 | `/runs/:id/compare[/:other]`  | [Compare](#compare--mcnemar) | Base/head pickers, regression highlighting, and the significance test. |
+| `/sets`                       | [Run sets](#run-sets) | Every project you can reach, and who may reach it. |
+| `/sets/:project`              | [Run sets](#run-sets) | That project's suites, with their trends, baselines and locks. |
+| `/sets/:project/:suite`       | [One suite](#one-suite) | One suite's record, plus the [access panel](#who-may-reach-a-set). |
 | `/search?q=`                  | [Search](#search) | Full-text across runs and case outputs. |
 | `/cache`                      | [Cache stats](#cache-stats) | The server's shared cache tier: entries, size, hit/miss counters. |
 | `/settings`                   | [Settings](#settings) | Account, appearance, and what this server is running. |
@@ -26,7 +29,7 @@ beside it discusses what the shot shows. -->
 
 /// info | Where these screenshots come from
 
-Every image below is a real capture, not a mock-up: `mise run screenshots` starts a throwaway server, seeds it with actual runs of the [shipped examples](../examples/index.md) against a loopback Ollama, and drives a browser at 1920×1080 in both themes. That is why the actor reads `demo`, the host reads `docs-seed`, and the numbers are small — this is a demo instance with two dozen runs on it, and it shows you exactly what you will see.
+Every image below is a real capture, not a mock-up: `mise run screenshots` starts a throwaway server, seeds it with actual runs of the [shipped examples](../examples/index.md) against a loopback Ollama, and drives a browser at 1920×1080 in both themes. That is why the actor reads `demo`, the host reads `docs-seed`, the numbers are small, and the [access list](#who-may-reach-a-set) names three seeded accounts, one per grant level — this is a demo instance with two dozen runs on it, and it shows you exactly what you will see.
 
 ///
 
@@ -129,6 +132,55 @@ The per-case table below expands each row into its base and head evidence, so a 
 
 ---
 
+## Run sets
+
+![The suites of one project, with their trends and flags](../assets/screenshots/set-project-light.png#only-light)
+![The suites of one project, with their trends and flags](../assets/screenshots/set-project-dark.png#only-dark)
+
+**Sets** answers a different question from Runs: not what ran, but *what exists and who can reach it*. A **set** is a `project / suite` pair — the two keys every run already declares — and the browser drills down in that order: `/sets` lists the projects you can see, `/sets/:project` (above) lists that project's suites, and one more click opens the suite itself. A run that declares no `project:` belongs to no set and never appears here — the same runs the [Overview](#overview) shows as `(no project) / (no suite)`.
+
+The root listing is one row per project, which on this demo server means exactly one: every shipped example declares `project: examples`. The shot above is therefore taken one level down, where the data is. Each row is a suite with its run count, when it last ran, its latest pass rate, and a trend across its recent runs — and the two chips on the right are the flags this page exists to surface: `hello` has a pinned **baseline**, `baselines-and-diff` is **restricted**.
+
+Note what the two red rows do *not* do: `failing-gate` at 33.3% and `errors-and-retries` at 25.0% sit in suite-name order like everything else. This is a directory, not a status board — [Overview](#overview) is the page that sorts by what needs attention.
+
+### One suite
+
+![One suite: its record, its runs, and the access button](../assets/screenshots/set-suite-light.png#only-light)
+![One suite: its record, its runs, and the access button](../assets/screenshots/set-suite-dark.png#only-dark)
+
+A suite's whole record on one page: how many runs, the newest run's pass rate, the case total with the share that passed across all of them, when it last ran, and a pass-rate trend as soon as there are two runs to draw a line between.
+
+Below that, every run of the suite — **including the fully-cached passing ones the [runs list](#runs-list) folds away by default**. Both runs here carry a `cached` badge and would be hidden there; hiding them on this page would make the rows silently disagree with the `RUNS 2` above them. Tick two and `Compare 2 runs` opens them in [Compare](#compare--mcnemar), older as base; the per-row `Compare` link takes a run against the one before it, which is why the oldest row has a `—` instead. `View in Runs →` hands the same project and suite to the runs list when you want its filters and grouping.
+
+The `restricted` chip beside the heading, and the `Access` button opposite it, are the other half of this page.
+
+### Who may reach a set
+
+![The access panel over a restricted suite](../assets/screenshots/set-access-light.png#only-light)
+![The access panel over a restricted suite](../assets/screenshots/set-access-dark.png#only-dark)
+
+The model is **default-open**: until someone restricts a set, anyone who can read this server can read its runs, exactly as before this page existed. Restrict one and it disappears — from the runs list, from search, from compare, from the [MCP tools](mcp.md), and from this browser — for everyone except the accounts on this list and any admin, who is never filtered by a grant. Addressing one of its runs directly by id answers `404`, not `403`: "you may not see this" and "there is nothing here" are deliberately the same answer.
+
+`Visibility` states which of the two this set is, and `Restrict suite` / `Unlock suite` flips it. That button is **admin-only** — administering a set's access list is delegated, locking and unlocking is not — and unlocking keeps the grants, so re-locking the set restores the list it had. Grants come at three levels, each including the ones below it:
+
+| Level | What it allows |
+|---|---|
+| `view` | Read this set's runs. |
+| `upload` | Read, and upload runs into it — `domarinn run --share`, and pinning its baseline. |
+| `manage` | Read, upload, and administer this list. |
+
+The `Access` button appears for admins and for anyone holding `manage` over the set. Opened from a **project** page it edits the project-wide list, which covers every suite in the project — including suites nobody has uploaded to yet; opened from a suite it edits that suite alone. A suite that is hidden by its project's restriction says so, and names the project as the place that restriction is lifted.
+
+Three things are worth knowing before you plan around this panel:
+
+- **A non-admin manager cannot add new people.** The `Add person` picker is filled from the account list, and listing accounts is admin-only. A `manage` grant therefore lets you re-level and remove the people already on the list, but not extend it — ask an admin to add someone.
+- **A read-only credential renders the panel read-only.** Reading the list needs `read` scope, changing it needs `write`, so a `viewer` account that holds `manage` can see who is on the list and change nothing. The panel says so rather than offering controls that would be refused.
+- **A set with no runs yet is not in this browser at all.** Restrictions and grants may be created before a set's first upload — that is how you lock a project down in advance — but until a run arrives the set has nothing to list, so `/sets` omits it and its page `404`s. Manage it through the [REST API](rest-api.md#run-sets-access-control) until then.
+
+Static tokens are the other thing this page cannot show you, and they split in two. A `read` or `write` `DOMARINN_TOKENS` entry has no owning user, so it holds no grants and never pierces a restriction — for CI that uploads into a restricted set, give the job an API key belonging to an account you granted `upload` instead. An `admin:` entry is the opposite: admin scope sees and manages every set on the instance, exactly like an admin account. See [Server](server.md#restricting-a-run-set).
+
+---
+
 ## Search
 
 ![Full-text search across runs and cases](../assets/screenshots/search-light.png#only-light)
@@ -197,7 +249,7 @@ Five panels, and three of them answer support questions before they are asked.
 
 API keys are the credential for CI and scripts that should be attributable to a person. Name one, pick a scope, and the secret is displayed **exactly once, immediately after creation** — the page says so before you click, because there is no second chance and no recovery path.
 
-The scope selector is capped at your own: a `member` cannot mint an `admin` key, and no key can outrank the account that created it. Keys are revocable at any time, and revoking one takes effect immediately for every script holding it. For a credential with no user behind it — bootstrapping, a shared CI runner — use a static `DOMARINN_TOKENS` entry instead; the two kinds are compared in [Server](server.md#two-kinds-of-credentials).
+The scope selector is capped at your own: a `member` cannot mint an `admin` key, a `viewer` gets `read` and nothing else, and no key can outrank the account that created it. A key also rides its owner's [run-set grants](#who-may-reach-a-set), whatever scope it was minted at — which is exactly what a static token, having no owner, cannot do. Keys are revocable at any time, and revoking one takes effect immediately for every script holding it. For a credential with no user behind it — bootstrapping, a shared CI runner — use a static `DOMARINN_TOKENS` entry instead; the two kinds are compared in [Server](server.md#two-kinds-of-credentials).
 
 ---
 
@@ -206,9 +258,9 @@ The scope selector is capped at your own: a `member` cannot mint an `admin` key,
 ![The user administration page](../assets/screenshots/admin-light.png#only-light)
 ![The user administration page](../assets/screenshots/admin-dark.png#only-dark)
 
-Account management, admin-only, and short by design: create a user with a role, or change a role, disable an account, reset a password, delete. Two roles exist — `admin` and `member` — and each maps to a scope ceiling rather than to a list of permissions.
+Account management, admin-only, and short by design: create a user with a role, or change a role, disable an account, reset a password, delete. Three roles exist — `viewer`, `member` and `admin` — and each maps to a scope ceiling rather than to a list of permissions: `viewer → read`, `member → write`, `admin → admin`. A `viewer` browses, mints read-only API keys of its own, and cannot upload a run or change policy; give one a [run-set grant](#who-may-reach-a-set) and it can reach a restricted set, still read-only. The three accounts under `admin` in this shot are the seed's, one per grant level on the [access list](#who-may-reach-a-set) above — which is why one of them is a `viewer`.
 
-Static bearer tokens never appear here. They are configured in the environment and are not tied to a user, which is exactly why they cannot mint API keys or be revoked from a web page — pull them from the environment and restart. Accounts provisioned by SSO do appear, with their role re-synced from the identity provider on every login; the one thing that sync will not do is auto-demote your last enabled admin.
+Static bearer tokens never appear here. They are configured in the environment and are not tied to a user, which is exactly why they cannot mint API keys or be revoked from a web page — pull them from the environment and restart. Accounts provisioned by SSO do appear, with their role re-synced from the identity provider on every login — which means a role you set here does not stick for them, and that `DOMARINN_SSO_DEFAULT_ROLE` re-applies to accounts provisioned long ago (see [Server](server.md#global-sso-settings)). The one thing that sync will not do is auto-demote your last enabled admin.
 
 ---
 

@@ -106,9 +106,11 @@ Each comma-separated entry is `scope:secret`, where scope is `read`, `write`, or
 **2. Local user accounts** — real username/password logins stored in SQLite.
 
 - Passwords are **argon2**-hashed (minimum 8 characters).
-- Two roles: **`admin`** and **`member`**. Role maps to a scope ceiling: `admin → admin`, `member → write`.
+- Three roles: **`admin`**, **`member`**, and **`viewer`**. Role maps to a scope ceiling: `admin → admin`, `member → write`, `viewer → read`.
 - Logging in mints a **session** (token prefix `mses_`, 30-day lifetime). The browser UI uses sessions; `POST /auth/logout` revokes the presenting one.
 - Each account can mint **API keys** (prefix `domarinn_`, 256 bits of entropy). The secret is shown **exactly once** on creation, is revocable, and carries a **scope ceiling** — a key may be created at or below the creator's own scope, never above it.
+
+**What `viewer` is for.** A viewer reads: the runs it may see, the run sets it has been granted, and the analysis views built on them. It can mint API keys — capped, like every account, at its own `read` scope — which is what makes it the right role for a dashboard, an auditor, or an agent pointed at the [MCP endpoint](mcp.md). It can never upload a run, pin a baseline, or change policy: even a viewer holding a `manage` grant on a [run set](rest-api.md#run-sets-access-control) sees that set's access list read-only, because editing it takes `write` scope. Minting and revoking your own keys is `read`-scoped for exactly this reason; nothing else about the key endpoints is loosened.
 
 | Credential   | Prefix   | Backed by | Can manage accounts/keys? | Typical use |
 |--------------|----------|-----------|---------------------------|-------------|
@@ -125,6 +127,18 @@ Authorization: Bearer <static-token | domarinn_apikey | mses_session>
 ```
 
 The `Bearer ` prefix is recommended; a bare token value in the header is also accepted. The same header works for every credential kind — the server figures out which one you presented.
+
+### Restricting a run set
+
+Scopes are instance-wide: they say how strong a credential is, not which projects it may touch. **Run sets** are the other axis. A run set is a `(project, suite)` pair, and the model is default-open — until an admin restricts one, everything behaves as it always has. Restrict a set and its runs disappear for everyone except the accounts granted it, at `view`, `upload` or `manage` — and admins, who are never filtered by a grant and can always see and manage every set.
+
+Two operator-facing consequences:
+
+- **A `read` or `write` static token never pierces a restriction.** `DOMARINN_TOKENS` entries are shared secrets with no owning user, so they have no grants; if a `write` token could reach restricted sets, every CI job in the deployment could. For CI that uploads into a restricted set, create a bot **account at the `member` role**, grant it `upload` there, and give the job that account's API key. It has to be a `member`: uploading needs `write` scope, and a `viewer` can only mint `read` keys, so a viewer bot is refused however it is granted. **An `admin:` static token is the exception, and it is not a subtle one:** admin scope resolves to the same total visibility an admin account has, so such a token reads and manages every restricted set on the instance. It is an operator credential — do not hand one to CI expecting run sets to contain it.
+- **An invisible run is a `404`, never a `403`.** Nothing in the API distinguishes "restricted away from you" from "never existed", which is also why an operator debugging a missing run should check the set's access list rather than the run id.
+- **In `open` mode a restriction is a self-DoS.** Open mode grants every route to anonymous callers, so anybody who can reach the server may restrict a set — and no anonymous caller can ever hold a grant, so the set goes dark for everyone, whoever locked it included. Undo it with `DELETE /api/v1/sets/{project}/restriction`; run sets are only meaningful under `protect-writes` or `closed`.
+
+The endpoints and the full model are in the [REST API reference](rest-api.md#run-sets-access-control); the browser is the [Sets page](web-ui.md#run-sets).
 
 ---
 
@@ -143,6 +157,19 @@ domarinn can delegate login to one or more external identity providers — any O
 | Variable | Default | Purpose |
 |---|---|---|
 | `DOMARINN_SSO_CLOCK_SKEW_SECS` | `60` | Tolerance for OIDC `exp`/`iat` and SAML `NotBefore`/`NotOnOrAfter`. |
+| `DOMARINN_SSO_DEFAULT_ROLE` | `member` | Role for an SSO login that matches no admin rule — set `viewer` to provision read-only accounts. `admin` is not accepted; use the per-provider admin groups/emails below. |
+
+> **`DOMARINN_SSO_DEFAULT_ROLE` is not only about new accounts.** The role is
+> re-synced on **every** SSO login, so this variable is re-evaluated for people
+> who signed in months ago. Flipping it from `member` to `viewer` therefore
+> **demotes every existing SSO account** that matches no admin rule, the next
+> time each of them signs in — quietly, one at a time, as they log in. That is
+> the intended way to make an SSO deployment read-only by default; it is a
+> surprise if you meant it to apply only to new joiners. Editing such an
+> account's role on the admin page does **not** hold either — the next SSO login
+> re-syncs it — so the IdP's admin groups/emails, and this variable, are the two
+> places the role of an SSO account is actually decided. (The one thing the sync
+> will not do is auto-demote your last enabled admin.)
 
 ### OIDC providers
 

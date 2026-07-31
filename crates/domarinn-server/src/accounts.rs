@@ -13,7 +13,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use ts_rs::TS;
 
-use crate::auth::{self, Admin, Identity, Scope, Scoped, Write};
+use crate::auth::{self, Admin, Identity, Read, Scope, Scoped};
 use crate::domain::{ApiKeyId, Role, UserId};
 use crate::dto::accounts::{
     ApiKeyCreatedResponse, ApiKeyListResponse, ApiKeyView, AuthSessionResponse, MeResponse, MeUser,
@@ -153,8 +153,17 @@ pub(crate) struct CreateKeyBody {
 }
 
 /// `GET /apikeys` — the caller's own keys (never the secret).
+///
+/// Gated at `read`, not `write`, and the three key endpoints below agree.
+/// What protects them is not the route gate but the two per-request checks:
+/// [`require_user`], which refuses any credential with no owning account
+/// (a static token can never mint a key), and the scope ceiling in
+/// [`create_apikey`], which caps a minted key at the caller's own scope. A
+/// `write` gate on top of those bought nothing and cost something real — in
+/// `closed` mode it locked a viewer out of minting the read-only key their
+/// role is entirely about.
 pub(crate) async fn list_apikeys(
-    scope: Scoped<Write>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
 ) -> ApiResult<Json<ApiKeyListResponse>> {
     let user_id = require_user(&scope.identity)?;
@@ -166,7 +175,7 @@ pub(crate) async fn list_apikeys(
 /// `POST /apikeys` — mint a key, returning its secret exactly once. The scope
 /// defaults to the caller's own and may never exceed it.
 pub(crate) async fn create_apikey(
-    scope: Scoped<Write>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     ApiJson(body): ApiJson<CreateKeyBody>,
 ) -> ApiResult<Response> {
@@ -197,7 +206,7 @@ pub(crate) async fn create_apikey(
 
 /// `DELETE /apikeys/{id}` — revoke a key. Allowed for its owner or any admin.
 pub(crate) async fn delete_apikey(
-    scope: Scoped<Write>,
+    scope: Scoped<Read>,
     State(state): State<AppState>,
     Path(id): Path<ApiKeyId>,
 ) -> ApiResult<Response> {

@@ -2,26 +2,30 @@
 
 use std::str::FromStr;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, OptionalExtension};
 
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 
 use super::{decompress, empty_to_none, from_microusd, parse_stored_asserts, Storage};
 use crate::dto::cases::{CaseDetailResponse, CaseListItem, CaseListResponse};
+use crate::runsets::{visible_run_predicate, RunVisibility};
 
 impl Storage {
     pub async fn list_cases(&self, filter: CaseListFilter) -> anyhow::Result<CaseListResponse> {
         self.runs.read(move |conn| filter.query(conn)).await
     }
 
+    /// One case's detail, or `None` when the case, the run, or the caller's
+    /// access to the run is missing — all three render as the same 404.
     pub async fn get_case(
         &self,
         run_id: RunId,
         case_key: CaseKey,
+        vis: RunVisibility,
     ) -> anyhow::Result<Option<CaseDetailResponse>> {
         self.runs
-            .read(move |conn| get_case_detail(conn, &run_id, &case_key))
+            .read(move |conn| get_case_detail(conn, &run_id, &case_key, &vis))
             .await
     }
 }
@@ -30,6 +34,9 @@ impl Storage {
 #[derive(Debug, Clone)]
 pub struct CaseListFilter {
     pub run_id: RunId,
+    /// Required, with no default: a case list is a view onto its run, so it
+    /// answers to the same access check the run itself does.
+    pub visibility: RunVisibility,
     pub status: Option<CaseStatus>,
     pub tag: Option<String>,
     pub q: Option<String>,
@@ -64,6 +71,8 @@ impl CaseListFilter {
              FROM cases WHERE run_id = ?1",
         );
         let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
+        let visible = visible_run_predicate(1, &self.visibility, &mut args);
+        sql.push_str(&format!(" AND {visible}"));
         if let Some(status) = self.status {
             args.push(status.as_str().to_string().into());
             sql.push_str(&format!(" AND status = ?{}", args.len()));
@@ -196,14 +205,22 @@ fn get_case_detail(
     conn: &Connection,
     run_id: &RunId,
     case_key: &CaseKey,
+    vis: &RunVisibility,
 ) -> anyhow::Result<Option<CaseDetailResponse>> {
+    let mut args: Vec<rusqlite::types::Value> = vec![
+        run_id.as_str().to_string().into(),
+        case_key.as_str().to_string().into(),
+    ];
+    let visible = visible_run_predicate(1, vis, &mut args);
+    let sql = format!("SELECT detail FROM cases WHERE run_id = ?1 AND case_key = ?2 AND {visible}");
+    // `.optional()?`, never `.ok()` — see `project_has_visible_runs` in
+    // [`super::sets`]. This answer becomes a 404, and a storage fault must not
+    // be reported to the caller as a case that does not exist.
     let blob: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT detail FROM cases WHERE run_id = ?1 AND case_key = ?2",
-            params![run_id.as_str(), case_key.as_str()],
-            |row| row.get(0),
-        )
-        .ok();
+        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
+            row.get(0)
+        })
+        .optional()?;
     let Some(blob) = blob else {
         return Ok(None);
     };

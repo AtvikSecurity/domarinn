@@ -4,6 +4,8 @@
 
 mod common;
 
+use domarinn_server::runsets::RunVisibility;
+
 use std::path::Path;
 
 use axum::http::StatusCode;
@@ -268,11 +270,20 @@ async fn reopen_backfills_search_rows_for_unindexed_runs() {
     wipe_fts(dir.path());
     let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
 
-    let res = storage.search("gronkle".to_string(), 20).await.unwrap();
+    let res = storage
+        .search("gronkle".to_string(), 20, RunVisibility::Full)
+        .await
+        .unwrap();
     assert_eq!(res.cases.len(), 1, "prompt text reindexed from the blob");
-    let res = storage.search("frobnicate".to_string(), 20).await.unwrap();
+    let res = storage
+        .search("frobnicate".to_string(), 20, RunVisibility::Full)
+        .await
+        .unwrap();
     assert_eq!(res.cases.len(), 1, "error text reindexed from the blob");
-    let res = storage.search("nightly".to_string(), 20).await.unwrap();
+    let res = storage
+        .search("nightly".to_string(), 20, RunVisibility::Full)
+        .await
+        .unwrap();
     assert_eq!(res.runs.len(), 1, "run metadata reindexed");
 }
 

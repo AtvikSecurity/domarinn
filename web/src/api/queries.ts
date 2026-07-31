@@ -19,9 +19,11 @@ import type {
   CaseListResponse,
   CaseResult,
   CompareResponse,
+  GrantLevel,
   MatrixResponse,
   MetaResponse,
   MeResponse,
+  ProjectSetDetailResponse,
   ProjectsResponse,
   PruneResponse,
   Role,
@@ -29,6 +31,10 @@ import type {
   RunDetailResponse,
   RunListResponse,
   SearchResponse,
+  SetAccessResponse,
+  SetGrantUpsert,
+  SetsResponse,
+  SuiteSetDetailResponse,
   SuitesResponse,
   UserListResponse,
   UserView,
@@ -61,6 +67,15 @@ export const qk = {
   search: (q: string, limit: number) => ["search", q, limit] as const,
   projects: ["projects"] as const,
   suites: (project: string) => ["suites", project] as const,
+  // The whole run-set browser nests under ["sets"], so one invalidate after a
+  // grant or a restriction change clears the listing, both detail levels and
+  // every open access panel — a restriction moves rows between all of them.
+  sets: () => ["sets"] as const,
+  setsProject: (project: string) => ["sets", "project", project] as const,
+  setsSuite: (project: string, suite: string) =>
+    ["sets", "suite", project, suite] as const,
+  setsAccess: (project: string, suite: string | null) =>
+    ["sets", "access", project, suite] as const,
   cacheStats: ["cache", "stats"] as const,
   // Everything cache-related nests under ["cache"], so pruning can invalidate
   // the whole subtree in one call — see `usePruneCache`.
@@ -328,6 +343,111 @@ export function useSetBaseline(project: string, suite: string) {
       void client.invalidateQueries({ queryKey: qk.suites(project) });
       void client.invalidateQueries({ queryKey: ["compare"] });
     },
+  });
+}
+
+// --- Run sets --------------------------------------------------------------
+
+/**
+ * The set path segment for a `(project, suite)` pair. The literal `access` /
+ * `restriction` / `grants` segments sit where a suite name could otherwise go,
+ * which is why the suite form spells `/suites/` out — see `sets.rs`.
+ */
+function setPath(project: string, suite: string | null): string {
+  const base = `/sets/${encodeURIComponent(project)}`;
+  return suite === null ? base : `${base}/suites/${encodeURIComponent(suite)}`;
+}
+
+/** Every project with at least one run this caller may see (`GET /sets`). */
+export function useSets() {
+  return useQuery({
+    queryKey: qk.sets(),
+    queryFn: ({ signal }) => apiRequest<SetsResponse>("/sets", { signal }),
+  });
+}
+
+/**
+ * One project's suites. A 404 here means "invisible or nonexistent" — the
+ * server refuses to distinguish them, so the page must not either.
+ */
+export function useSetProject(project: string | undefined) {
+  return useQuery({
+    queryKey: qk.setsProject(project ?? ""),
+    queryFn: ({ signal }) =>
+      apiRequest<ProjectSetDetailResponse>(setPath(project!, null), { signal }),
+    enabled: !!project,
+  });
+}
+
+export function useSetSuite(project: string | undefined, suite: string | undefined) {
+  return useQuery({
+    queryKey: qk.setsSuite(project ?? "", suite ?? ""),
+    queryFn: ({ signal }) =>
+      apiRequest<SuiteSetDetailResponse>(setPath(project!, suite!), { signal }),
+    enabled: !!project && !!suite,
+  });
+}
+
+/**
+ * A set's access list. Read-scoped on the server, so a viewer-role manager can
+ * load it and still be refused every mutation below — `enabled` gates the fetch
+ * on the panel actually being open, since most page views never open it.
+ */
+export function useSetAccess(
+  project: string | undefined,
+  suite: string | null,
+  opts: { enabled?: boolean } = {},
+) {
+  return useQuery({
+    queryKey: qk.setsAccess(project ?? "", suite),
+    queryFn: ({ signal }) =>
+      apiRequest<SetAccessResponse>(`${setPath(project!, suite)}/access`, { signal }),
+    enabled: (opts.enabled ?? true) && !!project,
+  });
+}
+
+/**
+ * Lock or unlock a set (admin scope; a manage grant is refused with a 403).
+ *
+ * Also invalidates `["runs"]`: a restriction changes which runs the caller —
+ * and anyone whose page is open — may see, so leaving the runs list cached
+ * would keep rendering rows the server has just hidden.
+ */
+export function useSetRestrictionMutation(project: string, suite: string | null) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (restricted: boolean) =>
+      apiRequest(`${setPath(project, suite)}/restriction`, {
+        method: restricted ? "PUT" : "DELETE",
+      }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: qk.sets() });
+      void client.invalidateQueries({ queryKey: ["runs"] });
+    },
+  });
+}
+
+/** Add a person to a set's access list, or change the level they hold. */
+export function useSetGrantMutation(project: string, suite: string | null) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { userId: string; level: GrantLevel }) =>
+      apiRequest(
+        `${setPath(project, suite)}/grants/${encodeURIComponent(input.userId)}`,
+        { method: "PUT", body: { level: input.level } satisfies SetGrantUpsert },
+      ),
+    onSuccess: () => client.invalidateQueries({ queryKey: qk.sets() }),
+  });
+}
+
+export function useSetGrantDeleteMutation(project: string, suite: string | null) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) =>
+      apiRequest(`${setPath(project, suite)}/grants/${encodeURIComponent(userId)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: qk.sets() }),
   });
 }
 

@@ -142,10 +142,23 @@ describe("users (admin)", () => {
     if (typeof promoted !== "string") expect(promoted.role).toBe("admin");
   });
 
+  // The mock used to coerce "anything but admin" to member, which silently
+  // swallowed a third role on both the create and the patch path.
+  it("keeps a viewer a viewer, and resolves its session to read scope", () => {
+    const created = createUser("vera", "pw", "viewer");
+    expect(created?.role).toBe("viewer");
+    expect(resolveAuth(login("vera", "pw")!.token).me.scope).toBe("read");
+
+    const demoted = updateUser("u_member", { role: "viewer" });
+    if (typeof demoted !== "string") expect(demoted.role).toBe("viewer");
+    expect(resolveAuth(login("member", "member")!.token).me.scope).toBe("read");
+  });
+
   it("blocks removing the last active admin", () => {
     // The seeded "admin" is the only admin.
     expect(deleteUser("u_admin")).toBe("last_admin");
     expect(updateUser("u_admin", { role: "member" })).toBe("last_admin");
+    expect(updateUser("u_admin", { role: "viewer" })).toBe("last_admin");
     expect(updateUser("u_admin", { disabled: true })).toBe("last_admin");
 
     // With a second admin, the guard releases.

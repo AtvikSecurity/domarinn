@@ -1,0 +1,401 @@
+//! Handlers for the run-set browser and its access lists (`/api/v1/sets*`).
+//!
+//! Separate from [`crate::routes`], which is at the per-file line ratchet, and
+//! wired from its router the way [`crate::cachebrowse`] already is. Everything
+//! here is additive: `/api/v1/projects*` keeps the wire shape older CLIs
+//! depend on, and this surface is free to grow.
+//!
+//! # Two independent gates
+//!
+//! Every endpoint here passes through a **route scope** (the deployment's auth
+//! mode, via [`Scoped`]) and, where it touches policy, a **set gate** (the
+//! caller's grant over this `(project, suite)`, via
+//! [`crate::storage::Storage::set_access`]). They answer different questions —
+//! "is this credential strong enough" and "does this principal own this set" —
+//! and neither substitutes for the other.
+//!
+//! That independence is the whole point, because a grant belongs to a *user*
+//! and every user-backed credential rides its owner's grants:
+//! [`RunVisibility::of`] maps a session and an API key alike to
+//! `User(user_id)`, whatever scope the key was minted at. So the set gate alone
+//! would let the least privileged credential the product offers — a `read` API
+//! key — inherit its owner's `manage` grant and rewrite an access list. The
+//! scope gate is what keeps a leaked read-only key meaning "read what I can
+//! read".
+//!
+//! | Endpoint | Route scope | Set gate | Refusal |
+//! |---|---|---|---|
+//! | browse (`list`, `project`, `suite`) | `Read` | visibility filter | 404 |
+//! | `GET .../access` | `Read` | `Manage` | 404 |
+//! | `PUT`/`DELETE .../grants/{user}` | `Write` | `Manage` | 401 / 403 / 404 |
+//! | `PUT`/`DELETE .../restriction` | `Admin` | — | 401 / 403 |
+//!
+//! The scope gate's own refusal is a 401 when no credential was presented at
+//! all and a 403 when the one presented is too weak; the 404s are the set
+//! gate's.
+//!
+//! # Why those refusals
+//!
+//! * **The browse reads** are filtered by [`RunVisibility`]. An invisible set
+//!   is `None` from storage and so 404s through exactly the same path as one
+//!   that never existed — no 403, no existence leak. Identical to the run
+//!   reads.
+//!
+//! * **The set gate refuses with 404**, not 403. That is not politeness: the
+//!   access list names the users who can reach a restricted set, so "you may
+//!   not see this" and "there is nothing here" must be the same answer.
+//!   [`GrantLevel::Manage`] is never handed out by the default-open waiver, so
+//!   an unrestricted set is just as closed here as a locked one — a caller who
+//!   could otherwise upload into it still cannot read or edit who else may.
+//!
+//! * **The scope gate refuses with 401 or 403** — 401 when no credential was
+//!   presented, 403 when the one presented is too weak. It is an extractor, so
+//!   it runs *before* the handler and therefore before the set gate: a weak
+//!   credential is turned away without the manage check ever being reached.
+//!   That still leaks nothing, because the answer is path-independent — it
+//!   depends only on the credential and the route's required scope, never on
+//!   which set was named, so a nonexistent set gets the same refusal. Reading
+//!   the panel stays at `Read`: a viewer-role manager may look at the access
+//!   list, and `Write` is what stops them (and any read-scoped key) changing
+//!   it. A viewer browses; it never mutates.
+//!
+//! * **Restriction toggling** is `Scoped<Admin>`, so a manage-grant holder gets
+//!   a 403: they administer their set's access list, but locking and unlocking
+//!   a set stays with the operator.
+//!
+//! # What the classes actually resolve to
+//!
+//! [`RunVisibility::of`] is the only derivation, and it is worth being precise
+//! about static tokens rather than waving at them: a token carrying
+//! [`crate::auth::Scope::Admin`] resolves to [`RunVisibility::Full`] and *does*
+//! manage every set — it is an operator credential. Only **non-admin** static
+//! tokens and anonymous callers are [`RunVisibility::Public`], which can never
+//! satisfy the set gate at any level above the waiver, so those are the ones
+//! refused unconditionally here.
+//!
+//! CSRF is unaffected by any of this — that middleware keys on the HTTP method.
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, put};
+use axum::{Json, Router};
+
+use crate::auth::{Admin, Identity, Read, Scoped, Write};
+use crate::domain::UserId;
+use crate::dto::sets::{SetAccessResponse, SetGrantUpsert, SetGrantView};
+use crate::extract::ApiJson;
+use crate::routes::{not_found, ApiResult};
+use crate::runsets::{GrantLevel, RunVisibility};
+use crate::AppState;
+
+/// The run-set routes, merged into the main router before its layers are
+/// applied so they inherit auth, CSRF, tracing, and the request id.
+///
+/// The literal `access` / `restriction` / `grants` segments sit where a suite
+/// name could otherwise go, which is why the suite forms spell `/suites/`
+/// explicitly: `/sets/{project}/suites/{suite}` can never collide with
+/// `/sets/{project}/access`, whatever a project or suite is called.
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/sets", get(list))
+        .route("/api/v1/sets/{project}", get(project))
+        .route("/api/v1/sets/{project}/access", get(project_access))
+        .route(
+            "/api/v1/sets/{project}/restriction",
+            put(project_restrict).delete(project_unrestrict),
+        )
+        .route(
+            "/api/v1/sets/{project}/grants/{user_id}",
+            put(project_grant).delete(project_ungrant),
+        )
+        .route("/api/v1/sets/{project}/suites/{suite}", get(suite))
+        .route(
+            "/api/v1/sets/{project}/suites/{suite}/access",
+            get(suite_access),
+        )
+        .route(
+            "/api/v1/sets/{project}/suites/{suite}/restriction",
+            put(suite_restrict).delete(suite_unrestrict),
+        )
+        .route(
+            "/api/v1/sets/{project}/suites/{suite}/grants/{user_id}",
+            put(suite_grant).delete(suite_ungrant),
+        )
+}
+
+// ---------------------------------------------------------------------------
+// Browse
+// ---------------------------------------------------------------------------
+
+async fn list(scope: Scoped<Read>, State(state): State<AppState>) -> ApiResult<Response> {
+    let sets = state
+        .storage
+        .list_run_sets(RunVisibility::of(&scope.identity))
+        .await?;
+    Ok(Json(sets).into_response())
+}
+
+async fn project(
+    scope: Scoped<Read>,
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+) -> ApiResult<Response> {
+    match state
+        .storage
+        .run_set_project(project, RunVisibility::of(&scope.identity))
+        .await?
+    {
+        Some(detail) => Ok(Json(detail).into_response()),
+        None => Err(not_found("run set")),
+    }
+}
+
+async fn suite(
+    scope: Scoped<Read>,
+    State(state): State<AppState>,
+    Path((project, suite)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    match state
+        .storage
+        .run_set_suite(project, suite, RunVisibility::of(&scope.identity))
+        .await?
+    {
+        Some(detail) => Ok(Json(detail).into_response()),
+        None => Err(not_found("run set")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Access lists
+// ---------------------------------------------------------------------------
+
+/// Refuse unless this caller may administer `(project, suite)`'s access list.
+///
+/// The refusal is [`not_found`] — see this module's header for why a 403 would
+/// be a disclosure.
+async fn require_manage(
+    state: &AppState,
+    identity: &Identity,
+    project: &str,
+    suite: Option<&str>,
+) -> ApiResult<()> {
+    let allowed = state
+        .storage
+        .set_access(
+            RunVisibility::of(identity),
+            Some(project.to_string()),
+            suite.map(str::to_string),
+            GrantLevel::Manage,
+        )
+        .await?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(not_found("run set"))
+    }
+}
+
+async fn access(
+    state: AppState,
+    identity: Identity,
+    project: String,
+    suite: Option<String>,
+) -> ApiResult<Response> {
+    require_manage(&state, &identity, &project, suite.as_deref()).await?;
+    // Exact scope on both halves: this is the editor for the row the toggle
+    // beside it writes, not a report on what covers the set.
+    let restricted = state
+        .storage
+        .run_set_restricted_exactly(project.clone(), suite.clone())
+        .await?;
+    let grants = state
+        .storage
+        .list_run_set_grants(project, suite)
+        .await?
+        .into_iter()
+        .map(|g| SetGrantView {
+            user_id: g.user_id,
+            username: g.username,
+            level: g.level,
+            created_at: g.created_at,
+            created_by: g.created_by,
+        })
+        .collect();
+    Ok(Json(SetAccessResponse { restricted, grants }).into_response())
+}
+
+async fn project_access(
+    scope: Scoped<Read>,
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+) -> ApiResult<Response> {
+    access(state, scope.identity, project, None).await
+}
+
+async fn suite_access(
+    scope: Scoped<Read>,
+    State(state): State<AppState>,
+    Path((project, suite)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    access(state, scope.identity, project, Some(suite)).await
+}
+
+// ---------------------------------------------------------------------------
+// Restriction
+// ---------------------------------------------------------------------------
+
+/// A restriction row is a fact about a `(project, suite)` pair, not about the
+/// runs in it: it may be created before the set has ever been uploaded to, so
+/// nothing here checks that the set exists in `runs`.
+async fn restrict(
+    state: AppState,
+    identity: Identity,
+    project: String,
+    suite: Option<String>,
+) -> ApiResult<Response> {
+    // Idempotent: `false` means the row was already there, which is the same
+    // outcome the caller asked for.
+    state
+        .storage
+        .restrict_run_set(project, suite, identity.label.clone())
+        .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn unrestrict(
+    state: AppState,
+    project: String,
+    suite: Option<String>,
+) -> ApiResult<Response> {
+    if state.storage.unrestrict_run_set(project, suite).await? {
+        Ok(StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(not_found("restriction"))
+    }
+}
+
+async fn project_restrict(
+    scope: Scoped<Admin>,
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+) -> ApiResult<Response> {
+    restrict(state, scope.identity, project, None).await
+}
+
+async fn suite_restrict(
+    scope: Scoped<Admin>,
+    State(state): State<AppState>,
+    Path((project, suite)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    restrict(state, scope.identity, project, Some(suite)).await
+}
+
+async fn project_unrestrict(
+    _scope: Scoped<Admin>,
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+) -> ApiResult<Response> {
+    unrestrict(state, project, None).await
+}
+
+async fn suite_unrestrict(
+    _scope: Scoped<Admin>,
+    State(state): State<AppState>,
+    Path((project, suite)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    unrestrict(state, project, Some(suite)).await
+}
+
+// ---------------------------------------------------------------------------
+// Grants
+// ---------------------------------------------------------------------------
+
+async fn grant(
+    state: AppState,
+    identity: Identity,
+    project: String,
+    suite: Option<String>,
+    user_id: UserId,
+    level: GrantLevel,
+) -> ApiResult<Response> {
+    require_manage(&state, &identity, &project, suite.as_deref()).await?;
+    // A grant to a user that does not exist would be unreachable dead policy —
+    // and `run_set_grants` has no foreign key onto `users`, so nothing else
+    // would catch it. The 404 names the user, not the set, so it cannot be
+    // confused with the manage refusal above.
+    if state
+        .storage
+        .get_user_by_id(user_id.clone())
+        .await?
+        .is_none()
+    {
+        return Err(not_found("user"));
+    }
+    state
+        .storage
+        .upsert_run_set_grant(project, suite, user_id, level, identity.label.clone())
+        .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn ungrant(
+    state: AppState,
+    identity: Identity,
+    project: String,
+    suite: Option<String>,
+    user_id: UserId,
+) -> ApiResult<Response> {
+    require_manage(&state, &identity, &project, suite.as_deref()).await?;
+    if state
+        .storage
+        .delete_run_set_grant(project, suite, user_id)
+        .await?
+    {
+        Ok(StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(not_found("grant"))
+    }
+}
+
+async fn project_grant(
+    scope: Scoped<Write>,
+    State(state): State<AppState>,
+    Path((project, user_id)): Path<(String, UserId)>,
+    ApiJson(body): ApiJson<SetGrantUpsert>,
+) -> ApiResult<Response> {
+    grant(state, scope.identity, project, None, user_id, body.level).await
+}
+
+async fn suite_grant(
+    scope: Scoped<Write>,
+    State(state): State<AppState>,
+    Path((project, suite, user_id)): Path<(String, String, UserId)>,
+    ApiJson(body): ApiJson<SetGrantUpsert>,
+) -> ApiResult<Response> {
+    grant(
+        state,
+        scope.identity,
+        project,
+        Some(suite),
+        user_id,
+        body.level,
+    )
+    .await
+}
+
+async fn project_ungrant(
+    scope: Scoped<Write>,
+    State(state): State<AppState>,
+    Path((project, user_id)): Path<(String, UserId)>,
+) -> ApiResult<Response> {
+    ungrant(state, scope.identity, project, None, user_id).await
+}
+
+async fn suite_ungrant(
+    scope: Scoped<Write>,
+    State(state): State<AppState>,
+    Path((project, suite, user_id)): Path<(String, String, UserId)>,
+) -> ApiResult<Response> {
+    ungrant(state, scope.identity, project, Some(suite), user_id).await
+}

@@ -24,6 +24,7 @@ use super::{decompress, ms_to_rfc3339, Storage};
 use crate::dto::search::{
     CaseSearchHit, RunSearchHit, SearchResponse, SNIPPET_CLOSE, SNIPPET_OPEN,
 };
+use crate::runsets::{visibility_predicate, RunVisibility};
 
 /// Snippet length passed to FTS5 `snippet()` (in tokens).
 const SNIPPET_TOKENS: i64 = 12;
@@ -31,7 +32,12 @@ const SNIPPET_TOKENS: i64 = 12;
 impl Storage {
     /// Grouped full-text hits for a user query, each group ranked by bm25.
     /// A query with no indexable tokens returns empty groups.
-    pub async fn search(&self, query: String, limit: i64) -> anyhow::Result<SearchResponse> {
+    pub async fn search(
+        &self,
+        query: String,
+        limit: i64,
+        vis: RunVisibility,
+    ) -> anyhow::Result<SearchResponse> {
         self.runs
             .read(move |conn| {
                 let Some(fts) = fts_match_query(&query) else {
@@ -41,8 +47,8 @@ impl Storage {
                     });
                 };
                 Ok(SearchResponse {
-                    runs: run_hits(conn, &fts, limit)?,
-                    cases: case_hits(conn, &fts, limit)?,
+                    runs: run_hits(conn, &fts, limit, &vis)?,
+                    cases: case_hits(conn, &fts, limit, &vis)?,
                 })
             })
             .await
@@ -69,62 +75,86 @@ fn fts_match_query(input: &str) -> Option<String> {
     }
 }
 
-fn run_hits(conn: &Connection, fts: &str, limit: i64) -> anyhow::Result<Vec<RunSearchHit>> {
-    let mut stmt = conn.prepare(
+fn run_hits(
+    conn: &Connection,
+    fts: &str,
+    limit: i64,
+    vis: &RunVisibility,
+) -> anyhow::Result<Vec<RunSearchHit>> {
+    // The FTS tables index every run; the join back to `runs` is where access
+    // is decided, so a restricted run never surfaces as a hit or a snippet.
+    let mut args: Vec<rusqlite::types::Value> = vec![
+        fts.to_string().into(),
+        SNIPPET_OPEN.to_string().into(),
+        SNIPPET_CLOSE.to_string().into(),
+        SNIPPET_TOKENS.into(),
+        limit.into(),
+    ];
+    let visible = visibility_predicate("r", vis, &mut args);
+    let sql = format!(
         "SELECT runs_fts.run_id, r.project, r.suite, r.created_at,
                 snippet(runs_fts, -1, ?2, ?3, '…', ?4)
          FROM runs_fts
          JOIN runs r ON r.id = runs_fts.run_id
-         WHERE runs_fts MATCH ?1
+         WHERE runs_fts MATCH ?1 AND {visible}
          ORDER BY rank
-         LIMIT ?5",
-    )?;
-    let rows = stmt.query_map(
-        params![fts, SNIPPET_OPEN, SNIPPET_CLOSE, SNIPPET_TOKENS, limit],
-        |row| {
-            Ok(RunSearchHit {
-                id: RunId::new(row.get::<_, String>(0)?),
-                project: row.get(1)?,
-                suite: row.get(2)?,
-                created_at: ms_to_rfc3339(row.get(3)?),
-                snippet: row.get(4)?,
-            })
-        },
-    )?;
+         LIMIT ?5"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+        Ok(RunSearchHit {
+            id: RunId::new(row.get::<_, String>(0)?),
+            project: row.get(1)?,
+            suite: row.get(2)?,
+            created_at: ms_to_rfc3339(row.get(3)?),
+            snippet: row.get(4)?,
+        })
+    })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-fn case_hits(conn: &Connection, fts: &str, limit: i64) -> anyhow::Result<Vec<CaseSearchHit>> {
-    let mut stmt = conn.prepare(
+fn case_hits(
+    conn: &Connection,
+    fts: &str,
+    limit: i64,
+    vis: &RunVisibility,
+) -> anyhow::Result<Vec<CaseSearchHit>> {
+    let mut args: Vec<rusqlite::types::Value> = vec![
+        fts.to_string().into(),
+        SNIPPET_OPEN.to_string().into(),
+        SNIPPET_CLOSE.to_string().into(),
+        SNIPPET_TOKENS.into(),
+        limit.into(),
+    ];
+    let visible = visibility_predicate("r", vis, &mut args);
+    let sql = format!(
         "SELECT cases_fts.run_id, cases_fts.case_key, c.name, c.status,
                 r.project, r.suite,
                 snippet(cases_fts, -1, ?2, ?3, '…', ?4)
          FROM cases_fts
          JOIN cases c ON c.run_id = cases_fts.run_id AND c.case_key = cases_fts.case_key
          JOIN runs r ON r.id = cases_fts.run_id
-         WHERE cases_fts MATCH ?1
+         WHERE cases_fts MATCH ?1 AND {visible}
          ORDER BY rank
-         LIMIT ?5",
-    )?;
-    let rows = stmt.query_map(
-        params![fts, SNIPPET_OPEN, SNIPPET_CLOSE, SNIPPET_TOKENS, limit],
-        |row| {
-            Ok(CaseSearchHit {
-                run_id: RunId::new(row.get::<_, String>(0)?),
-                case_key: CaseKey::new(row.get::<_, String>(1)?),
-                name: row.get(2)?,
-                // The column is CHECK-constrained to the four statuses; Error
-                // is an unreachable fallback, not a real decode path.
-                status: row
-                    .get::<_, String>(3)?
-                    .parse()
-                    .unwrap_or(CaseStatus::Error),
-                project: row.get(4)?,
-                suite: row.get(5)?,
-                snippet: row.get(6)?,
-            })
-        },
-    )?;
+         LIMIT ?5"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+        Ok(CaseSearchHit {
+            run_id: RunId::new(row.get::<_, String>(0)?),
+            case_key: CaseKey::new(row.get::<_, String>(1)?),
+            name: row.get(2)?,
+            // The column is CHECK-constrained to the four statuses; Error
+            // is an unreachable fallback, not a real decode path.
+            status: row
+                .get::<_, String>(3)?
+                .parse()
+                .unwrap_or(CaseStatus::Error),
+            project: row.get(4)?,
+            suite: row.get(5)?,
+            snippet: row.get(6)?,
+        })
+    })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 

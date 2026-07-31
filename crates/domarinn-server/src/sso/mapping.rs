@@ -20,6 +20,10 @@ pub struct RoleMapping {
     pub admin_emails: Vec<String>,
     /// When non-empty, only emails in these domains may sign in.
     pub allowed_email_domains: Vec<String>,
+    /// The role a login that matches no admin rule lands on. `None` keeps the
+    /// historical [`Role::Member`]; an operator who wants SSO to provision
+    /// read-only accounts sets [`Role::Viewer`] here.
+    pub default_role: Option<Role>,
 }
 
 impl RoleMapping {
@@ -44,8 +48,11 @@ impl RoleMapping {
         }
     }
 
-    /// The role this login's claims earn. Re-evaluated on every SSO login so
-    /// the IdP stays the source of truth for SSO-provisioned users.
+    /// The role this login's claims earn, falling back to [`default_role`].
+    /// Re-evaluated on every SSO login so the IdP stays the source of truth
+    /// for SSO-provisioned users.
+    ///
+    /// [`default_role`]: RoleMapping::default_role
     pub fn role_for(&self, email: Option<&str>, groups: &[String]) -> Role {
         let admin_by_group = groups
             .iter()
@@ -58,7 +65,7 @@ impl RoleMapping {
         if admin_by_group || admin_by_email {
             Role::Admin
         } else {
-            Role::Member
+            self.default_role.unwrap_or(Role::Member)
         }
     }
 }
@@ -72,6 +79,7 @@ mod tests {
             admin_groups: vec!["sso-admins".into()],
             admin_emails: vec!["ops@example.com".into()],
             allowed_email_domains: vec!["example.com".into()],
+            default_role: None,
         }
     }
 
@@ -127,5 +135,24 @@ mod tests {
             RoleMapping::default().role_for(Some("x@y.z"), &["g".into()]),
             Role::Member
         );
+    }
+
+    /// An operator who wants SSO to provision read-only accounts sets the
+    /// default role; the admin rules keep overriding it.
+    #[test]
+    fn a_configured_default_role_replaces_member_but_never_beats_admin() {
+        let m = RoleMapping {
+            default_role: Some(Role::Viewer),
+            ..mapping()
+        };
+        assert_eq!(
+            m.role_for(Some("dev@example.com"), &["devs".into()]),
+            Role::Viewer
+        );
+        assert_eq!(
+            m.role_for(Some("a@example.com"), &["sso-admins".into()]),
+            Role::Admin
+        );
+        assert_eq!(m.role_for(Some("OPS@example.com"), &[]), Role::Admin);
     }
 }

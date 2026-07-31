@@ -19,7 +19,8 @@ use domarinn_core::result::{
     RunResult, RunSummary,
 };
 use domarinn_core::types::{Output, TokenUsage};
-use domarinn_server::storage::CaseListFilter;
+use domarinn_server::runsets::RunVisibility;
+use domarinn_server::storage::{CaseListFilter, Storage};
 use domarinn_server::{build_app, ServerConfig, Settings};
 
 /// Build a router backed by a fresh temp data dir. Returns the router and the
@@ -35,6 +36,17 @@ pub async fn test_app_with_mode(
     settings: Settings,
     auth_mode: domarinn_server::AuthMode,
 ) -> (Router, TempDir) {
+    let (app, _storage, dir) = test_app_with_storage(settings, auth_mode).await;
+    (app, dir)
+}
+
+/// [`test_app_with_mode`] plus a second [`Storage`] handle onto the same data
+/// directory, for tests that seed state the HTTP API cannot reach yet (run-set
+/// policy, whose endpoints do not exist).
+pub async fn test_app_with_storage(
+    settings: Settings,
+    auth_mode: domarinn_server::AuthMode,
+) -> (Router, Storage, TempDir) {
     let dir = TempDir::new().expect("tempdir");
     let config = ServerConfig {
         port: 0,
@@ -42,7 +54,10 @@ pub async fn test_app_with_mode(
         auth_mode,
     };
     let (app, _state) = build_app(&config, settings).await.expect("build_app");
-    (app, dir)
+    let storage = Storage::open(dir.path().to_path_buf())
+        .await
+        .expect("open storage");
+    (app, storage, dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -465,10 +480,13 @@ pub fn make_run(
 
 /// A tiny run with a single passing case.
 /// An unfiltered `CaseListFilter` for a run — the storage-level equivalent of
-/// `GET /runs/{id}/cases` with no query params.
+/// `GET /runs/{id}/cases` with no query params, read as an admin. Tests that
+/// care about access control build their own filter with the visibility under
+/// test.
 pub fn default_case_filter(run_id: RunId) -> CaseListFilter {
     CaseListFilter {
         run_id,
+        visibility: RunVisibility::Full,
         status: None,
         tag: None,
         q: None,

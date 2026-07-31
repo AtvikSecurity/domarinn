@@ -522,6 +522,22 @@ async fn patch_cannot_remove_the_last_admin() {
         demote.json()
     );
 
+    // Demoting to the read-only role is refused for the same reason: the
+    // guard counts enabled admins, so a third role must not open a hole.
+    let to_viewer = patch(
+        &app,
+        &format!("/api/v1/users/{root_id}"),
+        Some(&admin),
+        &json!({ "role": "viewer" }),
+    )
+    .await;
+    assert_eq!(
+        to_viewer.status,
+        StatusCode::CONFLICT,
+        "body: {:?}",
+        to_viewer.json()
+    );
+
     // Disabling the only admin is refused too.
     let disable = patch(
         &app,
@@ -555,6 +571,138 @@ async fn patch_cannot_remove_the_last_admin() {
     .await;
     assert_eq!(ok.status, StatusCode::OK, "body: {:?}", ok.json());
     assert_eq!(ok.json()["role"], "member");
+}
+
+/// A `viewer` account is a real login that buys read access and nothing more:
+/// it sees the data, cannot write it, and cannot reach the admin API.
+#[tokio::test]
+async fn a_viewer_account_can_read_and_nothing_else() {
+    let (app, _dir) =
+        test_app_with_mode(Settings::default(), domarinn_server::AuthMode::Closed).await;
+    let admin = setup_admin(&app).await;
+    let viewer = create_and_login(&app, &admin, "vera", "viewer").await;
+
+    let me = get_auth(&app, "/api/v1/auth/me", Some(&viewer)).await;
+    assert_eq!(me.json()["scope"], "read");
+    assert_eq!(me.json()["user"]["role"], "viewer");
+
+    // Reads are granted — the whole point of the role, and in closed mode
+    // they are refused to anonymous callers.
+    assert_eq!(
+        get(&app, "/api/v1/runs").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        get_auth(&app, "/api/v1/runs", Some(&viewer)).await.status,
+        StatusCode::OK
+    );
+
+    // Writes and admin are not.
+    assert_eq!(
+        post_json(
+            &app,
+            "/api/v1/runs",
+            Some(&viewer),
+            &run_value(&simple_run("viewer-write"))
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        get_auth(&app, "/api/v1/users", Some(&viewer)).await.status,
+        StatusCode::FORBIDDEN
+    );
+
+    // Minting a key is not a write in that sense: it is how a read-only
+    // account gets a credential for scripting, and the scope ceiling keeps
+    // that credential read-only. See `list_apikeys` for why the gate is
+    // `read`.
+    let key = post_json(
+        &app,
+        "/api/v1/apikeys",
+        Some(&viewer),
+        &json!({ "name": "k" }),
+    )
+    .await;
+    assert_eq!(key.status, StatusCode::CREATED);
+    assert_eq!(key.json()["scope"], "read");
+}
+
+/// The key-minting ceiling is the caller's own scope, in every auth mode.
+///
+/// Open mode is the case where the extractor waves everyone through and the
+/// ceiling is the only thing standing between a read-only account and a
+/// write-scoped key. Closed mode is the case the key endpoints' `read` gate
+/// exists for: a viewer has to be able to mint the read-only credential their
+/// role is entirely about.
+#[tokio::test]
+async fn a_viewer_can_only_mint_read_keys() {
+    for mode in [AuthMode::Open, AuthMode::Closed] {
+        let (app, _dir) = test_app_with_mode(Settings::default(), mode).await;
+        let admin = setup_admin(&app).await;
+        let viewer = create_and_login(&app, &admin, "vera", "viewer").await;
+
+        for over in ["write", "admin"] {
+            let denied = post_json(
+                &app,
+                "/api/v1/apikeys",
+                Some(&viewer),
+                &json!({ "name": "over", "scope": over }),
+            )
+            .await;
+            assert_eq!(
+                denied.status,
+                StatusCode::FORBIDDEN,
+                "{mode:?}: scope {over}"
+            );
+        }
+
+        // The implicit default is the caller's own scope, which is read.
+        let minted = post_json(
+            &app,
+            "/api/v1/apikeys",
+            Some(&viewer),
+            &json!({ "name": "readonly" }),
+        )
+        .await;
+        assert_eq!(
+            minted.status,
+            StatusCode::CREATED,
+            "{mode:?} body: {:?}",
+            minted.json()
+        );
+        assert_eq!(minted.json()["scope"], "read");
+
+        // And the key it produced really is read-only.
+        let key = minted.json()["key"].as_str().unwrap().to_string();
+        assert_eq!(
+            get_auth(&app, "/api/v1/runs", Some(&key)).await.status,
+            StatusCode::OK,
+            "{mode:?}"
+        );
+        let write = post_json(
+            &app,
+            "/api/v1/runs",
+            Some(&key),
+            &run_value(&simple_run("viewer-key-run")),
+        )
+        .await;
+        // Open mode waives scope for every caller, key or not, so only the
+        // enforcing mode can show the key being held to `read`.
+        let want = match mode {
+            AuthMode::Open => StatusCode::CREATED,
+            _ => StatusCode::FORBIDDEN,
+        };
+        assert_eq!(write.status, want, "{mode:?}");
+
+        // Listing and revoking their own keys works at the same scope.
+        let listed = get_auth(&app, "/api/v1/apikeys", Some(&viewer)).await;
+        assert_eq!(listed.status, StatusCode::OK, "{mode:?}");
+        let key_id = minted.json()["id"].as_str().unwrap().to_string();
+        let revoked = delete(&app, &format!("/api/v1/apikeys/{key_id}"), Some(&viewer)).await;
+        assert_eq!(revoked.status, StatusCode::NO_CONTENT, "{mode:?}");
+    }
 }
 
 /// Regression: the DELETE last-admin guard must count only *enabled* admins.
@@ -786,5 +934,41 @@ async fn throttled_lookup_still_honors_revocation() {
         after.json()["authenticated"],
         false,
         "revoked key must not authenticate via the throttled read path"
+    );
+}
+
+/// Lowering the route gate must not let a credential with no owning user in:
+/// `require_user` is what actually protects these endpoints.
+#[tokio::test]
+async fn key_endpoints_still_refuse_static_tokens_and_anonymous_callers() {
+    let (app, _dir) = test_app_with_mode(
+        Settings {
+            tokens: Some("read:tok_read,admin:tok_admin".to_string()),
+            auth_mode: Some(AuthMode::Closed),
+            ..Default::default()
+        },
+        AuthMode::Closed,
+    )
+    .await;
+
+    for token in ["tok_read", "tok_admin"] {
+        let created = post_json(&app, "/api/v1/apikeys", Some(token), &json!({})).await;
+        assert_eq!(
+            created.status,
+            StatusCode::FORBIDDEN,
+            "static token {token} has no owning user to attach a key to"
+        );
+        let listed = get_auth(&app, "/api/v1/apikeys", Some(token)).await;
+        assert_eq!(listed.status, StatusCode::FORBIDDEN);
+        let deleted = delete(&app, "/api/v1/apikeys/whatever", Some(token)).await;
+        assert_eq!(deleted.status, StatusCode::FORBIDDEN);
+    }
+
+    // Closed mode rejects the anonymous caller before the handler runs.
+    let anon = post_json(&app, "/api/v1/apikeys", None, &json!({})).await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        get_auth(&app, "/api/v1/apikeys", None).await.status,
+        StatusCode::UNAUTHORIZED
     );
 }

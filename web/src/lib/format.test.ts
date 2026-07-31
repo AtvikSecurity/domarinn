@@ -6,6 +6,7 @@ import {
   formatPercent,
   formatRelative,
   formatTokens,
+  isoFromEpoch,
   parseTimestamp,
   passRate,
   shortCacheKey,
@@ -108,5 +109,22 @@ describe("shortCacheKey", () => {
     expect(shortCacheKey("md5:abc")).toBe("md5:abc");
     expect(shortCacheKey("sha256:short")).toBe("sha256:short");
     expect(shortCacheKey("")).toBe("");
+  });
+});
+
+describe("isoFromEpoch", () => {
+  it("round-trips through parseTimestamp", () => {
+    // The run-set browser's timestamps are epoch-ms; every formatter in this
+    // module speaks RFC3339, so this is the one conversion between them.
+    const ms = Date.UTC(2026, 6, 19, 15, 0, 0);
+    expect(parseTimestamp(isoFromEpoch(ms)!)).toBe(ms);
+  });
+
+  it("returns null for a missing or unrepresentable value", () => {
+    // `last_run_at` is null for a set with no visible runs; formatters render
+    // null as "-", which is the honest answer.
+    expect(isoFromEpoch(null)).toBeNull();
+    expect(isoFromEpoch(undefined)).toBeNull();
+    expect(isoFromEpoch(Number.NaN)).toBeNull();
   });
 });

@@ -20,6 +20,9 @@ export const SCOPE_RANK: Record<AuthScope, number> = {
 
 export const ALL_SCOPES: AuthScope[] = ["read", "write", "admin"];
 
+/** Every assignable role, least privileged first (`Role` in the Rust domain). */
+export const ALL_ROLES: Role[] = ["viewer", "member", "admin"];
+
 /** True when `have` is at least as privileged as `need`. */
 export function scopeAtLeast(
   have: AuthScope | undefined,

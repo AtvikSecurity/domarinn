@@ -44,6 +44,8 @@ pub mod extract;
 pub mod localcache;
 pub mod mcp;
 pub mod routes;
+pub mod runsets;
+pub mod sets;
 pub mod sso;
 pub mod storage;
 
@@ -670,6 +672,10 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     use crate::dto::projects::{ProjectsResponse, SuitesResponse};
     use crate::dto::runs::{IngestResponse, RunDetailResponse, RunListResponse};
     use crate::dto::search::SearchResponse;
+    use crate::dto::sets::{
+        ProjectSetDetailResponse, SetAccessResponse, SetGrantUpsert, SetsResponse,
+        SuiteSetDetailResponse,
+    };
     use crate::routes::BaselineBody;
 
     let cfg = Config::new().with_out_dir(dir).with_large_int("number");
@@ -685,6 +691,12 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     MatrixResponse::export_all(&cfg)?;
     ProjectsResponse::export_all(&cfg)?;
     SuitesResponse::export_all(&cfg)?;
+    // The run-set browser. `GrantLevel` rides along on every one of these, so
+    // it needs no root of its own.
+    SetsResponse::export_all(&cfg)?;
+    ProjectSetDetailResponse::export_all(&cfg)?;
+    SuiteSetDetailResponse::export_all(&cfg)?;
+    SetAccessResponse::export_all(&cfg)?;
     CacheStatsResponse::export_all(&cfg)?;
     CacheEntryListResponse::export_all(&cfg)?;
     CacheEntryDetail::export_all(&cfg)?;
@@ -712,6 +724,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     PatchUserBody::export_all(&cfg)?;
     CreateKeyBody::export_all(&cfg)?;
     BaselineBody::export_all(&cfg)?;
+    SetGrantUpsert::export_all(&cfg)?;
 
     // Not reachable from any response/request-body root (see the module doc
     // above) but still part of the web-facing TypeScript contract.

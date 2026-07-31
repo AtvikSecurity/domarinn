@@ -14,12 +14,13 @@
 //! ("nothing used it" or "everything that used it predates the column") and
 //! every reader has to say so rather than implying the entry is unused.
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use domarinn_core::ids::RunId;
 
 use super::{decode_cursor, encode_cursor, ms_to_rfc3339, Storage};
 use crate::dto::cacheentries::{CacheEntryRunRef, CacheEntryRunsResponse};
+use crate::runsets::{visibility_predicate, RunVisibility};
 
 impl Storage {
     /// Cases whose provider call was addressed by `key`, newest run first.
@@ -28,9 +29,10 @@ impl Storage {
         key: String,
         limit: i64,
         cursor: Option<(i64, RunId)>,
+        vis: RunVisibility,
     ) -> anyhow::Result<CacheEntryRunsResponse> {
         self.runs
-            .read(move |conn| entry_runs(conn, &key, limit, cursor))
+            .read(move |conn| entry_runs(conn, &key, limit, cursor, &vis))
             .await
     }
 }
@@ -40,7 +42,14 @@ fn entry_runs(
     key: &str,
     limit: i64,
     cursor: Option<(i64, RunId)>,
+    vis: &RunVisibility,
 ) -> anyhow::Result<CacheEntryRunsResponse> {
+    // Fetch one extra to learn whether a next page exists without counting.
+    let fetch = limit + 1;
+    // Positional arguments, built in the order the SQL numbers them, so the
+    // visibility parameter lands after the cursor's two slots when there is a
+    // cursor and immediately after `LIMIT`'s when there is not.
+    let mut args: Vec<rusqlite::types::Value> = vec![key.to_string().into(), fetch.into()];
     let mut sql = String::from(
         "SELECT runs.id, runs.project, runs.suite, runs.created_at,
                 cases.case_key, cases.name, cases.status, cases.cached
@@ -50,9 +59,13 @@ fn entry_runs(
     );
     // Same keyset shape as the runs list, and its cursor helper is reusable
     // here because this page really is run-shaped.
-    if cursor.is_some() {
+    if let Some((created_at, run_id)) = &cursor {
         sql.push_str(" AND (runs.created_at < ?3 OR (runs.created_at = ?3 AND runs.id < ?4))");
+        args.push((*created_at).into());
+        args.push(run_id.as_str().to_string().into());
     }
+    let visible = visibility_predicate("runs", vis, &mut args);
+    sql.push_str(&format!(" AND {visible}"));
     sql.push_str(" ORDER BY runs.created_at DESC, runs.id DESC LIMIT ?2");
 
     let mut stmt = conn.prepare(&sql)?;
@@ -74,18 +87,10 @@ fn entry_runs(
             run_id,
         ))
     };
-    // Fetch one extra to learn whether a next page exists without counting.
-    let fetch = limit + 1;
-    let rows: Vec<(CacheEntryRunRef, i64, String)> = match &cursor {
-        Some((created_at, run_id)) => stmt
-            .query_map(params![key, fetch, created_at, run_id.as_str()], map)?
-            .collect::<Result<_, _>>()?,
-        None => stmt
-            .query_map(params![key, fetch], map)?
-            .collect::<Result<_, _>>()?,
-    };
+    let mut rows: Vec<(CacheEntryRunRef, i64, String)> = stmt
+        .query_map(rusqlite::params_from_iter(args.iter()), map)?
+        .collect::<Result<_, _>>()?;
 
-    let mut rows = rows;
     let next_cursor = if rows.len() as i64 > limit {
         rows.truncate(limit as usize);
         rows.last()

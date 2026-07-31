@@ -157,6 +157,41 @@ for (const theme of THEMES) {
       await shoot(page, "compare", theme);
     });
 
+    // NOT the `/sets` root: this seed has exactly one project (every shipped
+    // example declares `project: examples`), so the root listing is a
+    // one-row table that documents the seed rather than the page. One level
+    // down is where the suites, the trends and the flags are.
+    test("set-project", async ({ page }) => {
+      await page.goto("/sets/examples");
+      await expect(page.getByRole("heading", { name: "examples" })).toBeVisible();
+      // The rows, not just the heading: the table mounts after the query
+      // resolves, so a shot taken on the heading alone races an empty card.
+      await expect(page.getByTestId("suite-row-hello")).toBeVisible();
+      await shoot(page, "set-project", theme);
+    });
+
+    test("set-suite", async ({ page }) => {
+      // The suite scripts/seed-docs-runs.sh restricts and grants — every other
+      // suite's access list is empty, which is a picture of nothing.
+      await page.goto("/sets/examples/baselines-and-diff");
+      await expect(
+        page.getByRole("heading", { name: "baselines-and-diff" }),
+      ).toBeVisible();
+      await expect(page.getByRole("link", { name: /^01/ }).first()).toBeVisible();
+      await shoot(page, "set-suite", theme);
+    });
+
+    test("set-access", async ({ page }) => {
+      await page.goto("/sets/examples/baselines-and-diff");
+      await page.getByRole("button", { name: "Access" }).click();
+      const panel = page.getByRole("dialog");
+      await expect(panel).toBeVisible();
+      // Wait for the grants, not just the modal: the panel renders its spinner
+      // first, and the whole point of the shot is who is in the list.
+      await expect(panel.getByTestId("grant-row-qa-lead")).toBeVisible();
+      await shoot(page, "set-access", theme);
+    });
+
     test("search", async ({ page }) => {
       // "Hello" is example 01's assertion word (the output literally contains
       // it), so it is guaranteed to have hits once the offline block is seeded.

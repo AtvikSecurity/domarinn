@@ -1,7 +1,7 @@
 //! Run ingest (content-hash idempotency) and run list / detail / export queries.
 
 use anyhow::Context;
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use domarinn_core::ids::RunId;
 use domarinn_core::result::{AssertStatus, RunResult};
@@ -13,6 +13,7 @@ use super::{
 use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
 use crate::dto::config::RunConfigResponse;
 use crate::dto::runs::{CaseAssertLean, RunDetailResponse, RunListItem};
+use crate::runsets::{visibility_predicate, visible_run_predicate, RunVisibility};
 
 impl Storage {
     /// Ingest a run in a single transaction. Idempotent by (id, content_hash).
@@ -33,28 +34,51 @@ impl Storage {
         self.runs.read(move |conn| filter.query(conn)).await
     }
 
-    pub async fn get_run(&self, id: RunId) -> anyhow::Result<Option<RunDetailResponse>> {
-        self.runs.read(move |conn| get_run_detail(conn, &id)).await
+    /// A run's detail, or `None` when it does not exist **or** is invisible to
+    /// this caller. The two are deliberately indistinguishable: the handler
+    /// renders both as a 404, so a restricted run leaks nothing by existing.
+    pub async fn get_run(
+        &self,
+        id: RunId,
+        vis: RunVisibility,
+    ) -> anyhow::Result<Option<RunDetailResponse>> {
+        self.runs
+            .read(move |conn| get_run_detail(conn, &id, &vis))
+            .await
     }
 
-    pub async fn export_run(&self, id: RunId) -> anyhow::Result<Option<serde_json::Value>> {
-        self.runs.read(move |conn| export_run_blob(conn, &id)).await
+    pub async fn export_run(
+        &self,
+        id: RunId,
+        vis: RunVisibility,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        self.runs
+            .read(move |conn| export_run_blob(conn, &id, &vis))
+            .await
     }
 
-    pub async fn get_run_config(&self, id: RunId) -> anyhow::Result<Option<RunConfigResponse>> {
-        self.runs.read(move |conn| run_config_blob(conn, &id)).await
+    pub async fn get_run_config(
+        &self,
+        id: RunId,
+        vis: RunVisibility,
+    ) -> anyhow::Result<Option<RunConfigResponse>> {
+        self.runs
+            .read(move |conn| run_config_blob(conn, &id, &vis))
+            .await
     }
 
-    pub async fn run_exists(&self, id: RunId) -> anyhow::Result<bool> {
+    /// Whether the run exists *and* this caller may see it — the gate `/cases`
+    /// and `/matrix` share. `.optional()?`, never `.is_ok()` (see `sets`).
+    pub async fn run_exists(&self, id: RunId, vis: RunVisibility) -> anyhow::Result<bool> {
         self.runs
             .read(move |conn| {
-                Ok(conn
-                    .query_row(
-                        "SELECT 1 FROM runs WHERE id = ?1",
-                        params![id.as_str()],
-                        |_| Ok(()),
-                    )
-                    .is_ok())
+                let mut args: Vec<rusqlite::types::Value> = vec![id.as_str().to_string().into()];
+                let clause = visibility_predicate("runs", &vis, &mut args);
+                let sql = format!("SELECT 1 FROM runs WHERE id = ?1 AND {clause}");
+                let found = conn
+                    .query_row(&sql, rusqlite::params_from_iter(args.iter()), |_| Ok(()))
+                    .optional()?;
+                Ok(found.is_some())
             })
             .await
     }
@@ -500,8 +524,12 @@ impl PreparedRun {
 // ---------------------------------------------------------------------------
 
 /// Filters for `GET /runs`.
-#[derive(Debug, Clone, Default)]
+///
+/// `visibility` is required rather than optional: there is no safe default, so
+/// every construction site has to decide what the caller may see.
+#[derive(Debug, Clone)]
 pub struct RunListFilter {
+    pub visibility: RunVisibility,
     pub project: Option<String>,
     pub suite: Option<String>,
     pub tag: Option<String>,
@@ -605,6 +633,11 @@ impl RunListFilter {
             }
             None => {}
         }
+
+        // Access control, appended with the rest of the filters so the
+        // `cached_hidden` count below covers exactly the same rows the page
+        // does — a count that included invisible runs would be a disclosure.
+        clauses.push(visibility_predicate("runs", &self.visibility, &mut args));
 
         // Only ever hide fully-cached runs that also PASSED: verdicts are not
         // cached, so a fully-cached run can still carry a fresh regression.
@@ -798,10 +831,15 @@ pub(super) fn load_run_tags(conn: &Connection, run_id: &str) -> anyhow::Result<V
 // Run detail & export
 // ---------------------------------------------------------------------------
 
-fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDetailResponse>> {
-    let row = conn
-        .query_row(
-            "SELECT id, project, suite, created_at, uploaded_at, schema_version,
+fn get_run_detail(
+    conn: &Connection,
+    id: &RunId,
+    vis: &RunVisibility,
+) -> anyhow::Result<Option<RunDetailResponse>> {
+    let mut args: Vec<rusqlite::types::Value> = vec![id.as_str().to_string().into()];
+    let clause = visibility_predicate("runs", vis, &mut args);
+    let sql = format!(
+        "SELECT id, project, suite, created_at, uploaded_at, schema_version,
                     git_branch, git_commit, git_dirty, ci_provider, ci_run_url,
                     case_count, pass_count, fail_count, error_count,
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
@@ -809,54 +847,55 @@ fn get_run_detail(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunDet
                     actor, host, description, domarinn_version,
                     cache_read_tokens, cache_write_tokens,
                     cache_savings_microusd, grader_cost_microusd
-             FROM runs WHERE id = ?1",
-            params![id.as_str()],
-            |row| {
-                Ok(RunDetailResponse {
-                    id: RunId::new(row.get::<_, String>(0)?),
-                    project: row.get::<_, Option<String>>(1)?,
-                    suite: row.get::<_, Option<String>>(2)?,
-                    created_at: ms_to_rfc3339(row.get::<_, i64>(3)?),
-                    uploaded_at: ms_to_rfc3339(row.get::<_, i64>(4)?),
-                    schema_version: row.get::<_, i64>(5)?,
-                    git_branch: row.get::<_, Option<String>>(6)?,
-                    git_commit: row.get::<_, Option<String>>(7)?,
-                    git_dirty: row.get::<_, Option<i64>>(8)?.map(|d| d != 0),
-                    ci_provider: row.get::<_, Option<String>>(9)?,
-                    ci_run_url: row.get::<_, Option<String>>(10)?,
-                    case_count: row.get::<_, i64>(11)?,
-                    pass_count: row.get::<_, i64>(12)?,
-                    fail_count: row.get::<_, i64>(13)?,
-                    error_count: row.get::<_, i64>(14)?,
-                    prompt_tokens: row.get::<_, i64>(15)?,
-                    completion_tokens: row.get::<_, i64>(16)?,
-                    cost_usd: from_microusd(row.get::<_, Option<i64>>(17)?),
-                    duration_ms: row.get::<_, i64>(18)?,
-                    content_hash: row.get::<_, String>(19)?,
-                    uploaded_by: row.get::<_, Option<String>>(20)?,
-                    // Map the empty-string backfill sentinel to `None`.
-                    config_digest: empty_to_none(row.get::<_, Option<String>>(21)?),
-                    cache_hits: clean_cache_count(row.get::<_, Option<i64>>(22)?),
-                    cache_misses: clean_cache_count(row.get::<_, Option<i64>>(23)?),
-                    actor: row.get::<_, Option<String>>(24)?,
-                    host: row.get::<_, Option<String>>(25)?,
-                    note: row.get::<_, Option<String>>(26)?,
-                    domarinn_version: row.get::<_, Option<String>>(27)?,
-                    // Migration-12 columns. NULL for anything stored before
-                    // them, and rendered as absent rather than zero — the run
-                    // may well have had cache activity we simply did not
-                    // record.
-                    cache_read_tokens: row.get::<_, Option<i64>>(28)?,
-                    cache_write_tokens: row.get::<_, Option<i64>>(29)?,
-                    cache_savings_usd: from_microusd(row.get::<_, Option<i64>>(30)?),
-                    grader_cost_usd: from_microusd(row.get::<_, Option<i64>>(31)?),
-                    // Filled in below, after the row is loaded.
-                    tags: Vec::new(),
-                    assert_labels: Vec::new(),
-                })
-            },
-        )
-        .ok();
+             FROM runs WHERE id = ?1 AND {clause}"
+    );
+    let row = conn
+        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
+            Ok(RunDetailResponse {
+                id: RunId::new(row.get::<_, String>(0)?),
+                project: row.get::<_, Option<String>>(1)?,
+                suite: row.get::<_, Option<String>>(2)?,
+                created_at: ms_to_rfc3339(row.get::<_, i64>(3)?),
+                uploaded_at: ms_to_rfc3339(row.get::<_, i64>(4)?),
+                schema_version: row.get::<_, i64>(5)?,
+                git_branch: row.get::<_, Option<String>>(6)?,
+                git_commit: row.get::<_, Option<String>>(7)?,
+                git_dirty: row.get::<_, Option<i64>>(8)?.map(|d| d != 0),
+                ci_provider: row.get::<_, Option<String>>(9)?,
+                ci_run_url: row.get::<_, Option<String>>(10)?,
+                case_count: row.get::<_, i64>(11)?,
+                pass_count: row.get::<_, i64>(12)?,
+                fail_count: row.get::<_, i64>(13)?,
+                error_count: row.get::<_, i64>(14)?,
+                prompt_tokens: row.get::<_, i64>(15)?,
+                completion_tokens: row.get::<_, i64>(16)?,
+                cost_usd: from_microusd(row.get::<_, Option<i64>>(17)?),
+                duration_ms: row.get::<_, i64>(18)?,
+                content_hash: row.get::<_, String>(19)?,
+                uploaded_by: row.get::<_, Option<String>>(20)?,
+                // Map the empty-string backfill sentinel to `None`.
+                config_digest: empty_to_none(row.get::<_, Option<String>>(21)?),
+                cache_hits: clean_cache_count(row.get::<_, Option<i64>>(22)?),
+                cache_misses: clean_cache_count(row.get::<_, Option<i64>>(23)?),
+                actor: row.get::<_, Option<String>>(24)?,
+                host: row.get::<_, Option<String>>(25)?,
+                note: row.get::<_, Option<String>>(26)?,
+                domarinn_version: row.get::<_, Option<String>>(27)?,
+                // Migration-12 columns. NULL for anything stored before
+                // them, and rendered as absent rather than zero — the run
+                // may well have had cache activity we simply did not
+                // record.
+                cache_read_tokens: row.get::<_, Option<i64>>(28)?,
+                cache_write_tokens: row.get::<_, Option<i64>>(29)?,
+                cache_savings_usd: from_microusd(row.get::<_, Option<i64>>(30)?),
+                grader_cost_usd: from_microusd(row.get::<_, Option<i64>>(31)?),
+                // Filled in below, after the row is loaded.
+                tags: Vec::new(),
+                assert_labels: Vec::new(),
+            })
+        })
+        // Never `.ok()`: a fault must not read as a missing run (see `sets`).
+        .optional()?;
 
     let Some(mut detail) = row else {
         return Ok(None);
@@ -897,15 +936,12 @@ fn distinct_assert_labels(conn: &Connection, run_id: &str) -> anyhow::Result<Vec
     Ok(seen)
 }
 
-fn export_run_blob(conn: &Connection, id: &RunId) -> anyhow::Result<Option<serde_json::Value>> {
-    let blob: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT body FROM run_blobs WHERE run_id = ?1",
-            params![id.as_str()],
-            |row| row.get(0),
-        )
-        .ok();
-    let Some(blob) = blob else {
+fn export_run_blob(
+    conn: &Connection,
+    id: &RunId,
+    vis: &RunVisibility,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let Some(blob) = load_run_blob(conn, id, vis)? else {
         return Ok(None);
     };
     let bytes = decompress(&blob)?;
@@ -913,20 +949,35 @@ fn export_run_blob(conn: &Connection, id: &RunId) -> anyhow::Result<Option<serde
     Ok(Some(value))
 }
 
+/// The stored run document for `id`, or `None` when there is none *or* the run
+/// is invisible. `run_blobs` carries no `project`/`suite` of its own, so the
+/// access check rides on an `EXISTS` over `runs`.
+fn load_run_blob(
+    conn: &Connection,
+    id: &RunId,
+    vis: &RunVisibility,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut args: Vec<rusqlite::types::Value> = vec![id.as_str().to_string().into()];
+    let clause = visible_run_predicate(1, vis, &mut args);
+    let sql = format!("SELECT body FROM run_blobs WHERE run_id = ?1 AND {clause}");
+    Ok(conn
+        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
+            row.get(0)
+        })
+        .ok())
+}
+
 /// Like [`export_run_blob`], but extracts just the `config_digest` and
 /// `config_snapshot` from the stored run document — the cheap config fetch
 /// behind `GET /runs/{id}/config`. Returns `None` when the run has no stored
 /// blob (unknown run). The digest is `None` when absent or the empty-string
 /// sentinel; the snapshot is `null` when the document has none.
-fn run_config_blob(conn: &Connection, id: &RunId) -> anyhow::Result<Option<RunConfigResponse>> {
-    let blob: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT body FROM run_blobs WHERE run_id = ?1",
-            params![id.as_str()],
-            |row| row.get(0),
-        )
-        .ok();
-    let Some(blob) = blob else {
+fn run_config_blob(
+    conn: &Connection,
+    id: &RunId,
+    vis: &RunVisibility,
+) -> anyhow::Result<Option<RunConfigResponse>> {
+    let Some(blob) = load_run_blob(conn, id, vis)? else {
         return Ok(None);
     };
     let bytes = decompress(&blob)?;

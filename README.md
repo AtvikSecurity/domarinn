@@ -14,7 +14,8 @@ domarinn inverts that:
 - **The grader is structured** (tool-use / JSON-schema verdicts, never regex-from-prose) and **fails closed** — a missing or truncated verdict is an error, never a silent pass.
 - **Statistics built in** — Wilson confidence intervals, McNemar significance, and pass@k, not bare pass rates.
 - **Content-addressed caching** of every outgoing request — provider calls, grader verdicts, embeddings — under one rule, so it is safe to share between teammates over a server URL or an S3-compatible bucket.
-- **A self-hostable server + web UI** with real accounts — local logins, an admin role, and per-user API keys — plus run comparison and a shared cache.
+- **A self-hostable server + web UI** with real accounts — local logins or SSO, admin/member/viewer roles, and per-user API keys — plus run comparison and a shared cache.
+- **Access control per run set.** Every run declares a project and a suite; restrict that pair and it disappears for everyone but admins and the accounts granted `view`, `upload` or `manage` on it. Default-open, so nothing changes until you lock something, and the **Sets** browser is where you see who can reach what.
 - **Structured logging** — human-readable on a terminal, JSON one-object-per-line in a container (or when requested), with per-request ids on the server.
 
 ## Install
@@ -111,7 +112,7 @@ were substituted into the prompt, and where the request was actually sent:
 
 More in **[the web UI reference](docs/reference/web-ui.md)** — the overview
 board, the prompt × provider matrix, run comparison with McNemar significance,
-and the cache browser.
+the run-set browser and its access lists, and the cache browser.
 
 ## Documentation
 

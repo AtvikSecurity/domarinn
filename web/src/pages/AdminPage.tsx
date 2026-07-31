@@ -8,6 +8,7 @@ import {
 import type { Role, UserView } from "@/api";
 import { ApiError } from "@/api/client";
 import { useAuthView } from "@/auth/AuthProvider";
+import { ALL_ROLES } from "@/lib/authz";
 import { formatDate } from "@/lib/format";
 import { Button } from "@/components/ui/Button";
 import { Modal, ModalActions } from "@/components/ui/Modal";
@@ -150,8 +151,11 @@ export function AdminPage() {
                           changeRole(u, e.target.value as Role)
                         }
                       >
-                        <option value="member">member</option>
-                        <option value="admin">admin</option>
+                        {ALL_ROLES.map((r) => (
+                          <option key={r} value={r}>
+                            {r}
+                          </option>
+                        ))}
                       </select>
                     </td>
                     <td className="px-3 py-2">
@@ -302,8 +306,11 @@ function CreateUserForm({ onError }: { onError: (message: string) => void }) {
             value={role}
             onChange={(e) => setRole(e.target.value as Role)}
           >
-            <option value="member">member</option>
-            <option value="admin">admin</option>
+            {ALL_ROLES.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
           </select>
         </label>
         <Button

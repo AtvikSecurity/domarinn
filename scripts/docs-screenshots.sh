@@ -11,6 +11,14 @@
 #                      (implies SEED_OFFLINE_ONLY=1 for the seed script)
 #   SEED_EMBEDDINGS=1 also seed example 30 (pulls $OLLAMA_EMBED_MODEL too)
 #   KEEP_SERVER=1     skip teardown: leave the seeded server running afterwards
+#   SHOTS=<regex>     capture only the shots whose test title matches. Read from
+#                      the environment by playwright.screenshots.config.ts, which
+#                      applies it to the capture project alone — deliberately NOT
+#                      the --grep flag, which would also filter the `setup`
+#                      project the capture depends on for its session. Every
+#                      other committed PNG is left exactly as it is, which is
+#                      what you want when one page changed and the rest would
+#                      only churn run ids and dates.
 #   OLLAMA_URL, OLLAMA_MODEL, OLLAMA_EMBED_MODEL — see scripts/seed-docs-runs.sh
 set -euo pipefail
 
@@ -97,9 +105,13 @@ mkdir -p "$SEED_CACHE_DIR"
 
 echo "==> starting domarinn server on :$SERVER_PORT (data dir: $SERVER_DATA_DIR)"
 echo "==> mounting $SEED_CACHE_DIR as the read-only local cache tier"
+# Three static tokens: `write` shares the runs, `read` runs the seed's own
+# data-at-rest check least-privilege, and `admin` exists only so the seed can
+# provision the run-set policy the /sets shots are pictures of. This server is
+# thrown away at the end of the script; the tokens are not secrets.
 DOMARINN_ADMIN_USER=admin \
   DOMARINN_ADMIN_PASSWORD=screenshots \
-  DOMARINN_TOKENS="write:docs-seed-token,read:docs-read-token" \
+  DOMARINN_TOKENS="write:docs-seed-token,read:docs-read-token,admin:docs-admin-token" \
   DOMARINN_LOCAL_CACHE_DIR="$SEED_CACHE_DIR" \
   "$BIN" server --port "$SERVER_PORT" --data-dir "$SERVER_DATA_DIR" \
   >"$SERVER_LOG" 2>&1 &
@@ -145,6 +157,7 @@ fi
 DOMARINN_SERVER_URL="$SERVER_URL" \
   DOMARINN_TOKEN=docs-seed-token \
   DOMARINN_READ_TOKEN=docs-read-token \
+  DOMARINN_ADMIN_TOKEN=docs-admin-token \
   OLLAMA_URL="$OLLAMA_URL" \
   OLLAMA_MODEL="$OLLAMA_MODEL" \
   OLLAMA_EMBED_MODEL="$OLLAMA_EMBED_MODEL" \
@@ -152,8 +165,13 @@ DOMARINN_SERVER_URL="$SERVER_URL" \
   "$REPO_ROOT/scripts/seed-docs-runs.sh"
 
 # --- 6. Capture screenshots ----------------------------------------------------
-echo "==> capturing screenshots"
-PLAYWRIGHT_BASE_URL="$SERVER_URL" pnpm -C web run screenshots
+if [ -n "${SHOTS:-}" ]; then
+  echo "==> capturing screenshots matching '${SHOTS}'"
+fi
+# $SHOTS is read by playwright.screenshots.config.ts rather than passed as
+# --grep, so that it filters the capture project without also filtering the
+# `setup` project this one depends on for its session.
+SHOTS="${SHOTS:-}" PLAYWRIGHT_BASE_URL="$SERVER_URL" pnpm -C web run screenshots
 
 # --- 8. Report -----------------------------------------------------------------
 echo "==> screenshots written to docs/assets/screenshots/:"

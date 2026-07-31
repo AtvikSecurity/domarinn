@@ -43,6 +43,8 @@ mod server;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::auth::Identity;
+use crate::runsets::RunVisibility;
 use crate::AppState;
 
 /// A tool's outcome. `is_error` marks a *tool execution* error — something the
@@ -91,15 +93,26 @@ pub fn definitions() -> Vec<Value> {
 }
 
 /// Dispatch a `tools/call`.
-pub async fn call(state: &AppState, name: &str, args: Value) -> Result<ToolResult, UnknownTool> {
+///
+/// The caller's [`Identity`] becomes a [`RunVisibility`] exactly once, here,
+/// and every tool that reads run data takes it. Nothing about it reaches the
+/// wire: the tool argument schemas are unchanged, and `deny_unknown_fields`
+/// keeps them that way.
+pub async fn call(
+    state: &AppState,
+    identity: &Identity,
+    name: &str,
+    args: Value,
+) -> Result<ToolResult, UnknownTool> {
+    let vis = RunVisibility::of(identity);
     let result = match name {
-        "find_runs" => runs::find_runs(state, args).await,
-        "get_run" => runs::get_run(state, args).await,
-        "list_cases" => cases::list_cases(state, args).await,
-        "get_case" => cases::get_case(state, args).await,
-        "case_history" => cases::case_history(state, args).await,
-        "compare_runs" => analysis::compare_runs(state, args).await,
-        "search" => analysis::search(state, args).await,
+        "find_runs" => runs::find_runs(state, &vis, args).await,
+        "get_run" => runs::get_run(state, &vis, args).await,
+        "list_cases" => cases::list_cases(state, &vis, args).await,
+        "get_case" => cases::get_case(state, &vis, args).await,
+        "case_history" => cases::case_history(state, &vis, args).await,
+        "compare_runs" => analysis::compare_runs(state, &vis, args).await,
+        "search" => analysis::search(state, &vis, args).await,
         "get_server_info" => server::get_server_info(state, args).await,
         _ => return Err(UnknownTool),
     };

@@ -19,6 +19,8 @@
 //! * [`history`] — one case's evolution across a suite's recent runs,
 //! * [`matrix`] — the per-run prompt × provider aggregate matrix,
 //! * [`projects`] — projects, suites, and baselines,
+//! * [`runsets`] — run-set restrictions and per-user grants,
+//! * [`sets`] — the run-set browser's per-project/per-suite aggregates,
 //! * [`search`] — FTS5 full-text search over runs and cases,
 //! * [`cache`] — the content-addressed cache table, stats, and pruning,
 //! * [`cacheindex`] — deriving the browsable columns from an entry's body,
@@ -55,8 +57,10 @@ mod matrix;
 mod projects;
 pub mod retention;
 mod runs;
+mod runsets;
 mod schema;
 mod search;
+mod sets;
 mod sso;
 
 pub use auth::{
@@ -67,6 +71,7 @@ pub use cachelink::decode_run_cursor;
 pub use cases::CaseListFilter;
 pub use matrix::MatrixFilter;
 pub use runs::{RunListFilter, RunListPage};
+pub use runsets::RunSetGrant;
 pub use sso::{login_txn_expiry, LoginTxn, NewIdentity, UserIdentityRow, LOGIN_TXN_TTL_MS};
 
 const MAX_READERS: usize = 4;
@@ -213,9 +218,7 @@ impl Storage {
 
         let runs_path = dir.join("domarinn.db");
         let mut runs_writer = open_conn(&runs_path)?;
-        schema::runs_migrations()
-            .to_latest(&mut runs_writer)
-            .context("applying runs migrations")?;
+        schema::migrate_runs(&mut runs_writer).context("applying runs migrations")?;
         // Populate the migration-3 columns for any rows written before the
         // migration (fresh DBs and already-backfilled DBs select 0 rows).
         backfill::run(&mut runs_writer).context("backfilling runs database")?;

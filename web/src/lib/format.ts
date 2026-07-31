@@ -125,6 +125,20 @@ export function parseTimestamp(iso: string): number {
   return Date.parse(iso);
 }
 
+/**
+ * Epoch millis -> RFC3339, so a DTO that carries numbers can use the same
+ * formatters as the RFC3339 ones.
+ *
+ * The run-set browser (`/api/v1/sets*`) is the one surface whose timestamps are
+ * epoch-ms rather than strings; converting at the edge keeps that difference
+ * out of `formatRelative`/`formatDateAbsolute`, which stay single-typed.
+ * `null` for a missing or unrepresentable value — the formatters render it "-".
+ */
+export function isoFromEpoch(ms: number | undefined | null): string | null {
+  if (ms === undefined || ms === null || !Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
 export function formatDate(iso: string | undefined | null): string {
   if (!iso) return "-";
   const ms = parseTimestamp(iso);

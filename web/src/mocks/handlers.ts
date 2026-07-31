@@ -13,6 +13,8 @@ import type {
   CacheEntryListItem,
   CacheEntryListResponse,
   CaseListResponse,
+  GrantLevel,
+  MeResponse,
   OkResponse,
   PruneResponse,
   Role,
@@ -231,6 +233,21 @@ function filterCases(cases: MockCaseRow[], p: URLSearchParams): MockCaseRow[] {
   });
 }
 
+/**
+ * The mock's `RunVisibility::of` (crates/domarinn-server/src/runsets.rs): the
+ * one place an identity becomes an access class.
+ *
+ * An admin account — via any credential — and an admin-scoped static token see
+ * everything. Any other user-backed identity rides its own grants. Anonymous
+ * callers and non-admin static tokens are public: unrestricted sets only.
+ */
+function setViewer(me: MeResponse, userId: string | undefined): fx.SetViewer {
+  if (me.user?.role === "admin") return { kind: "full" };
+  if (me.source === "static" && me.scope === "admin") return { kind: "full" };
+  if (me.authenticated && userId !== undefined) return { kind: "user", id: userId };
+  return { kind: "public" };
+}
+
 // Mirrors `fetch`'s async signature so the client can `await` the mock and the
 // real `fetch` through one code path (awaiting a sync value would trip
 // await-thenable at the call site). No handler awaits today, hence the one
@@ -295,10 +312,11 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
     }
   }
 
-  // /apikeys — write scope
+  // /apikeys — read scope; the real gate is the account check below plus the
+  // ceiling on the requested scope, so a viewer can mint its own read-only key.
   if (seg[0] === "apikeys") {
     const { me, userId } = auth.resolveAuth(bearer(init));
-    if (!scopeAtLeast(me.scope ?? undefined, "write")) return forbidden();
+    if (!scopeAtLeast(me.scope ?? undefined, "read")) return forbidden();
     if (method === "GET" && seg.length === 1) {
       const res: ApiKeyListResponse = { keys: auth.listApiKeys(userId) };
       return json(res);
@@ -494,6 +512,89 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
             : undefined;
         const history = fx.caseHistory(project, suite, caseKey, limit);
         return history ? json(history) : notFound();
+      }
+    }
+  }
+
+  // /sets... — the run-set browser and its access lists. Two independent
+  // gates, exactly as `crates/domarinn-server/src/sets.rs` documents them: the
+  // route scope (is this credential strong enough) and the set gate (does this
+  // principal own this set). The set gate refuses with 404, never 403 — the
+  // access list names who can reach a restricted set, so "you may not see this"
+  // and "there is nothing here" have to be the same answer.
+  if (seg[0] === "sets") {
+    const { me, userId } = auth.resolveAuth(bearer(init));
+    const viewer = setViewer(me, userId);
+
+    if (method === "GET" && seg.length === 1) return json(fx.listRunSets(viewer));
+
+    const project = seg[1];
+    if (project === undefined) return notFound();
+    // `/sets/{p}/suites/{s}/...` and `/sets/{p}/...` differ only by the two
+    // segments the suite form inserts, so normalize both into one
+    // `(project, suite, tail)` triple rather than writing every leaf twice.
+    const suiteForm = seg[2] === "suites";
+    const suite = suiteForm ? (seg[3] ?? null) : null;
+    if (suiteForm && suite === null) return notFound();
+    const tail = suiteForm ? seg.slice(4) : seg.slice(2);
+
+    // Browse: an invisible set is `null` from the fixture and 404s through the
+    // same path as one that never existed.
+    if (method === "GET" && tail.length === 0) {
+      const detail =
+        suite === null
+          ? fx.runSetProject(project, viewer)
+          : fx.runSetSuite(project, suite, viewer);
+      return detail ? json(detail) : notFound();
+    }
+
+    if (method === "GET" && tail.length === 1 && tail[0] === "access") {
+      if (!fx.canManageSet(viewer, project, suite)) return notFound();
+      return json(fx.setAccess(project, suite));
+    }
+
+    if (tail.length === 1 && tail[0] === "restriction") {
+      // Admin scope, so a manage-grant holder gets a 403: they administer
+      // their set's access list, but locking a set stays with the operator.
+      if (!scopeAtLeast(me.scope ?? undefined, "admin")) return forbidden();
+      if (method === "PUT") {
+        fx.restrictSet(project, suite);
+        return noContent();
+      }
+      if (method === "DELETE") {
+        return fx.unrestrictSet(project, suite) ? noContent() : notFound();
+      }
+    }
+
+    if (tail.length === 2 && tail[0] === "grants") {
+      const targetId = tail[1];
+      if (targetId === undefined) return notFound();
+      if (method === "PUT" || method === "DELETE") {
+        // Write scope ON TOP OF the manage grant: an API key rides its owner's
+        // grants whatever scope it was minted at, so the set gate alone would
+        // let a read-only key rewrite an access list.
+        if (!scopeAtLeast(me.scope ?? undefined, "write")) return forbidden();
+        if (!fx.canManageSet(viewer, project, suite)) return notFound();
+      }
+      if (method === "PUT") {
+        const level = readJson<{ level?: GrantLevel }>(init).level;
+        if (level === undefined) return json({ error: "level required" }, 400);
+        // A grant to a user that does not exist would be unreachable dead
+        // policy; the 404 names the user, not the set.
+        const target = auth.listUsers().find((u) => u.id === targetId);
+        if (!target) return notFound();
+        fx.upsertGrant(
+          project,
+          suite,
+          target.id,
+          target.username,
+          level,
+          me.user?.username ?? null,
+        );
+        return noContent();
+      }
+      if (method === "DELETE") {
+        return fx.deleteGrant(project, suite, targetId) ? noContent() : notFound();
       }
     }
   }
