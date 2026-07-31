@@ -1,6 +1,6 @@
 //! Projects, suites (with a recent pass-rate series), and baseline management.
 
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use domarinn_core::ids::RunId;
 
@@ -63,9 +63,14 @@ impl Storage {
                     "SELECT 1 FROM runs
                       WHERE id = ?1 AND project IS ?2 AND suite IS ?3 AND {visible}"
                 );
+                // `.optional()?`, never `.is_ok()` — see
+                // `project_has_visible_runs` in [`super::sets`]. A swallowed
+                // error here reports "no such run" for a broken database and
+                // silently leaves the baseline unpinned.
                 let exists = tx
                     .query_row(&sql, rusqlite::params_from_iter(args.iter()), |_| Ok(()))
-                    .is_ok();
+                    .optional()?
+                    .is_some();
                 if !exists {
                     return Ok(false);
                 }
@@ -141,11 +146,14 @@ pub(super) fn read_baseline(
         "SELECT b.run_id FROM baselines b JOIN runs ON runs.id = b.run_id
           WHERE b.project = ?1 AND b.suite = ?2 AND {visible}"
     );
+    // `.optional()?`, never `.ok()` — see `project_has_visible_runs` in
+    // [`super::sets`]. A suite reading as unpinned because the query failed is
+    // indistinguishable from one that was never pinned.
     Ok(conn
         .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
             row.get::<_, String>(0)
         })
-        .ok()
+        .optional()?
         .map(RunId::new))
 }
 

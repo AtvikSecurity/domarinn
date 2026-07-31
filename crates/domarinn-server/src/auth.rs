@@ -421,7 +421,13 @@ pub async fn authenticate(
     // 2. Account API keys.
     if token.starts_with(API_KEY_PREFIX) {
         if let Some(key) = api_keys.resolve(&token).await {
-            identity.scope = Some(key.scope);
+            // Cap the minted scope by the owner's *current* role. The mint-time
+            // ceiling is a snapshot, and a demotion has to bind immediately or
+            // it is cosmetic: a member demoted to viewer would keep writing
+            // with yesterday's `write` key, and a demoted admin would keep an
+            // `admin` key that can lift any set's restriction. Revoking every
+            // key by hand on every demotion is not a control anyone operates.
+            identity.scope = Some(key.scope.min(Scope::for_role(key.role)));
             identity.label = Some(key.username.clone());
             identity.user_id = Some(key.user_id);
             identity.username = Some(key.username);

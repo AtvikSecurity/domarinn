@@ -614,6 +614,12 @@ async fn a_view_only_grant_cannot_upload_into_the_set_it_can_read() {
 
     let r = post_json(&f.app, "/api/v1/runs", Some(&token), &run_value(&run)).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.json());
+    // The refusal names the missing level, and this body is on the wire in
+    // front of every CI log, so its article has to agree with the level.
+    assert_eq!(
+        r.json()["error"],
+        "this run set is restricted; you need an upload grant on it"
+    );
 
     // The same caller reading that set is fine.
     let read = get_auth(&f.app, &format!("/api/v1/runs/{R_PRIVATE}"), Some(&token)).await;

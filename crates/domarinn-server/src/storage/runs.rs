@@ -1,7 +1,7 @@
 //! Run ingest (content-hash idempotency) and run list / detail / export queries.
 
 use anyhow::Context;
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use domarinn_core::ids::RunId;
 use domarinn_core::result::{AssertStatus, RunResult};
@@ -67,17 +67,18 @@ impl Storage {
             .await
     }
 
-    /// Whether the run exists *and* this caller may see it — the existence
-    /// check the child endpoints (`/cases`, `/matrix`) gate on.
+    /// Whether the run exists *and* this caller may see it — the gate `/cases`
+    /// and `/matrix` share. `.optional()?`, never `.is_ok()` (see `sets`).
     pub async fn run_exists(&self, id: RunId, vis: RunVisibility) -> anyhow::Result<bool> {
         self.runs
             .read(move |conn| {
                 let mut args: Vec<rusqlite::types::Value> = vec![id.as_str().to_string().into()];
                 let clause = visibility_predicate("runs", &vis, &mut args);
                 let sql = format!("SELECT 1 FROM runs WHERE id = ?1 AND {clause}");
-                Ok(conn
+                let found = conn
                     .query_row(&sql, rusqlite::params_from_iter(args.iter()), |_| Ok(()))
-                    .is_ok())
+                    .optional()?;
+                Ok(found.is_some())
             })
             .await
     }
@@ -893,7 +894,8 @@ fn get_run_detail(
                 assert_labels: Vec::new(),
             })
         })
-        .ok();
+        // Never `.ok()`: a fault must not read as a missing run (see `sets`).
+        .optional()?;
 
     let Some(mut detail) = row else {
         return Ok(None);

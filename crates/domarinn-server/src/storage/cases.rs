@@ -2,7 +2,7 @@
 
 use std::str::FromStr;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
@@ -213,11 +213,14 @@ fn get_case_detail(
     ];
     let visible = visible_run_predicate(1, vis, &mut args);
     let sql = format!("SELECT detail FROM cases WHERE run_id = ?1 AND case_key = ?2 AND {visible}");
+    // `.optional()?`, never `.ok()` — see `project_has_visible_runs` in
+    // [`super::sets`]. This answer becomes a 404, and a storage fault must not
+    // be reported to the caller as a case that does not exist.
     let blob: Option<Vec<u8>> = conn
         .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
             row.get(0)
         })
-        .ok();
+        .optional()?;
     let Some(blob) = blob else {
         return Ok(None);
     };

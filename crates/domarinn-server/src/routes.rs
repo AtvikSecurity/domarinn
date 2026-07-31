@@ -945,10 +945,10 @@ pub(crate) fn clamp_limit(limit: Option<i64>) -> i64 {
 /// scope the route already demanded.
 ///
 /// A 403 rather than a 404: unlike a run id, the `(project, suite)` pair here
-/// comes from the caller, so refusing it discloses nothing they did not already
-/// name — and a silent 404 on a legitimate upload would be a debugging trap for
-/// whoever runs the CI job. The access endpoints in [`crate::sets`] make the
-/// opposite trade, and say why.
+/// comes from the caller, so refusing it discloses only that the set they named
+/// is restricted — an accepted bit — and a silent 404 on a legitimate upload
+/// would be a debugging trap for whoever runs the CI job. The access endpoints
+/// in [`crate::sets`] make the opposite trade, and say why.
 async fn require_set_access(
     state: &AppState,
     identity: &crate::auth::Identity,
@@ -968,9 +968,15 @@ async fn require_set_access(
     if allowed {
         return Ok(());
     }
+    // The article agrees with the level: this body is on the wire, in front of
+    // every CI log that hits a set it cannot write.
+    let article = match needed {
+        GrantLevel::Upload => "an",
+        GrantLevel::View | GrantLevel::Manage => "a",
+    };
     Err(ApiError::status(
         StatusCode::FORBIDDEN,
-        format!("this run set is restricted; you need a {needed} grant on it"),
+        format!("this run set is restricted; you need {article} {needed} grant on it"),
     ))
 }
 
