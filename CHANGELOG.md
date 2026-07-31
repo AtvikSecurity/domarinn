@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.1](https://github.com/AtvikSecurity/domarinn/compare/0.6.0...0.6.1) (2026-07-31)
+
+
+### Features
+
+* run-set access control and a browsable Sets hierarchy ([#42](https://github.com/AtvikSecurity/domarinn/issues/42)) ([270d27e](https://github.com/AtvikSecurity/domarinn/commit/270d27e2118436511c81fdd90629db75f7bc96c5))
+
+
+### Bug Fixes
+
+* **caching:** resolve `$digest:` on a provider's cache_salt ([#38](https://github.com/AtvikSecurity/domarinn/issues/38)) ([e83e6eb](https://github.com/AtvikSecurity/domarinn/commit/e83e6eb88666da004ea0e38fd351ef696da03cbd))
+* declared env keys against legacy stores, and the eval gate names the failure ([#43](https://github.com/AtvikSecurity/domarinn/issues/43)) ([bedbec3](https://github.com/AtvikSecurity/domarinn/commit/bedbec3c8ca4ce58de6286c84e44ed6d4df755b1))
+
 ## [0.6.0](https://github.com/AtvikSecurity/domarinn/compare/0.5.1...0.6.0) (2026-07-30)
 
 
