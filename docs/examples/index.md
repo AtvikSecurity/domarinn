@@ -69,6 +69,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 38  | [Every key, once](models-grading-and-budgets.md#example-38--every-key-once) | One runnable suite setting every top-level key, annotated as a map of the reference. |
 | 39  | [A promptfoo config, converted](running-and-reporting.md#example-39--a-promptfoo-config-converted) | A promptfoo config and the suite `domarinn import promptfoo` turns it into, both shipped. |
 | 40  | [A rubric that sees the tool calls](models-grading-and-budgets.md#example-40--a-rubric-that-sees-the-tool-calls) | `include_tool_calls`, for grading the delegation decision instead of the prose. |
+| 41  | [Per-case conversation history](templates-and-test-data.md#example-41--per-case-conversation-history) | Each case brings its own prior turns, spliced at the prompt's `history` marker. |
 
 ## See also
 

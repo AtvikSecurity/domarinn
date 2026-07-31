@@ -1,0 +1,10 @@
+# A transcript a case points at with `history: file://convos/escalation.yaml`.
+# The same shape as inline history: a list of {role, content} turns.
+- role: user
+  content: "My order arrived damaged and the support chat disconnected twice."
+- role: assistant
+  content: "I'm sorry — I can escalate this to a supervisor right away."
+- role: user
+  content: "Please do."
+- role: assistant
+  content: "Done. You'll be contacted within one business day."

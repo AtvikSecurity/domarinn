@@ -1,0 +1,94 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Per-case conversation history.
+#
+# Example 34 fixes the transcript in the prompt: every case shares the same
+# prior turns and varies only the newest line. This example moves the history
+# to the CASES: each one brings its own prior turns — different lengths,
+# different roles — and the prompt names where they splice in with the bare
+# `history` marker entry. A prompt may hold at most one marker; a prompt
+# without one gets each case's history right after its leading system
+# turn(s), and a `template:` prompt becomes the transcript's newest user
+# turn.
+#
+# A case writes its history inline, or points at a whole transcript with
+# `history: file://…` (a YAML/JSON list of `{role, content}`). A CSV test
+# file carries it in the reserved `__history` column — a JSON list of turns
+# or a `file://` path, with an empty cell meaning none. Turn contents are
+# templates like any other message content, and may be `file://` themselves.
+#
+# History is part of each case's request identity: two cases that differ only
+# in their prior turns key — and cache — separately.
+#
+# The echo provider returns the prompt it was handed, so the assertions below
+# can see exactly which transcript reached the provider — and, just as
+# important, which other case's transcript did NOT.
+#
+# Run:  domarinn run examples/41-per-case-history
+version: 1
+project: examples
+suite: per-case-history
+
+providers:
+  - id: echo
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+# --8<-- [start:marker]
+prompts:
+  - id: support
+    messages:
+      - role: system
+        content: "You are a support agent for Aurora Notes. Answer from the conversation so far."
+      - history
+      - role: user
+        content: "{{ followup }}"
+# --8<-- [end:marker]
+
+tests:
+  # No history: the marker simply disappears and the case is a first contact.
+  - id: history/first-contact
+    vars:
+      followup: "What is your return window?"
+    assert:
+      - type: contains
+        value: "What is your return window?"
+      # Nothing from the other cases' conversations leaked in.
+      - type: not-contains
+        value: "carrying case"
+
+  # --8<-- [start:inline]
+  # Two prior turns, inline. This case's transcript is system → user →
+  # assistant → user, and only this case sees these turns.
+  - id: history/follow-up
+    history:
+      - role: user
+        content: "Can I return a carrying case bought 10 days ago?"
+      - role: assistant
+        content: "Yes — within 30 days of delivery, in original condition."
+    vars:
+      followup: "And if the box is already open?"
+    assert:
+      # The assistant's earlier turn reached the provider…
+      - type: contains
+        value: "30 days of delivery"
+      # …together with this case's newest line.
+      - type: contains
+        value: "already open"
+  # --8<-- [end:inline]
+
+  # A whole transcript from a file. Longer conversations live next to the
+  # suite instead of bloating it; the file is a YAML list of turns.
+  - id: history/escalation
+    history: file://convos/escalation.yaml
+    vars:
+      followup: "So who exactly is going to call me back?"
+    assert:
+      - type: contains
+        value: "escalate this to a supervisor"
+      - type: not-contains
+        value: "carrying case"
+
+  # CSV rows: `__history` is reserved, like `__assert`.
+  - file://cases.csv
