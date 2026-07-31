@@ -66,6 +66,7 @@ jobs:
 | `artifact-name`      | `"domarinn-results"` | Name of the uploaded artifact holding `results.xml` + `summary.md`. |
 | `allow-empty`        | `"false"`           | If `true`, succeed when the run resolves to zero cases (becomes `--allow-empty`). Off by default: a green result over no cells is indistinguishable from a green result over every cell. Turn it on for a sharded matrix where a shard legitimately has no work. |
 | `cache-dir`          | `""`                | Directory for the local cache — typically the path `actions/cache` restored (becomes `--cache-dir`). Empty uses `.domarinn/cache` beside the suite, which a cache step rarely saves. See [Shared cache for CI](#uploading-ci-runs-to-a-shared-server). |
+| `branch`             | `""`                | Branch to record on the run (exported as `DOMARINN_BRANCH`). Empty **autodetects** from the workflow environment, which is what you want on `push` and `pull_request`. Set it where the event's ref is not the branch you mean — a merge-queue or `workflow_run` build. See [Uploading CI runs](#uploading-ci-runs-to-a-shared-server). |
 
 ### Outputs
 
@@ -307,6 +308,8 @@ Point CI at a shared [server](../reference/server.md) so every eval is browsable
 - **`--share`** uploads the completed run and prints `View run: <url>`; the URL uses the server's `DOMARINN_PUBLIC_URL`.
 
 On GitHub Actions the CLI automatically enriches the uploaded run with git (branch, commit, dirty flag) and CI (provider + run URL) metadata, so shared runs are traceable back to the workflow.
+
+**The branch is read from the workflow environment, not from git.** `actions/checkout` leaves a detached HEAD, so `git rev-parse --abbrev-ref HEAD` answers the literal `HEAD` on every runner — and on a pull request the checked-out ref is `refs/pull/N/merge`, which is nobody's branch. domarinn therefore prefers `GITHUB_HEAD_REF` (the PR's source branch), then `GITHUB_REF`, and understands the equivalents on GitLab, Buildkite, CircleCI, Travis, Drone/Woodpecker, Bitbucket, Azure Pipelines and Jenkins. A tag build records no branch rather than the tag. Override it with the action's **`branch`** input (or `DOMARINN_BRANCH`) where the event's ref is not the branch you mean — a merge-queue or `workflow_run` build. This is what makes `?branch=` filters, `--against` comparisons and the server's per-branch retention behave on CI runs.
 
 **Shared cache for CI.** Multiple CI jobs can share every request domarinn makes — provider responses, grader verdicts, embeddings — through the server's content-addressed cache (`/api/v1/cache/*`), which cuts cost and time on reruns. The client side is `cache.backend: layered` plus `DOMARINN_SERVER_URL`, documented in [`caching.md`](../concepts/caching.md#backends).
 

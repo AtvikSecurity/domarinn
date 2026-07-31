@@ -141,6 +141,86 @@ fn actor() -> Option<String> {
     whoami::username().ok()
 }
 
+/// Where a branch name comes from in CI, in the order we trust the answers.
+///
+/// Each entry is consulted in turn and the first one that normalizes to a real
+/// branch wins; a variable holding a tag, a pull-request merge ref or an empty
+/// string is skipped rather than accepted, so a tag build falls through to the
+/// next candidate instead of recording `v1.2.3` as a branch.
+///
+/// The order within a provider is "most specific first": on a pull request the
+/// *source* branch is the answer anyone wants, and the generic ref points at a
+/// synthetic merge ref instead.
+const BRANCH_ENV: &[&str] = &[
+    // An explicit override wins over any autodetection, matching DOMARINN_ACTOR.
+    "DOMARINN_BRANCH",
+    // GitHub Actions — and Gitea/Forgejo Actions, whose runners set the same
+    // names. `GITHUB_HEAD_REF` is set only on `pull_request` events and holds
+    // the source branch; `GITHUB_REF` is then `refs/pull/N/merge`, which
+    // `branch_name` rejects. `GITHUB_REF_NAME` is deliberately absent from this
+    // list: it spells that same merge ref as `N/merge`, which looks like a
+    // branch and is not.
+    "GITHUB_HEAD_REF",
+    "GITHUB_REF",
+    // GitLab CI. `CI_COMMIT_BRANCH` is unset on tag and merge-request pipelines,
+    // which is what makes it safe to take at face value.
+    "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME",
+    "CI_COMMIT_BRANCH",
+    // Buildkite, CircleCI, Travis, Drone/Woodpecker, Bitbucket, AppVeyor.
+    "BUILDKITE_BRANCH",
+    "CIRCLE_BRANCH",
+    "TRAVIS_PULL_REQUEST_BRANCH",
+    "TRAVIS_BRANCH",
+    "DRONE_SOURCE_BRANCH",
+    "DRONE_BRANCH",
+    "BITBUCKET_BRANCH",
+    "APPVEYOR_REPO_BRANCH",
+    // Azure Pipelines. Both are full refs.
+    "SYSTEM_PULLREQUEST_SOURCEBRANCH",
+    "BUILD_SOURCEBRANCH",
+    // Jenkins: `BRANCH_NAME` on a multibranch pipeline, `GIT_BRANCH` from the
+    // git plugin — which spells it `origin/main`.
+    "BRANCH_NAME",
+    "GIT_BRANCH",
+];
+
+/// The branch CI says it is building, if any.
+fn ci_branch() -> Option<String> {
+    branch_from(env)
+}
+
+/// [`ci_branch`] with the environment injected, so the precedence rules are
+/// testable without mutating process state — `std::env::set_var` is global to a
+/// test binary whose tests run in parallel.
+fn branch_from(get: impl Fn(&str) -> Option<String>) -> Option<String> {
+    BRANCH_ENV
+        .iter()
+        .filter_map(|key| get(key))
+        .find_map(|raw| branch_name(&raw))
+}
+
+/// Reduce a ref to a branch name, or `None` when it does not name a branch.
+///
+/// Rejecting is as important as stripping: `refs/tags/v1.2.3` and
+/// `refs/pull/42/merge` are refs a CI variable will happily hand over, and a
+/// detached checkout reports the literal `HEAD` — none of which is a branch, and
+/// all of which would otherwise be stored as one and then show up in the runs
+/// list, the `?branch=` filter and the retention key.
+fn branch_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    let name = name
+        .strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("refs/remotes/origin/"))
+        // Jenkins' `GIT_BRANCH`. A branch genuinely named `origin/…` would be
+        // mangled here; that is a worse name than this is a bug.
+        .or_else(|| name.strip_prefix("origin/"))
+        .unwrap_or(name);
+    if name.is_empty() || name == "HEAD" || name.starts_with("refs/") {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 fn host() -> Option<String> {
     if let Some(value) = env("DOMARINN_HOST") {
         return Some(value);
@@ -174,12 +254,24 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 /// Returns before running `status --porcelain` when neither rev-parse produced
 /// anything, so a non-repo directory costs two cheap failing spawns rather than
 /// three — and the expensive one, which walks the whole worktree, never runs.
+///
+/// **The branch comes from CI first**, for the same reason the actor does: CI
+/// checks out a detached HEAD, so `rev-parse --abbrev-ref` answers the literal
+/// `HEAD` for every run on a runner. That is not a branch, it is an artifact of
+/// how the checkout works — and it was being stored as one, which is what a
+/// `?branch=` filter, a `--against` comparison and the server's
+/// `(project, suite, branch)` retention key all read.
+///
+/// Whether this is a repo at all stays a question only git answers. Deciding it
+/// from the environment would make a run in a non-repo directory on a runner
+/// report a branch and no commit, which is a checkout that never existed.
 pub fn collect_git(dir: &Path) -> Option<GitMeta> {
-    let branch = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let head = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let commit = git(dir, &["rev-parse", "HEAD"]);
-    if branch.is_none() && commit.is_none() {
+    if head.is_none() && commit.is_none() {
         return None;
     }
+    let branch = ci_branch().or_else(|| head.as_deref().and_then(branch_name));
     let dirty = git(dir, &["status", "--porcelain"])
         .map(|s| !s.is_empty())
         .unwrap_or(false);
@@ -287,6 +379,107 @@ mod tests {
         let collected = collect(&ProvenanceOptions::default(), Path::new("."));
         let origin = collected.origin.expect("full records an origin");
         assert_eq!(origin.redacted, None);
+    }
+
+    /// Look up `key` in a fixture table, the way [`branch_from`] looks it up in
+    /// the environment.
+    fn lookup<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            vars.iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_string())
+                .filter(|v| !v.is_empty())
+        }
+    }
+
+    #[test]
+    fn a_ref_is_reduced_to_a_branch_name() {
+        assert_eq!(branch_name("refs/heads/main").as_deref(), Some("main"));
+        assert_eq!(
+            branch_name("refs/heads/feat/ci-branch").as_deref(),
+            Some("feat/ci-branch")
+        );
+        assert_eq!(branch_name("origin/main").as_deref(), Some("main"));
+        assert_eq!(
+            branch_name("refs/remotes/origin/main").as_deref(),
+            Some("main")
+        );
+        assert_eq!(branch_name(" main \n").as_deref(), Some("main"));
+    }
+
+    /// The rejections are the point: each of these would otherwise be stored as
+    /// a branch and then filtered on as one.
+    #[test]
+    fn what_does_not_name_a_branch_is_refused() {
+        assert_eq!(branch_name("HEAD"), None, "a detached checkout");
+        assert_eq!(branch_name("refs/tags/v1.2.3"), None, "a tag build");
+        assert_eq!(branch_name("refs/pull/42/merge"), None, "a merge ref");
+        assert_eq!(branch_name("   "), None);
+    }
+
+    /// On a pull request the source branch is the answer; `GITHUB_REF` points at
+    /// the synthetic merge ref, which is nobody's branch.
+    #[test]
+    fn a_github_pull_request_records_the_source_branch() {
+        let vars = [
+            ("GITHUB_HEAD_REF", "feat/ci-branch"),
+            ("GITHUB_REF", "refs/pull/42/merge"),
+        ];
+        assert_eq!(
+            branch_from(lookup(&vars)).as_deref(),
+            Some("feat/ci-branch")
+        );
+    }
+
+    /// On a push `GITHUB_HEAD_REF` is defined but empty, and the ref is real.
+    #[test]
+    fn a_github_push_falls_through_the_empty_head_ref() {
+        let vars = [("GITHUB_HEAD_REF", ""), ("GITHUB_REF", "refs/heads/main")];
+        assert_eq!(branch_from(lookup(&vars)).as_deref(), Some("main"));
+    }
+
+    /// A tag build has no branch. Falling through to a later provider's variable
+    /// would be worse than admitting that.
+    #[test]
+    fn a_tag_build_reports_no_branch() {
+        let vars = [("GITHUB_HEAD_REF", ""), ("GITHUB_REF", "refs/tags/v0.6.1")];
+        assert_eq!(branch_from(lookup(&vars)), None);
+    }
+
+    #[test]
+    fn an_explicit_override_beats_every_detected_value() {
+        let vars = [
+            ("DOMARINN_BRANCH", "release/2026-07"),
+            ("GITHUB_REF", "refs/heads/main"),
+        ];
+        assert_eq!(
+            branch_from(lookup(&vars)).as_deref(),
+            Some("release/2026-07")
+        );
+    }
+
+    #[test]
+    fn the_other_forges_are_understood_too() {
+        for (key, raw, want) in [
+            ("CI_MERGE_REQUEST_SOURCE_BRANCH_NAME", "feat/x", "feat/x"),
+            ("CI_COMMIT_BRANCH", "main", "main"),
+            ("BUILDKITE_BRANCH", "main", "main"),
+            ("CIRCLE_BRANCH", "main", "main"),
+            ("BUILD_SOURCEBRANCH", "refs/heads/main", "main"),
+            ("GIT_BRANCH", "origin/main", "main"),
+        ] {
+            let vars = [(key, raw)];
+            assert_eq!(
+                branch_from(lookup(&vars)).as_deref(),
+                Some(want),
+                "{key} = {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_in_the_environment_means_no_ci_branch() {
+        assert_eq!(branch_from(|_| None), None);
     }
 
     /// A directory that is not a repo must not be reported as a clean checkout.
