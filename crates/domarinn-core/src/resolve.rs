@@ -324,14 +324,20 @@ fn parse_delimited_tests(
                 "__history" => {
                     let cell = field.trim();
                     if !cell.is_empty() {
-                        // A bare `file://` path or a JSON list of turns; the
-                        // JSON route reuses `HistorySpec`'s own deserializer so
-                        // the error messages match the YAML forms.
-                        tc.history = Some(if cell.starts_with("file://") {
-                            crate::config::HistorySpec::File(cell.to_string())
-                        } else {
+                        // A JSON list of turns, or a string form. Both funnel
+                        // through `HistorySpec`'s own deserializer so every
+                        // rule — including "a string must be `file://…`" and
+                        // its curated error — lives in one place; a bare path
+                        // must not die as a raw JSON tokenizer error.
+                        let value = if cell.starts_with('[') {
                             serde_json::from_str(cell).map_err(|e| parse_err(path, e))?
-                        });
+                        } else {
+                            Json::String(cell.to_string())
+                        };
+                        tc.history = Some(
+                            serde_json::from_value::<crate::config::HistorySpec>(value)
+                                .map_err(|e| parse_err(path, e))?,
+                        );
                     }
                 }
                 other => {
@@ -556,6 +562,22 @@ tests: ["file://t.yaml"]
         assert!(
             !tests[0].vars.contains_key("__history"),
             "__history is reserved, not a var"
+        );
+    }
+
+    /// The forgotten-`file://` case the `HistorySpec` deserializer exists to
+    /// catch: a bare path cell must get its curated "is not a file:// path"
+    /// message, not a raw JSON tokenizer error ("expected value at line 1
+    /// column 1") that points nowhere near the fix.
+    #[test]
+    fn csv_history_bare_path_gets_the_curated_file_error() {
+        let text = "id,__history\nforgot,convos/long.yaml\n";
+        let err = parse_delimited_tests(text, std::path::Path::new("cases.csv"), b',')
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("file://"),
+            "error must name the missing prefix: {err}"
         );
     }
 

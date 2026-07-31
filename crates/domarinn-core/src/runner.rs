@@ -23,7 +23,7 @@ use crate::ids::RunId;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::provider::{CallCtx, Provider, ProviderRequest, TestMeta};
 use crate::provider_factory::build_provider;
-use crate::render::{self};
+use crate::render;
 use crate::resolve::expand_tests;
 use crate::result::{
     CaseResult, CaseStatus, CellKey, FilterSpec, RunResult, RESULT_SCHEMA_VERSION,

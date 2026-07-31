@@ -187,7 +187,7 @@ Templating context for `url` / `headers` / `body`: every test var by name, plus 
 - `prompt` — the prompt as one string. A multi-turn prompt (a `messages:` prompt, or a case with [history](domarinn-yaml.md#per-case-history)) is flattened to `role: content` lines joined by newlines.
 - `messages` — the same turns **structurally**, a list of `{role, content}` objects: `{{ messages | tojson }}` embeds the array JSON-encoded, and `{% for m in messages %}` iterates it — the way a body template forwards a real conversation to an OpenAI-shaped API. A `template:` prompt appears as the single user turn it becomes on the wire.
 
-Existing templates that never reference `messages` render byte-identically, so their cache keys are unchanged.
+A test var named `messages` takes precedence: the structural view is only added when no var of that name exists, so a suite that already forwarded a hand-rolled conversation under that name keeps rendering — and cache-keying — exactly as before. Existing templates that never reference `messages` render byte-identically either way.
 
 The response is exposed to `output_expr` as:
 

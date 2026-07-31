@@ -12,6 +12,25 @@ use serde_json::Value as Json;
 
 use crate::config::Message;
 
+/// Deserialize out of a buffered [`Json`] value with the inner path
+/// re-attached to the error text.
+///
+/// Buffering into `Json` (the peek-the-shape pattern shared with `TestSource`)
+/// detaches the loader's outer `serde_path_to_error` tracking, so without this
+/// an error deep in a 40-turn transcript loses its turn index. The path is
+/// prefixed here instead — `[17].content: …` — which the outer tracker then
+/// anchors at the right key.
+fn detached<T: serde::de::DeserializeOwned>(value: Json) -> Result<T, String> {
+    serde_path_to_error::deserialize(value).map_err(|e| {
+        let path = e.path().to_string();
+        if path == "." {
+            e.inner().to_string()
+        } else {
+            format!("{path}: {}", e.inner())
+        }
+    })
+}
+
 /// The bare-string `history` placeholder inside a `messages:` prompt.
 ///
 /// A single-variant fieldless enum so serde and schemars both see exactly the
@@ -50,7 +69,7 @@ impl<'de> Deserialize<'de> for PromptEntry {
                 "unknown prompt entry '{s}': a string entry must be the \
                  `history` marker; a turn is a {{role, content}} mapping"
             ))),
-            Json::Object(_) => Message::deserialize(value)
+            Json::Object(_) => detached::<Message>(value)
                 .map(PromptEntry::Turn)
                 .map_err(D::Error::custom),
             other => Err(D::Error::custom(format!(
@@ -95,7 +114,7 @@ impl<'de> Deserialize<'de> for HistorySpec {
                  `file://<transcript>`; inline turns are a list of \
                  {{role, content}} mappings"
             ))),
-            Json::Array(_) => Vec::<Message>::deserialize(value)
+            Json::Array(_) => detached::<Vec<Message>>(value)
                 .map(HistorySpec::Inline)
                 .map_err(D::Error::custom),
             other => Err(D::Error::custom(format!(
@@ -245,6 +264,24 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("file://"), "unhelpful error: {err}");
+    }
+
+    /// The detach-into-Value pattern turns off `serde_path_to_error`'s outer
+    /// tracking, so the deserializer must re-attach the path itself: in a
+    /// 40-turn transcript, "unknown field `contnet`" without the turn index is
+    /// a needle-in-haystack hunt.
+    #[test]
+    fn a_bad_turn_error_names_its_index_in_the_transcript() {
+        let err = serde_json::from_value::<HistorySpec>(serde_json::json!([
+            {"role": "user", "content": "ok"},
+            {"role": "user"},
+        ]))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("[1]"),
+            "error must name the failing turn's index: {err}"
+        );
     }
 
     #[test]

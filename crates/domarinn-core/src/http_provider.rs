@@ -488,18 +488,24 @@ fn render_context(req: &ProviderRequest, env: &Json) -> Json {
         // The same turns, structurally: `{{ messages | tojson }}` or a
         // `{% for %}` loop lets a body template forward a real conversation. A
         // `Text` prompt appears as the single user turn it becomes on the wire
-        // (the shape `openai::to_messages` produces). Existing templates never
-        // reference `messages`, so their rendered bodies — and therefore every
-        // existing cache key — are unchanged.
-        let messages = match prompt {
-            RenderedPrompt::Text(t) => {
-                serde_json::json!([{"role": "user", "content": t}])
-            }
-            RenderedPrompt::Messages(msgs) => {
-                serde_json::to_value(msgs).unwrap_or(Json::Array(Vec::new()))
-            }
-        };
-        obj.insert("messages".into(), messages);
+        // (the shape `openai::to_messages` produces).
+        //
+        // A test var named `messages` wins: this key arrived after suites that
+        // forwarded hand-rolled conversations under that very name, and
+        // overwriting the var would change their rendered request — and move
+        // its cache key — on upgrade. (`prompt` overwrites vars, but it has
+        // done so since this provider existed; that ship has sailed.)
+        if !obj.contains_key("messages") {
+            let messages = match prompt {
+                RenderedPrompt::Text(t) => {
+                    serde_json::json!([{"role": "user", "content": t}])
+                }
+                RenderedPrompt::Messages(msgs) => {
+                    serde_json::to_value(msgs).unwrap_or(Json::Array(Vec::new()))
+                }
+            };
+            obj.insert("messages".into(), messages);
+        }
     }
     Json::Object(obj)
 }
@@ -592,6 +598,26 @@ mod tests {
             canonical["body"]["flat"],
             json!("user: hi\nassistant: hello")
         );
+    }
+
+    /// A suite that already had a var named `messages` (say, a hand-rolled
+    /// conversation forwarded as JSON text — exactly the workaround the
+    /// structured context supersedes) must keep rendering the var: anything
+    /// else silently changes the request sent to the SUT and moves its cache
+    /// key on upgrade.
+    #[test]
+    fn a_var_named_messages_is_not_clobbered() {
+        let p = HttpProvider::new(
+            "h",
+            "https://sut.example/v1",
+            None,
+            BTreeMap::new(),
+            Some(json!({"payload": "{{ messages }}"})),
+            None,
+        );
+        let req = request_with_var("messages", "[hand-rolled json]");
+        let canonical = p.canonical_request(&req).unwrap();
+        assert_eq!(canonical["body"]["payload"], json!("[hand-rolled json]"));
     }
 
     /// A `template:` prompt reaches `{{ messages }}` as the single user turn it

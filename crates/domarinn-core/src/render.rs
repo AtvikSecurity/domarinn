@@ -36,6 +36,19 @@ pub enum RenderError {
     /// list of `{role, content}` turns.
     #[error("history transcript {path}: {message}")]
     BadTranscript { path: String, message: String },
+    /// Enforced here as well as in the loader's `validate()` diagnostics,
+    /// because only the CLI runs `validate()` — an embedder calling
+    /// `runner::run` directly must not get silent first-marker-wins.
+    #[error("prompt '{0}' has more than one `history` marker; a prompt may have at most one")]
+    DuplicateMarker(String),
+    /// A `messages:` prompt whose final transcript came out empty — no turns
+    /// of its own and no case history to splice. Sent as-is, an empty
+    /// `messages` array draws a provider 400 that never names the cause.
+    #[error(
+        "prompt '{0}' rendered to an empty transcript: it has no turns and \
+         the case supplied no history"
+    )]
+    EmptyTranscript(String),
 }
 
 /// Render a test's vars to a plain map.
@@ -161,17 +174,15 @@ pub fn render_prompt_with_history(
             for entry in entries {
                 match entry {
                     PromptEntry::Turn(message) => {
-                        let source = load_content(&message.content, base_dir)?;
-                        rendered.push(ChatMessage {
-                            role: message.role,
-                            content: engine.render_str(&source, ctx)?,
-                        });
+                        rendered.push(render_message(message, ctx, engine, base_dir)?);
                     }
                     // Position indexes the rendered turns; the marker itself
-                    // never appears in the output. The loader rejects a second
-                    // marker, so first-wins here is belt and braces.
+                    // never appears in the output.
                     PromptEntry::Marker(_) => {
-                        marker_at.get_or_insert(rendered.len());
+                        if marker_at.is_some() {
+                            return Err(RenderError::DuplicateMarker(prompt.id.clone()));
+                        }
+                        marker_at = Some(rendered.len());
                     }
                 }
             }
@@ -182,15 +193,32 @@ pub fn render_prompt_with_history(
                     .count()
             });
             rendered.splice(at..at, history.iter().cloned());
+            if rendered.is_empty() {
+                return Err(RenderError::EmptyTranscript(prompt.id.clone()));
+            }
             Ok(RenderedPrompt::Messages(rendered))
         }
         _ => Err(RenderError::BadPrompt(prompt.id.clone())),
     }
 }
 
-/// Render a list of config turns to chat messages: each turn's `content` may
-/// be `file://path`, then is rendered as a template against `ctx`. Shared by
-/// `messages:` prompt turns and history turns, so both have the same contract.
+/// Render one config turn: its `content` may be `file://path`, then is
+/// rendered as a template against `ctx`. The single per-turn contract, shared
+/// by `messages:` prompt turns and history turns.
+fn render_message(
+    message: &Message,
+    ctx: &Json,
+    engine: &TemplateEngine,
+    base_dir: &Path,
+) -> Result<ChatMessage, RenderError> {
+    let source = load_content(&message.content, base_dir)?;
+    Ok(ChatMessage {
+        role: message.role,
+        content: engine.render_str(&source, ctx)?,
+    })
+}
+
+/// [`render_message`] over a list.
 pub fn render_messages(
     messages: &[Message],
     ctx: &Json,
@@ -199,13 +227,7 @@ pub fn render_messages(
 ) -> Result<Vec<ChatMessage>, RenderError> {
     messages
         .iter()
-        .map(|message| {
-            let source = load_content(&message.content, base_dir)?;
-            Ok(ChatMessage {
-                role: message.role,
-                content: engine.render_str(&source, ctx)?,
-            })
-        })
+        .map(|message| render_message(message, ctx, engine, base_dir))
         .collect()
 }
 
@@ -562,6 +584,75 @@ mod history_tests {
             }
             other => panic!("expected messages, got {other:?}"),
         }
+    }
+
+    /// `validate()` also flags this, but only the CLI runs `validate()` — the
+    /// embedder entry point (`runner::run`) does not, so the render path must
+    /// hold the line itself rather than silently splicing at the first marker.
+    #[test]
+    fn a_second_marker_is_a_render_error() {
+        let engine = TemplateEngine::new();
+        let prompt = Prompt {
+            id: "doubled".into(),
+            template: None,
+            messages: Some(vec![
+                PromptEntry::Marker(HistoryMarker::History),
+                cfg_turn(ChatRole::User, "hi"),
+                PromptEntry::Marker(HistoryMarker::History),
+            ]),
+        };
+        let err = render_prompt_with_history(
+            &prompt,
+            &serde_json::json!({}),
+            &engine,
+            Path::new("."),
+            &short_history(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("marker") && err.contains("doubled"),
+            "error must name the problem and the prompt: {err}"
+        );
+    }
+
+    /// A marker-only prompt is legal — it renders the case's history as the
+    /// whole transcript — but a case that then supplies no history would send
+    /// an empty `messages` array, which OpenAI- and Anthropic-shaped APIs
+    /// reject with a 400 that never names the real cause. Fail at render, with
+    /// the cause.
+    #[test]
+    fn an_empty_final_transcript_is_a_render_error() {
+        let engine = TemplateEngine::new();
+        let prompt = Prompt {
+            id: "marker-only".into(),
+            template: None,
+            messages: Some(vec![PromptEntry::Marker(HistoryMarker::History)]),
+        };
+        // With history: fine — the history is the transcript.
+        let ok = render_prompt_with_history(
+            &prompt,
+            &serde_json::json!({}),
+            &engine,
+            Path::new("."),
+            &short_history(),
+        )
+        .unwrap();
+        assert!(matches!(ok, RenderedPrompt::Messages(m) if m.len() == 2));
+        // Without: an error that names the empty transcript, not a provider 400.
+        let err = render_prompt_with_history(
+            &prompt,
+            &serde_json::json!({}),
+            &engine,
+            Path::new("."),
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("marker-only") && err.contains("no turns"),
+            "error must name the prompt and the cause: {err}"
+        );
     }
 
     #[test]

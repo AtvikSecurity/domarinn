@@ -233,26 +233,27 @@ Assertions carry two common controls in addition to their `type`: `weight` (defa
 
 A test's `history` is its prior conversation: the turns the model should see *before* the prompt's newest line. Where a `messages:` prompt fixes one transcript for every case ([example 34](../examples/templates-and-test-data.md#example-34--a-multi-turn-conversation)), `history` lets each case bring its own — different lengths and roles included ([example 41](../examples/templates-and-test-data.md#example-41--per-case-conversation-history)).
 
-Two forms, same shape:
+Two forms, same shape. Inline turns, from the shipped [example 41](../examples/templates-and-test-data.md#example-41--per-case-conversation-history):
 
 ```yaml
-tests:
-  - id: inline
-    history:                          # inline turns
-      - { role: user, content: "Can I return this?" }
-      - { role: assistant, content: "Yes — within 30 days." }
-    vars: { followup: "Even opened?" }
+--8<-- "examples/41-per-case-history/domarinn.yaml:inline"
+```
 
-  - id: from-file
-    history: file://convos/long.yaml  # a YAML/JSON list of {role, content}
-    vars: { followup: "Who calls me back?" }
+Or a whole transcript from a file — a YAML/JSON list of `{role, content}`:
+
+```yaml
+history: file://convos/long.yaml
 ```
 
 Each turn's `content` is a template rendered against the case's vars, and may itself be `file://path` — the same contract as a `messages:` prompt turn.
 
 **Where the history goes**, in order of precedence:
 
-1. At the prompt's `history` **marker** — a bare-string entry in `messages:`, at most one per prompt (a second is a load error).
+1. At the prompt's `history` **marker** — a bare-string entry in `messages:`, at most one per prompt (a second is rejected: a `validate` issue at load, and a render error at run time):
+
+    ```yaml
+    --8<-- "examples/41-per-case-history/domarinn.yaml:marker"
+    ```
 2. No marker: **after the leading run of `system` turns**, so the usual `[system, user-template]` prompt stays a well-formed transcript.
 3. A `template:` prompt becomes the transcript's **newest user turn** — `history + [user: rendered template]`. With no history it stays a plain text prompt, byte-identical to before.
 4. **No `prompts:` block at all**: the history *is* the transcript, newest turn included — a file of transcripts is a runnable suite on its own.
@@ -263,7 +264,7 @@ An empty or absent history makes the marker simply disappear.
 
 **Provider notes.** Role ordering is deliberately not validated — it is the provider's contract. The `anthropic` provider hoists any `system` turns (history's included) into its top-level `system` field; `openai` and `exec` receive the array verbatim; the `http` provider flattens the transcript into the `{{ prompt }}` string but also exposes it structurally as [`{{ messages }}`](providers.md#http) for body templates. The [LLM-rubric grader](#grader) builds its own single-turn requests and does not see case history.
 
-`defaults.history` supplies a suite-wide fallback — **fill-if-unset**, never concatenated: a case's own history always wins whole.
+`defaults.history` supplies a suite-wide fallback — **fill-if-unset**, never concatenated: a case's own history always wins whole. An explicit `history: []` (or a `[]` CSV cell) counts as set, so it is the way a case opts *out* of the default.
 
 ### Matrix / parameter sweeps
 
@@ -325,7 +326,7 @@ A glob string must start with `file://`; the remainder is a glob resolved relati
 | `threshold` | Parsed as a float (ignored if it doesn't parse). |
 | `cache_salt` | The case's [cache salt](../concepts/caching.md#per-case-salts) — reserved so a digest column keys the cache instead of becoming a var. |
 | `__assert` | A JSON array of assertions. |
-| `__history` | The case's [history](#per-case-history): a JSON array of `{role, content}` turns, or a `file://` transcript path. An empty cell means none. |
+| `__history` | The case's [history](#per-case-history): a JSON array of `{role, content}` turns, or a `file://` transcript path. An empty cell means *unset* — like an absent YAML field, it falls back to `defaults.history`; a literal `[]` cell opts out of the default entirely. |
 
 ```yaml
 # YAML test file — a bare sequence

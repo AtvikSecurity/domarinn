@@ -140,7 +140,7 @@ The `history/escalation` case points at a transcript file instead of inlining it
 --8<-- "examples/41-per-case-history/convos/escalation.yaml"
 ```
 
-And the CSV rows carry theirs in the reserved `__history` column, JSON-encoded (or a `file://` path; an empty cell means none):
+And the CSV rows carry theirs in the reserved `__history` column, JSON-encoded (or a `file://` path). An empty cell means *unset* — with a `defaults.history` in play it would inherit the default; a literal `[]` cell is the opt-out:
 
 ```csv
 --8<-- "examples/41-per-case-history/cases.csv"

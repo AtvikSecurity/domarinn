@@ -96,6 +96,16 @@ pub fn validate(suite: &Suite, raw: &Yaml) -> Vec<Issue> {
                 format!("{markers} `history` markers; a prompt may have at most one"),
             ));
         }
+        // `messages: []` can never render a transcript. A marker-only prompt is
+        // deliberately NOT flagged here: with per-case history it means "the
+        // case is the transcript", and the render path errors on the specific
+        // cases whose transcript still comes out empty.
+        if prompt.messages.as_ref().is_some_and(|m| m.is_empty()) {
+            issues.push(Issue::new(
+                format!("prompts[{i}]"),
+                "`messages` has no entries; add turns or a `history` marker",
+            ));
+        }
         if !seen_prompt_ids.insert(prompt.id.as_str()) {
             issues.push(Issue::new(
                 format!("prompts[{i}]"),
@@ -376,6 +386,40 @@ prompts:
             hit.message.contains("history"),
             "message should name the marker: {}",
             hit.message
+        );
+    }
+
+    /// An entirely empty `messages: []` can never render a non-empty
+    /// transcript for a case without history, so say so at load. A marker-only
+    /// prompt is NOT flagged: with per-case history it is a legitimate "the
+    /// case is the transcript" prompt, and the render path errors on the
+    /// specific cases where the transcript comes out empty.
+    #[test]
+    fn an_empty_messages_prompt_is_an_issue_but_marker_only_is_not() {
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers:
+  - {id: p, type: openai, model: gpt-x}
+prompts:
+  - id: hollow
+    messages: []
+  - id: marker-only
+    messages:
+      - history
+"#,
+        )
+        .unwrap();
+        let issues = validate(&suite, &raw);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.path == "prompts[0]" && i.message.contains("no")),
+            "empty messages must be flagged: {issues:?}"
+        );
+        assert!(
+            !issues.iter().any(|i| i.path == "prompts[1]"),
+            "a marker-only prompt is legal: {issues:?}"
         );
     }
 
