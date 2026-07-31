@@ -11,6 +11,7 @@ pub mod cache;
 pub mod cache_key;
 pub mod cache_migrate;
 pub mod config;
+pub mod config_history;
 pub mod diff;
 pub mod digests;
 pub mod embeddings;

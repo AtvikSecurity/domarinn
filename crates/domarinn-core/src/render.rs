@@ -10,7 +10,7 @@ use std::path::Path;
 
 use serde_json::Value as Json;
 
-use crate::config::Prompt;
+use crate::config::{Prompt, PromptEntry};
 use crate::template::{TemplateEngine, TemplateError};
 use crate::types::{ChatMessage, RenderedPrompt};
 use crate::val::Val;
@@ -120,14 +120,21 @@ pub fn render_prompt(
             let source = load_content(template, base_dir)?;
             Ok(RenderedPrompt::Text(engine.render_str(&source, ctx)?))
         }
-        (None, Some(messages)) => {
-            let mut rendered = Vec::with_capacity(messages.len());
-            for message in messages {
-                let source = load_content(&message.content, base_dir)?;
-                rendered.push(ChatMessage {
-                    role: message.role,
-                    content: engine.render_str(&source, ctx)?,
-                });
+        (None, Some(entries)) => {
+            let mut rendered = Vec::with_capacity(entries.len());
+            for entry in entries {
+                match entry {
+                    PromptEntry::Turn(message) => {
+                        let source = load_content(&message.content, base_dir)?;
+                        rendered.push(ChatMessage {
+                            role: message.role,
+                            content: engine.render_str(&source, ctx)?,
+                        });
+                    }
+                    // The splice point for a case's history; with no history
+                    // to splice, the marker simply disappears.
+                    PromptEntry::Marker(_) => {}
+                }
             }
             Ok(RenderedPrompt::Messages(rendered))
         }
@@ -221,14 +228,14 @@ mod tests {
             id: "p".into(),
             template: None,
             messages: Some(vec![
-                Message {
+                PromptEntry::Turn(Message {
                     role: ChatRole::System,
                     content: "You are helpful".into(),
-                },
-                Message {
+                }),
+                PromptEntry::Turn(Message {
                     role: ChatRole::User,
                     content: "{{ request }}".into(),
-                },
+                }),
             ]),
         };
         let ctx = serde_json::json!({ "request": "hi" });
