@@ -14,6 +14,12 @@ use rusqlite_migration::{Migrations, M};
 /// migration in one, so it has to be toggled out here, on the connection,
 /// around the whole run — this is step 1 of SQLite's own documented rebuild
 /// recipe.
+///
+/// **The pragma is off for the whole batch, so *every* migration runs without
+/// foreign-key enforcement — including every one added after this comment.** A
+/// migration that inserts or backfills rows cannot rely on a `REFERENCES`
+/// clause to reject a dangling parent; check the invariant in SQL, or verify it
+/// with `PRAGMA foreign_key_check` before the batch ends.
 pub(super) fn migrate_runs(conn: &mut Connection) -> anyhow::Result<()> {
     conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
     let applied = runs_migrations().to_latest(conn);

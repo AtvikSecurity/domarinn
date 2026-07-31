@@ -27,8 +27,12 @@
 //! |---|---|---|---|
 //! | browse (`list`, `project`, `suite`) | `Read` | visibility filter | 404 |
 //! | `GET .../access` | `Read` | `Manage` | 404 |
-//! | `PUT`/`DELETE .../grants/{user}` | `Write` | `Manage` | 403 / 404 |
-//! | `PUT`/`DELETE .../restriction` | `Admin` | — | 403 |
+//! | `PUT`/`DELETE .../grants/{user}` | `Write` | `Manage` | 401 / 403 / 404 |
+//! | `PUT`/`DELETE .../restriction` | `Admin` | — | 401 / 403 |
+//!
+//! The scope gate's own refusal is a 401 when no credential was presented at
+//! all and a 403 when the one presented is too weak; the 404s are the set
+//! gate's.
 //!
 //! # Why those refusals
 //!
@@ -44,12 +48,16 @@
 //!   an unrestricted set is just as closed here as a locked one — a caller who
 //!   could otherwise upload into it still cannot read or edit who else may.
 //!
-//! * **The scope gate refuses with 403**, because by the time it can matter the
-//!   caller has already proved they hold the manage grant, so the only thing
-//!   left to tell them is that their credential is too weak. Reading the panel
-//!   stays at `Read`: a viewer-role manager may look at the access list, and
-//!   `Write` is what stops them (and any read-scoped key) changing it. A viewer
-//!   browses; it never mutates.
+//! * **The scope gate refuses with 401 or 403** — 401 when no credential was
+//!   presented, 403 when the one presented is too weak. It is an extractor, so
+//!   it runs *before* the handler and therefore before the set gate: a weak
+//!   credential is turned away without the manage check ever being reached.
+//!   That still leaks nothing, because the answer is path-independent — it
+//!   depends only on the credential and the route's required scope, never on
+//!   which set was named, so a nonexistent set gets the same refusal. Reading
+//!   the panel stays at `Read`: a viewer-role manager may look at the access
+//!   list, and `Write` is what stops them (and any read-scoped key) changing
+//!   it. A viewer browses; it never mutates.
 //!
 //! * **Restriction toggling** is `Scoped<Admin>`, so a manage-grant holder gets
 //!   a 403: they administer their set's access list, but locking and unlocking

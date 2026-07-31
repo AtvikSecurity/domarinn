@@ -130,7 +130,7 @@ The model is **default-open**: until someone restricts a set, it behaves exactly
 
 | Method | Path | Scope | Notes |
 |--------|------|-------|-------|
-| GET | `/api/v1/sets` | `read` | Every project the caller may see, with per-project totals, one latest pass rate per suite, and the caller's own grant. Never paginated. |
+| GET | `/api/v1/sets` | `read` | Every project with at least one run the caller can see — a set restricted or granted before its first upload is not listed — with per-project totals, one latest pass rate per suite, and the caller's own grant. Never paginated. |
 | GET | `/api/v1/sets/{project}` | `read` | One project's suites, each with totals, a pass-rate sparkline and its pinned baseline. `404` if it does not exist **or** is restricted away. |
 | GET | `/api/v1/sets/{project}/suites/{suite}` | `read` | The same aggregates for one suite, addressed directly. `404` on the same terms. |
 | GET | `/api/v1/sets/{project}/access` | `read` | The project's access list: `{ restricted, grants: [...] }`. Admin, or a covering `manage` grant — else `404`. |
@@ -172,7 +172,7 @@ Four fields on that body are easy to misread:
 
 - `last_run_at` — and every other timestamp on this surface — is integer **epoch-ms**, not the RFC3339 strings `/api/v1/projects` emits.
 - `recent_pass_rates` is one latest rate per suite, suites in name order and capped: the spread across the project, not a time series. The per-suite `sparkline` on the detail endpoints is the time series.
-- `my_level` is `null` both for callers that do not ride grants at all — admins, anonymous callers, static tokens — and for a user who simply holds none, which are indistinguishable on the wire. On a `/sets` row (and on `ProjectSetDetail` itself) it reports only **project-scoped** grants, so a user whose only grant is on one suite reads `null` here and sees their level on that suite's row instead.
+- `my_level` is `null` both for callers that do not ride grants at all — admins, anonymous callers, static tokens — and for a user who simply holds none, which are indistinguishable on the wire. On a `/sets` row (and on `ProjectSetDetailResponse` itself) it reports only **project-scoped** grants, so a user whose only grant is on one suite reads `null` here and sees their level on that suite's row instead.
 - `restricted` does not mean the same thing everywhere. See below.
 
 ### Two meanings of `restricted`
@@ -199,6 +199,7 @@ Two consequences worth stating outright, because both look like bugs:
 - Restricting a set is a fact about the `(project, suite)` pair, not about its runs — you may restrict and grant a set **before** its first run is ever uploaded.
 - Lifting a restriction keeps the grants, so re-restricting the set restores the access list it had.
 - A run with **no project** can never be restricted: no restriction row can name it, so it is always visible.
+- **In `open` mode a restriction is a self-DoS.** Every route is granted to anonymous callers there, so anyone who can reach the server may `PUT` one — and no anonymous caller can ever satisfy a grant, so the set goes dark for everybody, whoever locked it included. Recovery is `DELETE /api/v1/sets/{project}/restriction`, equally anonymous; run sets only mean anything in `protect-writes` or `closed`.
 
 `manage` is deliberately outside the default-open waiver. On an unrestricted set `view` and `upload` are free to everyone — that is what default-open means — but `manage` is the power to hand out grants on a set, including to yourself, so it always takes admin or an explicit covering `manage` grant. Without that carve-out, any caller who could reach a write endpoint could seize a project nobody had restricted yet, which on a fresh instance is every project.
 
@@ -211,7 +212,7 @@ Every endpoint above passes through a **route scope** (the deployment's auth mod
 That is also why the refusals differ:
 
 - **The browse reads and the access lists refuse with `404`.** An access list names the people who can reach a restricted set, so "you may not see this" and "there is nothing here" have to be the same answer. Note that the gate on an access list is `manage`, which the default-open waiver never hands out: reading the access list of a set you do not manage is a `404` even when the set itself is wide open and you can browse it freely.
-- **The scope gate refuses with `403`.** By the time it can matter the caller has already proved they hold the grant, so the only thing left to say is that their credential is too weak. Reading an access list is `read`-scoped (a `viewer` who manages a set may look at it); `write` is what stops them — or any read-scoped key — from changing it.
+- **The scope gate refuses with `401` or `403`** — `401` when no credential was presented at all, `403` when the one presented is too weak. It runs *before* the set gate, so a weak credential is turned away without the grant ever being checked; that leaks nothing, because its answer depends only on the credential and the route's required scope, never on which set was named. Reading an access list is `read`-scoped (a `viewer` who manages a set may look at it); `write` is what stops them — or any read-scoped key — from changing it.
 - **`POST /runs` and the baseline routes refuse with `403` too**, and say which level was missing. Unlike a run id, the `(project, suite)` there comes from the caller, so refusing it discloses nothing they did not already name — and a silent `404` on a legitimate upload would be a debugging trap for whoever runs the CI job.
 
 ### Which credentials see what
@@ -223,7 +224,7 @@ That is also why the refusals differ:
 | Session or API key (`member` or `viewer`) | unrestricted sets + whatever their user is granted | An API key rides its **owner's** grants, whatever scope the key was minted at. |
 | Anonymous, and static tokens at `read`/`write` | unrestricted sets only | |
 
-**A `read` or `write` static token deliberately does not pierce restrictions.** Those are shared, widely-copied secrets with no owning user and therefore no grants; if a `write` token could reach restricted sets, every CI job in the deployment could. To let CI upload into a restricted set, create a bot **user account**, grant it `upload` on the set, and give the job that account's API key.
+**A `read` or `write` static token deliberately does not pierce restrictions.** Those are shared, widely-copied secrets with no owning user and therefore no grants; if a `write` token could reach restricted sets, every CI job in the deployment could. To let CI upload into a restricted set, create a bot **user account at the `member` role**, grant it `upload` on the set, and give the job that account's API key. The role matters: `POST /runs` needs `write` scope, and a `viewer` account can only mint `read` keys, so a viewer bot is refused by the scope gate before its grant is ever consulted.
 
 **An `admin:` static token is not contained by any of this**, as the table above says: admin scope resolves to full visibility, so such a token reads and manages every restricted set on the instance. That is intended — it is the operator credential — but it means "we gave CI a static token" is only a containment argument for the `read` and `write` ones.
 
