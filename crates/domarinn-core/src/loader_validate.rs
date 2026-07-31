@@ -84,6 +84,18 @@ pub fn validate(suite: &Suite, raw: &Yaml) -> Vec<Issue> {
             )),
             _ => {}
         }
+        let markers = prompt
+            .messages
+            .iter()
+            .flatten()
+            .filter(|e| matches!(e, crate::config::PromptEntry::Marker(_)))
+            .count();
+        if markers > 1 {
+            issues.push(Issue::new(
+                format!("prompts[{i}]"),
+                format!("{markers} `history` markers; a prompt may have at most one"),
+            ));
+        }
         if !seen_prompt_ids.insert(prompt.id.as_str()) {
             issues.push(Issue::new(
                 format!("prompts[{i}]"),
@@ -337,6 +349,57 @@ mod tests {
         let (suite, raw) = load_str_raw("version: 1\nproviders: []\n").unwrap();
         let issues = validate(&suite, &raw);
         assert!(issues.iter().any(|i| i.path == "providers"));
+    }
+
+    #[test]
+    fn a_second_history_marker_is_an_issue() {
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers:
+  - {id: p, type: openai, model: gpt-x}
+prompts:
+  - id: doubled
+    messages:
+      - history
+      - {role: user, content: "hi"}
+      - history
+"#,
+        )
+        .unwrap();
+        let issues = validate(&suite, &raw);
+        let hit = issues
+            .iter()
+            .find(|i| i.path == "prompts[0]")
+            .unwrap_or_else(|| panic!("expected a prompts[0] issue, got {issues:?}"));
+        assert!(
+            hit.message.contains("history"),
+            "message should name the marker: {}",
+            hit.message
+        );
+    }
+
+    #[test]
+    fn one_history_marker_is_fine() {
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers:
+  - {id: p, type: openai, model: gpt-x}
+prompts:
+  - id: ok
+    messages:
+      - {role: system, content: "sys"}
+      - history
+      - {role: user, content: "hi"}
+"#,
+        )
+        .unwrap();
+        let issues = validate(&suite, &raw);
+        assert!(
+            !issues.iter().any(|i| i.path.starts_with("prompts")),
+            "a single marker must not be flagged: {issues:?}"
+        );
     }
 
     #[test]
