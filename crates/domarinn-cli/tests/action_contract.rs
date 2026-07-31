@@ -16,21 +16,29 @@
 //! exit codes exist to prevent. The artifact upload, gated on `results-path`,
 //! was skipped at the same time.
 //!
-//! So the scripts are run here rather than read. Both tests execute the real
+//! So the scripts are run here rather than read. Each test executes the real
 //! `run:` text lifted out of `action.yml`, under the interpreter GitHub uses,
-//! against a stub binary that exits on demand. [`the_gate_distinguishes_a_regression_from_a_broken_harness`]
-//! is the contract itself; [`the_eval_step_writes_its_outputs_for_every_exit_code`]
-//! is the mechanism it rests on, checked separately so a failure says which
-//! half moved.
+//! against a stub binary that exits on demand.
+//!
+//! # The shape of the file
+//!
+//! [`SHELL_STEPS`] is the registry: one entry per `run:` step, carrying the
+//! environment a caller who set no optional inputs would produce.
+//! [`every_shell_step_is_exercised_here`] fails if the action grows a step the
+//! registry does not name, because the first fix for this bug covered only the
+//! two steps it was reported against and left the same abort live in the step
+//! that resolves the binary. Errexit is a property of the *shell*, so a guard
+//! that opts steps in one at a time will keep missing it; this one opts them
+//! out.
 //!
 //! [`the_shape_this_test_assumes_still_holds`] guards the assumption underneath
-//! both: if the step stops declaring `shell: bash`, or grows an input, the
+//! all of them: if a step stops declaring `shell: bash`, or grows an input, the
 //! interpreter and environment reproduced here have silently stopped matching
-//! the runner's and the other two tests would be asserting about nothing.
+//! the runner's and the other tests would be asserting about nothing.
 
 #![cfg(unix)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -45,21 +53,66 @@ const ACTION: &str = ".github/actions/domarinn-eval/action.yml";
 /// convenient shell would pass against the broken action.
 const GITHUB_BASH: &[&str] = &["--noprofile", "--norc", "-e", "-o", "pipefail"];
 
-/// The variables the eval step declares, and the values a caller who set no
-/// optional inputs would produce.
+/// One `run:` step of the action: how to find it, and the variables it reads.
 ///
-/// The empty ones are the default path, and the one most likely to break: every
-/// optional argument is appended by a `[ -n "$X" ] && args+=(…)` line, and an
-/// unset input is what makes those tests fail.
-const EVAL_ENV: &[(&str, &str)] = &[
-    ("DOMARINN_SERVER_URL", ""),
-    ("DOMARINN_TOKEN", ""),
-    ("DOMARINN_BRANCH", ""),
-    ("INPUT_CONFIG", "suite.yaml"),
-    ("INPUT_AGAINST", ""),
-    ("INPUT_ALLOW_EMPTY", "false"),
-    ("INPUT_CACHE_DIR", ""),
+/// `field` is `id` for the steps that have one and `name` for the rest — the
+/// same two ways `action.yml` identifies a step.
+struct ShellStep {
+    field: &'static str,
+    value: &'static str,
+    /// Exactly the keys of the step's `env:` block, with the values a caller
+    /// who set no optional inputs would produce. The empty ones are the default
+    /// path and the one most likely to break: every optional argument is
+    /// appended by a `[ -n "$X" ] && args+=(…)` line, and an unset input is
+    /// what makes those tests fail. Tests override individual entries.
+    env: &'static [(&'static str, &'static str)],
+}
+
+/// Every `run:` step in the action. Adding a step to `action.yml` without
+/// adding it here fails [`every_shell_step_is_exercised_here`].
+const SHELL_STEPS: &[ShellStep] = &[
+    ShellStep {
+        field: "id",
+        value: "bin",
+        env: &[("INPUT_BINARY_PATH", ""), ("INPUT_VERSION", "latest")],
+    },
+    ShellStep {
+        field: "id",
+        value: "eval",
+        env: &[
+            ("DOMARINN_BIN", ""),
+            ("DOMARINN_SERVER_URL", ""),
+            ("DOMARINN_TOKEN", ""),
+            ("DOMARINN_BRANCH", ""),
+            ("INPUT_CONFIG", "suite.yaml"),
+            ("INPUT_AGAINST", ""),
+            ("INPUT_ALLOW_EMPTY", "false"),
+            ("INPUT_CACHE_DIR", ""),
+        ],
+    },
+    ShellStep {
+        field: "id",
+        value: "summary",
+        env: &[
+            ("DOMARINN_BIN", ""),
+            ("DOMARINN_SERVER_URL", ""),
+            ("DOMARINN_TOKEN", ""),
+            ("INPUT_AGAINST", ""),
+        ],
+    },
+    ShellStep {
+        field: "name",
+        value: "Gate on result",
+        env: &[("CODE", ""), ("FAIL_ON_REGRESSION", "true")],
+    },
 ];
+
+fn registered(value: &str) -> &'static ShellStep {
+    SHELL_STEPS
+        .iter()
+        .find(|s| s.value == value)
+        .unwrap_or_else(|| panic!("SHELL_STEPS has no entry for {value}"))
+}
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -74,16 +127,19 @@ fn action() -> serde_yaml_ng::Value {
     serde_yaml_ng::from_str(&raw).unwrap_or_else(|e| panic!("parsing {ACTION}: {e}"))
 }
 
-/// The step whose `field` is `value` — `id` for the steps that have one, `name`
-/// for the rest.
-fn step(field: &str, value: &str) -> serde_yaml_ng::Value {
+fn steps() -> Vec<serde_yaml_ng::Value> {
     action()["runs"]["steps"]
         .as_sequence()
         .expect("runs.steps is a list")
-        .iter()
+        .clone()
+}
+
+/// The step whose `field` is `value`.
+fn step(field: &str, value: &str) -> serde_yaml_ng::Value {
+    steps()
+        .into_iter()
         .find(|s| s[field].as_str() == Some(value))
         .unwrap_or_else(|| panic!("{ACTION} has no step with {field}: {value}"))
-        .clone()
 }
 
 fn script_of(field: &str, value: &str) -> String {
@@ -93,53 +149,140 @@ fn script_of(field: &str, value: &str) -> String {
         .to_string()
 }
 
-/// Run a step's `run:` text the way the runner would, in `dir`.
-fn run_step(script: &str, env: &[(&str, &str)], dir: &Path) -> Output {
-    let path = dir.join("step.sh");
-    std::fs::write(&path, script).unwrap();
-    Command::new("bash")
+/// What a step run by [`run_step`] left behind.
+struct Ran {
+    status: Option<i32>,
+    /// stdout and stderr together: a `::error::` annotation and the shell's own
+    /// diagnostic land on different streams, and a reader of the job log sees
+    /// one interleaved transcript.
+    log: String,
+    /// The `key=value` lines the step appended to `$GITHUB_OUTPUT`.
+    outputs: BTreeMap<String, String>,
+    /// What the step appended to `$GITHUB_STEP_SUMMARY`.
+    step_summary: String,
+}
+
+impl Ran {
+    fn output(&self, key: &str) -> Option<&str> {
+        self.outputs.get(key).map(String::as_str)
+    }
+}
+
+/// A workspace for one step: the runner-supplied files it writes to, and a
+/// `shims` directory on the front of `PATH` for tests that need a command
+/// (`curl`, `uname`) to behave a particular way.
+struct Workspace {
+    dir: tempfile::TempDir,
+}
+
+impl Workspace {
+    fn new() -> Self {
+        let ws = Self {
+            dir: tempfile::tempdir().expect("a temp dir"),
+        };
+        std::fs::create_dir_all(ws.path().join("shims")).unwrap();
+        ws
+    }
+
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Write an executable `name` on the front of the step's `PATH`.
+    fn shim(&self, name: &str, body: &str) -> &Self {
+        self.write_exec(&self.path().join("shims").join(name), body);
+        self
+    }
+
+    /// A stand-in for the CLI, at a path the caller passes as `DOMARINN_BIN`.
+    /// Not a shim: the action invokes it by path, never by name.
+    fn stub_cli(&self, body: &str) -> String {
+        let path = self.path().join("stub-domarinn");
+        self.write_exec(&path, body);
+        path.to_str().expect("a UTF-8 temp path").to_string()
+    }
+
+    fn write_exec(&self, path: &Path, body: &str) {
+        std::fs::write(path, format!("#!/usr/bin/env bash\n{body}")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// Run a registered step's `run:` text the way the runner would.
+///
+/// `overrides` replace entries of the step's [`ShellStep::env`]; every other
+/// declared variable keeps its default, so `set -u` sees the environment the
+/// runner would have built.
+fn run_step(value: &str, overrides: &[(&str, &str)], ws: &Workspace) -> Ran {
+    let registered = registered(value);
+    let script = ws.path().join("step.sh");
+    std::fs::write(&script, script_of(registered.field, value)).unwrap();
+
+    let mut env: BTreeMap<String, String> = registered
+        .env
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    for (k, v) in overrides {
+        env.insert((*k).to_string(), (*v).to_string());
+    }
+
+    // Runner-supplied, never in a step's `env:` block. Redirected per run so a
+    // test can read them back — and so running the suite *on* Actions cannot
+    // append to the real ones.
+    let github_output = ws.path().join("github_output");
+    let step_summary = ws.path().join("github_step_summary");
+    std::fs::write(&github_output, "").unwrap();
+    std::fs::write(&step_summary, "").unwrap();
+    env.insert("GITHUB_OUTPUT".into(), path_str(&github_output));
+    env.insert("GITHUB_STEP_SUMMARY".into(), path_str(&step_summary));
+    env.insert("RUNNER_TEMP".into(), path_str(ws.path()));
+    env.insert("GITHUB_WORKSPACE".into(), path_str(ws.path()));
+    env.insert(
+        "PATH".into(),
+        format!(
+            "{}:{}",
+            path_str(&ws.path().join("shims")),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+
+    let out: Output = Command::new("bash")
         .args(GITHUB_BASH)
-        .arg(&path)
-        .current_dir(dir)
-        .envs(env.iter().copied())
+        .arg(&script)
+        .current_dir(ws.path())
+        .envs(&env)
         .output()
-        .expect("bash is on PATH")
+        .expect("bash is on PATH");
+
+    Ran {
+        status: out.status.code(),
+        log: format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        outputs: std::fs::read_to_string(&github_output)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        step_summary: std::fs::read_to_string(&step_summary).unwrap_or_default(),
+    }
 }
 
-/// A stand-in for the CLI that writes the report it was asked for and then
-/// exits with `code`, so the step sees a real non-zero exit rather than a
-/// missing binary.
-fn stub_exiting(code: i32, dir: &Path) -> String {
-    let path = dir.join("stub-domarinn");
-    std::fs::write(
-        &path,
-        format!("#!/usr/bin/env bash\nprintf '<testsuites/>' > results.xml\nexit {code}\n"),
-    )
-    .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path.to_str().unwrap().to_string()
+fn path_str(path: &Path) -> String {
+    path.to_str().expect("a UTF-8 temp path").to_string()
 }
 
-/// The `key=value` lines a step appended to `$GITHUB_OUTPUT`.
-fn outputs_written(dir: &Path) -> BTreeMap<String, String> {
-    let raw = std::fs::read_to_string(dir.join("github_output")).unwrap_or_default();
-    raw.lines()
-        .filter_map(|line| line.split_once('='))
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
-}
-
-/// Run the eval step against a stub exiting `code`, and return what it wrote.
-fn eval_step_with(code: i32, dir: &Path) -> (Output, BTreeMap<String, String>) {
-    let mut env: Vec<(&str, &str)> = EVAL_ENV.to_vec();
-    let stub = stub_exiting(code, dir);
-    let output_file = dir.join("github_output");
-    std::fs::write(&output_file, "").unwrap();
-    env.push(("DOMARINN_BIN", &stub));
-    env.push(("GITHUB_OUTPUT", output_file.to_str().unwrap()));
-
-    let out = run_step(&script_of("id", "eval"), &env, dir);
-    (out, outputs_written(dir))
+/// Run the eval step against a stub CLI that writes its report and exits
+/// `code`, so the step sees a real non-zero exit rather than a missing binary.
+fn eval_step_with(code: i32, ws: &Workspace) -> Ran {
+    let stub = ws.stub_cli(&format!(
+        "printf '<testsuites/>' > results.xml\nexit {code}\n"
+    ));
+    run_step("eval", &[("DOMARINN_BIN", &stub)], ws)
 }
 
 /// Every exit code the CLI documents must survive as a step output.
@@ -150,25 +293,24 @@ fn eval_step_with(code: i32, dir: &Path) -> (Output, BTreeMap<String, String>) {
 #[test]
 fn the_eval_step_writes_its_outputs_for_every_exit_code() {
     for code in [0, 1, 2, 3] {
-        let dir = tempfile::tempdir().unwrap();
-        let (out, written) = eval_step_with(code, dir.path());
-        let log = String::from_utf8_lossy(&out.stdout);
+        let ws = Workspace::new();
+        let ran = eval_step_with(code, &ws);
 
         assert_eq!(
-            written.get("exit-code").map(String::as_str),
+            ran.output("exit-code"),
             Some(code.to_string().as_str()),
-            "exit {code} must reach the gate step; the eval step logged:\n{log}\
-             {}",
-            String::from_utf8_lossy(&out.stderr)
+            "exit {code} must reach the gate step; the eval step logged:\n{}",
+            ran.log
         );
         assert_eq!(
-            written.get("results-path").map(String::as_str),
+            ran.output("results-path"),
             Some("results.xml"),
             "exit {code} must still publish the report for the upload step"
         );
         assert!(
-            log.contains(&format!("domarinn exited with {code}")),
-            "the step log must name the code a reader will see annotated: {log}"
+            ran.log.contains(&format!("domarinn exited with {code}")),
+            "the step log must name the code a reader will see annotated: {}",
+            ran.log
         );
     }
 }
@@ -178,20 +320,14 @@ fn the_eval_step_writes_its_outputs_for_every_exit_code() {
 /// only here, so the two must not render the same.
 #[test]
 fn the_gate_distinguishes_a_regression_from_a_broken_harness() {
-    let gate = script_of("name", "Gate on result");
     let annotation_for = |code: i32| {
-        let dir = tempfile::tempdir().unwrap();
-        let (_, written) = eval_step_with(code, dir.path());
-        let observed = written.get("exit-code").cloned().unwrap_or_default();
-        let out = run_step(
-            &gate,
-            &[("CODE", observed.as_str()), ("FAIL_ON_REGRESSION", "true")],
-            dir.path(),
-        );
-        (
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        )
+        let ws = Workspace::new();
+        let observed = eval_step_with(code, &ws)
+            .output("exit-code")
+            .unwrap_or_default()
+            .to_string();
+        let ran = run_step("Gate on result", &[("CODE", &observed)], &ws);
+        (ran.status, ran.log.trim().to_string())
     };
 
     let (regression_status, regression) = annotation_for(1);
@@ -215,40 +351,206 @@ fn the_gate_distinguishes_a_regression_from_a_broken_harness() {
     );
 }
 
-/// What the two tests above assume about the step they execute.
+/// `version: latest` has to become a concrete tag before a download URL
+/// exists, and the redirect it reads that from is a network call that can
+/// fail. When it does, the step must say so and exit 3 — the same
+/// infrastructure code its other two dead ends already use.
 ///
-/// Both reproduce the runner rather than call it: [`GITHUB_BASH`] is the
-/// expansion of the literal `shell: bash`, and [`EVAL_ENV`] is hand-written. If
-/// either drifts from `action.yml` the tests keep passing while asserting about
-/// a step the runner no longer runs.
+/// The abort this catches is quieter than the eval step's: the CLI never runs,
+/// so there is no run to summarize and no report to upload, and the operator
+/// gets a red step whose only content is the shell's own exit status.
+#[test]
+fn an_unresolvable_latest_release_is_an_infrastructure_error() {
+    let ws = Workspace::new();
+    // What `curl -f` does for a 404, and near enough what it does for a DNS or
+    // TLS failure: a non-zero exit and nothing on stdout.
+    ws.shim("curl", "exit 22\n");
+
+    let ran = run_step("bin", &[("INPUT_VERSION", "latest")], &ws);
+
+    assert!(
+        ran.log.contains("::error::"),
+        "a failed release lookup must be annotated, not left to the shell; \
+         the step logged:\n{}",
+        ran.log
+    );
+    assert!(
+        ran.log
+            .contains("could not resolve the latest domarinn release tag"),
+        "the annotation must name what failed, got:\n{}",
+        ran.log
+    );
+    assert_eq!(
+        ran.status,
+        Some(3),
+        "the action documents 3 for an infrastructure error; curl's own exit \
+         code is not one of the four the gate step knows how to render"
+    );
+}
+
+/// An arch with no release asset is the binary step's other infrastructure
+/// dead end. It already behaves; it is here so a fix to the `latest` path
+/// cannot regress it.
+#[test]
+fn an_unsupported_architecture_is_an_infrastructure_error() {
+    let ws = Workspace::new();
+    ws.shim("uname", "echo riscv64\n");
+
+    let ran = run_step("bin", &[], &ws);
+
+    assert_eq!(ran.status, Some(3));
+    assert!(
+        ran.log.contains("::error::unsupported arch riscv64"),
+        "got:\n{}",
+        ran.log
+    );
+}
+
+/// A concrete version with no downloadable asset is *not* an error: the step
+/// falls back to building from source. That tolerance comes from wrapping the
+/// download in `if curl …`, which is the shape the `latest` lookup lacks — so
+/// this pins the working half of the same step.
+#[test]
+fn a_missing_release_asset_falls_back_to_a_source_build() {
+    let ws = Workspace::new();
+    ws.shim("curl", "exit 22\n");
+    ws.shim("cargo", "exit 0\n");
+
+    let ran = run_step("bin", &[("INPUT_VERSION", "0.9.9")], &ws);
+
+    assert_eq!(
+        ran.status,
+        Some(0),
+        "a missing asset is recoverable; the step logged:\n{}",
+        ran.log
+    );
+    assert!(
+        ran.log.contains("::warning::no release asset for 0.9.9"),
+        "the fallback must be visible in the log, got:\n{}",
+        ran.log
+    );
+    assert!(
+        ran.output("path")
+            .is_some_and(|p| p.ends_with("/bin/domarinn")),
+        "the built binary's path is what every later step invokes, got: {:?}",
+        ran.output("path")
+    );
+}
+
+/// The summary step is a reporter: the gate step owns the verdict, and this one
+/// failing turns a clean pass or a legible regression into a red job with a
+/// `cat` error for a message.
+///
+/// Its own comment says it "always exits 0 on a completed run", but the exit
+/// code of `ci-summary` is not the precondition the step actually needs — the
+/// file is. A CLI that exits 0 without writing one (an `--out` it could not
+/// create, a run with nothing in it) takes the success branch and then dies on
+/// the `cat`.
+#[test]
+fn the_summary_step_never_owns_the_verdict() {
+    for (case, body) in [
+        ("ci-summary failed", "exit 1\n"),
+        ("ci-summary exited 0 but wrote nothing", "exit 0\n"),
+        ("ci-summary wrote an empty file", ": > summary.md\nexit 0\n"),
+    ] {
+        let ws = Workspace::new();
+        let stub = ws.stub_cli(body);
+        let ran = run_step("summary", &[("DOMARINN_BIN", &stub)], &ws);
+
+        assert_eq!(
+            ran.status,
+            Some(0),
+            "{case}: the reporter must not fail the job; it logged:\n{}",
+            ran.log
+        );
+        assert_eq!(
+            ran.output("summary-path"),
+            Some("summary.md"),
+            "{case}: the PR comment and the artifact upload both read this path"
+        );
+        assert!(
+            !ran.step_summary.trim().is_empty(),
+            "{case}: a blank job summary reads as 'nothing ran'; say what happened"
+        );
+    }
+}
+
+/// A summary the CLI did produce is passed through untouched.
+#[test]
+fn the_summary_step_publishes_what_the_cli_wrote() {
+    let ws = Workspace::new();
+    let stub = ws.stub_cli("printf '### domarinn eval\\n\\n12 passed\\n' > summary.md\n");
+    let ran = run_step("summary", &[("DOMARINN_BIN", &stub)], &ws);
+
+    assert_eq!(ran.status, Some(0));
+    assert!(
+        ran.step_summary.contains("12 passed"),
+        "the real summary must survive to the job summary, got: {:?}",
+        ran.step_summary
+    );
+}
+
+/// Errexit applies to every step, so the registry must cover every step.
+///
+/// The first fix for this class of bug covered the two steps it was reported
+/// against and left the identical abort live in a third. Opting steps in one at
+/// a time reproduces that; this fails until the registry names them all.
+#[test]
+fn every_shell_step_is_exercised_here() {
+    let in_action: BTreeSet<String> = steps()
+        .iter()
+        .filter(|s| s["run"].as_str().is_some())
+        .map(|s| {
+            s["id"]
+                .as_str()
+                .or_else(|| s["name"].as_str())
+                .expect("a `run:` step has an id or a name")
+                .to_string()
+        })
+        .collect();
+    let registered: BTreeSet<String> = SHELL_STEPS.iter().map(|s| s.value.to_string()).collect();
+
+    assert_eq!(
+        in_action, registered,
+        "a `run:` step this file never executes is a step whose behaviour under \
+         `bash -e` is unverified — the exact gap that shipped the bug this file \
+         exists for. Add it to SHELL_STEPS and give it a test."
+    );
+}
+
+/// What every test above assumes about the steps it executes.
+///
+/// They reproduce the runner rather than call it: [`GITHUB_BASH`] is the
+/// expansion of the literal `shell: bash`, and each [`ShellStep::env`] is
+/// hand-written. If either drifts from `action.yml` the tests keep passing
+/// while asserting about a step the runner no longer runs.
 #[test]
 fn the_shape_this_test_assumes_still_holds() {
-    let eval = step("id", "eval");
-    assert_eq!(
-        eval["shell"].as_str(),
-        Some("bash"),
-        "GITHUB_BASH is the expansion of exactly this string; changing the \
-         shell means changing it here too"
-    );
+    for registered in SHELL_STEPS {
+        let step = step(registered.field, registered.value);
+        let name = registered.value;
 
-    let declared: Vec<&str> = eval["env"]
-        .as_mapping()
-        .expect("the eval step declares an `env` block")
-        .keys()
-        .filter_map(|k| k.as_str())
-        // Supplied per-run rather than as a constant: one points at the stub,
-        // the other at the temp file the outputs are read back from.
-        .filter(|k| !matches!(*k, "DOMARINN_BIN" | "GITHUB_OUTPUT"))
-        .collect();
-    let covered: Vec<&str> = EVAL_ENV.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            step["shell"].as_str(),
+            Some("bash"),
+            "{name}: GITHUB_BASH is the expansion of exactly this string; \
+             changing the shell means changing it here too"
+        );
 
-    let mut declared_sorted = declared.clone();
-    declared_sorted.sort_unstable();
-    let mut covered_sorted = covered.clone();
-    covered_sorted.sort_unstable();
-    assert_eq!(
-        declared_sorted, covered_sorted,
-        "an input the step reads but this test never sets is an input whose \
-         effect on the exit-code contract is untested"
-    );
+        let mut declared: Vec<&str> = step["env"]
+            .as_mapping()
+            .unwrap_or_else(|| panic!("{name} declares an `env` block"))
+            .keys()
+            .filter_map(|k| k.as_str())
+            .collect();
+        let mut covered: Vec<&str> = registered.env.iter().map(|(k, _)| *k).collect();
+        declared.sort_unstable();
+        covered.sort_unstable();
+
+        assert_eq!(
+            declared, covered,
+            "{name}: an input the step reads but this test never sets is an \
+             input whose effect on the exit-code contract is untested"
+        );
+    }
 }
