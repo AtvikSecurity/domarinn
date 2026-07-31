@@ -202,7 +202,13 @@ runs:
           # /releases/latest/download/. It does redirect /releases/latest to
           # /releases/tag/<tag>, and reading that needs no token and is not
           # rate-limited the way unauthenticated api.github.com is.
-          ver="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${base}/latest" | sed 's#.*/tag/##')"
+          #
+          # `|| ver=""` is load-bearing: this is a network call, an assignment
+          # takes the pipeline's status as its own, and `-e` is on (see the eval
+          # step). Without it a 404 or a DNS failure aborts the step here and
+          # the annotation below — the only thing that tells an operator what
+          # broke — never runs.
+          ver="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${base}/latest" | sed 's#.*/tag/##')" || ver=""
           if [ -z "$ver" ] || [ "$ver" = "latest" ]; then
             echo "::error::could not resolve the latest domarinn release tag"
             exit 3
@@ -313,7 +319,12 @@ runs:
         args=(ci-summary latest --out "${summary}")
         [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
 
-        if ! "${DOMARINN_BIN}" "${args[@]}"; then
+        # The condition is "there is no usable summary", not "the command
+        # failed". A file is what the `cat` below and the PR comment actually
+        # need, and `ci-summary` exiting 0 without writing one would otherwise
+        # take the success branch and then abort the step on the missing file —
+        # letting a reporter fail the job the gate step is supposed to own.
+        if ! "${DOMARINN_BIN}" "${args[@]}" || [ ! -s "${summary}" ]; then
           # A suite that never ran (bad config, missing binary) persists no run,
           # so there is nothing to summarize. Say so rather than leaving the PR
           # comment and job summary blank.
