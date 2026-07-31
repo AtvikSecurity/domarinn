@@ -20,6 +20,11 @@ use assert_cmd::prelude::*;
 /// found). A test that wants CI sets these itself, on the `run` invocation:
 /// `ci-summary` prefers the run's own recorded URL over the ambient
 /// environment, so setting them only at summary time proves nothing.
+///
+/// The branch half is the same trap one layer down: the engine prefers the CI
+/// branch over the checked-out one (a runner's checkout is detached, so git
+/// answers `HEAD`), so a test asserting on a repo it just created on `main`
+/// would read the *workflow's* branch instead.
 const CI_ENV: &[&str] = &[
     "GITHUB_ACTIONS",
     "GITHUB_SERVER_URL",
@@ -34,6 +39,24 @@ const CI_ENV: &[&str] = &[
     "BUILD_USER",
     "BUILDKITE_BUILD_CREATOR",
     "CI",
+    // Branch sources, in the order `provenance::BRANCH_ENV` consults them.
+    "DOMARINN_BRANCH",
+    "GITHUB_HEAD_REF",
+    "GITHUB_REF",
+    "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME",
+    "CI_COMMIT_BRANCH",
+    "BUILDKITE_BRANCH",
+    "CIRCLE_BRANCH",
+    "TRAVIS_PULL_REQUEST_BRANCH",
+    "TRAVIS_BRANCH",
+    "DRONE_SOURCE_BRANCH",
+    "DRONE_BRANCH",
+    "BITBUCKET_BRANCH",
+    "APPVEYOR_REPO_BRANCH",
+    "SYSTEM_PULLREQUEST_SOURCEBRANCH",
+    "BUILD_SOURCEBRANCH",
+    "BRANCH_NAME",
+    "GIT_BRANCH",
 ];
 
 pub fn bin() -> Command {

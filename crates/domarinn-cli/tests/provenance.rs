@@ -79,6 +79,72 @@ fn a_local_run_records_git_metadata_without_sharing() {
     assert!(!git_meta.dirty, "a committed, ignored-output tree is clean");
 }
 
+/// The CI regression: `actions/checkout` leaves a detached HEAD, so git alone
+/// answers the literal `HEAD` for every run on a runner and that string was
+/// being stored as the branch. The pull-request source branch is what a reviewer
+/// means by "the branch", and only the environment knows it.
+#[test]
+fn a_github_pull_request_run_records_the_source_branch_not_the_merge_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    write_suite(dir.path(), suite("hello", "hello"));
+    // What a runner looks like mid-`pull_request`: HEAD is not on a branch.
+    git(dir.path(), &["checkout", "--detach", "HEAD"]);
+
+    bin()
+        .arg("run")
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_HEAD_REF", "feat/ci-branch")
+        .env("GITHUB_REF", "refs/pull/42/merge")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let git_meta = latest_run(dir.path()).git.expect("git metadata");
+    assert_eq!(git_meta.branch.as_deref(), Some("feat/ci-branch"));
+    assert!(git_meta.commit.is_some(), "the commit still comes from git");
+}
+
+/// A push build carries no head ref, and the branch is behind `refs/heads/`.
+#[test]
+fn a_github_push_run_records_the_ref_it_was_pushed_to() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    write_suite(dir.path(), suite("hello", "hello"));
+
+    bin()
+        .arg("run")
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_HEAD_REF", "")
+        .env("GITHUB_REF", "refs/heads/release/2026-07")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    assert_eq!(
+        latest_run(dir.path()).git.and_then(|g| g.branch).as_deref(),
+        Some("release/2026-07")
+    );
+}
+
+/// Detached with nothing in the environment to ask: no branch beats a branch
+/// named `HEAD`, which is what every filter and the retention key would store.
+#[test]
+fn a_detached_checkout_records_no_branch_rather_than_the_word_head() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    write_suite(dir.path(), suite("hello", "hello"));
+    git(dir.path(), &["checkout", "--detach", "HEAD"]);
+
+    bin().arg("run").current_dir(dir.path()).assert().success();
+
+    let git_meta = latest_run(dir.path())
+        .git
+        .expect("a detached checkout is still a repo");
+    assert_eq!(git_meta.branch, None);
+    assert!(git_meta.commit.is_some());
+}
+
 /// An uncommitted change is recorded, because "this result came from a tree that
 /// is not reproducible" is exactly the trust signal a shared board needs.
 #[test]

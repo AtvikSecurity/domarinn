@@ -54,6 +54,7 @@ const GITHUB_BASH: &[&str] = &["--noprofile", "--norc", "-e", "-o", "pipefail"];
 const EVAL_ENV: &[(&str, &str)] = &[
     ("DOMARINN_SERVER_URL", ""),
     ("DOMARINN_TOKEN", ""),
+    ("DOMARINN_BRANCH", ""),
     ("INPUT_CONFIG", "suite.yaml"),
     ("INPUT_AGAINST", ""),
     ("INPUT_ALLOW_EMPTY", "false"),

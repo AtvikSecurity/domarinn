@@ -15,6 +15,7 @@
 #       token: ${{ secrets.DOMARINN_TOKEN }}        # optional bearer token
 #       against: server:baseline                      # optional baseline to diff
 #       cache-dir: .domarinn-cache                 # optional; actions/cache path
+#       branch: ${{ github.head_ref }}                # optional; autodetected
 #       fail-on-regression: "true"
 #
 # Exit-code contract (from the CLI): 0 = all pass; 1 = assertion failure or
@@ -96,6 +97,18 @@ inputs:
       actions/cache. Passed to domarinn as --cache-dir. Empty uses the
       default (.domarinn/cache beside the suite), which a cache action
       may not save.
+    required: false
+    default: ""
+  branch:
+    description: >-
+      Branch to record on the run (exported as DOMARINN_BRANCH). Leave empty:
+      domarinn reads GITHUB_HEAD_REF / GITHUB_REF itself, which is what makes a
+      pull request record its source branch rather than `refs/pull/N/merge` —
+      and `actions/checkout` leaves a detached HEAD, so git alone would answer
+      `HEAD` for every run. Set it only where the event's ref is not the branch
+      you mean: a `merge_group` run (whose ref is the queue's temporary branch)
+      or a `workflow_run` run (whose ref is the default branch, not the branch
+      of the workflow that triggered it).
     required: false
     default: ""
 
@@ -237,6 +250,9 @@ runs:
         DOMARINN_BIN: ${{ steps.bin.outputs.path }}
         DOMARINN_SERVER_URL: ${{ inputs.server-url }}
         DOMARINN_TOKEN: ${{ inputs.token }}
+        # Empty is the normal case and means "autodetect": domarinn ignores an
+        # empty value and falls through to the runner's own GITHUB_* refs.
+        DOMARINN_BRANCH: ${{ inputs.branch }}
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_AGAINST: ${{ inputs.against }}
         INPUT_ALLOW_EMPTY: ${{ inputs.allow-empty }}

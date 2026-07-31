@@ -101,7 +101,7 @@ Every run records who and what produced it, in the engine — so a plain `domari
 | `origin.host` | `DOMARINN_HOST`, else the hostname. |
 | `origin.version` | The domarinn build that produced the document. |
 | `origin.note` | `--note`, else the suite's `description`. |
-| `git` | Branch, commit and dirty state of the repo containing the suite. |
+| `git` | Branch, commit and dirty state of the repo containing the suite. The **branch** comes from `DOMARINN_BRANCH`, else the CI environment (`GITHUB_HEAD_REF`/`GITHUB_REF`, `CI_COMMIT_BRANCH`, `BUILDKITE_BRANCH`, `CIRCLE_BRANCH`, `BUILD_SOURCEBRANCH`, `GIT_BRANCH`, …), else the checked-out branch. CI wins for the same reason the actor does: a runner checks out a detached HEAD, so git alone reports `HEAD` for every CI run. A tag build, a pull-request merge ref and a detached checkout all record **no** branch rather than a fake one. |
 | `ci` | The detected CI system and its run URL. `ci` being present *is* the "was this CI?" flag — there is no separate boolean to disagree with it. |
 
 **Suppressing it.** `actor` and `host` are mild PII, and once written they are inside the document the server content-hashes for ingest idempotency, so they cannot be redacted afterwards without changing that hash. Suppression therefore has to happen on the client:
