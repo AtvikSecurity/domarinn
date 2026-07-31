@@ -447,7 +447,7 @@
       ]
     },
     "Prompt": {
-      "description": "A prompt template. Exactly one of `template` / `messages` must be set.",
+      "description": "A prompt template. Exactly one of `template` / `messages` must be set.\n\nA `messages:` entry is either a `{role, content}` turn or the bare-string\n`history` marker naming where each case's [`TestCase::history`] turns\nsplice in (at most one marker; without one, history lands after the\nleading run of `system` turns). See [`crate::config_history`].",
       "type": "object",
       "properties": {
         "id": {
@@ -465,13 +465,31 @@
             "null"
           ],
           "items": {
-            "$ref": "#/$defs/Message"
+            "$ref": "#/$defs/PromptEntry"
           }
         }
       },
       "additionalProperties": false,
       "required": [
         "id"
+      ]
+    },
+    "PromptEntry": {
+      "description": "One entry in a `messages:` prompt: a chat turn, or the `history` marker\nnaming where each case's [`HistorySpec`] turns splice in.\n\n`Deserialize` is hand-written (same contract as `TestSource`) so a typo'd\nturn surfaces [`Message`]'s precise deny-guarded error and a misspelled\nmarker names the valid spelling, instead of the opaque \"did not match any\nvariant\" an untagged derive emits.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HistoryMarker"
+        },
+        {
+          "$ref": "#/$defs/Message"
+        }
+      ]
+    },
+    "HistoryMarker": {
+      "description": "The bare-string `history` placeholder inside a `messages:` prompt.\n\nA single-variant fieldless enum so serde and schemars both see exactly the\nstring `\"history\"` — it round-trips as a bare string (config-digest\nstability) and the generated schema is a one-value string enum.",
+      "type": "string",
+      "enum": [
+        "history"
       ]
     },
     "Message": {
@@ -652,6 +670,17 @@
           "items": {
             "type": "string"
           }
+        },
+        "history": {
+          "description": "This case's prior conversation, spliced into the prompt at its\n`history` marker (or after the leading `system` turns when the prompt\nhas no marker). Inline turns or `file://transcript.yaml`; each turn's\n`content` is templated against the case's vars like a prompt turn.\nKept out of the serialized config when unset (digest stability).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistorySpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -1360,6 +1389,22 @@
         }
       ]
     },
+    "HistorySpec": {
+      "description": "A test case's prior conversation: inline turns, or a whole transcript\nloaded from a `file://` path (YAML or JSON list of `{role, content}`).\n\nEach turn's `content` is a minijinja template rendered against the case's\nvars, and may itself be `file://path` — the same contract as a `messages:`\nprompt turn.\n\n`Deserialize` is hand-written for precise errors, and so the string form\nrejects anything that is not a `file://` path at parse time — a forgotten\nprefix would otherwise surface much later, at render time, with the file's\npath-shaped content as the mystery.",
+      "anyOf": [
+        {
+          "description": "`file://path` to a YAML/JSON transcript file.",
+          "type": "string"
+        },
+        {
+          "description": "Inline turns.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Message"
+          }
+        }
+      ]
+    },
     "Defaults": {
       "description": "Values merged into every test before it runs.",
       "type": "object",
@@ -1397,6 +1442,17 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "history": {
+          "description": "Suite-wide fallback for [`TestCase::history`], used only by cases that\ndo not set their own (fill-if-unset, never concatenated).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistorySpec"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },

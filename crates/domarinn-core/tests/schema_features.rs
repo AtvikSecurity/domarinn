@@ -74,6 +74,40 @@ fn test_case_and_defaults_expose_cache_salt() {
 }
 
 #[test]
+fn test_case_and_defaults_expose_history() {
+    // Same pointer style as `cache_salt` above: "history" appears elsewhere in
+    // the schema (the marker enum), so a substring check would pass vacuously.
+    let schema = serde_json::to_value(domarinn_core::config_schema()).unwrap();
+    let defs = schema.get("$defs").expect("schema carries a $defs block");
+    for def in ["TestCase", "Defaults"] {
+        assert!(
+            defs.pointer(&format!("/{def}/properties/history"))
+                .is_some(),
+            "{def} must advertise `history` in the config schema"
+        );
+    }
+}
+
+#[test]
+fn prompt_messages_entries_advertise_the_history_marker() {
+    // A `messages:` entry is a turn or the bare `history` marker; editors only
+    // learn that if the schema names both alternatives.
+    let schema = serde_json::to_value(domarinn_core::config_schema()).unwrap();
+    let defs = schema.get("$defs").expect("schema carries a $defs block");
+    assert!(
+        defs.pointer("/PromptEntry/anyOf").is_some(),
+        "PromptEntry must be a marker-or-turn alternative"
+    );
+    let marker = defs
+        .pointer("/HistoryMarker")
+        .expect("HistoryMarker definition present");
+    assert!(
+        serde_json::to_string(marker).unwrap().contains("history"),
+        "the marker's schema must pin the literal string: {marker}"
+    );
+}
+
+#[test]
 fn result_schema_is_versioned() {
     let schema = serde_json::to_string(&domarinn_core::result_schema()).unwrap();
     assert!(schema.contains("schema_version"));
