@@ -242,8 +242,10 @@ runs:
         INPUT_ALLOW_EMPTY: ${{ inputs.allow-empty }}
         INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
       run: |
-        # No `set -e`: we must capture the CLI exit code and keep going so the
-        # summary, artifact upload, PR comment, and gate step still run.
+        # `shell: bash` runs as `bash --noprofile --norc -eo pipefail {0}`, so
+        # `-e` is on whether this script asks for it or not — see the `|| code=$?`
+        # below, which is what actually keeps a non-zero CLI exit from aborting
+        # the step before the outputs are written.
         set -uo pipefail
 
         results="results.xml"
@@ -258,8 +260,12 @@ runs:
         [ -n "${DOMARINN_SERVER_URL}" ] && args+=(--share)
 
         echo "Running: domarinn ${args[*]}"
-        "${DOMARINN_BIN}" "${args[@]}"
-        code=$?
+        # A non-zero exit is the answer here, not a failure to run: the gate
+        # step below cannot tell a regression (1) from a broken harness (3)
+        # without it, and the artifact upload is gated on `results-path`. Both
+        # are lost if this line is allowed to abort the step.
+        code=0
+        "${DOMARINN_BIN}" "${args[@]}" || code=$?
         echo "domarinn exited with $code"
 
         {
