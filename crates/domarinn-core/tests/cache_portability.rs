@@ -291,14 +291,16 @@ async fn a_changed_command_busts() {
     .await;
 }
 
-#[tokio::test]
-async fn a_changed_declared_env_busts() {
-    // Two backends behind one wrapper script — the A/B shape that made `env`
-    // part of the fingerprint in the first place.
-    let checkout = Checkout::new("printf '{\"output\":\"ok\"}'");
-    let with_endpoint = |url: &str| {
-        format!(
-            r#"
+/// Two backends behind one wrapper script — the A/B shape that made `env` part
+/// of the fingerprint in the first place. `cases` is 1 when the probe *order*
+/// matters and 2 for the hit/miss arithmetic `assert_busts` does.
+fn endpoint_suite(url: &str, cases: usize) -> String {
+    let tests: String = ["a", "b"][..cases]
+        .iter()
+        .map(|x| format!("  - id: case-{x}\n    vars: {{x: \"{x}\"}}\n"))
+        .collect();
+    format!(
+        r#"
 version: 1
 project: test
 suite: portability
@@ -308,20 +310,52 @@ providers:
     command: ["sh", "./sut"]
     env: {{MODEL_ENDPOINT: "{url}"}}
 tests:
-  - id: case-a
-    vars: {{x: "a"}}
-  - id: case-b
-    vars: {{x: "b"}}
-"#
-        )
-    };
+{tests}"#
+    )
+}
+
+#[tokio::test]
+async fn a_changed_declared_env_busts() {
+    let checkout = Checkout::new("printf '{\"output\":\"ok\"}'");
     assert_busts(
-        &with_endpoint("http://a"),
-        &with_endpoint("http://b"),
+        &endpoint_suite("http://a", 2),
+        &endpoint_suite("http://b", 2),
         checkout.path(),
         "two endpoints must not share entries, or the comparison is fabricated",
     )
     .await;
+}
+
+#[tokio::test]
+async fn two_declared_env_values_share_no_probe_at_all() {
+    // The half `a_changed_declared_env_busts` structurally cannot reach: it
+    // populates the cache by *running*, so every entry it lays down is under a
+    // live key, and a shape that only ever collides on a legacy key stays
+    // invisible to it. Here the question is asked of the lookups themselves.
+    //
+    // Two of the four historical exec shapes predate `env` joining the key and
+    // so cannot carry the digest. Offered to a provider that declares `env`,
+    // they recompute identically for every declared value — which on a store
+    // carried across versions means pointing the suite at a different endpoint
+    // replays the old endpoint's answers, and on a shared tier means writing
+    // answers under keys nobody can tell from real ones.
+    let checkout = Checkout::new("printf '{\"output\":\"ok\"}'");
+    let a = keys_probed_for(&endpoint_suite("http://a", 1), checkout.path()).await;
+    let b = keys_probed_for(&endpoint_suite("http://b", 1), checkout.path()).await;
+
+    assert_eq!(
+        a.len(),
+        4,
+        "the live key, the ≤0.4.0 shape, and the two older generations that can \
+         carry an `env` digest — the other two are withheld: {a:#?}"
+    );
+    for key in &a {
+        assert!(
+            !b.contains(key),
+            "changing the variable that selects the backend must move every \
+             lookup, and {key} is shared"
+        );
+    }
 }
 
 #[tokio::test]

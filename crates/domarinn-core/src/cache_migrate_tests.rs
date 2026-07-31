@@ -207,6 +207,66 @@ fn shapes_are_ordered_newest_first() {
     assert!(fps[3].get("program").is_none());
 }
 
+/// A provider that declares `env` must not be offered the two shapes that
+/// predate `env` being keyed at all.
+///
+/// The store in the wild: a suite whose exec provider picks its backend with
+/// `env: {MODEL_ENDPOINT: …}`, run against a cache carried across versions.
+/// Those two shapes have nowhere to put the digest, so every declared value
+/// recomputes the same probe — point the suite at a different endpoint and it
+/// adopts the old endpoint's answers, silently, for as long as the store has
+/// pre-0.3.1 ancestors to offer. Dropping them costs a re-run; keeping them
+/// fabricates the comparison.
+#[test]
+fn a_declared_env_drops_the_shapes_that_could_not_carry_it() {
+    let digest = "blake3:0123456789abcdef";
+    let declared = legacy_exec_fingerprints(&command(&["./sut"]), Some(digest), Some("v1"), None);
+
+    assert_eq!(
+        declared.len(),
+        2,
+        "only the two shapes that carry `env` may be probed, got {declared:#?}"
+    );
+    for shape in &declared {
+        assert_eq!(
+            shape.get("env"),
+            Some(&Json::String(digest.into())),
+            "a probed shape must key on the declared environment"
+        );
+    }
+
+    // The env-less shapes are not deleted, only withheld: a provider declaring
+    // nothing is the case they exist for, and its 0.3.0/0.2.x entries stay
+    // reachable.
+    let undeclared = legacy_exec_fingerprints(&command(&["./sut"]), None, Some("v1"), None);
+    assert_eq!(undeclared.len(), 4);
+    assert_eq!(
+        undeclared[2].get("env"),
+        None,
+        "the withheld shapes are unchanged, and still have no `env` member"
+    );
+}
+
+/// The invariant, stated where it is cheapest to check: two declared values
+/// share no probe at all — not the live key, and not any historical shape.
+#[test]
+fn two_declared_env_values_share_no_probe() {
+    let probes = |digest: &str| {
+        legacy_exec_fingerprints(&command(&["./sut"]), Some(digest), None, None)
+            .into_iter()
+            .map(|fp| legacy_provider_key(&fp, &req("a"), 0))
+            .collect::<Vec<_>>()
+    };
+    let (a, b) = (probes("blake3:aaaa"), probes("blake3:bbbb"));
+    assert!(!a.is_empty());
+    for key in &a {
+        assert!(
+            !b.contains(key),
+            "a probe is shared between two declared environments: {key}"
+        );
+    }
+}
+
 /// …and the newest shape of all is the one 0.4.0 shipped: the provider's own
 /// current fingerprint. Every provider now has at least that one, where
 /// before 0.5.0 the three network kinds had no history at all — their key

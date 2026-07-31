@@ -431,6 +431,10 @@ impl Default for MigrationProbe {
 /// | `{type, command, program: […], cache_salt}` | 0.3.0 | before `env` joined the key |
 /// | `{type, command, cache_salt}` | 0.2.x | before `program` existed at all |
 ///
+/// The last two are emitted **only when `env_digest` is `None`**. They have no
+/// `env` member to key on, so for a provider that declares one they collide
+/// across every declared value — see the comment at the return below.
+///
 /// The two `program` flavours are both produced from one filesystem walk. The
 /// `mtime` ones only ever match on the machine that wrote them, with the files
 /// untouched since — which is exactly the case that matters, a developer or a
@@ -451,6 +455,18 @@ pub fn legacy_exec_fingerprints(
             "env": env_digest,
             "cache_salt": cache_salt,
         }));
+    }
+    // The two shapes below predate `env` joining the key, so they have nowhere
+    // to put the digest and an entry filed under either was written under an
+    // environment nobody recorded. Offering them to a provider that *declares*
+    // `env` is not a stale-replay risk, it is a guaranteed collision: every
+    // declared value recomputes the same probe, so changing the variable that
+    // selects the backend adopts the old backend's answers — and on a shared
+    // tier writes new ones under keys indistinguishable from real ones. A
+    // provider declaring no `env` is the case these shapes exist for, and it
+    // keeps them.
+    if env_digest.is_some() {
+        return out;
     }
     out.push(serde_json::json!({
         "type": "exec",
