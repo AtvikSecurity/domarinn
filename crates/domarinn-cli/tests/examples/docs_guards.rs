@@ -165,7 +165,7 @@ fn the_examples_index_table_maps_every_example_to_its_page() {
     let includes = snippet_includes(&root.join("docs/examples"));
 
     let mut unlinked = Vec::new();
-    for spec in EXAMPLES {
+    for spec in EXAMPLES.iter().copied() {
         let num = &spec.dir[..2];
         // The group pages that transclude this example, by file name.
         let mut pages: Vec<String> = includes
