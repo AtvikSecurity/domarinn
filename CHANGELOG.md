@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/AtvikSecurity/domarinn/compare/0.6.2...0.7.0) (2026-08-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* ChatRole gains a Tool variant and ChatMessage.content is now MessageContent rather than String. Embedders matching exhaustively on either will need updating.
+
+### Features
+
+* tool and content-block turns in per-case history, and validate warnings ([#57](https://github.com/AtvikSecurity/domarinn/issues/57)) ([8420ba3](https://github.com/AtvikSecurity/domarinn/commit/8420ba3419cf2dfda65709e2cf2aa057d43ee3d6))
+* **web:** make sets reachable, rows clickable, and the UI usable on a phone ([#55](https://github.com/AtvikSecurity/domarinn/issues/55)) ([66d5ad8](https://github.com/AtvikSecurity/domarinn/commit/66d5ad814872bedadf21820106f9b654f1088d73))
+
 ## [0.6.2](https://github.com/AtvikSecurity/domarinn/compare/0.6.1...0.6.2) (2026-07-31)
 
 
