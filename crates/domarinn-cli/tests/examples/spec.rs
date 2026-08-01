@@ -1,8 +1,11 @@
 //! What a row in [`crate::table`] is made of: the row types and the argv
 //! templates the rows share.
 //!
-//! Split out of `table.rs` so that file holds rows and nothing else — the one
-//! place a contributor edits when adding an example.
+//! Split out of `table.rs` so that file holds rows and nothing else. The rows
+//! themselves have since outgrown one file: `table.rs` carries examples 01–25
+//! and `table/rows_late.rs` carries 26 and up, which is where a new example
+//! goes. [`crate::table::EXAMPLES`] joins them, so every guard still reads one
+//! table.
 
 #![allow(dead_code)]
 

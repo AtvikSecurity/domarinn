@@ -58,7 +58,7 @@ Runs the system under test. Prompts are **optional** — when a suite has no pro
 ```json
 {
   "domarinn": { "protocol": 1, "kind": "provider" },
-  "prompt": { "role": "user", "content": "..." },
+  "prompt": { "text": "Summarize this: hello world" },
   "vars": { "user_input": "hello world" },
   "params": { "temperature": 0.0 },
   "test": { "id": "greeting/basic", "tags": ["smoke"] },
@@ -74,11 +74,74 @@ Runs the system under test. Prompts are **optional** — when a suite has no pro
 
 | Field    | Type            | Notes |
 |----------|-----------------|-------|
-| `prompt` | any JSON        | **Optional.** The rendered prompt. Absent when the suite has no prompts. |
+| `prompt` | object          | **Optional.** The rendered prompt, in one of exactly two shapes. Absent when there is nothing to render. See [The `prompt` shapes](#the-prompt-shapes). |
 | `vars`   | any JSON object | Template variables for this test. Defaults to `{}`. |
 | `params` | any JSON object | Provider parameters from the suite (model, temperature, ...). Defaults to `{}`. |
 | `test`   | object          | `{ "id": string, "tags": string[] }`. `tags` defaults to `[]`. Correlation metadata: it is sent, but [stripped out of the keyed request](../concepts/caching.md#what-is-in-the-key), so renaming a test does not re-run it. |
 | `tools`  | array           | Optional. Tools the suite declared. **Absent when it declared none**, so a tool-free request is exactly what it always was. See [Tools](#tools). |
+
+#### The `prompt` shapes
+
+`prompt` is a **wrapper object naming which shape it carries**, never a bare message. There are two shapes and one absence:
+
+```json
+"prompt": { "text": "Summarize this: hello world" }
+```
+
+A single-turn prompt. This is what a suite's `template:` prompt renders to when the case carries no conversation history.
+
+```json
+"prompt": { "messages": [
+  { "role": "system", "content": "You are terse." },
+  { "role": "user",   "content": "Summarize this: hello world" }
+] }
+```
+
+A transcript. Each turn is `{ "role", "content" }`, where `role` is `system`, `user`, `assistant`, or `tool`. This is what a `messages:` prompt renders to, and what *any* prompt renders to once the case has history.
+
+A turn may carry two more keys, **absent unless used**, so a tool-free transcript is byte-identical to what it always was:
+
+| Key | On | Notes |
+|---|---|---|
+| `tool_calls` | an `assistant` turn | The calls that turn made — `{ id?, name, arguments }`, exactly the shape you [report on the way out](#reporting-the-decision). `arguments` is the **decoded** object. |
+| `tool_call_id` | a `tool` turn | Which call this result answers. Absent when the transcript did not name one; results then pair with calls by position. |
+
+`content` is usually a string, but may be a list of typed blocks — `{ "type": "text", "text": … }` or `{ "type": "thinking", "thinking": …, "signature"? : … }` — when a transcript replays a model's reasoning. Treat a bare string as a single text block; if your upstream has no notion of reasoning, drop the `thinking` blocks rather than sending them as prose.
+
+The third case is **no `prompt` key at all** — the "self-input" suite, where there is no `prompts:` block and the case carries no history. Your provider works from `vars` alone.
+
+/// warning | There is no top-level `role`/`content`
+A request never looks like `"prompt": {"role": "user", "content": "…"}`. If you match on a top-level `role`, you will match nothing. Switch on the presence of `text` versus `messages`.
+///
+
+#### Conversation history
+
+Since 0.6.2 a test case may carry its own prior turns (the suite-side spelling is [`history`](domarinn-yaml.md#per-case-history)). This matters to you for one reason: it is how a `{"text": …}` provider starts receiving `{"messages": […]}`.
+
+**There is no `history` key on the wire.** The turns arrive already spliced into `prompt.messages`, in position — domarinn resolves and places them before the request is built. A provider that waits for a top-level `history` field will silently never fire.
+
+```json
+{
+  "domarinn": { "protocol": 1, "kind": "provider" },
+  "prompt": { "messages": [
+    { "role": "system",    "content": "You are a support agent." },
+    { "role": "user",      "content": "Can I return a case bought 10 days ago?" },
+    { "role": "assistant", "content": "Yes — within 30 days, in original condition." },
+    { "role": "user",      "content": "And if the box is already open?" }
+  ] },
+  "vars": { "followup": "And if the box is already open?" },
+  "params": {},
+  "test": { "id": "history/follow-up", "tags": [] }
+}
+```
+
+The middle two turns are the case's history; the first and last came from the prompt. Nothing on the wire distinguishes them, and nothing needs to — by the time you see it, it is one transcript.
+
+Where the turns land is a suite-side concern, but it determines what you receive, so: a `messages:` prompt splices them at its `history` marker, or failing that after its leading run of `system` turns; a `template:` prompt puts them *before* the rendered template, which becomes the newest `user` turn; and a suite with no `prompts:` block at all sends the case's history as the entire transcript.
+
+/// note | Adopting 0.6.2 does not invalidate your cache
+A case with **no** history is byte-identical to what it was before this feature existed: a `template:` prompt still sends `{"text": …}`, with the same bytes and therefore the same cache key. Only cases that actually carry history change shape, and those are new requests anyway.
+///
 
 ### Response (your stdout -> domarinn)
 
@@ -227,7 +290,6 @@ A custom grader. Receives the provider's output plus context and returns a `Grad
   "domarinn": { "protocol": 1, "kind": "assert" },
   "output": "hello, world",
   "test": { "id": "greeting/basic", "tags": ["smoke"] },
-  "prompt": { "role": "user", "content": "..." },
   "provider": { "id": "renderer" },
   "config": { "value": "hello" },
   "vars": { "user_input": "hello world" },
@@ -241,7 +303,7 @@ A custom grader. Receives the provider's output plus context and returns a `Grad
 |------------|-----------------|-------|
 | `output`   | any JSON        | **Required.** The provider output to grade. |
 | `test`     | object          | `{ "id", "tags" }`, as above. |
-| `prompt`   | any JSON        | **Optional.** The prompt that produced the output. |
+| `prompt`   | —               | Reserved, and **never sent today**: domarinn does not forward the prompt to an exec assert, and the key is omitted rather than set to `null` — so do not index it. Grade from `output`, `vars`, and `tool_calls`. If it is ever populated it will use the [provider request's shapes](#the-prompt-shapes). |
 | `provider` | object          | `{ "id": string }` — which provider produced the output. |
 | `config`   | any JSON        | The assertion's own config block from the suite. Defaults to `{}`. |
 | `vars`     | any JSON object | The case's rendered variables — for an assert request this is the full render context, including an `env` object snapshotting the parent's environment. The child receives `env` in this document even though its own spawned environment is empty; the cache key excludes it. Defaults to `{}`. |

@@ -734,15 +734,15 @@ tests:
         domarinn_core::types::RenderedPrompt::Messages(msgs) => {
             let flat: Vec<_> = msgs
                 .iter()
-                .map(|m| (m.role.as_str(), m.content.as_str()))
+                .map(|m| (m.role.as_str(), m.content.text().into_owned()))
                 .collect();
             assert_eq!(
                 flat,
                 vec![
-                    ("system", "sys"),
-                    ("user", "hi"),
-                    ("assistant", "hello"),
-                    ("user", "next"),
+                    ("system", "sys".to_string()),
+                    ("user", "hi".to_string()),
+                    ("assistant", "hello".to_string()),
+                    ("user", "next".to_string()),
                 ]
             );
         }
@@ -791,7 +791,7 @@ tests:
     match result.cases[0].prompt.as_ref().unwrap() {
         domarinn_core::types::RenderedPrompt::Messages(msgs) => {
             assert_eq!(msgs.len(), 3);
-            assert_eq!(msgs[2].content, "and now?");
+            assert_eq!(msgs[2].content.text(), "and now?");
         }
         other => panic!("expected the history as the whole transcript, got {other:?}"),
     }

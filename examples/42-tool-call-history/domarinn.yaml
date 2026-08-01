@@ -1,0 +1,207 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Replaying a tool-using transcript.
+#
+# Example 41 gives each case its own prior turns, but only as prose. That is
+# the wrong shape for the case `history` is most useful for: an agent told to
+# "call `lookup_order` first" will, in a single-turn eval, call it and stop —
+# nothing ever feeds a result back, so the decision you actually want to grade
+# never happens. History is what supplies turn one's result. But turn one IS a
+# tool call, and turn two's input IS a tool result.
+#
+# So a turn carries two more things:
+#
+#   * an `assistant` turn may have `tool_calls` — the same {id, name,
+#     arguments} shape a provider REPORTS on the way out, so the `tool_calls`
+#     block of a stored case pastes straight into a suite;
+#   * a `tool` turn carries the result, naming the call it answers with
+#     `tool_call_id` (optional — position pairs them when it is omitted).
+#
+# Each provider maps these to its own shape, and they disagree in exactly
+# mirrored ways: `anthropic` coalesces a round of parallel results into ONE
+# user message of `tool_result` blocks, while `openai` expands the same round
+# into separate `role: "tool"` messages. `exec` receives the JSON verbatim.
+#
+# A turn's `content` may also be a list of typed blocks rather than a string,
+# which is how a model's `thinking` is replayed. Thinking is NEVER templated:
+# its `signature` is a vendor integrity token over those exact bytes, so
+# rendering a variable inside one would invalidate the replay.
+#
+# domarinn still never EXECUTES a tool — it replays what happened and grades
+# what the model does next.
+#
+# The echo provider returns the prompt it was handed, so the assertions below
+# can see exactly which structured turn reached the provider — and that it
+# arrived as structure rather than as a paraphrase of one.
+#
+# Run:  domarinn run examples/42-tool-call-history
+version: 1
+project: examples
+suite: tool-call-history
+
+providers:
+  - id: echo
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+# The declared surface, so a reader sees the tool the transcript replays a
+# call into. Names must match: a call is not templated, for the same reason
+# this declaration is not.
+tools:
+  - name: lookup_order
+    description: Fetch an order by its id.
+    input_schema:
+      type: object
+      required: ["order_id"]
+      properties:
+        order_id: { type: integer }
+  # Declared because the file-based transcript below replays a call into it —
+  # the same "names must match" rule, applied to a transcript loaded from disk.
+  - name: refund_policy
+    description: Look up the return window for a product category.
+    input_schema:
+      type: object
+      required: ["category"]
+      properties:
+        category: { type: string }
+
+prompts:
+  - id: support
+    messages:
+      - role: system
+        content: "You are a support agent. Use the tools you are given."
+      - history
+      - role: user
+        content: "{{ followup }}"
+
+tests:
+  # --8<-- [start:tools]
+  # One round trip: the model called a tool, the tool answered, and the case
+  # grades what it says next. `tool_call_id` names which call the result
+  # answers — omit it and position pairs them instead.
+  - id: tools/replays-a-call
+    history:
+      - role: user
+        content: "Where is order 1042?"
+      - role: assistant
+        tool_calls:
+          - id: call_1
+            name: lookup_order
+            arguments: { order_id: 1042 }
+      - role: tool
+        tool_call_id: call_1
+        content: '{"status": "shipped", "eta": "Tuesday"}'
+    vars:
+      followup: "So when does it arrive?"
+    assert:
+      # The call reached the provider as a structured turn…
+      - type: contains
+        value: "lookup_order"
+      # …and so did the result it answers.
+      - type: contains
+        value: "shipped"
+  # --8<-- [end:tools]
+
+  # A parallel round: one assistant turn, two calls, two results. This is the
+  # case that makes the vendor split concrete — `anthropic` folds both results
+  # into one user message, `openai` sends two `role: "tool"` messages, and the
+  # suite says neither.
+  - id: tools/parallel-round
+    history:
+      - role: user
+        content: "Status of 1042 and 1043?"
+      - role: assistant
+        content: "Let me look up both."
+        tool_calls:
+          - name: lookup_order
+            arguments: { order_id: 1042 }
+          - name: lookup_order
+            arguments: { order_id: 1043 }
+      - role: tool
+        content: '{"status": "shipped"}'
+      - role: tool
+        content: '{"status": "pending"}'
+    vars:
+      followup: "Which one is late?"
+    assert:
+      - type: contains
+        value: "pending"
+      # No id was written anywhere; domarinn derived one from position so both
+      # vendors still get the correlation they require.
+      - type: contains
+        value: "Let me look up both."
+
+  # Arguments are templated leaf by leaf, and every leaf keeps its own type:
+  # an untemplated `1042` stays the integer the tool's schema wants, while the
+  # string leaf beside it is rendered against the case vars.
+  #
+  # The corollary is worth stating, because it is easy to trip over: a leaf you
+  # template is a STRING on the way out. `{order_id: "{{ order }}"}` sends
+  # `"7"`, not `7` — and so does a whole-value `arguments: "{{ some_var }}"`,
+  # since templating is string-in/string-out at every leaf. A non-string
+  # argument therefore has to be written literally, as `order_id` is below.
+  - id: tools/templated-arguments
+    history:
+      - role: user
+        content: "Where is order {{ order }} for {{ who }}?"
+      - role: assistant
+        tool_calls:
+          - name: lookup_order
+            arguments: { order_id: 1042, note: "for {{ who }}" }
+      - role: tool
+        content: '{"status": "delivered"}'
+    vars:
+      order: 7
+      who: "Ada"
+      followup: "Thanks — was it signed for?"
+    assert:
+      # The string leaf rendered against the case vars…
+      - type: contains
+        value: "for Ada"
+      # …while the untemplated number stayed a number: JSON writes an integer
+      # bare, so a quoted "1042" here would mean the type was lost.
+      - type: contains
+        value: '"order_id":1042'
+      - type: not-contains
+        value: '"order_id":"1042"'
+
+  # A `content` list instead of a string: this is how a model's reasoning is
+  # replayed. The `signature` is an integrity token over the thinking bytes, so
+  # neither it nor the text it covers is ever templated.
+  - id: tools/replays-thinking
+    history:
+      - role: user
+        content: "Where is order 1042?"
+      - role: assistant
+        content:
+          - type: thinking
+            thinking: "The customer gave an order id, so lookup_order applies."
+            signature: "sig-abc123"
+          - type: text
+            text: "Checking that now."
+        tool_calls:
+          - name: lookup_order
+            arguments: { order_id: 1042 }
+      - role: tool
+        content: '{"status": "shipped"}'
+    vars:
+      followup: "And the carrier?"
+    assert:
+      # The signature survived verbatim — proof the block was not re-rendered.
+      - type: contains
+        value: "sig-abc123"
+      - type: contains
+        value: "Checking that now."
+
+  # A whole tool-using transcript from a file, so a long agent trace lives next
+  # to the suite instead of inside it.
+  - id: tools/from-a-file
+    history: file://convos/lookup.yaml
+    vars:
+      followup: "Can you refund it?"
+    assert:
+      - type: contains
+        value: "refund_policy"
+      - type: not-contains
+        value: "1042"

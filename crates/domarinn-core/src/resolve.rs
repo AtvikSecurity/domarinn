@@ -510,7 +510,7 @@ tests:
         }
         match by_id("takes-default").history.as_ref().unwrap() {
             crate::config::HistorySpec::Inline(turns) => {
-                assert_eq!(turns[0].content, "default prior");
+                assert_eq!(turns[0].content.as_ref().unwrap().text(), "default prior");
             }
             other => panic!("expected the default history, got {other:?}"),
         }

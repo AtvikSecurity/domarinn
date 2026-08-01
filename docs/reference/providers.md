@@ -184,8 +184,8 @@ A generic provider for black-box HTTP systems. The URL, headers, and body are **
 
 Templating context for `url` / `headers` / `body`: every test var by name, plus two views of the rendered prompt:
 
-- `prompt` — the prompt as one string. A multi-turn prompt (a `messages:` prompt, or a case with [history](domarinn-yaml.md#per-case-history)) is flattened to `role: content` lines joined by newlines.
-- `messages` — the same turns **structurally**, a list of `{role, content}` objects: `{{ messages | tojson }}` embeds the array JSON-encoded, and `{% for m in messages %}` iterates it — the way a body template forwards a real conversation to an OpenAI-shaped API. A `template:` prompt appears as the single user turn it becomes on the wire.
+- `prompt` — the prompt as one string. A multi-turn prompt (a `messages:` prompt, or a case with [history](domarinn-yaml.md#per-case-history)) is flattened to `role: content` lines joined by newlines. **Prose only**: a turn's tool calls and its `thinking` blocks are deliberately absent, because inventing a textual rendering for a tool call is exactly what invites a tool-eager model to imitate that syntax as text instead of emitting a real call.
+- `messages` — the same turns **structurally**, a list of `{role, content}` objects — plus `tool_calls` / `tool_call_id` on a [tool-using transcript](domarinn-yaml.md#tool-using-transcripts), which is the view that carries them: `{{ messages | tojson }}` embeds the array JSON-encoded, and `{% for m in messages %}` iterates it — the way a body template forwards a real conversation to an OpenAI-shaped API. A `template:` prompt appears as the single user turn it becomes on the wire.
 
 A test var named `messages` takes precedence: the structural view is only added when no var of that name exists, so a suite that already forwarded a hand-rolled conversation under that name keeps rendering — and cache-keying — exactly as before. Existing templates that never reference `messages` render byte-identically either way.
 

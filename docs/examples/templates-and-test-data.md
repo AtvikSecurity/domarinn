@@ -149,3 +149,23 @@ And the CSV rows carry theirs in the reserved `__history` column, JSON-encoded (
 Three details worth knowing. A prompt may hold at most one marker, and a prompt *without* one still works: each case's history lands right after the prompt's leading system turn(s), and a `template:` prompt becomes the transcript's newest user turn. Second, history joins each case's request identity — two cases differing only in their prior turns key, and cache, separately. Third, the `not-contains` assertions above are the point: each case's transcript is its own, and nothing from another case's conversation leaks in.
 
 See [per-case history in the reference](../reference/domarinn-yaml.md#per-case-history) for the full splice rules.
+
+---
+
+## Example 42 — Replaying a tool-using transcript
+
+Example 41 gives each case its own prior turns, but only as prose — and that is the wrong shape for the case `history` is most useful for. An agent told to "call `lookup_order` first" will, in a single-turn eval, call it and stop: nothing ever feeds a result back, so the decision you actually wanted to grade never happens. History is what supplies turn one's result. But turn one *is* a tool call, and turn two's input *is* a tool result:
+
+```yaml
+--8<-- "examples/42-tool-call-history/domarinn.yaml"
+```
+
+An `assistant` turn's `tool_calls` use the same `{id, name, arguments}` shape a provider *reports* on the way out, so the `tool_calls` block of a stored case pastes straight into a suite. A `tool` turn carries the result, naming the call it answers with `tool_call_id` — optional, because position pairs them when a transcript omits it, which is what makes the `tools/parallel-round` case above work without a single id written anywhere.
+
+A whole tool-using trace can live in a file, which is usually where one captured from a real agent run already is:
+
+```yaml
+--8<-- "examples/42-tool-call-history/convos/lookup.yaml"
+```
+
+Three details. Arguments are templated leaf by leaf, so each leaf keeps its own type: an untemplated `{order_id: 1042}` stays an integer, which is what a [`tool-call` assertion](../reference/assertions.md#tool-call) comparing against the decoded object needs. The corollary is easy to trip over — a leaf you *do* template comes out a string, including a whole-value `"{{ var }}"` reference — so a non-string argument has to be written literally, and varying one per case is not expressible today. A turn's `content` may be a list of typed blocks instead of a string, which is how `thinking` is replayed; that one is **never** templated, because its `signature` is a vendor integrity token over those exact bytes. And the two vendors disagree in mirrored ways about a round of parallel results — `anthropic` folds them into one user message, `openai` sends one message each — which domarinn handles so the suite does not have to say.

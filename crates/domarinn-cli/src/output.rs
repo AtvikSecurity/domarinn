@@ -154,12 +154,16 @@ fn render_table(result: &RunResult, palette: Palette, failed_only: bool) -> Stri
     // status column's `{:<6}` padding is always the glyph plus two spaces —
     // reproduce that as `glyph + "  "` so the ANSI escapes never distort the
     // column width.
-    let header = format!("{:<6}{:<10}{:<name_w$}score", "", "provider", "test");
+    // `name_w` is the longest name, so the column must be padded WIDER than it
+    // or the longest row butts straight against the score — the same reason the
+    // provider column truncates to 9 and pads to 10.
+    let name_col = name_w + 2;
+    let header = format!("{:<6}{:<10}{:<name_col$}score", "", "provider", "test");
     out.push_str(&palette.header(&header));
     out.push('\n');
     for case in &cases {
         out.push_str(&format!(
-            "{}  {:<10}{:<name_w$}{:.2}\n",
+            "{}  {:<10}{:<name_col$}{:.2}\n",
             colored_glyph(&palette, case.status),
             truncate(&case.cell.provider_id, 9),
             truncate(&display_name(case), name_w),

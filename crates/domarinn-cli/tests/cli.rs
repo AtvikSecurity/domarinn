@@ -761,3 +761,78 @@ fn a_case_answered_by_a_tool_call_is_gradeable() {
         .success()
         .stdout(predicate::str::contains("PASS"));
 }
+
+/// A history whose first non-`system` turn is `assistant` — a near-certain
+/// provider 400, and the shape `validate` warns about without refusing.
+const ASSISTANT_FIRST_HISTORY_SUITE: &str = r#"
+version: 1
+suite: smoke
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"hello world\"}'"]
+tests:
+  - id: greet
+    history:
+      - {role: assistant, content: "I already answered."}
+    assert:
+      - {type: contains, value: "hello"}
+"#;
+
+/// The whole point of the severity axis: advice must not become an exit code.
+/// Exit `2` is documented as a config/usage error and CI gates on it, so a
+/// shape that is merely *probably* wrong — an Anthropic assistant prefill is a
+/// real one — has to stay runnable.
+#[test]
+fn validate_warns_on_assistant_first_history_without_failing() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), ASSISTANT_FIRST_HISTORY_SUITE);
+    bin()
+        .arg("validate")
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok:"))
+        .stdout(predicate::str::contains("1 warning(s)"))
+        .stderr(predicate::str::contains("warning:"))
+        .stderr(predicate::str::contains("assistant"));
+}
+
+/// Companion to `stdout_stays_pure_results_diagnostics_go_to_stderr`: the
+/// finding itself belongs on stderr, and only its count rides the summary line.
+#[test]
+fn a_validate_warning_body_never_reaches_stdout() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), ASSISTANT_FIRST_HISTORY_SUITE);
+    let output = bin().arg("validate").arg(dir.path()).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("warning:"),
+        "the warning body must stay on stderr, got stdout: {stdout}"
+    );
+}
+
+/// The single most important behavioural guard in the severity change: before
+/// it, every `Issue` was fatal and `run` aborted on any non-empty result. A
+/// warning must let the run proceed to completion.
+#[test]
+fn run_proceeds_through_a_history_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), ASSISTANT_FIRST_HISTORY_SUITE);
+    let output = bin()
+        .arg("run")
+        .current_dir(dir.path())
+        .env_remove("DOMARINN_SERVER_URL")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "a validate warning must not abort a run: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("assistant"),
+        "the warning must still be reported on the run: {stderr}"
+    );
+}

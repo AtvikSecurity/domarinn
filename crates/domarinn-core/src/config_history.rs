@@ -10,7 +10,189 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::config::Message;
+use crate::types::ChatRole;
+
+/// A tool call an `assistant` history turn made.
+///
+/// Field-for-field [`crate::result::ToolCall`], the type providers report on the
+/// way *out*, so the `tool_calls` block of a stored case pastes into a suite's
+/// `history:` unchanged. It is a separate type only because this one carries
+/// `deny_unknown_fields` and the wire type must not: that one parses stored
+/// blobs and vendor payloads, where an unknown key is forward compatibility;
+/// this one parses a file a human typed, where `nmae:` should be an error
+/// rather than a call with no name.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolCallSpec {
+    /// The call id this turn's result will answer. Optional — the vendor
+    /// mappings derive one from position when a transcript omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    /// The arguments object. Every string leaf is a template; numbers and
+    /// booleans pass through untouched, so `{order_id: 1042}` stays an integer.
+    #[serde(default, skip_serializing_if = "Json::is_null")]
+    pub arguments: Json,
+}
+
+/// One block of a turn's content in a suite file.
+///
+/// `deny_unknown_fields` for the same reason as [`ToolCallSpec`]: a typo'd
+/// `tex:` should name itself, not silently produce an empty block.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContentBlockSpec {
+    /// Prose. A template, and may be `file://path`.
+    Text { text: String },
+    /// Reasoning replayed verbatim — **never** templated, and never loaded from
+    /// `file://`, because `signature` is an integrity token over these exact
+    /// bytes and any rewrite invalidates it. See [`crate::types::ContentBlock`].
+    Thinking {
+        thinking: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+}
+
+/// A turn's content: prose, or an ordered list of blocks.
+///
+/// Untagged with `Text` first so the overwhelmingly common `content: "hi"`
+/// keeps serializing as a bare string — an existing suite's `config_digest`
+/// must not move because a block form became expressible.
+///
+/// `Deserialize` is hand-written for the same reason as [`PromptEntry`] and
+/// [`HistorySpec`]: an untagged *derive* discards the inner variant's error, so
+/// a typo'd `tex:` would surface as "data did not match any variant" and
+/// [`ContentBlockSpec`]'s `deny_unknown_fields` would never name the key it
+/// caught. Buffering into [`Json`] and dispatching on the shape keeps that
+/// error, and [`detached`] re-attaches the block index to it.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum MessageContentSpec {
+    Text(String),
+    Blocks(Vec<ContentBlockSpec>),
+}
+
+impl<'de> Deserialize<'de> for MessageContentSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let value = Json::deserialize(deserializer)?;
+        match value {
+            Json::String(s) => Ok(MessageContentSpec::Text(s)),
+            Json::Array(_) => detached::<Vec<ContentBlockSpec>>(value)
+                .map(MessageContentSpec::Blocks)
+                .map_err(D::Error::custom),
+            other => Err(D::Error::custom(format!(
+                "content must be a string or a list of \
+                 {{type: text|thinking, …}} blocks, found {other}"
+            ))),
+        }
+    }
+}
+
+/// A chat message; `content` may be `file://path` to load from disk.
+///
+/// `content` is optional only because an `assistant` turn whose whole point is
+/// a tool call has no prose, and a turn with neither content nor `tool_calls`
+/// is caught by [`turn_problem`] rather than sent as an empty message.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Message {
+    pub role: ChatRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<MessageContentSpec>,
+    /// The calls this `assistant` turn made, replayed into the next request in
+    /// each provider's native shape — `tool_use` blocks for `anthropic`, a
+    /// `tool_calls` array for `openai`, the same JSON for `exec`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallSpec>,
+    /// Which call a `tool` turn answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl MessageContentSpec {
+    /// The authored prose, `thinking` blocks omitted — the config-side mirror
+    /// of [`crate::types::MessageContent::text`], before any templating.
+    pub fn text(&self) -> std::borrow::Cow<'_, str> {
+        use std::borrow::Cow;
+        match self {
+            MessageContentSpec::Text(s) => Cow::Borrowed(s),
+            MessageContentSpec::Blocks(blocks) => {
+                let parts: Vec<&str> = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlockSpec::Text { text } => Some(text.as_str()),
+                        ContentBlockSpec::Thinking { .. } => None,
+                    })
+                    .collect();
+                match parts.as_slice() {
+                    [] => Cow::Borrowed(""),
+                    [only] => Cow::Borrowed(only),
+                    many => Cow::Owned(many.join("\n")),
+                }
+            }
+        }
+    }
+
+    /// Statically blank: nothing authored here can reach a provider.
+    ///
+    /// Only what is visible in the file — a `{{ note }}` that happens to render
+    /// empty is *not* blank, because predicting that would mean rendering, and
+    /// `validate` deliberately does not.
+    pub fn is_blank(&self) -> bool {
+        match self {
+            MessageContentSpec::Text(s) => s.trim().is_empty(),
+            MessageContentSpec::Blocks(blocks) => blocks.iter().all(|b| match b {
+                ContentBlockSpec::Text { text } => text.trim().is_empty(),
+                ContentBlockSpec::Thinking { thinking, .. } => thinking.trim().is_empty(),
+            }),
+        }
+    }
+}
+
+impl Message {
+    /// The plain-text turn, which is still almost every turn.
+    pub fn text(role: ChatRole, content: impl Into<String>) -> Self {
+        Message {
+            role,
+            content: Some(MessageContentSpec::Text(content.into())),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+}
+
+/// The one rule about a single turn's internal coherence, in one place.
+///
+/// `loader_validate` reports it for the turns it can see at load; [`crate::render`]
+/// errors on the ones it cannot, because a `file://` transcript is only read at
+/// run time. Two call sites, one rule.
+///
+/// Deliberately **not** about role *ordering*, which stays unvalidated — that
+/// is the provider's contract, as `docs/reference/domarinn-yaml.md` says. This
+/// is about a turn that cannot mean anything at all.
+pub fn turn_problem(m: &Message) -> Option<String> {
+    if m.content.is_none() && m.tool_calls.is_empty() {
+        return Some("a turn needs `content`, `tool_calls`, or both".to_string());
+    }
+    if !m.tool_calls.is_empty() && m.role != ChatRole::Assistant {
+        return Some(format!(
+            "`tool_calls` belongs on an `assistant` turn, not `{}`",
+            m.role.as_str()
+        ));
+    }
+    if m.tool_call_id.is_some() && m.role != ChatRole::Tool {
+        return Some(format!(
+            "`tool_call_id` belongs on a `tool` turn, not `{}`",
+            m.role.as_str()
+        ));
+    }
+    None
+}
 
 /// Deserialize out of a buffered [`Json`] value with the inner path
 /// re-attached to the error text.
@@ -203,7 +385,7 @@ mod tests {
         let entry: PromptEntry =
             serde_json::from_value(serde_json::json!({"role": "user", "content": "hi"})).unwrap();
         match entry {
-            PromptEntry::Turn(m) => assert_eq!(m.content, "hi"),
+            PromptEntry::Turn(m) => assert_eq!(m.content.unwrap().text(), "hi"),
             PromptEntry::Marker(_) => panic!("a mapping must not parse as the marker"),
         }
     }
@@ -220,12 +402,91 @@ mod tests {
 
     /// A bad turn surfaces [`Message`]'s own deny-guarded error verbatim, the
     /// same contract `TestSource` keeps for inline test cases.
+    ///
+    /// The vehicle is a misspelled field rather than a missing `content`:
+    /// `content` became optional when an `assistant` turn was allowed to be
+    /// nothing but a tool call, so `{role: user}` now parses here and is caught
+    /// later by [`turn_problem`] instead.
     #[test]
     fn a_bad_turn_surfaces_the_message_error() {
-        let err = serde_json::from_value::<PromptEntry>(serde_json::json!({"role": "user"}))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("content"), "unhelpful error: {err}");
+        let err = serde_json::from_value::<PromptEntry>(
+            serde_json::json!({"role": "user", "contnet": "hi"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("contnet"), "unhelpful error: {err}");
+    }
+
+    /// The reason `MessageContentSpec` hand-writes `Deserialize`: an untagged
+    /// derive would swallow `ContentBlockSpec`'s deny-guarded error and report
+    /// only "did not match any variant", losing the key that was wrong.
+    #[test]
+    fn a_typo_inside_a_content_block_names_the_key() {
+        let err = serde_json::from_value::<Message>(serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "tex": "hi"}],
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("tex"), "the bad key must be named: {err}");
+    }
+
+    /// And the block index comes along, via `detached`.
+    #[test]
+    fn a_typo_in_a_later_block_names_its_index() {
+        let err = serde_json::from_value::<MessageContentSpec>(serde_json::json!([
+            {"type": "text", "text": "ok"},
+            {"type": "thinking", "thinkin": "typo"},
+        ]))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("[1]"), "the failing block index: {err}");
+    }
+
+    /// The turn shapes that parse but cannot mean anything, caught by
+    /// [`turn_problem`] rather than by serde.
+    #[test]
+    fn an_incoherent_turn_is_reported_by_turn_problem() {
+        let empty = Message {
+            role: ChatRole::User,
+            content: None,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        };
+        assert!(turn_problem(&empty).unwrap().contains("tool_calls"));
+
+        let calls_on_a_user_turn = Message {
+            tool_calls: vec![ToolCallSpec {
+                id: None,
+                name: "f".into(),
+                arguments: Json::Null,
+            }],
+            ..Message::text(ChatRole::User, "hi")
+        };
+        assert!(turn_problem(&calls_on_a_user_turn)
+            .unwrap()
+            .contains("assistant"));
+
+        let id_on_an_assistant_turn = Message {
+            tool_call_id: Some("call_1".into()),
+            ..Message::text(ChatRole::Assistant, "hi")
+        };
+        assert!(turn_problem(&id_on_an_assistant_turn)
+            .unwrap()
+            .contains("tool"));
+
+        // The shapes that are fine.
+        assert!(turn_problem(&Message::text(ChatRole::User, "hi")).is_none());
+        assert!(turn_problem(&Message {
+            content: None,
+            tool_calls: vec![ToolCallSpec {
+                id: None,
+                name: "f".into(),
+                arguments: Json::Null,
+            }],
+            ..Message::text(ChatRole::Assistant, "")
+        })
+        .is_none());
     }
 
     #[test]
@@ -274,7 +535,7 @@ mod tests {
     fn a_bad_turn_error_names_its_index_in_the_transcript() {
         let err = serde_json::from_value::<HistorySpec>(serde_json::json!([
             {"role": "user", "content": "ok"},
-            {"role": "user"},
+            {"role": "user", "contnet": "typo"},
         ]))
         .unwrap_err()
         .to_string();

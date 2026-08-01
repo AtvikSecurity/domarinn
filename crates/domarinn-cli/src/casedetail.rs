@@ -263,11 +263,18 @@ fn render_prompt(prompt: &RenderedPrompt) -> String {
         }
         RenderedPrompt::Messages(messages) => {
             for msg in messages {
-                let mut lines = msg.content.lines();
+                let text = msg.content.text();
+                let mut lines = text.lines();
                 let first = lines.next().unwrap_or("");
                 out.push_str(&format!("    [{}] {first}\n", msg.role.as_str()));
                 for line in lines {
                     out.push_str(&format!("    {line}\n"));
+                }
+                // The calls this turn made, one per line beneath it. Guarded on
+                // non-empty, so a transcript without them prints exactly as
+                // before.
+                for call in &msg.tool_calls {
+                    out.push_str(&format!("      -> {}({})\n", call.name, call.arguments));
                 }
             }
         }
@@ -643,14 +650,8 @@ mod tests {
         c.cost_usd = Some(0.0012);
         c.stop_reason = Some("end_turn".into());
         c.prompt = Some(RenderedPrompt::Messages(vec![
-            ChatMessage {
-                role: ChatRole::System,
-                content: "You are helpful.".into(),
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                content: "Say hi.".into(),
-            },
+            ChatMessage::text(ChatRole::System, "You are helpful."),
+            ChatMessage::text(ChatRole::User, "Say hi."),
         ]));
         c.output = Some(Output::Text("hello there".into()));
         c.error = Some("boom".into());

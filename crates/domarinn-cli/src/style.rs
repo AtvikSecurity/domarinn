@@ -109,6 +109,17 @@ impl Palette {
         self.paint(Style::new().fg_color(Some(AnsiColor::Yellow.into())), text)
     }
 
+    /// Advice the reader may ignore (yellow).
+    ///
+    /// Deliberately not an alias for [`Self::error`], which is yellow for an
+    /// unrelated reason — the *results table's* infra-ERROR status. `validate`
+    /// pairs this with [`Self::fail`] (red) rather than `error`, so its two
+    /// severity labels are actually distinguishable at a glance instead of
+    /// being the same yellow with different words.
+    pub fn warn(&self, text: &str) -> String {
+        self.paint(Style::new().fg_color(Some(AnsiColor::Yellow.into())), text)
+    }
+
     /// A skipped status (dim).
     pub fn skip(&self, text: &str) -> String {
         self.paint(Style::new().dimmed(), text)
@@ -191,6 +202,7 @@ mod tests {
             p.pass("x"),
             p.fail("x"),
             p.error("x"),
+            p.warn("x"),
             p.skip("x"),
             p.added("x"),
             p.removed("x"),
@@ -201,6 +213,18 @@ mod tests {
             assert!(!painted.contains(ESC));
         }
         assert!(!p.enabled());
+    }
+
+    /// `validate` prints an `error:` and a `warning:` label in the same block,
+    /// so they have to be told apart by colour and not only by the word.
+    #[test]
+    fn a_validate_error_label_is_not_the_same_colour_as_a_warning() {
+        let p = Palette::for_test(true);
+        assert_ne!(
+            p.fail("error:"),
+            p.warn("warning:").replace("warning:", "error:"),
+            "the two severity labels must differ by more than their text"
+        );
     }
 
     #[test]

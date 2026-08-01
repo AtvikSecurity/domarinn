@@ -16,7 +16,7 @@ use crate::val::desugar_tags;
 // `Issue` and `validate` live in `loader_validate`; re-export here so the
 // `crate::loader::validate` / `crate::loader::Issue` paths (and the crate-root
 // re-exports built on them) are unchanged after the split.
-pub use crate::loader_validate::{validate, Issue};
+pub use crate::loader_validate::{validate, Issue, Severity, Validation};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
@@ -357,7 +357,7 @@ runner: {concurrency: 4, retries: {max: 3, initial_ms: 500, max_ms: 8000, jitter
     fn example_a_parses_and_validates() {
         let (suite, raw) = load_str_raw(EXAMPLE_A).unwrap();
         assert!(
-            validate(&suite, &raw).is_empty(),
+            validate(&suite, &raw).is_clean(),
             "{:?}",
             validate(&suite, &raw)
         );
@@ -397,7 +397,7 @@ runner: {concurrency: 4, retries: {max: 3, initial_ms: 500, max_ms: 8000, jitter
     fn example_b_parses_and_validates() {
         let (suite, raw) = load_str_raw(EXAMPLE_B).unwrap();
         assert!(
-            validate(&suite, &raw).is_empty(),
+            validate(&suite, &raw).is_clean(),
             "{:?}",
             validate(&suite, &raw)
         );
@@ -460,7 +460,7 @@ tests:
         .unwrap();
         let (suite, raw) = load_file_raw(dir.path()).unwrap();
         assert!(
-            validate(&suite, &raw).is_empty(),
+            validate(&suite, &raw).is_clean(),
             "{:?}",
             validate(&suite, &raw)
         );

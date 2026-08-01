@@ -21,7 +21,7 @@ fn file_vars_example_loads_validates_and_resolves_fixtures() {
     // `!file`/`{$file}` fixtures are resolved relative to the suite dir.
     let dir = example_dir("07-file-vars");
     let (suite, raw) = domarinn_core::loader::load_file_raw(&dir).unwrap();
-    assert!(domarinn_core::validate(&suite, &raw).is_empty());
+    assert!(domarinn_core::validate(&suite, &raw).is_clean());
     let expanded = domarinn_core::expand_tests(&suite, &dir).unwrap();
     assert_eq!(expanded.tests.len(), 4);
     // The raw SSTI fixture must remain raw (never templated) after resolution.
@@ -40,7 +40,7 @@ fn file_vars_example_loads_validates_and_resolves_fixtures() {
 fn matrix_example_loads_validates_and_sweeps() {
     let dir = example_dir("08-matrix-sweeps");
     let (suite, raw) = domarinn_core::loader::load_file_raw(&dir).unwrap();
-    assert!(domarinn_core::validate(&suite, &raw).is_empty());
+    assert!(domarinn_core::validate(&suite, &raw).is_clean());
     let expanded = domarinn_core::expand_tests(&suite, &dir).unwrap();
     // 2x2 greet sweep + 3-value locale sweep = 7 cells.
     assert_eq!(expanded.tests.len(), 7);
@@ -59,7 +59,7 @@ fn render_health_example_loads_and_validates() {
     let (suite, raw) = domarinn_core::loader::load_file_raw(&dir).unwrap();
     let issues = domarinn_core::validate(&suite, &raw);
     assert!(
-        issues.is_empty(),
+        issues.is_clean(),
         "unexpected validation issues: {issues:?}"
     );
 

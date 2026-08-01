@@ -10,10 +10,13 @@ use std::path::Path;
 
 use serde_json::Value as Json;
 
-use crate::config::{HistorySpec, Message, Prompt, PromptEntry};
+use crate::config::{
+    ContentBlockSpec, HistorySpec, Message, MessageContentSpec, Prompt, PromptEntry,
+};
+use crate::result::ToolCall;
 use crate::template::{TemplateEngine, TemplateError};
 use crate::types::ChatRole;
-use crate::types::{ChatMessage, RenderedPrompt};
+use crate::types::{ChatMessage, ContentBlock, MessageContent, RenderedPrompt};
 use crate::val::Val;
 
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +52,12 @@ pub enum RenderError {
          the case supplied no history"
     )]
     EmptyTranscript(String),
+    /// A turn that cannot mean anything: no content and no `tool_calls`, or a
+    /// tool field on a role that cannot carry it. Enforced here as well as in
+    /// `validate()` for the same reason as [`Self::DuplicateMarker`], and
+    /// because a `file://` transcript is not read until run time.
+    #[error("history turn: {0}")]
+    BadTurn(String),
 }
 
 /// Render a test's vars to a plain map.
@@ -162,10 +171,7 @@ pub fn render_prompt_with_history(
                 return Ok(RenderedPrompt::Text(text));
             }
             let mut msgs = history.to_vec();
-            msgs.push(ChatMessage {
-                role: ChatRole::User,
-                content: text,
-            });
+            msgs.push(ChatMessage::text(ChatRole::User, text));
             Ok(RenderedPrompt::Messages(msgs))
         }
         (None, Some(entries)) => {
@@ -205,17 +211,94 @@ pub fn render_prompt_with_history(
 /// Render one config turn: its `content` may be `file://path`, then is
 /// rendered as a template against `ctx`. The single per-turn contract, shared
 /// by `messages:` prompt turns and history turns.
+///
+/// Two things are deliberately **not** templated:
+///
+/// - a `thinking` block, because its `signature` is a vendor integrity token
+///   over these exact bytes and any rewrite invalidates the replay;
+/// - a tool call's `name` and `id`, for the same reason `tools[].name` is not:
+///   the declared surface and a call into it must be spelled the same way, and
+///   an id is a correlation token the docs already promise is never interpreted.
+///
+/// A call's `arguments`, by contrast, is per-case author-written data — the
+/// same *kind* of thing as a `vars:` value — so it goes through the same
+/// string-leaf renderer those use, which keeps `{order_id: 1042}` an integer.
 fn render_message(
     message: &Message,
     ctx: &Json,
     engine: &TemplateEngine,
     base_dir: &Path,
 ) -> Result<ChatMessage, RenderError> {
-    let source = load_content(&message.content, base_dir)?;
+    if let Some(problem) = crate::config_history::turn_problem(message) {
+        return Err(RenderError::BadTurn(problem));
+    }
+    let content = match &message.content {
+        Some(spec) => render_content(spec, ctx, engine, base_dir)?,
+        None => MessageContent::Text(String::new()),
+    };
+    let tool_calls = message
+        .tool_calls
+        .iter()
+        .map(|tc| {
+            Ok(ToolCall {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                // A call with no arguments is a call with an *empty* arguments
+                // object. Both vendor mappings already normalize this, but an
+                // `exec` child reads the serialized turn directly, and
+                // `docs/reference/protocol.md` promises it a decoded object —
+                // so normalize once, here, rather than per provider.
+                arguments: match engine.render_json(&tc.arguments, ctx)? {
+                    Json::Null => serde_json::json!({}),
+                    rendered => rendered,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, RenderError>>()?;
     Ok(ChatMessage {
         role: message.role,
-        content: engine.render_str(&source, ctx)?,
+        content,
+        tool_calls,
+        tool_call_id: message.tool_call_id.clone(),
     })
+}
+
+/// [`render_message`]'s content half: prose keeps the `file://`-then-template
+/// contract; a `thinking` block is copied through untouched.
+fn render_content(
+    spec: &MessageContentSpec,
+    ctx: &Json,
+    engine: &TemplateEngine,
+    base_dir: &Path,
+) -> Result<MessageContent, RenderError> {
+    match spec {
+        MessageContentSpec::Text(s) => {
+            let source = load_content(s, base_dir)?;
+            Ok(MessageContent::Text(engine.render_str(&source, ctx)?))
+        }
+        MessageContentSpec::Blocks(blocks) => {
+            let rendered = blocks
+                .iter()
+                .map(|b| match b {
+                    ContentBlockSpec::Text { text } => {
+                        let source = load_content(text, base_dir)?;
+                        Ok(ContentBlock::Text {
+                            text: engine.render_str(&source, ctx)?,
+                        })
+                    }
+                    // Verbatim, signature included. See the fn doc.
+                    ContentBlockSpec::Thinking {
+                        thinking,
+                        signature,
+                    } => Ok(ContentBlock::Thinking {
+                        thinking: thinking.clone(),
+                        signature: signature.clone(),
+                    }),
+                })
+                .collect::<Result<Vec<_>, RenderError>>()?;
+            Ok(MessageContent::Blocks(rendered))
+        }
+    }
 }
 
 /// [`render_message`] over a list.
@@ -340,21 +423,15 @@ mod tests {
             id: "p".into(),
             template: None,
             messages: Some(vec![
-                PromptEntry::Turn(Message {
-                    role: ChatRole::System,
-                    content: "You are helpful".into(),
-                }),
-                PromptEntry::Turn(Message {
-                    role: ChatRole::User,
-                    content: "{{ request }}".into(),
-                }),
+                PromptEntry::Turn(Message::text(ChatRole::System, "You are helpful")),
+                PromptEntry::Turn(Message::text(ChatRole::User, "{{ request }}")),
             ]),
         };
         let ctx = serde_json::json!({ "request": "hi" });
         match render_prompt(&prompt, &ctx, &engine, Path::new(".")).unwrap() {
             RenderedPrompt::Messages(msgs) => {
                 assert_eq!(msgs.len(), 2);
-                assert_eq!(msgs[1].content, "hi");
+                assert_eq!(msgs[1].content.text(), "hi");
             }
             other => panic!("expected messages, got {other:?}"),
         }
@@ -417,17 +494,11 @@ mod history_tests {
     use crate::types::ChatRole;
 
     fn turn(role: ChatRole, content: &str) -> ChatMessage {
-        ChatMessage {
-            role,
-            content: content.into(),
-        }
+        ChatMessage::text(role, content)
     }
 
     fn cfg_turn(role: ChatRole, content: &str) -> PromptEntry {
-        PromptEntry::Turn(Message {
-            role,
-            content: content.into(),
-        })
+        PromptEntry::Turn(Message::text(role, content))
     }
 
     fn marker_prompt() -> Prompt {
@@ -465,15 +536,15 @@ mod history_tests {
             RenderedPrompt::Messages(msgs) => {
                 let flat: Vec<_> = msgs
                     .iter()
-                    .map(|m| (m.role.as_str(), m.content.as_str()))
+                    .map(|m| (m.role.as_str(), m.content.text().into_owned()))
                     .collect();
                 assert_eq!(
                     flat,
                     vec![
-                        ("system", "You are helpful"),
-                        ("user", "hi"),
-                        ("assistant", "hello"),
-                        ("user", "next"),
+                        ("system", "You are helpful".to_string()),
+                        ("user", "hi".to_string()),
+                        ("assistant", "hello".to_string()),
+                        ("user", "next".to_string()),
                     ]
                 );
             }
@@ -503,7 +574,7 @@ mod history_tests {
             RenderedPrompt::Messages(msgs) => {
                 let roles: Vec<_> = msgs.iter().map(|m| m.role.as_str()).collect();
                 assert_eq!(roles, vec!["system", "user", "assistant", "user"]);
-                assert_eq!(msgs[1].content, "hi");
+                assert_eq!(msgs[1].content.text(), "hi");
             }
             other => panic!("expected messages, got {other:?}"),
         }
@@ -523,8 +594,8 @@ mod history_tests {
                 .unwrap();
         match rendered {
             RenderedPrompt::Messages(msgs) => {
-                assert_eq!(msgs[0].content, "hi");
-                assert_eq!(msgs[2].content, "next");
+                assert_eq!(msgs[0].content.text(), "hi");
+                assert_eq!(msgs[2].content.text(), "next");
             }
             other => panic!("expected messages, got {other:?}"),
         }
@@ -548,7 +619,7 @@ mod history_tests {
             RenderedPrompt::Messages(msgs) => {
                 assert_eq!(msgs.len(), 3);
                 assert_eq!(msgs[2].role, ChatRole::User);
-                assert_eq!(msgs[2].content, "Q: next");
+                assert_eq!(msgs[2].content.text(), "Q: next");
             }
             other => panic!("expected messages, got {other:?}"),
         }
@@ -658,13 +729,10 @@ mod history_tests {
     #[test]
     fn inline_history_turns_render_vars() {
         let engine = TemplateEngine::new();
-        let spec = HistorySpec::Inline(vec![Message {
-            role: ChatRole::Assistant,
-            content: "{{ prior }}".into(),
-        }]);
+        let spec = HistorySpec::Inline(vec![Message::text(ChatRole::Assistant, "{{ prior }}")]);
         let ctx = serde_json::json!({ "prior": "the earlier answer" });
         let turns = resolve_history(&spec, &ctx, &engine, Path::new(".")).unwrap();
-        assert_eq!(turns[0].content, "the earlier answer");
+        assert_eq!(turns[0].content.text(), "the earlier answer");
     }
 
     #[test]
@@ -672,13 +740,10 @@ mod history_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("turn.txt"), "from disk: {{ x }}").unwrap();
         let engine = TemplateEngine::new();
-        let spec = HistorySpec::Inline(vec![Message {
-            role: ChatRole::User,
-            content: "file://turn.txt".into(),
-        }]);
+        let spec = HistorySpec::Inline(vec![Message::text(ChatRole::User, "file://turn.txt")]);
         let ctx = serde_json::json!({ "x": "ok" });
         let turns = resolve_history(&spec, &ctx, &engine, dir.path()).unwrap();
-        assert_eq!(turns[0].content, "from disk: ok");
+        assert_eq!(turns[0].content.text(), "from disk: ok");
     }
 
     #[test]
@@ -694,8 +759,8 @@ mod history_tests {
         let ctx = serde_json::json!({ "prior": "hello" });
         let turns = resolve_history(&spec, &ctx, &engine, dir.path()).unwrap();
         assert_eq!(turns.len(), 2);
-        assert_eq!(turns[0].content, "hi");
-        assert_eq!(turns[1].content, "hello");
+        assert_eq!(turns[0].content.text(), "hi");
+        assert_eq!(turns[1].content.text(), "hello");
         assert_eq!(turns[1].role, ChatRole::Assistant);
     }
 
@@ -734,5 +799,153 @@ mod history_tests {
             err.contains("convo.yaml"),
             "error must name the file: {err}"
         );
+    }
+}
+
+/// Turns that carry tool calls, tool results, or content blocks.
+#[cfg(test)]
+mod tool_history_tests {
+    use super::*;
+    use crate::config::{ContentBlockSpec, Message, MessageContentSpec, ToolCallSpec};
+    use crate::types::ChatRole;
+
+    fn render_one(message: &Message, ctx: &Json) -> Result<ChatMessage, RenderError> {
+        render_message(message, ctx, &TemplateEngine::new(), Path::new("."))
+    }
+
+    /// Arguments are templated leaf by leaf, so a number stays a number.
+    ///
+    /// The alternative — stringify, template, reparse — would turn `5` into
+    /// `"5"`, and a `tool-call` assertion comparing `args` against the decoded
+    /// object would then never match.
+    #[test]
+    fn tool_call_arguments_render_against_the_case_vars() {
+        let message = Message {
+            content: None,
+            tool_calls: vec![ToolCallSpec {
+                id: None,
+                name: "lookup".into(),
+                arguments: serde_json::json!({"city": "{{ city }}", "limit": 5}),
+            }],
+            ..Message::text(ChatRole::Assistant, "")
+        };
+        let ctx = serde_json::json!({ "city": "Reykjavik" });
+        let out = render_one(&message, &ctx).unwrap();
+        assert_eq!(out.tool_calls[0].arguments["city"], "Reykjavik");
+        assert_eq!(
+            out.tool_calls[0].arguments["limit"],
+            serde_json::json!(5),
+            "a numeric argument must not become a string"
+        );
+    }
+
+    /// The one silent-failure mode this feature has: Anthropic's `signature` is
+    /// an integrity token over the exact thinking bytes, so rendering a
+    /// template inside them would invalidate the replay.
+    #[test]
+    fn a_thinking_block_is_never_templated() {
+        let message = Message {
+            content: Some(MessageContentSpec::Blocks(vec![
+                ContentBlockSpec::Thinking {
+                    thinking: "the city is {{ city }}".into(),
+                    signature: Some("ErUBCk".into()),
+                },
+                ContentBlockSpec::Text {
+                    text: "looking up {{ city }}".into(),
+                },
+            ])),
+            ..Message::text(ChatRole::Assistant, "")
+        };
+        let ctx = serde_json::json!({ "city": "Reykjavik" });
+        let out = render_one(&message, &ctx).unwrap();
+        match &out.content {
+            MessageContent::Blocks(blocks) => {
+                assert_eq!(
+                    blocks[0],
+                    ContentBlock::Thinking {
+                        thinking: "the city is {{ city }}".into(),
+                        signature: Some("ErUBCk".into()),
+                    },
+                    "thinking must survive verbatim, signature included"
+                );
+                // Prose beside it still renders normally.
+                assert_eq!(
+                    blocks[1],
+                    ContentBlock::Text {
+                        text: "looking up Reykjavik".into()
+                    }
+                );
+            }
+            other => panic!("expected blocks, got {other:?}"),
+        }
+    }
+
+    /// A call's `name` matches a declared `tools[].name`, which is not
+    /// templated either; an `id` is a correlation token the docs promise is
+    /// never interpreted.
+    #[test]
+    fn a_tool_call_name_and_id_are_not_templated() {
+        let message = Message {
+            content: None,
+            tool_calls: vec![ToolCallSpec {
+                id: Some("{{ city }}".into()),
+                name: "{{ city }}".into(),
+                arguments: Json::Null,
+            }],
+            ..Message::text(ChatRole::Assistant, "")
+        };
+        let out = render_one(&message, &serde_json::json!({ "city": "Reykjavik" })).unwrap();
+        assert_eq!(out.tool_calls[0].name, "{{ city }}");
+        assert_eq!(out.tool_calls[0].id.as_deref(), Some("{{ city }}"));
+    }
+
+    /// Enforced at render as well as in `validate`, because a `file://`
+    /// transcript is not read until run time.
+    #[test]
+    fn a_turn_with_neither_content_nor_calls_is_a_render_error() {
+        let message = Message {
+            role: ChatRole::User,
+            content: None,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        };
+        let err = render_one(&message, &serde_json::json!({})).unwrap_err();
+        assert!(
+            matches!(err, RenderError::BadTurn(_)),
+            "expected BadTurn, got {err:?}"
+        );
+    }
+
+    /// The cache tripwire at the render layer: a plain turn still renders to
+    /// exactly the two keys it always did.
+    #[test]
+    fn a_plain_turn_still_renders_to_the_same_two_keys() {
+        let out = render_one(
+            &Message::text(ChatRole::User, "{{ q }}"),
+            &serde_json::json!({ "q": "hi" }),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            serde_json::json!({"role": "user", "content": "hi"})
+        );
+    }
+
+    /// `protocol.md` promises an exec child a decoded arguments *object*, and
+    /// a call written without arguments must honour that rather than sending
+    /// `null` — which both vendor mappings already normalize away.
+    #[test]
+    fn a_call_without_arguments_renders_an_empty_object() {
+        let message = Message {
+            content: None,
+            tool_calls: vec![ToolCallSpec {
+                id: None,
+                name: "ping".into(),
+                arguments: Json::Null,
+            }],
+            ..Message::text(ChatRole::Assistant, "")
+        };
+        let out = render_one(&message, &serde_json::json!({})).unwrap();
+        assert_eq!(out.tool_calls[0].arguments, serde_json::json!({}));
     }
 }

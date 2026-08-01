@@ -206,7 +206,7 @@ fn every_example_behaves_as_its_row_claims() {
     // data, and generating per-row tests would need a macro whose expansion is
     // harder to read than this loop.
     assert!(!EXAMPLES.is_empty(), "the example table is empty");
-    for spec in EXAMPLES {
+    for spec in EXAMPLES.iter().copied() {
         verify(spec);
     }
 }

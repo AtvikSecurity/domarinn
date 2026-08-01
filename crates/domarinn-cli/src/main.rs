@@ -213,7 +213,7 @@ fn main() -> ExitCode {
             ImportFormat::Promptfoo => import::execute(path),
         },
         Command::GenTypes { dir } => cmd_gen_types(&dir),
-        Command::Validate { path } => cmd_validate(&path),
+        Command::Validate { path } => cmd_validate(&path, palette),
         Command::Schema { which } => cmd_schema(which),
         Command::List {
             what,
@@ -227,32 +227,65 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
-fn cmd_validate(path: &Path) -> u8 {
+/// Structural validation only. Warnings print but never change the exit code —
+/// exit `2` is documented as a config/usage error, and a shape that is merely
+/// *probably* wrong (an Anthropic assistant prefill is a real one) must stay
+/// runnable in CI.
+fn cmd_validate(path: &Path, palette: style::Palette) -> u8 {
     let (suite, raw) = match domarinn_core::loader::load_file_raw(path) {
         Ok(pair) => pair,
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("{} {e}", palette.fail("error:"));
             return exit::USAGE;
         }
     };
-    let issues = domarinn_core::validate(&suite, &raw);
-    if issues.is_empty() {
-        let file = domarinn_core::loader::resolve_suite_path(path);
-        println!(
-            "ok: {} — {} provider(s), {} prompt(s), {} test source(s)",
-            file.display(),
-            suite.providers.len(),
-            suite.prompts.len(),
-            suite.tests.len()
-        );
-        exit::OK
-    } else {
-        eprintln!("{} validation issue(s):", issues.len());
-        for issue in &issues {
-            eprintln!("  - {issue}");
+    let report = domarinn_core::validate(&suite, &raw);
+    let errors = report.errors().count();
+    let warnings = report.warnings().count();
+
+    if errors + warnings > 0 {
+        // Header keeps its exact pre-warnings wording when everything is an
+        // error, so the existing CLI tests and anyone grepping it are unmoved.
+        let header = if warnings == 0 {
+            format!("{} validation issue(s):", errors)
+        } else {
+            format!(
+                "{} validation issue(s) ({errors} error(s), {warnings} warning(s)):",
+                errors + warnings
+            )
+        };
+        eprintln!("{header}");
+        // Every line is labelled, always — a line whose shape depends on
+        // whether some *other* finding exists is miserable to read and to test.
+        for issue in report.issues() {
+            let label = match issue.severity {
+                domarinn_core::Severity::Error => palette.fail("error:"),
+                domarinn_core::Severity::Warning => palette.warn("warning:"),
+            };
+            eprintln!("  - {label} {issue}");
         }
-        exit::USAGE
     }
+
+    if errors > 0 {
+        return exit::USAGE;
+    }
+
+    let file = domarinn_core::loader::resolve_suite_path(path);
+    // The warning count rides the summary line so a green exit does not read as
+    // "nothing to see" when there is a block of advice on stderr.
+    let tail = if warnings > 0 {
+        format!(" ({warnings} warning(s))")
+    } else {
+        String::new()
+    };
+    println!(
+        "ok: {} — {} provider(s), {} prompt(s), {} test source(s){tail}",
+        file.display(),
+        suite.providers.len(),
+        suite.prompts.len(),
+        suite.tests.len()
+    );
+    exit::OK
 }
 
 fn cmd_schema(which: SchemaKind) -> u8 {

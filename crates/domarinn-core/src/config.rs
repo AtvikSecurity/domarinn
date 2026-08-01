@@ -10,8 +10,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-pub use crate::config_history::{HistoryMarker, HistorySpec, PromptEntry};
-use crate::types::ChatRole;
+pub use crate::config_history::{
+    ContentBlockSpec, HistoryMarker, HistorySpec, Message, MessageContentSpec, PromptEntry,
+    ToolCallSpec,
+};
 use crate::val::Val;
 
 /// A free-form bag of provider/grader parameters passed to the model verbatim.
@@ -311,14 +313,6 @@ pub struct Prompt {
     pub template: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages: Option<Vec<PromptEntry>>,
-}
-
-/// A chat message; `content` may be `file://path` to load from disk.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Message {
-    pub role: ChatRole,
-    pub content: String,
 }
 
 /// An entry in the `tests:` list.

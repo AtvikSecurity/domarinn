@@ -16,7 +16,7 @@ use crate::net::{api_key, http_client, parse_retry_after, status_error, transpor
 use crate::provider::{
     http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
 };
-use crate::types::{ChatRole, Output, RenderedPrompt, TokenUsage};
+use crate::types::{Output, RenderedPrompt, TokenUsage};
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -208,22 +208,15 @@ impl Provider for AnthropicProvider {
 }
 
 /// Convert a rendered prompt into (system, messages) for the Messages API.
+///
+/// The transcript arm lives in [`crate::chat_wire`], beside the OpenAI mapping
+/// it mirrors: the two disagree only about how a round of parallel tool
+/// results is folded, and that is far easier to keep correct when both folds
+/// are visible at once.
 fn to_messages(prompt: &RenderedPrompt) -> (Option<String>, Vec<Json>) {
     match prompt {
         RenderedPrompt::Text(text) => (None, vec![json!({"role": "user", "content": text})]),
-        RenderedPrompt::Messages(msgs) => {
-            let mut system: Vec<String> = Vec::new();
-            let mut out = Vec::new();
-            for m in msgs {
-                if m.role == ChatRole::System {
-                    system.push(m.content.clone());
-                } else {
-                    out.push(json!({"role": m.role, "content": m.content}));
-                }
-            }
-            let system = (!system.is_empty()).then(|| system.join("\n\n"));
-            (system, out)
-        }
+        RenderedPrompt::Messages(msgs) => crate::chat_wire::anthropic_messages(msgs),
     }
 }
 
@@ -242,7 +235,7 @@ fn join_blocks(blocks: &[Json], kind: &str) -> String {
 ///
 /// `input` is already a decoded object here — Anthropic sends it as JSON, not as
 /// a string, which is the half of the vendor split `openai.rs` has to undo.
-fn tool_calls_from_blocks(blocks: &[Json]) -> Vec<domarinn_types::result::ToolCall> {
+pub(crate) fn tool_calls_from_blocks(blocks: &[Json]) -> Vec<domarinn_types::result::ToolCall> {
     blocks
         .iter()
         .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
@@ -512,14 +505,8 @@ mod tests {
     #[test]
     fn system_messages_are_extracted() {
         let prompt = RenderedPrompt::Messages(vec![
-            crate::types::ChatMessage {
-                role: ChatRole::System,
-                content: "be nice".into(),
-            },
-            crate::types::ChatMessage {
-                role: ChatRole::User,
-                content: "hi".into(),
-            },
+            crate::types::ChatMessage::text(crate::types::ChatRole::System, "be nice"),
+            crate::types::ChatMessage::text(crate::types::ChatRole::User, "hi"),
         ]);
         let (system, messages) = to_messages(&prompt);
         assert_eq!(system.as_deref(), Some("be nice"));
@@ -536,14 +523,8 @@ mod tests {
         let req = ProviderRequest {
             tools: Vec::new(),
             prompt: Some(RenderedPrompt::Messages(vec![
-                crate::types::ChatMessage {
-                    role: ChatRole::System,
-                    content: "be nice".into(),
-                },
-                crate::types::ChatMessage {
-                    role: ChatRole::User,
-                    content: "hi".into(),
-                },
+                crate::types::ChatMessage::text(crate::types::ChatRole::System, "be nice"),
+                crate::types::ChatMessage::text(crate::types::ChatRole::User, "hi"),
             ])),
             ..Default::default()
         };
