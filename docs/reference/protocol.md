@@ -97,7 +97,16 @@ A single-turn prompt. This is what a suite's `template:` prompt renders to when 
 ] }
 ```
 
-A transcript. Each turn is `{ "role", "content" }`, where `role` is `system`, `user`, or `assistant`. This is what a `messages:` prompt renders to, and what *any* prompt renders to once the case has history.
+A transcript. Each turn is `{ "role", "content" }`, where `role` is `system`, `user`, `assistant`, or `tool`. This is what a `messages:` prompt renders to, and what *any* prompt renders to once the case has history.
+
+A turn may carry two more keys, **absent unless used**, so a tool-free transcript is byte-identical to what it always was:
+
+| Key | On | Notes |
+|---|---|---|
+| `tool_calls` | an `assistant` turn | The calls that turn made — `{ id?, name, arguments }`, exactly the shape you [report on the way out](#reporting-the-decision). `arguments` is the **decoded** object. |
+| `tool_call_id` | a `tool` turn | Which call this result answers. Absent when the transcript did not name one; results then pair with calls by position. |
+
+`content` is usually a string, but may be a list of typed blocks — `{ "type": "text", "text": … }` or `{ "type": "thinking", "thinking": …, "signature"? : … }` — when a transcript replays a model's reasoning. Treat a bare string as a single text block; if your upstream has no notion of reasoning, drop the `thinking` blocks rather than sending them as prose.
 
 The third case is **no `prompt` key at all** — the "self-input" suite, where there is no `prompts:` block and the case carries no history. Your provider works from `vars` alone.
 

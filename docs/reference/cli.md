@@ -49,7 +49,7 @@ The exit code is a **contract for CI** — it distinguishes "the model got worse
 |------|------|---------|
 | `0` | OK | Everything passed. |
 | `1` | assertion | An assertion failed, or a run regressed against a `--against` baseline. |
-| `2` | config/usage | Bad config or flags, a suite that fails to load or validate, a run that resolved to **zero cases**, or a missing / wrong-shaped provider credential. |
+| `2` | config/usage | Bad config or flags, a suite that fails to load or validate (a *warning* is not one of these), a run that resolved to **zero cases**, or a missing / wrong-shaped provider credential. |
 | `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, the server was unreachable, or a `--cache-only` run could not answer honestly (a miss, or a case whose `latency` assertion always needs a live call). |
 
 ---
@@ -121,7 +121,9 @@ See [domarinn.yaml](domarinn-yaml.md) for the suite file and [statistics.md](../
 
 ## `domarinn validate [PATH]`
 
-Parse and structurally validate a suite. **No provider calls.** Use it in pre-commit and CI to catch config errors fast. Exit `0` when valid (prints a one-line summary); exit `2` and lists issues otherwise.
+Parse and structurally validate a suite. **No provider calls.** Use it in pre-commit and CI to catch config errors fast. Exit `0` when the suite has no errors — it prints a one-line summary on stdout and any **warnings** on stderr; exit `2` and lists the issues otherwise.
+
+A **warning never changes the exit code.** Two shapes warn today: a case (or `defaults`) history whose first non-`system` turn is `assistant` *when the suite splices history at the front of a transcript*, and a turn whose `content` is empty. Both are near-certain provider 400s, and both are legal in principle — an Anthropic assistant prefill is the first one — so domarinn says so and gets out of the way. `domarinn run` reports the same warnings as `WARN` log lines and proceeds.
 
 ```sh
 domarinn validate examples/12-render-health

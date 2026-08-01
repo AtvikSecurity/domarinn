@@ -1,0 +1,20 @@
+# A tool-using transcript a case points at with
+# `history: file://convos/lookup.yaml`.
+#
+# The same shape as inline history, tool turns included — which is the point:
+# a trace captured from a real agent run is a file, not something you want
+# pasted into a suite.
+- role: user
+  content: "This jacket does not fit. What are my options?"
+- role: assistant
+  content: "Let me check what applies to your order."
+  tool_calls:
+    - id: call_policy
+      name: refund_policy
+      arguments:
+        category: apparel
+- role: tool
+  tool_call_id: call_policy
+  content: '{"window_days": 30, "condition": "unworn, tags attached"}'
+- role: assistant
+  content: "You have 30 days from delivery, provided the tags are still attached."

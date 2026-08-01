@@ -70,6 +70,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 39  | [A promptfoo config, converted](running-and-reporting.md#example-39--a-promptfoo-config-converted) | A promptfoo config and the suite `domarinn import promptfoo` turns it into, both shipped. |
 | 40  | [A rubric that sees the tool calls](models-grading-and-budgets.md#example-40--a-rubric-that-sees-the-tool-calls) | `include_tool_calls`, for grading the delegation decision instead of the prose. |
 | 41  | [Per-case conversation history](templates-and-test-data.md#example-41--per-case-conversation-history) | Each case brings its own prior turns, spliced at the prompt's `history` marker. |
+| 42  | [Replaying a tool-using transcript](templates-and-test-data.md#example-42--replaying-a-tool-using-transcript) | A turn that IS a tool call, the result that came back, and the reasoning behind it. |
 
 ## See also
 

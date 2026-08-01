@@ -423,4 +423,27 @@ pub const ROWS: &[Example] = &[
             cache_hits: 0,
         }],
     },
+    Example {
+        dir: "42-tool-call-history",
+        shows: "replaying a tool-using transcript: the call a turn made, the result \
+                that came back, and the reasoning behind it",
+        env: &[],
+        stub: &[],
+        stub_calls: 0,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(5),
+            case_ids: &[
+                "tools/replays-a-call",
+                "tools/parallel-round",
+                "tools/templated-arguments",
+                "tools/replays-thinking",
+                "tools/from-a-file",
+            ],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
 ];
