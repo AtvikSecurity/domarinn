@@ -253,7 +253,11 @@ export function AccessPanel({
                     : null}
                 </p>
               ) : (
-                <div className="mt-2 overflow-x-auto">
+                <div className="relative mt-2 overflow-x-auto">
+                  {/* `relative` above: contains the trailing Actions column's
+                      `sr-only` header, which is `position: absolute` and
+                      escapes a scroller that is not a containing block. See
+                      SetsPage for the full account. */}
                   <table className="w-full min-w-[420px] text-sm">
                     <thead>
                       <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">

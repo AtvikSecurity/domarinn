@@ -48,7 +48,14 @@ export function SetsPage() {
         <NoSets />
       ) : (
         <Card padding="flush">
-          <div className="overflow-x-auto">
+          {/* `relative` is load-bearing, not decoration. `sr-only` is
+              `position: absolute`, and without a positioned ancestor its
+              containing block is the document — so the visually-hidden header
+              of the trailing Access column, sitting ~765px into a 760px-wide
+              table, widened the *page* rather than this scroller and gave
+              /sets a sideways scrollbar at phone widths. Making the scroll
+              container the containing block keeps that overflow in here. */}
+          <div className="relative overflow-x-auto">
             <table className="w-full min-w-[760px] text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">

@@ -229,7 +229,10 @@ export function SetSuitePage() {
         ) : (
           <>
             <Card padding="flush">
-              <div className="overflow-x-auto">
+              {/* `relative`: contains the `sr-only` column headers, which are
+                  `position: absolute` and escape a scroller that is not a
+                  containing block. See SetsPage for the full account. */}
+              <div className="relative overflow-x-auto">
                 <table className="w-full min-w-[900px] text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
