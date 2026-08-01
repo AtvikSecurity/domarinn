@@ -27,6 +27,13 @@ import {
   isoFromEpoch,
   parseTimestamp,
 } from "@/lib/format";
+import {
+  comparePath,
+  runPath,
+  runsFilterHref,
+  setsPath,
+} from "@/lib/routes";
+import { useRowNav } from "@/lib/useRowNav";
 import { AccessPanel } from "./AccessPanel";
 
 /** From a pair of selected run ids, resolve which is base (older) / head (newer). */
@@ -73,6 +80,7 @@ export function SetSuitePage() {
     [runsQ.data],
   );
   const [selected, setSelected] = useState<string[]>([]);
+  const rowNav = useRowNav();
 
   if (q.isPending) return <CenteredSpinner label="Loading suite…" />;
   if (q.isError) {
@@ -84,7 +92,7 @@ export function SetSuitePage() {
   const last = isoFromEpoch(detail.last_run_at);
   const canOpenAccess = view.canAdmin || detail.my_level === "manage";
   const pair = comparePair(runs, selected);
-  const runsHref = `/runs?project=${encodeURIComponent(project)}&suite=${encodeURIComponent(suite)}&cached=all`;
+  const runsHref = runsFilterHref(project, suite);
 
   function toggle(id: string) {
     setSelected((prev) =>
@@ -100,7 +108,7 @@ export function SetSuitePage() {
         <Breadcrumb
           items={[
             { label: "Sets", to: "/sets" },
-            { label: project, to: `/sets/${encodeURIComponent(project)}` },
+            { label: project, to: setsPath(project) },
             { label: suite },
           ]}
         />
@@ -191,7 +199,7 @@ export function SetSuitePage() {
               {pair ? (
                 // Server contract: first url segment = base, second = head.
                 <Link
-                  to={`/runs/${encodeURIComponent(pair.baseId)}/compare/${encodeURIComponent(pair.headId)}`}
+                  to={comparePath(pair.baseId, pair.headId)}
                 >
                   <Button variant="primary" size="sm">
                     Compare 2 runs
@@ -259,7 +267,12 @@ export function SetSuitePage() {
                       return (
                         <tr
                           key={r.id}
-                          className={`border-b border-border/60 last:border-0 hover:bg-surface-2${dimmed ? " opacity-60" : ""}`}
+                          // The selection checkbox and the Compare link keep
+                          // their own clicks: `useRowNav` bails on any real
+                          // control in the row, so picking two runs to compare
+                          // never navigates away mid-selection.
+                          {...rowNav(runPath(r.id))}
+                          className={`cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2${dimmed ? " opacity-60" : ""}`}
                         >
                           <td className="px-3 py-2">
                             {/* The label is the hit target: an input's own 16px
@@ -277,7 +290,7 @@ export function SetSuitePage() {
                           <td className="px-4 py-2">
                             <span className="flex items-center gap-1">
                               <Link
-                                to={`/runs/${encodeURIComponent(r.id)}`}
+                                to={runPath(r.id)}
                                 className="font-medium text-accent hover:underline"
                               >
                                 {r.id}
@@ -324,7 +337,7 @@ export function SetSuitePage() {
                           <td className="px-3 py-2 text-right">
                             {compareTarget ? (
                               <Link
-                                to={`/runs/${encodeURIComponent(compareTarget.id)}/compare/${encodeURIComponent(r.id)}`}
+                                to={comparePath(compareTarget.id, r.id)}
                                 className="text-xs font-medium text-accent hover:underline"
                                 title={`Compare against ${compareTarget.id}`}
                               >

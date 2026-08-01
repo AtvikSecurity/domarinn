@@ -48,6 +48,25 @@ test.describe("Run sets", () => {
     await expect(page).toHaveURL(/\/sets$/);
   });
 
+  test("the whole row navigates, not just its first cell", async ({ page }) => {
+    await page.goto("/sets");
+    // Click a cell that holds no link of its own. The row already had a hover
+    // tint; before this it pointed at nothing.
+    await page
+      .getByTestId("set-row-checkout-agent")
+      .getByRole("cell")
+      .nth(1)
+      .click();
+    await expect(page).toHaveURL(/\/sets\/checkout-agent$/);
+
+    await page
+      .getByTestId("suite-row-regression")
+      .getByRole("cell")
+      .nth(1)
+      .click();
+    await expect(page).toHaveURL(/\/sets\/checkout-agent\/regression$/);
+  });
+
   test("says which projects are restricted", async ({ page }) => {
     await page.goto("/sets");
     await expect(page.getByTestId("set-row-support-bot")).toContainText(
