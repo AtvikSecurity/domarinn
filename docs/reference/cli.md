@@ -123,7 +123,9 @@ See [domarinn.yaml](domarinn-yaml.md) for the suite file and [statistics.md](../
 
 Parse and structurally validate a suite. **No provider calls.** Use it in pre-commit and CI to catch config errors fast. Exit `0` when the suite has no errors — it prints a one-line summary on stdout and any **warnings** on stderr; exit `2` and lists the issues otherwise.
 
-A **warning never changes the exit code.** Two shapes warn today: a case (or `defaults`) history whose first non-`system` turn is `assistant` *when the suite splices history at the front of a transcript*, and a turn whose `content` is empty. Both are near-certain provider 400s, and both are legal in principle — an Anthropic assistant prefill is the first one — so domarinn says so and gets out of the way. `domarinn run` reports the same warnings as `WARN` log lines and proceeds.
+A **warning never changes the exit code.** Three shapes warn today: a case (or `defaults`) history whose first non-`system` turn is `assistant`, or is `tool` — both only *when the suite splices history at the front of a transcript* — and a turn whose `content` is empty. All three are near-certain provider 400s and all three are legal in principle (an Anthropic assistant prefill is the first), so domarinn says so and gets out of the way. `domarinn run` reports the same warnings as `WARN` log lines and proceeds.
+
+One transcript problem is an **error**, not a warning: a turn with neither `content` nor `tool_calls` cannot mean anything to any provider, so it exits `2` like any other malformed suite.
 
 ```sh
 domarinn validate examples/12-render-health

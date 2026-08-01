@@ -235,7 +235,7 @@ fn cmd_validate(path: &Path, palette: style::Palette) -> u8 {
     let (suite, raw) = match domarinn_core::loader::load_file_raw(path) {
         Ok(pair) => pair,
         Err(e) => {
-            eprintln!("{} {e}", palette.error("error:"));
+            eprintln!("{} {e}", palette.fail("error:"));
             return exit::USAGE;
         }
     };
@@ -259,7 +259,7 @@ fn cmd_validate(path: &Path, palette: style::Palette) -> u8 {
         // whether some *other* finding exists is miserable to read and to test.
         for issue in report.issues() {
             let label = match issue.severity {
-                domarinn_core::Severity::Error => palette.error("error:"),
+                domarinn_core::Severity::Error => palette.fail("error:"),
                 domarinn_core::Severity::Warning => palette.warn("warning:"),
             };
             eprintln!("  - {label} {issue}");

@@ -290,7 +290,6 @@ A custom grader. Receives the provider's output plus context and returns a `Grad
   "domarinn": { "protocol": 1, "kind": "assert" },
   "output": "hello, world",
   "test": { "id": "greeting/basic", "tags": ["smoke"] },
-  "prompt": null,
   "provider": { "id": "renderer" },
   "config": { "value": "hello" },
   "vars": { "user_input": "hello world" },
@@ -304,7 +303,7 @@ A custom grader. Receives the provider's output plus context and returns a `Grad
 |------------|-----------------|-------|
 | `output`   | any JSON        | **Required.** The provider output to grade. |
 | `test`     | object          | `{ "id", "tags" }`, as above. |
-| `prompt`   | `null`          | Reserved, and **always `null` today** — domarinn does not currently forward the prompt to an exec assert. Do not grade on it; read `output`, `vars`, and `tool_calls` instead. When it is populated it will use the [provider request's shapes](#the-prompt-shapes). |
+| `prompt`   | —               | Reserved, and **never sent today**: domarinn does not forward the prompt to an exec assert, and the key is omitted rather than set to `null` — so do not index it. Grade from `output`, `vars`, and `tool_calls`. If it is ever populated it will use the [provider request's shapes](#the-prompt-shapes). |
 | `provider` | object          | `{ "id": string }` — which provider produced the output. |
 | `config`   | any JSON        | The assertion's own config block from the suite. Defaults to `{}`. |
 | `vars`     | any JSON object | The case's rendered variables — for an assert request this is the full render context, including an `env` object snapshotting the parent's environment. The child receives `env` in this document even though its own spawned environment is empty; the cache key excludes it. Defaults to `{}`. |

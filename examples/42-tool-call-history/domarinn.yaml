@@ -138,9 +138,9 @@ tests:
   #
   # The corollary is worth stating, because it is easy to trip over: a leaf you
   # template is a STRING on the way out. `{order_id: "{{ order }}"}` sends
-  # `"7"`, not `7`. To vary a numeric argument per case, put the whole
-  # `arguments` object in a var instead — a raw var passes through untouched,
-  # so its numbers survive.
+  # `"7"`, not `7` — and so does a whole-value `arguments: "{{ some_var }}"`,
+  # since templating is string-in/string-out at every leaf. A non-string
+  # argument therefore has to be written literally, as `order_id` is below.
   - id: tools/templated-arguments
     history:
       - role: user
