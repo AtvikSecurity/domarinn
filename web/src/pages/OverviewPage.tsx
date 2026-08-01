@@ -5,6 +5,7 @@ const MAX_PAGES = 10;
 import type { RunListItem } from "@/api";
 import { useRuns } from "@/api/queries";
 import { severityRank, suiteSeverity } from "@/lib/signals";
+import { suitePath } from "@/lib/routes";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { SuiteHealthCard } from "./overview/SuiteHealthCard";
@@ -44,12 +45,21 @@ export function OverviewPage() {
 
   const suites = useMemo(() => {
     const all: RunListItem[] = (runs.data?.pages ?? []).flatMap((p) => p.runs);
-    const groups = new Map<string, { project: string; suite: string; runs: RunListItem[] }>();
+    const groups = new Map<
+      string,
+      { project: string; suite: string; to: string | null; runs: RunListItem[] }
+    >();
     for (const r of all) {
       const project = r.project ?? "(no project)";
       const suite = r.suite ?? "(no suite)";
+      // The set link is built from the RAW values, never the display strings:
+      // a run that declared neither has no set, and linking the "(no project)"
+      // placeholder would route confidently to a guaranteed 404. Truthiness
+      // rather than a null check, because an empty name yields `/sets//x`,
+      // which matches no route either.
+      const to = r.project && r.suite ? suitePath(r.project, r.suite) : null;
       const key = `${project}/${suite}`;
-      const g = groups.get(key) ?? { project, suite, runs: [] };
+      const g = groups.get(key) ?? { project, suite, to, runs: [] };
       g.runs.push(r);
       groups.set(key, g);
     }
@@ -90,6 +100,7 @@ export function OverviewPage() {
             key={`${s.project}/${s.suite}`}
             project={s.project}
             suite={s.suite}
+            to={s.to}
             runs={s.runs}
             now={now}
           />

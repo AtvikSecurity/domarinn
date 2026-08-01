@@ -19,7 +19,9 @@ import {
   formatDuration,
   formatInt,
   formatTokens,
+  shortRunId,
 } from "@/lib/format";
+import { setsPath, suitePath } from "@/lib/routes";
 import { PassRateBadge } from "@/components/PassRateBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
@@ -231,11 +233,33 @@ export function RunDetail() {
       <div className="shrink-0 rounded-xl border border-border bg-surface p-4">
         <div className="flex flex-wrap items-start gap-4">
           <div className="min-w-0">
+            {/* The run id is the trail's last crumb, and that is a fix rather
+                than a flourish: `Breadcrumb` marks its final item
+                `aria-current="page"`, so ending at the suite told a screen
+                reader you were standing on the suite while you were in fact
+                standing on a run. Terminating at the run makes the claim true
+                and frees the suite to be a link.
+
+                Both crumbs need `project`, since a set is addressed by the
+                pair; `||` rather than `??` so an empty name is rejected too,
+                and a run that declared neither renders exactly as before —
+                `Breadcrumb` already draws a crumb without a `to` as inert
+                muted text. */}
             <Breadcrumb
               items={[
                 { label: "Runs", to: "/runs" },
-                { label: r.project ?? "—" },
-                { label: r.suite ?? "—" },
+                {
+                  label: r.project || "—",
+                  to: r.project ? setsPath(r.project) : undefined,
+                },
+                {
+                  label: r.suite || "—",
+                  to:
+                    r.project && r.suite
+                      ? suitePath(r.project, r.suite)
+                      : undefined,
+                },
+                { label: shortRunId(r.id) },
               ]}
             />
             <h1 className="mt-0.5 font-mono text-lg font-semibold tracking-tight">

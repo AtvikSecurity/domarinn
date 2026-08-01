@@ -19,6 +19,8 @@ import {
   formatRelative,
   isoFromEpoch,
 } from "@/lib/format";
+import { suitePath } from "@/lib/routes";
+import { useRowNav } from "@/lib/useRowNav";
 import { AccessPanel } from "./AccessPanel";
 
 /**
@@ -33,6 +35,7 @@ export function SetProjectPage() {
   const view = useAuthView();
   const q = useSetProject(project);
   const [accessOpen, setAccessOpen] = useState(false);
+  const rowNav = useRowNav();
 
   if (q.isPending) return <CenteredSpinner label="Loading project…" />;
   if (q.isError) {
@@ -85,7 +88,10 @@ export function SetProjectPage() {
       </div>
 
       <Card padding="flush">
-        <div className="overflow-x-auto">
+        {/* `relative`: contains the trailing Flags column's `sr-only` header,
+            which is `position: absolute` and would otherwise widen the page
+            instead of this scroller. See SetsPage for the full account. */}
+        <div className="relative overflow-x-auto scroll-hint">
           <table className="w-full min-w-[820px] text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
@@ -106,11 +112,12 @@ export function SetProjectPage() {
                   <tr
                     key={s.suite}
                     data-testid={`suite-row-${s.suite}`}
-                    className="border-b border-border/60 last:border-0 hover:bg-surface-2/60"
+                    {...rowNav(suitePath(project, s.suite))}
+                    className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2/60"
                   >
                     <td className="px-4 py-2">
                       <Link
-                        to={`/sets/${encodeURIComponent(project)}/${encodeURIComponent(s.suite)}`}
+                        to={suitePath(project, s.suite)}
                         className="rounded-sm font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         {s.suite}

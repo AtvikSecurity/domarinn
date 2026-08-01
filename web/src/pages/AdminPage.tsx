@@ -105,7 +105,7 @@ export function AdminPage() {
             <EmptyState title="No users" />
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto scroll-hint">
             <table className="w-full min-w-[760px] text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">

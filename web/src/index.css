@@ -108,6 +108,31 @@ body {
   background-clip: content-box;
 }
 
+/* Says "there is more this way" on a horizontally scrolling table.
+ *
+ * The wide tables are readable on a desktop and clipped on a phone, where a
+ * scrollbar only appears mid-gesture — so the columns past the right edge
+ * simply looked absent. Two pairs of gradients do this with no JS and no
+ * measuring: the `local` covers scroll with the content, the `scroll` shadows
+ * are pinned to the box, and a cover parks over its shadow exactly when that
+ * end is reached. A table that fits sits at both ends at once, so both shadows
+ * stay hidden and nothing is claimed that is not true.
+ *
+ * Painted as the element's background, i.e. behind the rows — which are
+ * transparent apart from their hover tint — so it reads as a soft edge rather
+ * than an overlay. */
+.scroll-hint {
+  background:
+    linear-gradient(to right, var(--surface), transparent) 0 0 / 28px 100%
+      no-repeat local,
+    linear-gradient(to left, var(--surface), transparent) 100% 0 / 28px 100%
+      no-repeat local,
+    linear-gradient(to right, var(--border-strong), transparent) 0 0 / 14px 100%
+      no-repeat scroll,
+    linear-gradient(to left, var(--border-strong), transparent) 100% 0 / 14px
+      100% no-repeat scroll;
+}
+
 /* Radix overlay/content animation primitives. */
 @keyframes overlay-in {
   from {

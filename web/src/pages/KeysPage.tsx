@@ -135,7 +135,7 @@ export function KeysPage() {
             </EmptyState>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto scroll-hint">
             <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">

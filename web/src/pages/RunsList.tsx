@@ -14,6 +14,8 @@ import {
   parseTimestamp,
   passRate,
 } from "@/lib/format";
+import { comparePath, runPath, suitePath } from "@/lib/routes";
+import { useRowNav } from "@/lib/useRowNav";
 import { RunsFilterBar } from "@/components/RunsFilterBar";
 import { Sparkline } from "@/components/Sparkline";
 import { PassRateBadge } from "@/components/PassRateBadge";
@@ -161,6 +163,7 @@ export function RunsList() {
 
 function SuiteGroup({ group }: { group: Group }) {
   const [selected, setSelected] = useState<string[]>([]);
+  const rowNav = useRowNav();
 
   // Prefer the server's authoritative pass-rate series + pinned baseline
   // (deduped per project by TanStack Query). Fall back to the client-computed
@@ -189,10 +192,29 @@ function SuiteGroup({ group }: { group: Group }) {
     <section className="overflow-hidden rounded-xl border border-border bg-surface">
       <header className="flex items-center gap-3 border-b border-border px-4 py-2.5">
         <div className="min-w-0">
+          {/* The group is named by the set it belongs to, so it links there.
+              Only the text, not the whole header — the header also carries the
+              Compare and Clear buttons. Heading colour rather than accent, to
+              match the overview cards: this is the group's identity, not one
+              more inline link. */}
           <div className="truncate text-sm font-semibold">
-            {group.project}
-            <span className="text-muted"> / </span>
-            {group.suite}
+            {group.project && group.suite ? (
+              <Link
+                to={suitePath(group.project, group.suite)}
+                className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {group.project}
+                <span className="text-muted"> / </span>
+                {group.suite}
+              </Link>
+            ) : (
+              // A run that declared neither has no set to link to.
+              <>
+                {group.project}
+                <span className="text-muted"> / </span>
+                {group.suite}
+              </>
+            )}
           </div>
           <div className="text-xs text-muted">{group.runs.length} loaded runs</div>
         </div>
@@ -206,7 +228,7 @@ function SuiteGroup({ group }: { group: Group }) {
                 // Server contract: first url segment = base, second = head
                 // (Path((id, other)) -> { base: id, head: other }). The
                 // older run is the base; the newer is the head.
-                <Link to={`/runs/${encodeURIComponent(pair.baseId)}/compare/${encodeURIComponent(pair.headId)}`}>
+                <Link to={comparePath(pair.baseId, pair.headId)}>
                   <Button variant="primary" size="sm">
                     Compare 2 runs
                   </Button>
@@ -237,7 +259,10 @@ function SuiteGroup({ group }: { group: Group }) {
           />
         </div>
       </header>
-      <div className="overflow-x-auto">
+      {/* `relative`: contains the Select column's `sr-only` header. Harmless
+          today only because that column is leftmost; see SetsPage, where the
+          same markup in a trailing column gave the page a sideways scroll. */}
+      <div className="relative overflow-x-auto scroll-hint">
         <table className="w-full min-w-[1080px] text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
@@ -272,7 +297,10 @@ function SuiteGroup({ group }: { group: Group }) {
               return (
               <tr
                 key={r.id}
-                className={`border-b border-border/60 last:border-0 hover:bg-surface-2${dimmed ? " opacity-60" : ""}`}
+                // Pointer convenience only; the checkbox and the Compare link
+                // in this row keep their own clicks (see `useRowNav`).
+                {...rowNav(runPath(r.id))}
+                className={`cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2${dimmed ? " opacity-60" : ""}`}
               >
                 <td className="px-3 py-2">
                   {/* The label is the hit target: padding a parent does not
@@ -291,7 +319,7 @@ function SuiteGroup({ group }: { group: Group }) {
                 <td className="px-4 py-2">
                   <span className="flex items-center gap-1">
                     <Link
-                      to={`/runs/${encodeURIComponent(r.id)}`}
+                      to={runPath(r.id)}
                       className="font-medium text-accent hover:underline"
                     >
                       {r.id}
@@ -374,7 +402,7 @@ function SuiteGroup({ group }: { group: Group }) {
                 <td className="px-3 py-2 text-right">
                   {compareTarget ? (
                     <Link
-                      to={`/runs/${encodeURIComponent(compareTarget.id)}/compare/${encodeURIComponent(r.id)}`}
+                      to={comparePath(compareTarget.id, r.id)}
                       className="text-xs font-medium text-accent hover:underline"
                       title={`Compare against ${compareTarget.id}`}
                     >

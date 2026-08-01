@@ -410,6 +410,10 @@ function DeltaTable({
                 <button
                   onClick={() => onToggleCase(row.case_key)}
                   aria-expanded={isOpen}
+                  // Names the row for the e2e specs, which previously picked
+                  // rows out by `aria-expanded` alone — true only for as long
+                  // as nothing else on the page happened to be expandable.
+                  data-delta-row=""
                   className={cn(
                     "grid w-full items-center px-4 py-2 text-left text-sm outline-none hover:bg-surface-2 focus-visible:bg-surface-2",
                     isOpen && "bg-surface-2",

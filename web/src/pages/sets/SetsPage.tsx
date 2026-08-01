@@ -6,6 +6,8 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { EmptyState, ErrorState } from "@/components/States";
+import { setsPath } from "@/lib/routes";
+import { useRowNav } from "@/lib/useRowNav";
 import { Sparkline } from "@/components/Sparkline";
 import {
   formatDateAbsolute,
@@ -28,6 +30,7 @@ const PROJECT_SNIPPET = `project: checkout-agent\nsuite: regression`;
 export function SetsPage() {
   const q = useSets();
   const projects = q.data?.projects ?? [];
+  const rowNav = useRowNav();
 
   return (
     <div className="space-y-5">
@@ -48,7 +51,14 @@ export function SetsPage() {
         <NoSets />
       ) : (
         <Card padding="flush">
-          <div className="overflow-x-auto">
+          {/* `relative` is load-bearing, not decoration. `sr-only` is
+              `position: absolute`, and without a positioned ancestor its
+              containing block is the document — so the visually-hidden header
+              of the trailing Access column, sitting ~765px into a 760px-wide
+              table, widened the *page* rather than this scroller and gave
+              /sets a sideways scrollbar at phone widths. Making the scroll
+              container the containing block keeps that overflow in here. */}
+          <div className="relative overflow-x-auto scroll-hint">
             <table className="w-full min-w-[760px] text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
@@ -71,12 +81,18 @@ export function SetsPage() {
                     <tr
                       key={p.project}
                       data-testid={`set-row-${p.project}`}
-                      className="border-b border-border/60 last:border-0 hover:bg-surface-2/60"
+                      // The row already had a hover tint but only its first
+                      // cell navigated, so the highlight promised a target
+                      // that was not there. `cursor-pointer` and the row-level
+                      // handler make the promise true; the link below stays the
+                      // tab stop and the accessible name.
+                      {...rowNav(setsPath(p.project))}
+                      className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2/60"
                     >
                       <td className="px-4 py-2">
                         {/* Project names are words, not ids — no font-mono. */}
                         <Link
-                          to={`/sets/${encodeURIComponent(p.project)}`}
+                          to={setsPath(p.project)}
                           className="rounded-sm font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           {p.project}

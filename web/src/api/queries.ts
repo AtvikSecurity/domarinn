@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -6,6 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { apiRequest } from "./client";
+import { rankProjects } from "@/lib/setSearch";
 import type {
   ApiKeyCreatedResponse,
   ApiKeyListResponse,
@@ -358,12 +360,47 @@ function setPath(project: string, suite: string | null): string {
   return suite === null ? base : `${base}/suites/${encodeURIComponent(suite)}`;
 }
 
-/** Every project with at least one run this caller may see (`GET /sets`). */
-export function useSets() {
+/**
+ * Every project with at least one run this caller may see (`GET /sets`).
+ *
+ * `enabled` exists for the header search bar, which mounts on every page but
+ * is opened on few of them. This is an aggregate behind a visibility join, not
+ * a lookup, so it is not a request to make on every page view.
+ */
+export function useSets(opts: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: qk.sets(),
     queryFn: ({ signal }) => apiRequest<SetsResponse>("/sets", { signal }),
+    enabled: opts.enabled ?? true,
   });
+}
+
+/**
+ * Name-matched projects for a search query.
+ *
+ * Client-side over the cached `/sets` listing, because the server's `/search`
+ * indexes run and case *contents* and has no notion of a project as a
+ * destination. Deriving the list from cached run pages instead would be free
+ * but wrong: it would be partial, stale, and blind to grants, so a restricted
+ * project would appear or not depending on which pages you had visited.
+ *
+ * Callers gate this on the search UI being open, and must keep gating on that
+ * rather than on the query string — re-disabling between debounce ticks would
+ * throw the cache away and refetch exactly when someone is waiting.
+ */
+export function useSetSearch(
+  query: string,
+  opts: { enabled?: boolean; limit?: number } = {},
+) {
+  const enabled = opts.enabled ?? true;
+  const limit = opts.limit ?? 5;
+  const sets = useSets({ enabled });
+  const projects = sets.data?.projects;
+  const matches = useMemo(
+    () => rankProjects(projects ?? [], query, limit),
+    [projects, query, limit],
+  );
+  return { matches, isPending: sets.isPending, isError: sets.isError };
 }
 
 /**

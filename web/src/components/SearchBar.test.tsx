@@ -31,16 +31,20 @@ describe("SearchBar", () => {
     const user = userEvent.setup();
     renderBar();
 
-    const input = screen.getByRole("combobox", { name: "Search runs and cases" });
+    const input = screen.getByRole("combobox", { name: "Search sets, runs and cases" });
     await user.type(input, "checkout");
 
-    // Debounce (200ms) then the mock responds; the group label appears
-    // ("checkout" matches run metadata only, so just the Runs group).
+    // Debounce (200ms) then the mock responds. "checkout" matches both the
+    // `checkout-agent` project by name and run metadata full-text, so the
+    // panel carries a Sets group above a Runs group.
     expect(await screen.findByText("Runs")).toBeInTheDocument();
+    expect(screen.getByText("Sets")).toBeInTheDocument();
 
-    // Click the first hit: a run hit navigates to its run page.
-    const options = screen.getAllByRole("button").filter((b) =>
-      b.textContent?.includes("/"),
+    // Click the first hit: a run hit navigates to its run page. Selected by
+    // `data-search-hit`, not by row copy: matching on text meant the assertion
+    // silently depended on which groups the dropdown happened to render.
+    const options = document.querySelectorAll<HTMLElement>(
+      '[data-search-hit="run"]',
     );
     expect(options.length).toBeGreaterThan(0);
     await user.click(options[0]!);
@@ -53,7 +57,7 @@ describe("SearchBar", () => {
     const user = userEvent.setup();
     renderBar();
 
-    const input = screen.getByRole("combobox", { name: "Search runs and cases" });
+    const input = screen.getByRole("combobox", { name: "Search sets, runs and cases" });
     await user.type(input, "checkout{Enter}");
 
     await waitFor(() =>
@@ -63,11 +67,34 @@ describe("SearchBar", () => {
     );
   });
 
+  it("offers matching sets, above the full-text groups", async () => {
+    const user = userEvent.setup();
+    renderBar();
+
+    const input = screen.getByRole("combobox", {
+      name: "Search sets, runs and cases",
+    });
+    await user.type(input, "checkout");
+    expect(await screen.findByText("Sets")).toBeInTheDocument();
+
+    // Sets come first so that a late server response only ever appends, and
+    // the indices the arrow keys sit on never shift underneath.
+    const rows = [...document.querySelectorAll<HTMLElement>("[data-search-hit]")];
+    expect(rows[0]?.dataset.searchHit).toBe("set");
+
+    await user.click(rows[0]!);
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/sets/checkout-agent",
+      ),
+    );
+  });
+
   it("Escape closes the dropdown", async () => {
     const user = userEvent.setup();
     renderBar();
 
-    const input = screen.getByRole("combobox", { name: "Search runs and cases" });
+    const input = screen.getByRole("combobox", { name: "Search sets, runs and cases" });
     await user.type(input, "checkout");
     expect(await screen.findByText("Runs")).toBeInTheDocument();
 

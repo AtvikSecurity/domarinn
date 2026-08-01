@@ -249,5 +249,25 @@ test.describe("Run detail", () => {
     expect(rows!.stats).toBeGreaterThan(6);
     expect(rows!.rows).toBe(1);
   });
-});
 
+  test("the breadcrumb ends at the run and links up into its set", async ({
+    page,
+  }) => {
+    await page.goto(`/runs/${MONEY_RUN}`);
+    const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
+
+    // Ending at the suite marked the suite as the current page while we are
+    // in fact on a run. The run id terminates the trail instead.
+    await expect(crumbs.getByText("checkout-agent-regression-12")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await crumbs.getByRole("link", { name: "regression" }).click();
+    await expect(page).toHaveURL(/\/sets\/checkout-agent\/regression$/);
+
+    await page.goBack();
+    await crumbs.getByRole("link", { name: "checkout-agent" }).click();
+    await expect(page).toHaveURL(/\/sets\/checkout-agent$/);
+  });
+});

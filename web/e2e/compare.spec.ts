@@ -70,12 +70,13 @@ test.describe("Compare view", () => {
     // Every filtered row is flagged "changed" in the Output column.
     await expect(page.getByText("changed").first()).toBeVisible();
 
-    // Expanding a row reveals the side-by-side / word diff. Only row buttons
-    // carry the aria-expanded attribute (chips use aria-pressed), so this
-    // attribute selector targets a row precisely.
-    const firstRow = page.locator('button[aria-expanded="false"]').first();
+    // Expanding a row reveals the side-by-side / word diff. Rows are named by
+    // `data-delta-row`: selecting on aria-expanded alone held only while
+    // nothing else on the page was expandable, which is not a property this
+    // spec can rely on.
+    const firstRow = page.locator('[data-delta-row][aria-expanded="false"]').first();
     await firstRow.click();
-    await expect(page.locator('button[aria-expanded="true"]')).toHaveCount(1);
+    await expect(page.locator('[data-delta-row][aria-expanded="true"]')).toHaveCount(1);
 
     // The diff renders "Base"/"Head" columns in addition to the delta-table
     // column headers, so each label now appears twice.
@@ -152,8 +153,8 @@ test.describe("Compare view", () => {
     // Filter to output-changed rows so the diff has real content, then expand
     // the first one.
     await page.getByRole("button", { name: /^Output changed \d+$/ }).click();
-    await page.locator('button[aria-expanded="false"]').first().click();
-    await expect(page.locator('button[aria-expanded="true"]')).toHaveCount(1);
+    await page.locator('[data-delta-row][aria-expanded="false"]').first().click();
+    await expect(page.locator('[data-delta-row][aria-expanded="true"]')).toHaveCount(1);
 
     // Default is the side-by-side pane with no ?diff= param.
     await expect(page.locator('[data-diff-mode="side"]')).toBeVisible();
@@ -181,8 +182,8 @@ test.describe("Compare view", () => {
     // No row is expanded initially (no ?case=).
     expect(caseParam(page)).toBeNull();
 
-    await page.locator('button[aria-expanded="false"]').first().click();
-    await expect(page.locator('button[aria-expanded="true"]')).toHaveCount(1);
+    await page.locator('[data-delta-row][aria-expanded="false"]').first().click();
+    await expect(page.locator('[data-delta-row][aria-expanded="true"]')).toHaveCount(1);
 
     const caseKey = caseParam(page);
     expect(caseKey).toBeTruthy();
@@ -190,7 +191,7 @@ test.describe("Compare view", () => {
     // Deep-load the same URL: the row auto-expands from ?case=.
     await page.reload();
     await expect(page.getByRole("heading", { name: "Compare" })).toBeVisible();
-    await expect(page.locator('button[aria-expanded="true"]')).toHaveCount(1);
+    await expect(page.locator('[data-delta-row][aria-expanded="true"]')).toHaveCount(1);
     expect(caseParam(page)).toBe(caseKey);
 
     // Deep-load a far-down case directly: the virtualized row is scrolled into
@@ -199,7 +200,7 @@ test.describe("Compare view", () => {
       `/runs/${MONEY_RUN_BASELINE}/compare/${MONEY_RUN}?case=case-0400`,
     );
     await expect(page.getByRole("heading", { name: "Compare" })).toBeVisible();
-    await expect(page.locator('button[aria-expanded="true"]')).toHaveCount(1);
+    await expect(page.locator('[data-delta-row][aria-expanded="true"]')).toHaveCount(1);
   });
 
   test("shows the McNemar significance panel with regression/fix counts and Wilson bars", async ({
@@ -289,8 +290,8 @@ test.describe("Compare view", () => {
     // Newly-failing cases flip a case pass→fail; the first such row is a
     // pass→fail case whose culprit assertion flipped too (deterministic fixture).
     await page.getByRole("button", { name: /^Newly failing \d+$/ }).click();
-    await page.locator('button[aria-expanded="false"]').first().click();
-    await expect(page.locator('button[aria-expanded="true"]')).toHaveCount(1);
+    await page.locator('[data-delta-row][aria-expanded="false"]').first().click();
+    await expect(page.locator('[data-delta-row][aria-expanded="true"]')).toHaveCount(1);
 
     const transitions = page.getByTestId("assert-transitions");
     await expect(transitions).toBeVisible();
