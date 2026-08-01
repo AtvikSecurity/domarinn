@@ -1,20 +1,27 @@
-//! Transcript-shape warnings: the two history mistakes that are near-certain
-//! provider 400s, reported at author time instead of run time.
-//!
-//! Both are **warnings**, never errors. Role ordering is deliberately not
-//! validated — it is the provider's contract, as `docs/reference/domarinn-yaml.md`
-//! says — and an Anthropic assistant *prefill* is a legitimate instance of the
-//! first shape here. So domarinn says what it sees and gets out of the way.
+//! Transcript-shape checks: the history mistakes that are near-certain provider
+//! 400s, reported at author time instead of run time.
 //!
 //! Why say anything at all: at run time these surface as an **errored cell**,
 //! which reads like an outage (credentials, rate limit, provider down) rather
 //! than a typo in turn 3. And an errored cell is never cached, so a malformed
 //! history in a large suite re-pays on every run until somebody notices.
 //!
-//! Deliberately **no** render-time counterpart, unlike
-//! [`crate::render::RenderError::DuplicateMarker`]. Those are duplicated
-//! because they are *errors* and an embedder skipping `validate` must not get
-//! silent wrong behaviour. These are advice; the run is meant to proceed.
+//! # Two warnings and one error
+//!
+//! An assistant-first history and a blank `content` are **warnings**. Role
+//! ordering is deliberately not validated — it is the provider's contract, as
+//! `docs/reference/domarinn-yaml.md` says — and an Anthropic assistant
+//! *prefill* is a legitimate instance of the first shape. So domarinn says what
+//! it sees and gets out of the way. Neither has a render-time counterpart,
+//! unlike [`crate::render::RenderError::DuplicateMarker`]: that one is
+//! duplicated because it is an *error* and an embedder skipping `validate` must
+//! not get silent wrong behaviour, whereas these are advice and the run is
+//! meant to proceed.
+//!
+//! [`check_turn_shape`] is the exception, and an **error**: a turn with no
+//! content and no `tool_calls` cannot mean anything to any provider. That one
+//! *is* enforced twice — here for the turns `validate` can see, and in
+//! [`crate::render`] for the ones it cannot.
 //!
 //! # What this can see
 //!
@@ -61,15 +68,32 @@ pub(crate) fn check(suite: &Suite, issues: &mut Vec<Issue>) {
     for (i, prompt) in suite.prompts.iter().enumerate() {
         for (j, entry) in prompt.messages.iter().flatten().enumerate() {
             if let PromptEntry::Turn(turn) = entry {
+                let path = format!("prompts[{i}].messages[{j}]");
+                check_turn_shape(turn, &path, issues);
                 if is_blank(turn) {
-                    issues.push(blank_content(&format!("prompts[{i}].messages[{j}]")));
+                    issues.push(blank_content(&path));
                 }
             }
         }
     }
 }
 
-/// The two checks over one resolved list of turns.
+/// A turn that cannot mean anything at all — no content and no `tool_calls`, or
+/// a tool field on a role that cannot carry it.
+///
+/// An **error**, not a warning, and the only one in this module: unlike the two
+/// shapes above, there is no provider for which this is legitimate. It is the
+/// same rule [`crate::render`] enforces via
+/// [`crate::config_history::turn_problem`] — reported here for the turns
+/// `validate` can see, so the author learns at author time rather than from an
+/// errored cell.
+fn check_turn_shape(turn: &Message, path: &str, issues: &mut Vec<Issue>) {
+    if let Some(problem) = crate::config_history::turn_problem(turn) {
+        issues.push(Issue::new(path, problem));
+    }
+}
+
+/// The checks over one resolved list of turns.
 fn check_history(turns: &[Message], path: &str, leads: bool, issues: &mut Vec<Issue>) {
     if leads {
         if let Some((i, turn)) = first_non_system(turns) {
@@ -86,6 +110,7 @@ fn check_history(turns: &[Message], path: &str, leads: bool, issues: &mut Vec<Is
         }
     }
     for (i, turn) in turns.iter().enumerate() {
+        check_turn_shape(turn, &format!("{path}[{i}]"), issues);
         if is_blank(turn) {
             issues.push(blank_content(&format!("{path}[{i}]")));
         }
@@ -338,6 +363,22 @@ mod tests {
             "version: 1\n{PROVIDER}tests:\n  - file://cases.csv\n"
         ));
         assert!(report.is_clean(), "{:?}", report.issues());
+    }
+
+    /// A turn that cannot mean anything is an **error**, not advice: no
+    /// provider accepts it, and render already refuses it.
+    #[test]
+    fn an_incoherent_turn_is_an_error_not_a_warning() {
+        let report = check_yaml(&format!(
+            "version: 1\n{PROVIDER}tests:\n  - id: t\n    history:\n      \
+             - {{role: user, content: \"hi\"}}\n      - {{role: user}}\n"
+        ));
+        let hit = report
+            .errors()
+            .find(|i| i.path == "tests[0].history[1]")
+            .unwrap_or_else(|| panic!("expected an error, got {:?}", report.issues()));
+        assert_eq!(hit.severity, Severity::Error);
+        assert!(report.has_errors());
     }
 
     /// Structural problems did not soften into advice.

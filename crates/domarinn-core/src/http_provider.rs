@@ -905,4 +905,38 @@ mod tests {
             .unwrap();
         assert_eq!(resp.output, Output::Text("ok".into()));
     }
+
+    /// The deliberate asymmetry between the two prompt views, pinned so a
+    /// future contributor cannot "fix" the `{{ prompt }}` half by adding a
+    /// textual rendering of a tool call — which is exactly what invites a
+    /// tool-eager model to imitate that syntax as text.
+    #[test]
+    fn a_tool_bearing_transcript_is_in_messages_and_not_in_prompt() {
+        let mut req = request_with_var("doc", "hi");
+        req.prompt = Some(RenderedPrompt::Messages(vec![
+            crate::types::ChatMessage::text(crate::types::ChatRole::User, "where is 1042?"),
+            crate::types::ChatMessage {
+                role: crate::types::ChatRole::Assistant,
+                content: crate::types::MessageContent::Text(String::new()),
+                tool_calls: vec![crate::result::ToolCall {
+                    id: None,
+                    name: "lookup_order".into(),
+                    arguments: json!({"order_id": 1042}),
+                }],
+                tool_call_id: None,
+            },
+        ]));
+        let ctx = render_context(&req, &json!({}));
+
+        let prompt = ctx["prompt"].as_str().expect("prompt is a string");
+        assert!(
+            !prompt.contains("lookup_order"),
+            "the flattened view carries prose only, got: {prompt}"
+        );
+        assert!(prompt.contains("where is 1042?"));
+
+        let messages = &ctx["messages"];
+        assert_eq!(messages[1]["tool_calls"][0]["name"], "lookup_order");
+        assert_eq!(messages[1]["tool_calls"][0]["arguments"]["order_id"], 1042);
+    }
 }
