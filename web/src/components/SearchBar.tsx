@@ -54,7 +54,23 @@ function keyFor(hit: Hit): string {
  * debounced dropdown shows the top hits per group; Enter with no selection
  * opens the full `/search?q=…` page.
  */
-export function SearchBar() {
+export function SearchBar({
+  variant = "header",
+  onNavigate,
+}: {
+  /**
+   * `header` is the desktop bar: hidden below `md`, panel floating over the
+   * page. `sheet` is the same component inside the phone menu, where it is
+   * full width and the panel sits in flow so it scrolls with the sheet.
+   *
+   * A prop rather than a headless hook plus two shells: the two differ only in
+   * three class strings, while the debounce, two queries, group assembly and
+   * keyboard handling are exactly what there must not be two copies of.
+   */
+  variant?: "header" | "sheet";
+  /** Called after a hit is opened, so a containing sheet can close itself. */
+  onNavigate?: () => void;
+} = {}) {
   const [value, setValue] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -118,16 +134,23 @@ export function SearchBar() {
   }
   function go(hit: Hit) {
     close();
+    onNavigate?.();
     void navigate(hrefFor(hit));
   }
   function goFullPage() {
     const q = value.trim();
     if (!q) return;
     close();
+    onNavigate?.();
     void navigate(`/search?q=${encodeURIComponent(q)}`);
   }
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Escape") {
+      // Just closes the panel. Deliberately no `stopPropagation`: inside the
+      // phone menu the competing listener is Radix's, which is registered on
+      // `document` in the capture phase and has therefore already run by the
+      // time this fires. Keeping one Escape to one dismissal is the sheet's
+      // job, via `onEscapeKeyDown` — see MobileNavSheet.
       close();
       return;
     }
@@ -148,13 +171,18 @@ export function SearchBar() {
   return (
     <div
       ref={rootRef}
-      className="relative hidden min-w-0 flex-1 justify-center md:flex"
+      className={cn(
+        "relative min-w-0",
+        variant === "header"
+          ? "hidden flex-1 justify-center md:flex"
+          : "flex w-full flex-col",
+      )}
       onBlur={(e) => {
         // Close only when focus leaves the bar AND its dropdown.
         if (!rootRef.current?.contains(e.relatedTarget)) close();
       }}
     >
-      <div className="w-full max-w-md">
+      <div className={variant === "header" ? "w-full max-w-md" : "w-full"}>
         <input
           type="search"
           role="combobox"
@@ -176,7 +204,14 @@ export function SearchBar() {
         {showPanel ? (
           <div
             id="global-search-results"
-            className="absolute left-1/2 top-10 z-40 w-full max-w-md -translate-x-1/2 overflow-hidden rounded-lg border border-border bg-surface shadow-xl"
+            className={cn(
+              "overflow-hidden rounded-lg border border-border bg-surface shadow-xl",
+              variant === "header"
+                ? "absolute left-1/2 top-10 z-40 w-full max-w-md -translate-x-1/2"
+                : // In flow inside the sheet, so it scrolls with the menu
+                  // instead of floating over it off-screen.
+                  "relative mt-2 w-full",
+            )}
           >
             {pending ? (
               <p className="px-3 py-2.5 text-sm text-muted">Searching…</p>

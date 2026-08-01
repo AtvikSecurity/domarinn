@@ -218,7 +218,16 @@ export function Layout() {
               </NavLink>
             )}
             <ThemeToggleButton />
-            {chromeOnly ? null : <MobileNavSheet nav={nav} />}
+            {chromeOnly ? null : (
+              // Search is the bigger phone gap than the nav strip was: the
+              // header bar is `hidden md:flex`, so below `md` there was no way
+              // to search at all. The header instance stays mounted but can
+              // never be focused, so it never opens its panel and the two
+              // cannot both claim the results element's id.
+              <MobileNavSheet nav={nav}>
+                {(close) => <SearchBar variant="sheet" onNavigate={close} />}
+              </MobileNavSheet>
+            )}
           </div>
         </div>
       </header>

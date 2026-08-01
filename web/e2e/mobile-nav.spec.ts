@@ -81,6 +81,47 @@ test.describe("Mobile navigation", () => {
     ).toBe("Open menu");
   });
 
+  test("the menu carries the search that the header cannot show here", async ({
+    page,
+  }) => {
+    await page.goto("/runs");
+    // The header bar is `hidden md:flex`, so at this width there was no way to
+    // search at all until the sheet carried one.
+    await page.getByRole("button", { name: "Open menu" }).click();
+
+    const input = page.getByRole("combobox", {
+      name: "Search sets, runs and cases",
+    });
+    await input.fill("checkout");
+    await page.locator('[data-search-hit="set"]').first().click();
+
+    await expect(page).toHaveURL(/\/sets\/checkout-agent$/);
+    // Navigating must take the sheet with it.
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("Escape dismisses the suggestions before the menu", async ({ page }) => {
+    await page.goto("/runs");
+    await page.getByRole("button", { name: "Open menu" }).click();
+    const input = page.getByRole("combobox", {
+      name: "Search sets, runs and cases",
+    });
+    await input.fill("checkout");
+    // By data attribute, not the "Sets" label — inside the sheet that string
+    // is also a nav link.
+    const suggestions = page.locator("[data-search-hit]");
+    await expect(suggestions.first()).toBeVisible();
+
+    // One press, one dismissal: the sheet must survive closing the dropdown.
+    await input.press("Escape");
+    await expect(suggestions).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toBeVisible();
+
+    // The next one is the sheet's.
+    await input.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
   test("an anonymous visitor in closed mode gets no menu button", async ({
     page,
   }) => {

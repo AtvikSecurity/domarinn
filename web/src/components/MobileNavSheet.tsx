@@ -55,8 +55,11 @@ export function MobileNavSheet({
   children,
 }: {
   nav: NavItem[];
-  /** Rendered above the links. The search bar, in practice. */
-  children?: React.ReactNode;
+  /**
+   * Rendered above the links — the search bar, in practice. A render prop so
+   * whatever navigates in there can dismiss the sheet behind itself.
+   */
+  children?: (close: () => void) => React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -105,6 +108,18 @@ export function MobileNavSheet({
             e.preventDefault();
             contentRef.current?.focus();
           }}
+          onEscapeKeyDown={(e) => {
+            // The search dropdown inside is its own dismissable layer, and one
+            // Escape should dismiss one thing. Handled here rather than by
+            // stopping propagation from the input: Radix listens on `document`
+            // in the CAPTURE phase, so it sees the keypress before any React
+            // handler in the tree below and nothing the input does can be
+            // early enough. The input's own handler still closes the panel on
+            // the bubble that follows.
+            if (contentRef.current?.querySelector("#global-search-results")) {
+              e.preventDefault();
+            }
+          }}
           className="fixed inset-y-0 right-0 z-50 flex w-[min(20rem,85vw)] flex-col gap-3 border-l border-border bg-surface p-4 shadow-2xl outline-none data-[state=open]:animate-[drawer-in_160ms_ease-out]"
         >
           <div className="flex items-center justify-between">
@@ -117,7 +132,7 @@ export function MobileNavSheet({
             </Dialog.Close>
           </div>
 
-          {children}
+          {children?.(() => setOpen(false))}
 
           <nav
             aria-label="Main menu"

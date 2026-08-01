@@ -34,7 +34,7 @@ function renderSheet(nav: NavItem[] = NAV) {
   return render(
     <MemoryRouter initialEntries={["/runs"]}>
       <MobileNavSheet nav={nav}>
-        <input aria-label="Search" />
+        {() => <input aria-label="Search" />}
       </MobileNavSheet>
       <Routes>
         <Route path="*" element={<LocationProbe />} />
