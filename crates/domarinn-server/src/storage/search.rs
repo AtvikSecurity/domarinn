@@ -229,12 +229,33 @@ pub(super) fn index_case(
 
 /// Flatten a rendered prompt to indexable text: message contents joined with
 /// newlines (roles carry no search value).
+///
+/// A turn's tool calls contribute their name and arguments, so searching for
+/// `lookup_order` finds the case that replayed one. A turn with no calls
+/// flattens to exactly the bytes it did before they were expressible, which
+/// keeps the startup backfill from churning every stored run.
 pub(super) fn flatten_prompt(prompt: &RenderedPrompt) -> String {
     match prompt {
         RenderedPrompt::Text(text) => text.clone(),
         RenderedPrompt::Messages(messages) => messages
             .iter()
-            .map(|m| m.content.as_str())
+            .map(|m| {
+                let text = m.content.text();
+                if m.tool_calls.is_empty() {
+                    return text.into_owned();
+                }
+                let calls = m
+                    .tool_calls
+                    .iter()
+                    .map(|c| format!("{} {}", c.name, c.arguments))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.is_empty() {
+                    calls
+                } else {
+                    format!("{text}\n{calls}")
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n"),
     }

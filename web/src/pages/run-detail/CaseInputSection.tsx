@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { CellKey, RenderedPrompt } from "@/api";
+import type { CellKey, ChatMessage, RenderedPrompt } from "@/api";
 import { JsonTree, OutputViewer, RawText, outputToString } from "@/components/output";
 import { Chip, type ChipTone } from "@/components/ui/Chip";
 import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
@@ -153,6 +153,62 @@ function ChatRoleChip({ role }: { role: string }) {
 }
 
 /**
+ * One turn's body: the reasoning that preceded it, what it said, and the calls
+ * it made.
+ *
+ * `content` is a bare string for almost every turn — the block form only shows
+ * up in a transcript replaying a model's reasoning. Thinking is dimmed and
+ * labelled rather than shown inline, so it never reads as something the model
+ * said aloud.
+ */
+function MessageBody({ message }: { message: ChatMessage }) {
+  const blocks = Array.isArray(message.content) ? message.content : null;
+  return (
+    <>
+      {blocks ? (
+        <div className="space-y-2">
+          {blocks.map((block, i) =>
+            block.type === "thinking" ? (
+              <div
+                key={i}
+                className="rounded border border-dashed border-border p-2"
+              >
+                <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted/80">
+                  thinking
+                </div>
+                <RawText text={block.thinking} wrap className="text-muted" />
+              </div>
+            ) : (
+              <OutputViewer key={i} value={block.text} />
+            ),
+          )}
+        </div>
+      ) : (
+        <OutputViewer value={message.content} />
+      )}
+      {message.tool_calls?.length ? (
+        <div className="mt-2 space-y-1.5">
+          {message.tool_calls.map((call, i) => (
+            <div
+              key={call.id ?? i}
+              className="rounded border border-border p-2"
+            >
+              <div className="mb-1 break-all font-mono text-[11px] font-medium text-fg">
+                {call.name}
+              </div>
+              <JsonTree
+                data={call.arguments}
+                className="text-[11px]/relaxed"
+              />
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/**
  * The readable view, ordered by what a reader reaches for first: the model that
  * answered, then the turns it saw, then the variables that produced them, then
  * the cell coordinates.
@@ -217,10 +273,15 @@ function RenderedInput({
                   key={`${m.role}-${i}`}
                   className="rounded-lg border border-border p-3"
                 >
-                  <div className="mb-2">
+                  <div className="mb-2 flex items-center gap-1.5">
                     <ChatRoleChip role={m.role} />
+                    {m.tool_call_id ? (
+                      <span className="font-mono text-[10px] text-muted/80">
+                        answering {m.tool_call_id}
+                      </span>
+                    ) : null}
                   </div>
-                  <OutputViewer value={m.content} />
+                  <MessageBody message={m} />
                 </div>
               ))}
             </div>

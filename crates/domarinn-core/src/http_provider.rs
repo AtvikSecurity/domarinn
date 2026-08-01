@@ -478,9 +478,14 @@ fn render_context(req: &ProviderRequest, env: &Json) -> Json {
     if let Some(prompt) = &req.prompt {
         let text = match prompt {
             RenderedPrompt::Text(t) => t.clone(),
+            // Prose only, deliberately: this string is lossy by construction
+            // (it already discards message boundaries), and inventing a textual
+            // rendering for a tool call is exactly the imitation hazard the
+            // structured `tool_calls` field exists to avoid. A tool-bearing
+            // transcript is visible in `{{ messages }}` below.
             RenderedPrompt::Messages(msgs) => msgs
                 .iter()
-                .map(|m| format!("{}: {}", m.role.as_str(), m.content))
+                .map(|m| format!("{}: {}", m.role.as_str(), m.content.text()))
                 .collect::<Vec<_>>()
                 .join("\n"),
         };
@@ -574,14 +579,8 @@ mod tests {
         );
         let mut req = request_with_var("doc", "hi");
         req.prompt = Some(RenderedPrompt::Messages(vec![
-            ChatMessage {
-                role: ChatRole::User,
-                content: "hi".into(),
-            },
-            ChatMessage {
-                role: ChatRole::Assistant,
-                content: "hello".into(),
-            },
+            ChatMessage::text(ChatRole::User, "hi"),
+            ChatMessage::text(ChatRole::Assistant, "hello"),
         ]));
         let canonical = p.canonical_request(&req).unwrap();
         let transcript: Json =

@@ -493,29 +493,142 @@
       ]
     },
     "Message": {
-      "description": "A chat message; `content` may be `file://path` to load from disk.",
+      "description": "A chat message; `content` may be `file://path` to load from disk.\n\n`content` is optional only because an `assistant` turn whose whole point is\na tool call has no prose, and a turn with neither content nor `tool_calls`\nis caught by [`turn_problem`] rather than sent as an empty message.",
       "type": "object",
       "properties": {
         "role": {
           "$ref": "#/$defs/ChatRole"
         },
         "content": {
-          "type": "string"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageContentSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool_calls": {
+          "description": "The calls this `assistant` turn made, replayed into the next request in\neach provider's native shape — `tool_use` blocks for `anthropic`, a\n`tool_calls` array for `openai`, the same JSON for `exec`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolCallSpec"
+          }
+        },
+        "tool_call_id": {
+          "description": "Which call a `tool` turn answers.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
       "required": [
-        "role",
-        "content"
+        "role"
       ]
     },
     "ChatRole": {
       "description": "A chat message role.",
-      "type": "string",
-      "enum": [
-        "system",
-        "user",
-        "assistant"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "system",
+            "user",
+            "assistant"
+          ]
+        },
+        {
+          "description": "A tool's result, answering a call an `assistant` turn made.\n\nOnly ever *replayed into* a request — no provider reports one coming\nback, because domarinn never runs a tool. It exists so a transcript can\nsay what came back from the call it is replaying.",
+          "type": "string",
+          "const": "tool"
+        }
+      ]
+    },
+    "MessageContentSpec": {
+      "description": "A turn's content: prose, or an ordered list of blocks.\n\nUntagged with `Text` first so the overwhelmingly common `content: \"hi\"`\nkeeps serializing as a bare string — an existing suite's `config_digest`\nmust not move because a block form became expressible.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContentBlockSpec"
+          }
+        }
+      ]
+    },
+    "ContentBlockSpec": {
+      "description": "One block of a turn's content in a suite file.\n\n`deny_unknown_fields` for the same reason as [`ToolCallSpec`]: a typo'd\n`tex:` should name itself, not silently produce an empty block.",
+      "oneOf": [
+        {
+          "description": "Prose. A template, and may be `file://path`.",
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "description": "Reasoning replayed verbatim — **never** templated, and never loaded from\n`file://`, because `signature` is an integrity token over these exact\nbytes and any rewrite invalidates it. See [`crate::types::ContentBlock`].",
+          "type": "object",
+          "properties": {
+            "thinking": {
+              "type": "string"
+            },
+            "signature": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "thinking"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "thinking"
+          ]
+        }
+      ]
+    },
+    "ToolCallSpec": {
+      "description": "A tool call an `assistant` history turn made.\n\nField-for-field [`crate::result::ToolCall`], the type providers report on the\nway *out*, so the `tool_calls` block of a stored case pastes into a suite's\n`history:` unchanged. It is a separate type only because this one carries\n`deny_unknown_fields` and the wire type must not: that one parses stored\nblobs and vendor payloads, where an unknown key is forward compatibility;\nthis one parses a file a human typed, where `nmae:` should be an error\nrather than a call with no name.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The call id this turn's result will answer. Optional — the vendor\nmappings derive one from position when a transcript omits it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "arguments": {
+          "description": "The arguments object. Every string leaf is a template; numbers and\nbooleans pass through untouched, so `{order_id: 1042}` stays an integer."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
       ]
     },
     "ToolDef": {

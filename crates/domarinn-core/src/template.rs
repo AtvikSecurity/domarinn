@@ -50,7 +50,16 @@ impl TemplateEngine {
         }
     }
 
-    fn render_json(&self, value: &Json, ctx: &Json) -> Result<Json, TemplateError> {
+    /// Render every string leaf of a JSON value, recursing through arrays and
+    /// objects and leaving object *keys*, numbers, booleans and nulls alone.
+    ///
+    /// Public because a history turn's `tool_calls[].arguments` gets exactly
+    /// this treatment: it is per-case author-written structured data, the same
+    /// kind of thing as a `vars:` value, and stringifying it to template it
+    /// would turn `{"order_id": 1042}` into `{"order_id": "1042"}` — which the
+    /// `tool-call` assertion, comparing against a decoded object, would then
+    /// never match.
+    pub fn render_json(&self, value: &Json, ctx: &Json) -> Result<Json, TemplateError> {
         match value {
             Json::String(s) => Ok(Json::String(self.render_str(s, ctx)?)),
             Json::Array(items) => Ok(Json::Array(

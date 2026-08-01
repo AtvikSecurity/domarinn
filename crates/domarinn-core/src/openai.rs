@@ -185,13 +185,14 @@ impl Provider for OpenAiProvider {
     }
 }
 
+/// Convert a rendered prompt into a chat-completions `messages` array.
+///
+/// The transcript arm lives in [`crate::chat_wire`], beside the Anthropic
+/// mapping it mirrors — see that module for why they are kept together.
 fn to_messages(prompt: &RenderedPrompt) -> Vec<Json> {
     match prompt {
         RenderedPrompt::Text(text) => vec![json!({"role": "user", "content": text})],
-        RenderedPrompt::Messages(msgs) => msgs
-            .iter()
-            .map(|m| json!({"role": m.role, "content": m.content}))
-            .collect(),
+        RenderedPrompt::Messages(msgs) => crate::chat_wire::openai_messages(msgs),
     }
 }
 
@@ -203,7 +204,7 @@ fn to_messages(prompt: &RenderedPrompt) -> Vec<Json> {
 /// so it is parsed here. A string that is not valid JSON is kept verbatim
 /// rather than dropped — the call did happen, and a `tool-call` assertion
 /// matching on name alone must still see it.
-fn tool_calls_from_message(message: &Json) -> Vec<domarinn_types::result::ToolCall> {
+pub(crate) fn tool_calls_from_message(message: &Json) -> Vec<domarinn_types::result::ToolCall> {
     let Some(calls) = message.get("tool_calls").and_then(|c| c.as_array()) else {
         return Vec::new();
     };
