@@ -38,9 +38,11 @@ describe("SearchBar", () => {
     // ("checkout" matches run metadata only, so just the Runs group).
     expect(await screen.findByText("Runs")).toBeInTheDocument();
 
-    // Click the first hit: a run hit navigates to its run page.
-    const options = screen.getAllByRole("button").filter((b) =>
-      b.textContent?.includes("/"),
+    // Click the first hit: a run hit navigates to its run page. Selected by
+    // `data-search-hit`, not by row copy: matching on text meant the assertion
+    // silently depended on which groups the dropdown happened to render.
+    const options = document.querySelectorAll<HTMLElement>(
+      '[data-search-hit="run"]',
     );
     expect(options.length).toBeGreaterThan(0);
     await user.click(options[0]!);
