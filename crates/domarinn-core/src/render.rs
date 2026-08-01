@@ -243,7 +243,15 @@ fn render_message(
             Ok(ToolCall {
                 id: tc.id.clone(),
                 name: tc.name.clone(),
-                arguments: engine.render_json(&tc.arguments, ctx)?,
+                // A call with no arguments is a call with an *empty* arguments
+                // object. Both vendor mappings already normalize this, but an
+                // `exec` child reads the serialized turn directly, and
+                // `docs/reference/protocol.md` promises it a decoded object —
+                // so normalize once, here, rather than per provider.
+                arguments: match engine.render_json(&tc.arguments, ctx)? {
+                    Json::Null => serde_json::json!({}),
+                    rendered => rendered,
+                },
             })
         })
         .collect::<Result<Vec<_>, RenderError>>()?;
@@ -921,5 +929,23 @@ mod tool_history_tests {
             serde_json::to_value(&out).unwrap(),
             serde_json::json!({"role": "user", "content": "hi"})
         );
+    }
+
+    /// `protocol.md` promises an exec child a decoded arguments *object*, and
+    /// a call written without arguments must honour that rather than sending
+    /// `null` — which both vendor mappings already normalize away.
+    #[test]
+    fn a_call_without_arguments_renders_an_empty_object() {
+        let message = Message {
+            content: None,
+            tool_calls: vec![ToolCallSpec {
+                id: None,
+                name: "ping".into(),
+                arguments: Json::Null,
+            }],
+            ..Message::text(ChatRole::Assistant, "")
+        };
+        let out = render_one(&message, &serde_json::json!({})).unwrap();
+        assert_eq!(out.tool_calls[0].arguments, serde_json::json!({}));
     }
 }

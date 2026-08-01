@@ -56,6 +56,15 @@ tools:
       required: ["order_id"]
       properties:
         order_id: { type: integer }
+  # Declared because the file-based transcript below replays a call into it —
+  # the same "names must match" rule, applied to a transcript loaded from disk.
+  - name: refund_policy
+    description: Look up the return window for a product category.
+    input_schema:
+      type: object
+      required: ["category"]
+      properties:
+        category: { type: string }
 
 prompts:
   - id: support
@@ -123,30 +132,39 @@ tests:
       - type: contains
         value: "Let me look up both."
 
-  # Arguments are templated leaf by leaf, so a number stays a number. Stringify
-  # the whole value to template it and `{order_id: 1042}` becomes
-  # `{order_id: "1042"}`, which a `tool-call` assertion — comparing against the
-  # decoded object — would then never match.
+  # Arguments are templated leaf by leaf, and every leaf keeps its own type:
+  # an untemplated `1042` stays the integer the tool's schema wants, while the
+  # string leaf beside it is rendered against the case vars.
+  #
+  # The corollary is worth stating, because it is easy to trip over: a leaf you
+  # template is a STRING on the way out. `{order_id: "{{ order }}"}` sends
+  # `"7"`, not `7`. To vary a numeric argument per case, put the whole
+  # `arguments` object in a var instead — a raw var passes through untouched,
+  # so its numbers survive.
   - id: tools/templated-arguments
     history:
       - role: user
-        content: "Where is order {{ order }}?"
+        content: "Where is order {{ order }} for {{ who }}?"
       - role: assistant
         tool_calls:
           - name: lookup_order
-            arguments: { order_id: "{{ order }}" }
+            arguments: { order_id: 1042, note: "for {{ who }}" }
       - role: tool
         content: '{"status": "delivered"}'
     vars:
       order: 7
+      who: "Ada"
       followup: "Thanks — was it signed for?"
     assert:
-      # Rendered from the case var…
+      # The string leaf rendered against the case vars…
       - type: contains
-        value: "delivered"
-      # …and this case's order id did not leak into another's.
+        value: "for Ada"
+      # …while the untemplated number stayed a number: JSON writes an integer
+      # bare, so a quoted "1042" here would mean the type was lost.
+      - type: contains
+        value: '"order_id":1042'
       - type: not-contains
-        value: "1042"
+        value: '"order_id":"1042"'
 
   # A `content` list instead of a string: this is how a model's reasoning is
   # replayed. The `signature` is an integrity token over the thinking bytes, so

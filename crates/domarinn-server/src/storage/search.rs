@@ -232,8 +232,10 @@ pub(super) fn index_case(
 ///
 /// A turn's tool calls contribute their name and arguments, so searching for
 /// `lookup_order` finds the case that replayed one. A turn with no calls
-/// flattens to exactly the bytes it did before they were expressible, which
-/// keeps the startup backfill from churning every stored run.
+/// flattens to exactly the bytes it did before they were expressible — which
+/// matters because the startup backfill only visits runs missing from
+/// `runs_fts`, so an already-indexed run is never revisited and any change here
+/// would otherwise leave old rows permanently inconsistent with new ones.
 pub(super) fn flatten_prompt(prompt: &RenderedPrompt) -> String {
     match prompt {
         RenderedPrompt::Text(text) => text.clone(),

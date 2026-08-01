@@ -59,11 +59,38 @@ pub enum ContentBlockSpec {
 /// Untagged with `Text` first so the overwhelmingly common `content: "hi"`
 /// keeps serializing as a bare string — an existing suite's `config_digest`
 /// must not move because a block form became expressible.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+///
+/// `Deserialize` is hand-written for the same reason as [`PromptEntry`] and
+/// [`HistorySpec`]: an untagged *derive* discards the inner variant's error, so
+/// a typo'd `tex:` would surface as "data did not match any variant" and
+/// [`ContentBlockSpec`]'s `deny_unknown_fields` would never name the key it
+/// caught. Buffering into [`Json`] and dispatching on the shape keeps that
+/// error, and [`detached`] re-attaches the block index to it.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum MessageContentSpec {
     Text(String),
     Blocks(Vec<ContentBlockSpec>),
+}
+
+impl<'de> Deserialize<'de> for MessageContentSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let value = Json::deserialize(deserializer)?;
+        match value {
+            Json::String(s) => Ok(MessageContentSpec::Text(s)),
+            Json::Array(_) => detached::<Vec<ContentBlockSpec>>(value)
+                .map(MessageContentSpec::Blocks)
+                .map_err(D::Error::custom),
+            other => Err(D::Error::custom(format!(
+                "content must be a string or a list of \
+                 {{type: text|thinking, …}} blocks, found {other}"
+            ))),
+        }
+    }
 }
 
 /// A chat message; `content` may be `file://path` to load from disk.
@@ -388,6 +415,32 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("contnet"), "unhelpful error: {err}");
+    }
+
+    /// The reason `MessageContentSpec` hand-writes `Deserialize`: an untagged
+    /// derive would swallow `ContentBlockSpec`'s deny-guarded error and report
+    /// only "did not match any variant", losing the key that was wrong.
+    #[test]
+    fn a_typo_inside_a_content_block_names_the_key() {
+        let err = serde_json::from_value::<Message>(serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "tex": "hi"}],
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("tex"), "the bad key must be named: {err}");
+    }
+
+    /// And the block index comes along, via `detached`.
+    #[test]
+    fn a_typo_in_a_later_block_names_its_index() {
+        let err = serde_json::from_value::<MessageContentSpec>(serde_json::json!([
+            {"type": "text", "text": "ok"},
+            {"type": "thinking", "thinkin": "typo"},
+        ]))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("[1]"), "the failing block index: {err}");
     }
 
     /// The turn shapes that parse but cannot mean anything, caught by

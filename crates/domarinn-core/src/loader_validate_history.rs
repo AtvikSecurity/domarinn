@@ -6,13 +6,14 @@
 //! than a typo in turn 3. And an errored cell is never cached, so a malformed
 //! history in a large suite re-pays on every run until somebody notices.
 //!
-//! # Two warnings and one error
+//! # Three warnings and one error
 //!
-//! An assistant-first history and a blank `content` are **warnings**. Role
-//! ordering is deliberately not validated — it is the provider's contract, as
-//! `docs/reference/domarinn-yaml.md` says — and an Anthropic assistant
-//! *prefill* is a legitimate instance of the first shape. So domarinn says what
-//! it sees and gets out of the way. Neither has a render-time counterpart,
+//! A history opening on `assistant` or on `tool`, and a blank `content`, are
+//! **warnings**. Role ordering is deliberately not validated — it is the
+//! provider's contract, as `docs/reference/domarinn-yaml.md` says — and an
+//! Anthropic assistant *prefill* is a legitimate instance of the first shape.
+//! So domarinn says what it sees and gets out of the way. None has a
+//! render-time counterpart,
 //! unlike [`crate::render::RenderError::DuplicateMarker`]: that one is
 //! duplicated because it is an *error* and an embedder skipping `validate` must
 //! not get silent wrong behaviour, whereas these are advice and the run is
@@ -97,15 +98,27 @@ fn check_turn_shape(turn: &Message, path: &str, issues: &mut Vec<Issue>) {
 fn check_history(turns: &[Message], path: &str, leads: bool, issues: &mut Vec<Issue>) {
     if leads {
         if let Some((i, turn)) = first_non_system(turns) {
-            if turn.role == ChatRole::Assistant {
-                issues.push(Issue::warning(
+            match turn.role {
+                ChatRole::Assistant => issues.push(Issue::warning(
                     format!("{path}[{i}]"),
                     "first turn is `assistant`, and this suite splices history at the \
                      front of the transcript, where providers require the opening turn \
                      to be `user`. An Anthropic assistant *prefill* is the legitimate \
                      exception; otherwise this is a 400 at run time — an errored cell, \
                      which is never cached, so it is re-paid on every run",
-                ));
+                )),
+                // Stricter in substance than the assistant case — a result with
+                // nothing to answer has no legitimate reading at all — but kept
+                // a warning for consistency with the documented stance that
+                // role ordering is the provider's contract.
+                ChatRole::Tool => issues.push(Issue::warning(
+                    format!("{path}[{i}]"),
+                    "first turn is `tool`, so it answers a call no earlier turn made. \
+                     This suite splices history at the front of the transcript, where \
+                     there is nothing before it; both providers reject a tool result \
+                     with no matching call",
+                )),
+                ChatRole::System | ChatRole::User => {}
             }
         }
     }
@@ -286,6 +299,23 @@ mod tests {
              - {{role: user, content: \"q\"}}\n"
         ));
         assert!(report.warnings().any(|i| i.path == "tests[0].history[1]"));
+    }
+
+    /// A result answering nothing has no legitimate reading — stricter in
+    /// substance than the assistant case, but kept a warning for consistency
+    /// with the documented "ordering is the provider's contract" stance.
+    #[test]
+    fn a_tool_first_history_warns() {
+        let report = check_yaml(&format!(
+            "version: 1\n{PROVIDER}tests:\n  - id: t\n    history:\n      \
+             - {{role: tool, content: \"{{}}\"}}\n"
+        ));
+        let hit = report
+            .warnings()
+            .find(|i| i.path == "tests[0].history[0]")
+            .unwrap_or_else(|| panic!("expected a warning, got {:?}", report.issues()));
+        assert!(hit.message.contains("answers a call no earlier turn made"));
+        assert!(!report.has_errors());
     }
 
     #[test]

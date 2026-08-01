@@ -120,7 +120,14 @@ impl Validation {
         self.issues.is_empty()
     }
 
-    pub fn into_issues(self) -> Vec<Issue> {
+    /// The findings as a plain vec, for tests that assert over all of them.
+    ///
+    /// `#[cfg(test)]` on purpose: on a bare `Vec`, `.is_empty()` compiles again
+    /// and means "fatal" again, which is exactly the confusion this type exists
+    /// to prevent. Production callers get [`Self::errors`], [`Self::warnings`],
+    /// [`Self::has_errors`], or [`Self::is_clean`].
+    #[cfg(test)]
+    pub(crate) fn into_issues(self) -> Vec<Issue> {
         self.issues
     }
 
@@ -130,7 +137,12 @@ impl Validation {
 }
 
 /// Run structural validation that does not require rendering templates or
-/// contacting providers. Returns an empty vec when the suite is well-formed.
+/// contacting providers.
+///
+/// A well-formed suite may still come back non-empty: [`Severity::Warning`]
+/// findings are advice, and a suite carrying only those is runnable. Ask
+/// [`Validation::has_errors`] to decide whether to proceed, and
+/// [`Validation::is_clean`] only when "nothing to report at all" is the bar.
 ///
 /// `raw` is the normalized YAML the suite was deserialized from (see
 /// [`crate::loader::load_str_raw`] / [`crate::loader::load_file_raw`]). It is

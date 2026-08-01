@@ -548,7 +548,7 @@
       ]
     },
     "MessageContentSpec": {
-      "description": "A turn's content: prose, or an ordered list of blocks.\n\nUntagged with `Text` first so the overwhelmingly common `content: \"hi\"`\nkeeps serializing as a bare string — an existing suite's `config_digest`\nmust not move because a block form became expressible.",
+      "description": "A turn's content: prose, or an ordered list of blocks.\n\nUntagged with `Text` first so the overwhelmingly common `content: \"hi\"`\nkeeps serializing as a bare string — an existing suite's `config_digest`\nmust not move because a block form became expressible.\n\n`Deserialize` is hand-written for the same reason as [`PromptEntry`] and\n[`HistorySpec`]: an untagged *derive* discards the inner variant's error, so\na typo'd `tex:` would surface as \"data did not match any variant\" and\n[`ContentBlockSpec`]'s `deny_unknown_fields` would never name the key it\ncaught. Buffering into [`Json`] and dispatching on the shape keeps that\nerror, and [`detached`] re-attaches the block index to it.",
       "anyOf": [
         {
           "type": "string"

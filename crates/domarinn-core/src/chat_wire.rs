@@ -72,6 +72,12 @@ fn plan(msgs: &[ChatMessage]) -> Vec<Turn<'_>> {
                 run.push((&msgs[i], id));
                 i += 1;
             }
+            // Consumed. Without this, a later run of `tool` turns that is *not*
+            // preceded by its own call turn would pair positionally against
+            // this round and re-emit an id already used — silently answering
+            // the wrong call. Such a transcript is malformed either way, but a
+            // fresh synthetic id is wrong in a way the provider can see.
+            open_calls.clear();
             out.push(Turn::Results(run));
             continue;
         }
@@ -126,14 +132,17 @@ pub(crate) fn anthropic_messages(msgs: &[ChatMessage]) -> (Option<String>, Vec<J
                 out.push(json!({"role": "assistant", "content": blocks}));
             }
             // The coalesce. Every result for a round of parallel calls goes in
-            // ONE user message: the API rejects a `tool_result` that is not in
-            // the message immediately following its `tool_use`, and rejects two
-            // user messages in a row.
+            // ONE user message, because a `tool_result` must sit in the message
+            // that follows its `tool_use` and Anthropic accepts at most one
+            // such message per round.
             //
-            // Only consecutive `tool` turns are merged. Folding in a following
-            // plain `user` turn, or merging runs of plain user turns, would
-            // change the body for suites that already write them — and move
-            // their cache keys.
+            // Only consecutive `tool` turns are merged — a following plain
+            // `user` turn stays its own message. That does leave two `user`
+            // messages in a row whenever a prompt appends a turn after the
+            // history (the shape example 42 uses), which is fine: Anthropic
+            // accepts consecutive same-role messages and combines them. Folding
+            // the author's prose into a `tool_result` message to avoid it would
+            // put their question inside a tool's answer.
             Turn::Results(results) => {
                 let blocks: Vec<Json> = results
                     .iter()
@@ -167,7 +176,11 @@ fn anthropic_content(content: &MessageContent) -> Json {
 /// A turn's content as an explicit block list, for the arms that must append.
 fn anthropic_blocks(content: &MessageContent) -> Vec<Json> {
     match content {
-        MessageContent::Text(s) if s.is_empty() => Vec::new(),
+        // `trim`, not `is_empty`: Anthropic rejects a text block that holds
+        // only whitespace ("text content blocks must contain non-whitespace
+        // text"), so a turn written as `content: " "` alongside a tool call
+        // would 400 on a block that carries nothing anyway.
+        MessageContent::Text(s) if s.trim().is_empty() => Vec::new(),
         MessageContent::Text(s) => vec![json!({"type": "text", "text": s})],
         MessageContent::Blocks(blocks) => blocks
             .iter()
@@ -526,5 +539,45 @@ mod tests {
         let (system, out) = anthropic_messages(&msgs);
         assert_eq!(system.as_deref(), Some("be terse"));
         assert!(out.iter().all(|m| m["role"] != "system"));
+    }
+
+    /// Anthropic rejects a text block holding only whitespace, so a turn
+    /// written `content: " "` beside a call must drop the block, not send it.
+    #[test]
+    fn a_whitespace_only_text_block_is_dropped_for_anthropic() {
+        let turn = ChatMessage {
+            role: ChatRole::Assistant,
+            content: MessageContent::Text("   ".into()),
+            tool_calls: vec![call("lookup", json!({}))],
+            tool_call_id: None,
+        };
+        let (_, out) = anthropic_messages(&[turn]);
+        let blocks = out[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1, "only the tool_use block: {blocks:?}");
+        assert_eq!(blocks[0]["type"], "tool_use");
+    }
+
+    /// A results run that is not preceded by its own call turn must not reuse
+    /// the previous round's ids — answering the wrong call silently is worse
+    /// than an id the provider can see is unmatched.
+    #[test]
+    fn an_orphaned_results_run_does_not_reuse_the_previous_rounds_ids() {
+        let msgs = vec![
+            assistant_with(vec![call("a", json!({})), call("b", json!({}))]),
+            tool_result("first"),
+            ChatMessage::text(ChatRole::User, "meanwhile"),
+            tool_result("orphan"),
+        ];
+        let (_, out) = anthropic_messages(&msgs);
+        let answered: Vec<&str> = out
+            .iter()
+            .filter(|m| m["content"][0]["type"] == "tool_result")
+            .map(|m| m["content"][0]["tool_use_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(answered.len(), 2);
+        assert_ne!(
+            answered[0], answered[1],
+            "two results must never claim the same call: {answered:?}"
+        );
     }
 }
