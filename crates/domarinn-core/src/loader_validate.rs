@@ -14,25 +14,118 @@ use serde_yaml_ng::Value as Yaml;
 
 use crate::config::Suite;
 
+/// How much a finding costs the reader.
+///
+/// Exactly one axis, exactly two values. `Error` means the suite cannot run as
+/// written; `Warning` means it will run and probably should not. There is no
+/// `Info`: a diagnostic nobody must act on is noise, and `tracing` is where
+/// noise belongs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// Advice. The suite loads, `run` proceeds, `validate` still exits 0.
+    Warning,
+    /// The suite is malformed. `validate` and `run` both refuse it.
+    Error,
+}
+
+impl Severity {
+    /// The label the CLI prefixes a finding with.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Warning => "warning",
+            Severity::Error => "error",
+        }
+    }
+}
+
 /// A structural validation problem, with a human-readable location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Issue {
     pub path: String,
     pub message: String,
+    pub severity: Severity,
 }
 
 impl Issue {
-    fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
+    /// An error: the default, because every check that predates warnings is
+    /// one. Keeping the severity inside the constructor is what lets the
+    /// existing call sites stay byte-identical.
+    pub(crate) fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
         Issue {
             path: path.into(),
             message: message.into(),
+            severity: Severity::Error,
+        }
+    }
+
+    /// Advice only. See [`Severity::Warning`].
+    pub(crate) fn warning(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Issue {
+            severity: Severity::Warning,
+            ..Issue::new(path, message)
         }
     }
 }
 
+/// `"{path}: {message}"` — severity is deliberately **not** rendered here.
+///
+/// The caller owns the label: `validate` prefixes `error: `/`warning: `, while
+/// `run` routes warnings through `tracing::warn!`, where the level is already
+/// the log line's own field. Baking it in would duplicate the level in logs and
+/// silently rewrite every existing error line.
 impl std::fmt::Display for Issue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.path, self.message)
+    }
+}
+
+/// Everything [`validate`] found, in the order the checks produced it.
+///
+/// Deliberately not a `Vec<Issue>`, and deliberately **without** an
+/// `is_empty()`. Before warnings existed, "non-empty" and "fatal" were the same
+/// predicate and every caller wrote `is_empty()`. Returning a bare `Vec` again
+/// would let those callers keep compiling while silently promoting every
+/// warning to a hard stop — the exact failure this type exists to prevent. The
+/// newtype makes each caller name the question it is asking.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Validation {
+    issues: Vec<Issue>,
+}
+
+impl Validation {
+    /// Every finding, errors and warnings interleaved in check order.
+    pub fn issues(&self) -> &[Issue] {
+        &self.issues
+    }
+
+    /// Findings that make the suite unrunnable.
+    pub fn errors(&self) -> impl Iterator<Item = &Issue> {
+        self.of(Severity::Error)
+    }
+
+    /// Findings that are advice. A caller that ignores these is still correct.
+    pub fn warnings(&self) -> impl Iterator<Item = &Issue> {
+        self.of(Severity::Warning)
+    }
+
+    /// The "refuse to run" predicate — the only one a runner should consult.
+    pub fn has_errors(&self) -> bool {
+        self.errors().next().is_some()
+    }
+
+    /// Nothing to report at all. The predicate for "this suite is exemplary",
+    /// used by the shipped-example guards, which must stay free of warnings too
+    /// rather than merely free of errors.
+    pub fn is_clean(&self) -> bool {
+        self.issues.is_empty()
+    }
+
+    pub fn into_issues(self) -> Vec<Issue> {
+        self.issues
+    }
+
+    fn of(&self, severity: Severity) -> impl Iterator<Item = &Issue> {
+        self.issues.iter().filter(move |i| i.severity == severity)
     }
 }
 
@@ -44,7 +137,7 @@ impl std::fmt::Display for Issue {
 /// needed to catch unknown keys in the `flatten`ed provider and assert mappings,
 /// which serde's `deny_unknown_fields` cannot guard — an unknown key there is
 /// silently dropped during deserialization, so it must be found in the raw shape.
-pub fn validate(suite: &Suite, raw: &Yaml) -> Vec<Issue> {
+pub fn validate(suite: &Suite, raw: &Yaml) -> Validation {
     let mut issues = Vec::new();
 
     check_unknown_flatten_keys(raw, &mut issues);
@@ -114,7 +207,9 @@ pub fn validate(suite: &Suite, raw: &Yaml) -> Vec<Issue> {
         }
     }
 
-    issues
+    crate::loader_validate_history::check(suite, &mut issues);
+
+    Validation { issues }
 }
 
 /// The set of keys a `flatten`ed config enum (Provider or Assert) accepts,
@@ -357,7 +452,7 @@ mod tests {
     #[test]
     fn missing_providers_is_an_issue() {
         let (suite, raw) = load_str_raw("version: 1\nproviders: []\n").unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         assert!(issues.iter().any(|i| i.path == "providers"));
     }
 
@@ -377,7 +472,7 @@ prompts:
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         let hit = issues
             .iter()
             .find(|i| i.path == "prompts[0]")
@@ -410,7 +505,7 @@ prompts:
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         assert!(
             issues
                 .iter()
@@ -439,7 +534,7 @@ prompts:
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         assert!(
             !issues.iter().any(|i| i.path.starts_with("prompts")),
             "a single marker must not be flagged: {issues:?}"
@@ -459,7 +554,7 @@ providers:
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         let hit = issues
             .iter()
             .find(|i| i.path == "providers[0]")
@@ -487,7 +582,7 @@ tests:
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         let hit = issues
             .iter()
             .find(|i| i.path == "tests[0].assert[0]")
@@ -514,7 +609,7 @@ grader:
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         let hit = issues
             .iter()
             .find(|i| i.path == "grader.provider")
@@ -545,7 +640,7 @@ tests:
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         let hit = issues
             .iter()
             .find(|i| i.path == "tests[0].assert[0].grader.provider")
@@ -575,7 +670,7 @@ defaults:
 "#,
         )
         .unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         let hit = issues
             .iter()
             .find(|i| i.path == "defaults.assert[0].grader.provider")
@@ -610,7 +705,7 @@ tests:
         )
         .unwrap();
         assert!(
-            validate(&suite, &raw).is_empty(),
+            validate(&suite, &raw).is_clean(),
             "{:?}",
             validate(&suite, &raw)
         );
@@ -637,7 +732,7 @@ tests:
         )
         .unwrap();
         assert!(
-            validate(&suite, &raw).is_empty(),
+            validate(&suite, &raw).is_clean(),
             "{:?}",
             validate(&suite, &raw)
         );
@@ -652,7 +747,7 @@ providers:
   - {id: dup, type: exec, command: ["b"]}
 "#;
         let (suite, raw) = load_str_raw(dup).unwrap();
-        let issues = validate(&suite, &raw);
+        let issues = validate(&suite, &raw).into_issues();
         assert!(issues
             .iter()
             .any(|i| i.message.contains("duplicate provider id")));

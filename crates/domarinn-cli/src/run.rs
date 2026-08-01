@@ -156,10 +156,18 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
             return exit::USAGE;
         }
     };
-    let issues = domarinn_core::validate(&suite, &raw);
-    if !issues.is_empty() {
-        eprintln!("{} validation issue(s):", issues.len());
-        for issue in &issues {
+    let report = domarinn_core::validate(&suite, &raw);
+    // Warnings first, so they survive an abort: a user fixing an error should
+    // see them in the same pass. `tracing` rather than `eprintln!` because this
+    // is a run — the finding is incidental, so it must honour `--log-format
+    // json` and `-q` like every other "the run continues, but know this" line.
+    for issue in report.warnings() {
+        tracing::warn!(path = %issue.path, "{}", issue.message);
+    }
+    if report.has_errors() {
+        let errors: Vec<_> = report.errors().collect();
+        eprintln!("{} validation issue(s):", errors.len());
+        for issue in errors {
             eprintln!("  - {issue}");
         }
         return exit::USAGE;

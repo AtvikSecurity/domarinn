@@ -109,6 +109,15 @@ impl Palette {
         self.paint(Style::new().fg_color(Some(AnsiColor::Yellow.into())), text)
     }
 
+    /// Advice the reader may ignore (yellow).
+    ///
+    /// Deliberately not an alias for [`Self::error`], which is yellow because
+    /// the *results table's* infra-ERROR status is yellow — a different concept
+    /// that happens to share a color today. Separate names let either move.
+    pub fn warn(&self, text: &str) -> String {
+        self.paint(Style::new().fg_color(Some(AnsiColor::Yellow.into())), text)
+    }
+
     /// A skipped status (dim).
     pub fn skip(&self, text: &str) -> String {
         self.paint(Style::new().dimmed(), text)
