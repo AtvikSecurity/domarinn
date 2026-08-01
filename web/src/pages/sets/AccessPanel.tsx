@@ -253,7 +253,7 @@ export function AccessPanel({
                     : null}
                 </p>
               ) : (
-                <div className="relative mt-2 overflow-x-auto">
+                <div className="relative mt-2 overflow-x-auto scroll-hint">
                   {/* `relative` above: contains the trailing Actions column's
                       `sr-only` header, which is `position: absolute` and
                       escapes a scroller that is not a containing block. See

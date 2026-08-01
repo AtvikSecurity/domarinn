@@ -262,7 +262,7 @@ function SuiteGroup({ group }: { group: Group }) {
       {/* `relative`: contains the Select column's `sr-only` header. Harmless
           today only because that column is leftmost; see SetsPage, where the
           same markup in a trailing column gave the page a sideways scroll. */}
-      <div className="relative overflow-x-auto">
+      <div className="relative overflow-x-auto scroll-hint">
         <table className="w-full min-w-[1080px] text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">

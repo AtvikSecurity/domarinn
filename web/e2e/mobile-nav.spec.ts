@@ -122,6 +122,28 @@ test.describe("Mobile navigation", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
   });
 
+  test("the runs filters start collapsed, and say when they are narrowing", async ({
+    page,
+  }) => {
+    await page.goto("/runs");
+    // Nine stacked controls filled the whole first screen and pushed every run
+    // below the fold.
+    const filters = page.getByRole("button", { name: /^Filters/ });
+    await expect(filters).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByLabel("Project")).not.toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Eval runs" }),
+    ).toBeVisible();
+
+    await filters.click();
+    await expect(page.getByLabel("Project")).toBeVisible();
+
+    // A narrowed list must never be unexplained while the controls that
+    // narrowed it are out of sight.
+    await page.goto("/runs?project=checkout-agent");
+    await expect(page.getByRole("button", { name: /1 active/ })).toBeVisible();
+  });
+
   test("an anonymous visitor in closed mode gets no menu button", async ({
     page,
   }) => {

@@ -91,7 +91,7 @@ export function SetProjectPage() {
         {/* `relative`: contains the trailing Flags column's `sr-only` header,
             which is `position: absolute` and would otherwise widen the page
             instead of this scroller. See SetsPage for the full account. */}
-        <div className="relative overflow-x-auto">
+        <div className="relative overflow-x-auto scroll-hint">
           <table className="w-full min-w-[820px] text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">

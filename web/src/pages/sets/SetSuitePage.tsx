@@ -240,7 +240,7 @@ export function SetSuitePage() {
               {/* `relative`: contains the `sr-only` column headers, which are
                   `position: absolute` and escape a scroller that is not a
                   containing block. See SetsPage for the full account. */}
-              <div className="relative overflow-x-auto">
+              <div className="relative overflow-x-auto scroll-hint">
                 <table className="w-full min-w-[900px] text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
