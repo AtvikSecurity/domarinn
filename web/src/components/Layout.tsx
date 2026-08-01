@@ -11,7 +11,9 @@ import { isMockEnabled } from "@/api/client";
 import { useAuth } from "@/auth/AuthProvider";
 import { onUnauthorized } from "@/lib/auth";
 import { cn } from "@/lib/cn";
+import { navItems } from "@/lib/nav";
 import { Button } from "./ui/Button";
+import { MobileNavSheet } from "./MobileNavSheet";
 import { SearchBar } from "./SearchBar";
 import { ThemeToggleButton } from "./ThemeToggle";
 import { FillViewportProvider, useFillViewportState } from "./AppShell";
@@ -54,12 +56,6 @@ function useUnauthorizedRedirect(): void {
       }),
     [navigate],
   );
-}
-
-interface NavItem {
-  to: string;
-  label: string;
-  end?: boolean;
 }
 
 function Logo() {
@@ -133,17 +129,7 @@ export function Layout() {
   // would show dead links that bounce straight back. Render a bare header.
   const chromeOnly = view.needsLogin;
 
-  const nav: NavItem[] = chromeOnly
-    ? []
-    : [
-        { to: "/", label: "Overview", end: true },
-        { to: "/runs", label: "Runs" },
-        { to: "/sets", label: "Sets" },
-        { to: "/cache", label: "Cache" },
-      ];
-  if (!chromeOnly && !view.promptLogin) nav.push({ to: "/keys", label: "API keys" });
-  if (!chromeOnly && view.canAdmin) nav.push({ to: "/admin", label: "Admin" });
-  if (!chromeOnly) nav.push({ to: "/settings", label: "Settings" });
+  const nav = navItems(view);
 
   return (
     // `h-dvh` + a non-scrolling root: the shell owns the viewport, so a page
@@ -154,7 +140,10 @@ export function Layout() {
         {/* `min-w-0` on the flex children plus a scrollable nav: with neither,
             the nav and the right-hand cluster refused to shrink and pushed the
             document to 508px wide at a 390px viewport — the one place the page
-            body itself scrolled sideways. */}
+            body itself scrolled sideways. Still load-bearing between `md` and
+            a narrow desktop; below `md` the two elements that were fighting
+            for that width are no longer rendered at all, and the menu sheet
+            carries them instead. */}
         <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-3 px-4 sm:gap-4 sm:px-6">
           <NavLink
             to="/"
@@ -163,8 +152,12 @@ export function Layout() {
             <Logo />
             <span className="hidden tracking-tight sm:inline">domarinn</span>
           </NavLink>
+          {/* A horizontally scrolling strip has no affordance saying it
+              scrolls, so on a phone the later items — API keys, Admin,
+              Settings — simply vanished off the right edge. Below `md` the
+              menu sheet owns navigation instead. */}
           <nav
-            className="flex min-w-0 items-center gap-1 overflow-x-auto"
+            className="hidden min-w-0 items-center gap-1 overflow-x-auto md:flex"
             aria-label="Primary"
           >
             {nav.map((item) => (
@@ -225,6 +218,7 @@ export function Layout() {
               </NavLink>
             )}
             <ThemeToggleButton />
+            {chromeOnly ? null : <MobileNavSheet nav={nav} />}
           </div>
         </div>
       </header>
