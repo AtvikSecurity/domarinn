@@ -134,8 +134,11 @@ async fn ingest_rejects_unsupported_schema_version() {
 /// release behind must still be able to upload (`docs/concepts/architecture.md`
 /// and the `supported_schema_versions` the CLI preflights against both say so).
 /// Without this, narrowing ingest to the current version only would still
-/// satisfy the rejection test below — every version it posts is out of window
-/// either way — while quietly breaking every CLI that had not yet updated.
+/// satisfy the *status* assertions in the rejection test below — every version
+/// it posts is out of window either way — while quietly breaking every CLI that
+/// had not yet updated. (That test's `{min}..={current}` window string would
+/// catch the narrowing; the statuses alone would not, and it is the statuses
+/// that describe the promise.)
 #[tokio::test]
 async fn ingest_accepts_one_release_back() {
     let (app, _dir) = test_app(Settings::default()).await;

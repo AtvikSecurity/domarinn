@@ -80,7 +80,7 @@ export const META: MetaResponse = {
       login_url: "/api/v1/auth/saml/corp/start",
     },
   ],
-  supported_schema_versions: [1],
+  supported_schema_versions: [2, 3],
   result_schema_version: RESULT_SCHEMA_VERSION,
   cache: {
     max_entry_bytes: 10_485_760,

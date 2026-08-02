@@ -224,6 +224,9 @@ struct PreparedRun {
     /// Migration-15 column: how many of this run's cases came back empty.
     /// Counted off the cases rather than read from `summary.empty_counts` so an
     /// older client that omits the summary field still lands the right number.
+    /// A present-but-empty reason (`""`, only reachable from a hand-authored
+    /// document) does not count: it stores as the `''` "known: not empty"
+    /// sentinel, which the detail `GROUP BY` and the case grid both exclude.
     empty_count: i64,
     tags: Vec<String>,
     blob: Vec<u8>,
@@ -355,7 +358,11 @@ impl PreparedRun {
             empty_count: run
                 .cases
                 .iter()
-                .filter(|c| c.empty_reason.is_some())
+                .filter(|c| {
+                    c.empty_reason
+                        .as_ref()
+                        .is_some_and(|r| !r.as_str().is_empty())
+                })
                 .count() as i64,
             tags: run.filters.tags.clone(),
             blob,
@@ -953,9 +960,10 @@ fn get_run_detail(
 /// Derived from the `cases` rows, exactly like the `runs.empty_count` column
 /// the list row reads — the same source, grouped instead of counted. That is
 /// what makes the list count, this map, and the case grid agree by
-/// construction for *every* document, including an externally authored one
-/// whose own `summary.empty_counts` contradicts its cases. (The document keeps
-/// its summary map untouched for export consumers; nothing here rewrites it.)
+/// construction — the backfill's `-1` corrupt-blob sentinel aside — even for an
+/// externally authored document whose own `summary.empty_counts` contradicts
+/// its cases. (The document keeps its summary map untouched for export
+/// consumers; nothing here rewrites it.)
 ///
 /// `empty_reason <> ''` excludes the "known: not empty" sentinel, the same
 /// guard [`super::cases::CaseListFilter`] applies to the wire filter, and NULL

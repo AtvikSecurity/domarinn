@@ -369,12 +369,12 @@ fn the_share_opt_out_only_travels_with_share() {
         !no_server.contains("--share"),
         "no server, no upload: {no_server}"
     );
-    // Asserted separately, and not as `!contains("--share")`: the substring
-    // `--share` does not occur in `--allow-share-failure` (the character before
-    // `share` is a `w`), so the line above passes just as happily against a
-    // step that emitted the opt-out with nothing to qualify. That is the exact
-    // regression worth catching — clap rejects the flag on its own, so the
-    // result is exit 2 on every run, unconditionally fatal at the gate.
+    // Asserted separately, and not as `!contains("--share")`: `--share` is not
+    // a substring of `--allow-share-failure`, so the line above passes just as
+    // happily against a step that emitted the opt-out with nothing to qualify.
+    // That is the exact regression worth catching — clap rejects the flag on
+    // its own, so the result is exit 2 on every run, unconditionally fatal at
+    // the gate.
     assert!(
         !no_server.contains("--allow-share-failure"),
         "the opt-out requires --share; alone it is a usage error the gate \

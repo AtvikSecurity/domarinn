@@ -223,14 +223,21 @@ fn decode_run_columns(body: &[u8]) -> anyhow::Result<RunColumns> {
     // Counted off the cases rather than summed from `summary.empty_counts`, so
     // a blob written by a client that records the per-case reason but not the
     // summary tally still lands the right number. A blob predating the field
-    // entirely counts 0, which is the truth about it.
+    // entirely counts 0, which is the truth about it. A present-but-empty
+    // reason does not count either: it stores as the `''` "known: not empty"
+    // sentinel, which the detail tally and the case grid both exclude, so
+    // counting it here would make the list disagree with both.
     let empty_count = value
         .get("cases")
         .and_then(|v| v.as_array())
         .map(|cases| {
             cases
                 .iter()
-                .filter(|c| c.get("empty_reason").is_some_and(|r| !r.is_null()))
+                .filter(|c| {
+                    c.get("empty_reason")
+                        .and_then(|r| r.as_str())
+                        .is_some_and(|r| !r.is_empty())
+                })
                 .count() as i64
         })
         .unwrap_or(0);

@@ -169,7 +169,7 @@ Render a stored run in the terminal (default `latest`). `RUN` is a run id, a `re
 | `--format <F>` | `table` (default), `json`, `jsonl`, `junit`, `md`. |
 | `--failed` | Show only failed/errored cases. The table footer still summarizes the whole run; `json`/`jsonl`/`junit` emit only the filtered cases. |
 | `--case <SEL>` | Show full detail for matching case(s) — a `case_key`, a `case_key` prefix (≥4 chars), a test id, or a name substring (repeatable). Rejected for `junit`/`md`. |
-| `--raw` | With `--case`, include the raw provider metadata (v2 runs). |
+| `--raw` | With `--case`, include the raw provider metadata (schema v2 and newer). |
 
 ```sh
 domarinn view latest

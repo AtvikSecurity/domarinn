@@ -495,6 +495,48 @@ async fn backfill_populates_empty_reason_and_empty_count_from_blobs() {
     assert_eq!(unstamped_runs, 0, "backfill must stamp every run row");
 }
 
+/// The blob-decoding path has to draw the "is this empty" line in the same
+/// place ingest does: a blob whose case carries a present-but-blank
+/// `empty_reason` backfills to the `''` "known: not empty" sentinel, which the
+/// detail tally and case grid both exclude — so the run count must exclude it
+/// too, or the list would claim an empty case the detail cannot show.
+#[tokio::test]
+async fn backfill_does_not_count_a_blank_reason_as_empty() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(empty_reason_run("run-bf-blank", ""), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    // Simulate rows written before migration 15, so the backfill re-derives
+    // both columns from the blob rather than reading what ingest computed.
+    {
+        let conn = raw(dir.path());
+        conn.execute_batch(
+            "UPDATE cases SET empty_reason = NULL;
+             UPDATE runs SET empty_count = NULL;",
+        )
+        .unwrap();
+    }
+
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        empty_reasons(&conn, "run-bf-blank"),
+        vec![Some(String::new()), Some(String::new())],
+        "a blank reason is indistinguishable from no reason once stored"
+    );
+    assert_eq!(
+        empty_count(&conn, "run-bf-blank"),
+        Some(0),
+        "no case is selectable as empty, so the run tally must be 0"
+    );
+}
+
 #[tokio::test]
 async fn backfill_stamps_empty_sentinels_for_corrupt_blobs_and_stops_rescanning() {
     let dir = TempDir::new().unwrap();

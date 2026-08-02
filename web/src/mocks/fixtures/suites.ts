@@ -6,7 +6,7 @@ import type { AssertName } from "@/api";
 
 export const NOW = Date.UTC(2026, 6, 19, 15, 0, 0); // fixed reference time
 export const DAY = 86_400_000;
-export const RESULT_SCHEMA_VERSION = 1;
+export const RESULT_SCHEMA_VERSION = 3;
 
 /** A suite whose cases are shaped as a provider × prompt × test × repeat grid
  *  (migration-3 matrix identity). When present on a `SuiteDef`, every run in the
