@@ -105,7 +105,9 @@ pub struct RunArgs {
     /// Upload the run to the server after it completes.
     ///
     /// Fail-closed: a rejected, unreachable or unconfigured upload exits 3.
-    /// Pass `--allow-share-failure` to tolerate it.
+    /// A server that says up front it cannot accept this CLI's result schema
+    /// exits 2 *before* the run executes, so the skew costs no provider calls.
+    /// Pass `--allow-share-failure` to tolerate either.
     #[arg(long)]
     pub share: bool,
 
@@ -183,6 +185,22 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
             eprintln!("  - {issue}");
         }
         return exit::USAGE;
+    }
+
+    // Before the runner, not after: `--share` failing closed already catches a
+    // version-skewed server, but only once every provider call has been billed
+    // and the graded results have nowhere to go. One GET here turns that into a
+    // refusal that costs a round trip. Anything short of a confirmed mismatch
+    // proceeds — see `preflight_schema`.
+    if args.share {
+        if let Err(msg) = crate::share::preflight_schema(server_url.as_deref()) {
+            if args.allow_share_failure {
+                tracing::warn!("{msg}");
+            } else {
+                eprintln!("error: --share preflight: {msg}");
+                return exit::USAGE;
+            }
+        }
     }
 
     let suite_file = domarinn_core::loader::resolve_suite_path(&args.path);

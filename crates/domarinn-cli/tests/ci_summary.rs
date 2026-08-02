@@ -17,19 +17,17 @@ const SHARE_OK: &str = r#"{"url":"https://domarinn.test/runs/abc"}"#;
 /// The server `run --share` talks to: the ingest POST answering `status` with
 /// `body`, plus the `/meta` route the upload's preflight consults.
 ///
-/// A routing stub rather than [`stub_server`] because the share leg is on its
-/// way to making more than one request; registering `/meta` here now means the
-/// preflight lands without every one of these tests having to be rewritten. The
-/// count is today's request total (the POST alone) so `join` still returns as
-/// soon as the client is done rather than idling to the deadline — adding the
-/// preflight means bumping it to 2.
+/// A routing stub rather than [`stub_server`] because the share leg makes two
+/// requests: the schema preflight against `/meta`, then the ingest POST. The
+/// count is that total, so `join` returns as soon as the client is done rather
+/// than idling to the deadline.
 fn share_stub(status: &'static str, body: &'static str) -> (String, JoinHandle<Vec<String>>) {
     stub_routes_status(
         vec![
             ("/api/v1/meta", "200 OK", meta_ok_body()),
             ("/api/v1/runs", status, body.to_string()),
         ],
-        1,
+        2,
         Duration::from_secs(30),
     )
 }
@@ -251,6 +249,140 @@ fn run_share_without_a_server_url_exits_infra() {
         .assert()
         .code(3)
         .stderr(predicate::str::contains("no server URL"));
+}
+
+/// A server that cannot accept what this CLI writes must be caught *before* the
+/// run executes. Fail-closed alone only turns the skew into an exit code after
+/// every provider call has already been billed and the results have nowhere to
+/// go; the preflight is what makes the refusal free.
+///
+/// The advertised window is computed from the current schema version rather than
+/// hardcoded, so the next bump moves it with us instead of quietly turning this
+/// into a test of a *supported* version.
+#[test]
+fn run_share_preflight_refuses_a_version_mismatch_before_running() {
+    let body = format!(
+        r#"{{"name":"stub","version":"9.9.9","supported_schema_versions":[{next}],"result_schema_version":{next}}}"#,
+        next = domarinn_core::RESULT_SCHEMA_VERSION + 1
+    );
+    // Budgeted for two requests even though only one is expected: a stub that
+    // stops listening after the preflight would make "no POST was served" true
+    // by construction, which is the assertion this test exists to make.
+    let (url, server) = stub_routes_status(
+        vec![
+            ("/api/v1/meta", "200 OK", body),
+            ("/api/v1/runs", "200 OK", SHARE_OK.to_string()),
+        ],
+        2,
+        Duration::from_secs(5),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+
+    bin()
+        .args(["run", "--share"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--share preflight"));
+
+    let served = server.join().unwrap();
+    assert!(
+        served.iter().any(|r| r.contains("GET /api/v1/meta")),
+        "the preflight never asked the server what it accepts, so exit 2 proves \
+         nothing about version skew; served: {served:?}"
+    );
+    assert!(
+        !served.iter().any(|r| r.contains("POST /api/v1/runs")),
+        "the run uploaded anyway, so the preflight refused after the spend it \
+         was meant to prevent; served: {served:?}"
+    );
+    assert!(
+        !dir.path().join(".domarinn/runs").exists(),
+        "a run directory exists, so the suite executed before the preflight — \
+         the provider calls were paid for and then thrown away"
+    );
+}
+
+/// The refusal is a default, not a wall. `--allow-share-failure` already means
+/// "publishing is optional here"; a preflight that ignored it would make the
+/// flag a lie in exactly the case it was added for. Pinned because the degrade
+/// path is one `if` away from being unreachable, and nothing else exercises it.
+#[test]
+fn run_share_preflight_mismatch_is_tolerated_with_allow_share_failure() {
+    let body = format!(
+        r#"{{"name":"stub","version":"9.9.9","supported_schema_versions":[{next}],"result_schema_version":{next}}}"#,
+        next = domarinn_core::RESULT_SCHEMA_VERSION + 1
+    );
+    let (url, server) = stub_routes_status(
+        vec![
+            ("/api/v1/meta", "200 OK", body),
+            ("/api/v1/runs", "200 OK", SHARE_OK.to_string()),
+        ],
+        2,
+        Duration::from_secs(30),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+
+    bin()
+        .args(["run", "--share", "--allow-share-failure"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let served = server.join().unwrap();
+    assert!(
+        served.iter().any(|r| r.contains("POST /api/v1/runs")),
+        "the preflight refused anyway, so --allow-share-failure did not degrade \
+         it to a warning; served: {served:?}"
+    );
+    assert_eq!(
+        latest_run(dir.path()).share_url.as_deref(),
+        Some("https://domarinn.test/runs/abc")
+    );
+}
+
+/// A server too old to serve `/meta` must not block the share. A 404 says
+/// nothing about whether ingest will accept the document — only the POST is
+/// authoritative — so the preflight steps aside rather than inventing a refusal
+/// out of an absent answer.
+#[test]
+fn run_share_preflight_tolerates_a_server_without_meta() {
+    let (url, server) = stub_routes_status(
+        vec![
+            (
+                "/api/v1/meta",
+                "404 Not Found",
+                r#"{"error":"not found"}"#.to_string(),
+            ),
+            ("/api/v1/runs", "200 OK", SHARE_OK.to_string()),
+        ],
+        2,
+        Duration::from_secs(30),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+
+    bin()
+        .args(["run", "--share"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let served = server.join().unwrap();
+    assert!(
+        served.iter().any(|r| r.contains("GET /api/v1/meta")),
+        "the preflight never ran, so its tolerance of a 404 is untested; \
+         served: {served:?}"
+    );
+    assert_eq!(
+        latest_run(dir.path()).share_url.as_deref(),
+        Some("https://domarinn.test/runs/abc")
+    );
 }
 
 /// The opt-out only means anything alongside `--share`; on its own it reads as

@@ -61,10 +61,7 @@ pub fn execute(args: ShareArgs, server_url: Option<String>) -> u8 {
 /// function's — `share` is best-effort unless `--strict`, `run --share` is fatal
 /// unless `--allow-share-failure` — so it takes no flag of its own.
 pub fn upload_run(result: &RunResult, server_url: Option<&str>) -> Result<String, String> {
-    let server = server_url
-        .map(String::from)
-        .or_else(|| std::env::var("DOMARINN_SERVER_URL").ok())
-        .filter(|s| !s.is_empty())
+    let server = resolve_server(server_url)
         .ok_or_else(|| "no server URL (set --server-url or DOMARINN_SERVER_URL)".to_string())?;
 
     let mut enriched = result.clone();
@@ -81,6 +78,126 @@ pub fn upload_run(result: &RunResult, server_url: Option<&str>) -> Result<String
     let url = runtime.block_on(upload(&server, &enriched))?;
     println!("View run: {url}");
     Ok(url)
+}
+
+/// Ask the server what it accepts *before* the run spends anything.
+///
+/// `run --share` failing closed still only reports the skew after every provider
+/// call has been billed and the results have nowhere to go. This is the cheap
+/// half of the same guarantee: one GET, before the runner starts, so a version
+/// skew costs nothing but the round trip.
+///
+/// Deliberately lenient — only a server that answered, parsed, and named a
+/// window this CLI is outside of earns a refusal. Unreachable, slow, 404 and
+/// unparsable all proceed with a warning, because the POST is the authoritative
+/// answer and a preflight that inferred a refusal from silence would turn every
+/// network blip, proxy and older server into a run that never happened. An
+/// absent or empty window is the same case: it states nothing to be outside of.
+pub fn preflight_schema(server_url: Option<&str>) -> Result<(), String> {
+    // No server is the share step's error to report later, with its own remedy;
+    // refusing here would only print the same misconfiguration twice.
+    let Some(server) = resolve_server(server_url) else {
+        return Ok(());
+    };
+
+    let meta = match tokio::runtime::Runtime::new().map_err(|e| e.to_string()) {
+        Ok(runtime) => runtime.block_on(fetch_meta(&server)),
+        Err(e) => Err(e),
+    };
+    let meta = match meta {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                server = %server,
+                "could not check the server's schema window before running; \
+                 continuing (the upload itself is authoritative)"
+            );
+            return Ok(());
+        }
+    };
+
+    let supported: Vec<u32> = meta
+        .get("supported_schema_versions")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_u64())
+                .map(|v| v as u32)
+                .collect()
+        })
+        .unwrap_or_default();
+    let ours = domarinn_core::RESULT_SCHEMA_VERSION;
+    if supported.is_empty() || supported.contains(&ours) {
+        return Ok(());
+    }
+
+    let server_version = meta
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    // Which side to upgrade is the whole actionable content of the message, and
+    // it is not guessable from the numbers alone by someone reading in a hurry:
+    // a window entirely below ours is a server too old to store what we write,
+    // anything else is a CLI too old to write what the server now stores.
+    let older = if supported.iter().all(|v| *v < ours) {
+        "server"
+    } else {
+        "CLI"
+    };
+    Err(format!(
+        "server at {server} accepts result schema versions {supported:?} (server \
+         v{server_version}); this CLI writes v{ours}. Upgrade the {older} before \
+         sharing, or pass --allow-share-failure to run anyway."
+    ))
+}
+
+/// `GET /api/v1/meta`, parsed as loose JSON.
+///
+/// Loose on purpose: the CLI reads three fields out of a response the server is
+/// free to grow, and importing its DTO would make every field the server adds a
+/// compile-time coupling — and, worse, make an unknown field from a *newer*
+/// server a parse failure, which is precisely the skew this preflight exists to
+/// report clearly.
+///
+/// The timeout is short because this runs ahead of the work: a server that
+/// cannot answer in five seconds has said nothing worth delaying a run for.
+async fn fetch_meta(server: &str) -> Result<serde_json::Value, String> {
+    let url = format!("{}/api/v1/meta", server.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = with_token(client.get(&url))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
+    }
+    serde_json::from_str(&body).map_err(|e| e.to_string())
+}
+
+/// `--server-url`, else `DOMARINN_SERVER_URL`, else nothing.
+///
+/// Shared so the preflight and the upload can never disagree about which server
+/// they are talking to — a preflight that cleared a different host than the one
+/// the POST went to would be worse than none.
+fn resolve_server(server_url: Option<&str>) -> Option<String> {
+    server_url
+        .map(String::from)
+        .or_else(|| std::env::var("DOMARINN_SERVER_URL").ok())
+        .filter(|s| !s.is_empty())
+}
+
+/// Attach `DOMARINN_TOKEN` as a bearer when one is set.
+fn with_token(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match std::env::var("DOMARINN_TOKEN") {
+        Ok(token) if !token.is_empty() => request.bearer_auth(token),
+        _ => request,
+    }
 }
 
 /// Attach git and CI metadata to a run that predates engine-side collection.
@@ -109,13 +226,10 @@ async fn upload(server: &str, result: &RunResult) -> Result<String, String> {
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut request = client.post(&url).json(result);
-    if let Ok(token) = std::env::var("DOMARINN_TOKEN") {
-        if !token.is_empty() {
-            request = request.bearer_auth(token);
-        }
-    }
-    let response = request.send().await.map_err(|e| e.to_string())?;
+    let response = with_token(client.post(&url).json(result))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
