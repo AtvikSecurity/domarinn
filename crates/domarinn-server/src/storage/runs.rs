@@ -944,52 +944,42 @@ fn get_run_detail(
 
     detail.tags = load_run_tags(conn, id.as_str())?;
     detail.assert_labels = distinct_assert_labels(conn, id.as_str())?;
-    detail.empty_counts = stored_empty_counts(conn, id, vis)?;
+    detail.empty_counts = empty_counts_by_reason(conn, id.as_str())?;
     Ok(Some(detail))
 }
 
-/// The stored document's `summary.empty_counts`, or `None` when the run
-/// reported no empty output.
+/// This run's empty-output cases tallied by reason, or `None` when it has none.
 ///
-/// Deliberately *not* the `runs.empty_count` column the list row reads. That
-/// column is counted off the cases at ingest and answers "how many"; this map
-/// is the producer's own breakdown and answers "why". For every run this
-/// codebase writes the two agree by construction — they can diverge only for an
-/// externally authored blob whose summary contradicts its own cases, and then
-/// each surface reports what its own source said rather than inventing a
-/// reconciliation nobody asked for.
+/// Derived from the `cases` rows, exactly like the `runs.empty_count` column
+/// the list row reads — the same source, grouped instead of counted. That is
+/// what makes the list count, this map, and the case grid agree by
+/// construction for *every* document, including an externally authored one
+/// whose own `summary.empty_counts` contradicts its cases. (The document keeps
+/// its summary map untouched for export consumers; nothing here rewrites it.)
 ///
-/// A missing, corrupt, or shape-surprising blob degrades to `None` and a warn
-/// rather than failing the whole detail — the same call the `asserts` column
-/// gets in [`distinct_assert_labels`].
-fn stored_empty_counts(
+/// `empty_reason <> ''` excludes the "known: not empty" sentinel, the same
+/// guard [`super::cases::CaseListFilter`] applies to the wire filter, and NULL
+/// excludes legacy pre-backfill rows. Index-covered by migration 15's
+/// `idx_cases_run_empty_reason(run_id, empty_reason)`.
+fn empty_counts_by_reason(
     conn: &Connection,
-    id: &RunId,
-    vis: &RunVisibility,
+    run_id: &str,
 ) -> anyhow::Result<Option<BTreeMap<String, u64>>> {
-    let Some(blob) = load_run_blob(conn, id, vis)? else {
-        return Ok(None);
-    };
-    let read = || -> anyhow::Result<BTreeMap<String, u64>> {
-        let value: serde_json::Value = serde_json::from_slice(&decompress(&blob)?)?;
-        // A client older than the field simply has nothing to report.
-        let Some(raw) = value.get("summary").and_then(|s| s.get("empty_counts")) else {
-            return Ok(BTreeMap::new());
-        };
-        Ok(serde_json::from_value(raw.clone())?)
-    };
-    match read() {
-        Ok(counts) if counts.is_empty() => Ok(None),
-        Ok(counts) => Ok(Some(counts)),
-        Err(e) => {
-            tracing::warn!(
-                run_id = %id,
-                error = %e,
-                "unreadable stored summary.empty_counts; reporting none"
-            );
-            Ok(None)
-        }
+    let mut stmt = conn.prepare(
+        "SELECT empty_reason, COUNT(*) FROM cases
+          WHERE run_id = ?1 AND empty_reason IS NOT NULL AND empty_reason <> ''
+          GROUP BY empty_reason",
+    )?;
+    let rows = stmt.query_map(params![run_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let (reason, n) = row?;
+        counts.insert(reason, n.max(0) as u64);
     }
+    // Omitted, never `{}` — see `RunDetailResponse::empty_counts`.
+    Ok((!counts.is_empty()).then_some(counts))
 }
 
 fn distinct_assert_labels(conn: &Connection, run_id: &str) -> anyhow::Result<Vec<String>> {

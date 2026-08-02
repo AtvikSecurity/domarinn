@@ -150,9 +150,13 @@ pub struct RunDetailResponse {
     pub domarinn_version: Option<String>,
     pub tags: Vec<String>,
     pub assert_labels: Vec<String>,
-    /// This run's empty-output cases tallied by reason, read from the stored
-    /// document's `summary.empty_counts`. Counts *every* empty output, not
-    /// just refusals — `refusal` is one key among an open set.
+    /// This run's empty-output cases tallied by reason. Counts *every* empty
+    /// output, not just refusals — `refusal` is one key among an open set.
+    ///
+    /// Grouped from the same `cases` rows [`RunListItem::empty_count`] is
+    /// counted from, so the list count, this map, and the case grid always
+    /// agree. The stored document's own `summary.empty_counts` is left to
+    /// export consumers and is deliberately not the source here.
     ///
     /// Omitted, never `{}`, when the run reported none, matching how
     /// `RunSummary` itself serializes it and how [`RunListItem::empty_count`]

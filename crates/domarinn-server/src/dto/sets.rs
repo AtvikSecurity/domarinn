@@ -27,7 +27,9 @@
 //! that predates migration 15 is NULL, and one whose blob would not decode
 //! carries `-1`. Neither is zero, so neither is summed — such runs contribute
 //! nothing, which makes the total a **lower bound** on a corpus that still has
-//! un-backfilled runs.
+//! un-backfilled runs. The bound tightens on its own: [`crate::storage`]'s
+//! backfill re-runs on every open and fills the NULLs, after which only the
+//! `-1` rows — runs whose blob will never decode — stay excluded.
 //!
 //! The field is then omitted, not zeroed, when that total is `0` — the same
 //! rule [`crate::dto::runs::RunListItem::empty_count`] follows, so "absent"
@@ -289,6 +291,41 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[test]
+    fn a_suite_row_with_nothing_to_report_omits_its_empty_count() {
+        // The suite row follows `ProjectSetView`'s rule: `empty_count` is the
+        // one optional here that goes absent rather than null.
+        let dto = SuiteSetView {
+            suite: "quiet".to_string(),
+            run_count: 1,
+            last_run_at: None,
+            pass_count: 1,
+            fail_count: 0,
+            error_count: 0,
+            case_count: 1,
+            empty_count: None,
+            latest_pass_rate: None,
+            sparkline: vec![],
+            baseline_run_id: None,
+            restricted: false,
+            my_level: None,
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        assert!(
+            v.get("empty_count").is_none(),
+            "empty_count must be omitted, not null: {v}"
+        );
+        for key in [
+            "last_run_at",
+            "latest_pass_rate",
+            "baseline_run_id",
+            "my_level",
+        ] {
+            assert!(v.get(key).is_some(), "missing key {key}");
+            assert!(v[key].is_null(), "expected {key} null, got {:?}", v[key]);
+        }
     }
 
     #[test]
