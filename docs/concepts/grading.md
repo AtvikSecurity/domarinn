@@ -183,7 +183,7 @@ tests:
 
 The check runs **when the template is read, at grading time** — not at load. A suite holding the contradiction validates clean and then fails the first graded cell that reaches it, as a fail-closed `grader misconfigured: …` on that assertion: the case is promoted to `error` and the run exits `3`. (A missing `{{rubric}}` or `{{output}}` stays tolerated; a template is allowed to grade on less than everything.)
 
-**Do not combine it with `runner.skip_on_empty_reason: [tool_use_only]`.** That setting skips tool-only cells *before* grading, so exactly the cells this flag exists for never reach the judge. Pick one: skip them, or show them to the grader.
+**Do not combine it with `runner.skip_on_empty_reason: [tool_use_only]`.** That setting does *not* keep tool-only cells away from the judge — it overrides their verdict *after* grading, so you pay the judge for exactly the cells this flag exists for and then discard the answer as a `skip`. Pick one: report them as skips, or show them to the grader and let the verdict stand. See [excluding them from the verdict](#excluding-them-from-the-verdict).
 
 **0.4.x verdicts are never adopted for a flag-on grading.** [Cache migration](caching.md#upgrading-to-05) adopts pre-0.5 grader entries on a miss, but every one of them was produced by a judge that could not see tool calls. Adopting one would answer the new question with the old answer.
 
@@ -211,16 +211,23 @@ An empty output is a **successful** provider call. Nothing raises, nothing retri
 - **A cell that reported tool calls is graded normally.** `tool_use_only` is an empty *text* output by a model that did act, and there is real evidence to judge: the reported calls. Both `not-tool-call` and a rubric with `include_tool_calls: true` see them.
 - **Metric assertions are unaffected.** `cost`, `latency` and `tokens` never read the output, so an empty answer says nothing about whether they hold.
 
-**So a run can honestly report `Result: 300 passed` and `Empty: 4 (refusal × 4)` at the same time** — that is the intended reading, not a contradiction. It happens when the empty cells' only assertions were metric bounds (or when `skip_on_empty_reason` took them out of grading): the cases passed the questions actually asked of them, and the `Empty` row exists precisely so that reading is visible instead of silently flattering the pass rate.
+**So a run can honestly report `Result: 300 passed` and `Empty: 4 (refusal × 4)` at the same time** — that is the intended reading, not a contradiction. It happens when the empty cells' only assertions were metric bounds (or when `skip_on_empty_reason` took them out of the verdict): the cases passed the questions actually asked of them, and the `Empty` tally exists precisely so that reading is visible instead of silently flattering the pass rate.
 
-### Excluding them instead
+### Excluding them from the verdict
 
-`runner.skip_on_empty_reason` removes matching cells from grading **entirely** — they become `skip`, not `fail`, and no assertion runs against them at all. It is checked before every rule above:
+`runner.skip_on_empty_reason` removes matching cells from the **verdict**: they are reported `skip` rather than `fail`, so they stop dragging the pass rate down.
 
 ```yaml
 runner:
   skip_on_empty_reason: ["refusal", "content_filter"]
 ```
+
+It is a **verdict override, not a grading skip**, and the difference is worth money:
+
+- **The assertions still run.** Every rule above still applies to the cell — including the vacuous-negation guard, which fires during evaluation, before the skip decision is taken. Their result simply no longer decides the case.
+- **A rubric grader is still called, and still billed.** Nothing about this setting keeps a graded assertion away from the judge. If the spend is what you are trying to avoid, this is not the lever — [the graded-pass short-circuit](../reference/assertions.md#evaluation-order-and-short-circuiting) is the mechanism that skips a judge call, and it decides on weight arithmetic, not on `empty_reason`.
+- **A broken assertion still errors the case.** An assertion that could not be evaluated at all outranks the skip: the cell is reported `error`, not `skip`. A config error stays visible rather than being quietly excused by the reason.
+- **The assert results are kept.** The stored case still carries every assertion's status, score and reason, so the drawer explains what a `skip` was judged on.
 
 The list matches the **classified** reason each case reports — the value shown in results, which domarinn fills in as `blank` when the provider named none — so list what you see there, not what you expect the provider to send.
 
@@ -228,7 +235,8 @@ The list matches the **classified** reason each case reports — the value shown
 
 | Surface | What you get |
 |---|---|
-| `domarinn run` summary and `--ci-summary` | An `Empty` row, broken down by reason (`4 (refusal × 3, truncated × 1)`), printed only when there is one. |
+| `domarinn run` terminal summary | An `{n} empty` segment in the stats footer, beside the pass rate it qualifies. The **total only** — no per-reason breakdown. |
+| `--ci-summary` and `--format md` | An `Empty` row in the metrics table, carrying the full per-reason breakdown — `4 (refusal × 3, truncated × 1)` — in `BTreeMap` order, so it is stable across runs. |
 | `GET /runs/{id}` | `empty_counts`: reason → count for the run. |
 | `GET /runs` | `empty_count` per row. |
 | `GET /runs/{id}/cases?empty_reason=refusal` | Filters cases to one reason (also on the `list_cases` MCP tool). |
