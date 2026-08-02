@@ -44,6 +44,10 @@ pub struct EvalCtx<'a> {
     /// text, and folding calls into it would change what every existing
     /// assertion sees — and what a cache key hashes.
     pub tool_calls: &'a [crate::result::ToolCall],
+    /// Why this cell's output has nothing gradeable in it, if it does not.
+    /// Read only by the vacuous-pass guard — see
+    /// [`AssertOutcome::deny_vacuous_negated_pass`].
+    pub empty_reason: Option<&'a crate::empty::EmptyReason>,
 }
 
 // `AssertName` lives in `domarinn-types`: it is a wire value (it appears on
@@ -83,6 +87,29 @@ pub fn is_local(kind: &AssertKind) -> bool {
         kind,
         AssertKind::Exec { .. } | AssertKind::LlmRubric { .. } | AssertKind::Similar { .. }
     )
+}
+
+/// Whether this assertion judges response content (text or tool calls) rather
+/// than run metrics. The vacuous-pass guard applies only to content asserts:
+/// negating a latency bound over a refusal is still a true statement about
+/// latency.
+fn judges_content(kind: &AssertKind) -> bool {
+    !matches!(
+        kind,
+        AssertKind::Cost { .. } | AssertKind::Latency { .. } | AssertKind::Tokens { .. }
+    )
+}
+
+/// Whether this assertion had evidence to judge *despite* the empty output.
+///
+/// `tool_use_only` — the model called a tool and said nothing else — is an
+/// empty **text** output, and a `tool-call` assertion never read that text.
+/// `not-tool-call: delete_everything` over a response that called
+/// `get_weather` is a true statement about the calls that were reported, so
+/// the vacuous-pass guard must leave it alone; the hole it exists to close is
+/// the same assertion over *zero* calls.
+fn judged_reported_calls(kind: &AssertKind, ctx: &EvalCtx<'_>) -> bool {
+    matches!(kind, AssertKind::ToolCall { .. }) && !ctx.tool_calls.is_empty()
 }
 
 /// Whether one reported call satisfies an assertion's `args`/`schema`
@@ -173,8 +200,14 @@ pub fn evaluate_local(
     if !is_local(&assert.kind) {
         return None;
     }
-    let outcome = evaluate_kind(&assert.kind, output, ctx);
-    Some(outcome.negated(assert.negate))
+    let outcome = evaluate_kind(&assert.kind, output, ctx).negated(assert.negate);
+    Some(
+        if judges_content(&assert.kind) && !judged_reported_calls(&assert.kind, ctx) {
+            outcome.deny_vacuous_negated_pass(assert.negate, ctx.empty_reason)
+        } else {
+            outcome
+        },
+    )
 }
 
 fn evaluate_kind(kind: &AssertKind, output: &Output, ctx: &EvalCtx<'_>) -> AssertOutcome {

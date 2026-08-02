@@ -537,3 +537,152 @@ fn a_reason_this_build_has_never_heard_of_can_still_be_skipped() {
         &["invented_next_year".to_string()]
     ));
 }
+
+// ── The vacuous-pass guard, end to end ───────────────────────────────────────
+
+/// A provider that declines: no output, and a reason saying why.
+struct RefusingProvider;
+
+#[async_trait]
+impl Provider for RefusingProvider {
+    fn id(&self) -> &str {
+        "refuser"
+    }
+    fn fingerprint(&self) -> Json {
+        serde_json::json!({ "type": "refuser" })
+    }
+    async fn call(
+        &self,
+        _req: &ProviderRequest,
+        _ctx: &CallCtx,
+    ) -> Result<ProviderResponse, ProviderError> {
+        Ok(ProviderResponse {
+            empty_reason: Some(crate::empty::EmptyReason::new(
+                crate::empty::EmptyReason::REFUSAL,
+            )),
+            ..ProviderResponse::text("")
+        })
+    }
+}
+
+fn not_contains() -> crate::config::AssertKind {
+    crate::config::AssertKind::Contains {
+        value: "forbidden".into(),
+    }
+}
+
+/// A grader whose judgement is always "the output did not satisfy the rubric"
+/// — which a negated assert would otherwise turn into a pass.
+struct FailingGrader;
+
+#[async_trait]
+impl AssertGrader for FailingGrader {
+    async fn grade(
+        &self,
+        _assert: &crate::config::Assert,
+        _output: &crate::types::Output,
+        _ctx: &GradeCtx<'_>,
+    ) -> Result<crate::cache::Graded, crate::errors::GraderError> {
+        Ok(crate::cache::Graded::unpriced(
+            crate::cache::GradedVerdict::Rubric {
+                score: 0.0,
+                pass: false,
+                reasoning: "nothing to judge".into(),
+            },
+        ))
+    }
+}
+
+/// Run one cell against [`RefusingProvider`] with a single negated assert.
+async fn refused_case(
+    kind: crate::config::AssertKind,
+    negate: bool,
+    skip_on_empty_reason: &[String],
+) -> CaseResult {
+    let engine = TemplateEngine::new();
+    let cache = NoopCache;
+    let schemas = crate::jsonschema_cache::SchemaCache::new();
+    let aborted = AbortFlag::default();
+    let cache_state = crate::runner::runner_cache::CacheRunState::default();
+    let test = crate::config::TestCase {
+        id: Some("t1".into()),
+        assert: vec![crate::config::Assert {
+            weight: 1.0,
+            negate,
+            kind,
+        }],
+        ..Default::default()
+    };
+    run_cell(
+        &RefusingProvider,
+        None,
+        &test,
+        0,
+        &engine,
+        &cache,
+        Some(&FailingGrader),
+        &CallCtx::default(),
+        Path::new("."),
+        CacheMode::Disabled,
+        false,
+        &RetryPolicy::default(),
+        &schemas,
+        false,
+        &aborted,
+        skip_on_empty_reason,
+        &[],
+        &cache_state,
+    )
+    .await
+}
+
+/// The hole this closes: `not-contains` over a refusal scored 1.00 and the
+/// case reported green, for a run the model never attempted.
+#[tokio::test]
+async fn a_refusal_with_negated_asserts_lands_in_fail_not_pass() {
+    let case = refused_case(not_contains(), true, &[]).await;
+    assert_eq!(case.status, CaseStatus::Fail, "{:?}", case.asserts);
+    assert_eq!(case.score, 0.0);
+    assert!(
+        case.asserts[0].reason.contains("vacuously"),
+        "{}",
+        case.asserts[0].reason
+    );
+}
+
+/// `skip_on_empty_reason` is checked before the verdict, so a suite that opted
+/// out of grading refusals still gets `Skip` rather than the guard's `Fail`.
+#[tokio::test]
+async fn skip_on_empty_reason_still_wins_over_the_vacuous_pass_guard() {
+    let case = refused_case(
+        not_contains(),
+        true,
+        &[crate::empty::EmptyReason::REFUSAL.to_string()],
+    )
+    .await;
+    assert_eq!(case.status, CaseStatus::Skip, "{:?}", case.asserts);
+}
+
+/// The graded seam: a negated `llm-rubric` over a refusal is the same vacuous
+/// pass, and the guard has to sit before the score the case is graded on.
+#[tokio::test]
+async fn a_negated_graded_assert_cannot_pass_vacuously_either() {
+    let case = refused_case(
+        crate::config::AssertKind::LlmRubric {
+            value: "is rude".into(),
+            grader: None,
+            threshold: None,
+            params: None,
+        },
+        true,
+        &[],
+    )
+    .await;
+    assert_eq!(case.status, CaseStatus::Fail, "{:?}", case.asserts);
+    assert_eq!(case.score, 0.0, "the scored verdict agrees with the result");
+    assert!(
+        case.asserts[0].reason.contains("vacuously"),
+        "{}",
+        case.asserts[0].reason
+    );
+}

@@ -898,8 +898,7 @@ async fn run_cell(
     let wall_ms = start.elapsed().as_millis() as u64;
     // Provider time, never wall time: `latency` assertions read this, and
     // charging retry backoff to it fails them on a model that answered fast.
-    // Entries written before the field existed fall back to wall time, which is
-    // what they always reported.
+    // Entries predating the field fall back to wall time, as they always did.
     let latency_ms = provider_latency_ms.unwrap_or(wall_ms);
     // After the cache read, so a replayed hit carries the same diagnosis a
     // fresh call would. Keyed on the reason being present, never on the output
@@ -930,6 +929,7 @@ async fn run_cell(
             repeat,
             aborted,
             tool_calls: &response.tool_calls,
+            empty_reason: empty_reason.as_ref(),
         },
         &test.assert,
         &response.output,

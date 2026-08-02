@@ -27,6 +27,7 @@ fn eval(assert: &Assert, out: &str) -> AssertOutcome {
             metrics: &metrics,
             schemas: &schemas,
             tool_calls: &[],
+            empty_reason: None,
         },
     )
     .unwrap()
@@ -148,6 +149,7 @@ fn budget_asserts_use_metrics() {
         metrics: &metrics,
         schemas: &schemas,
         tool_calls: &[],
+        empty_reason: None,
     };
     let lat = evaluate_local(&a(AssertKind::Latency { max: 1000 }), &out, &ctx).unwrap();
     assert!(lat.passed);
@@ -184,6 +186,7 @@ fn non_local_asserts_return_none() {
             metrics: &metrics,
             schemas: &schemas,
             tool_calls: &[],
+            empty_reason: None,
         }
     )
     .is_none());
@@ -298,6 +301,7 @@ mod contains_json_schema_tests {
                 metrics: &metrics,
                 schemas: &schemas,
                 tool_calls: &[],
+                empty_reason: None,
             },
         )
         .unwrap()
@@ -364,6 +368,7 @@ mod contains_json_schema_tests {
                 metrics: &metrics,
                 schemas: &schemas,
                 tool_calls: &[],
+                empty_reason: None,
             },
         )
         .unwrap();
@@ -399,6 +404,7 @@ mod contains_json_schema_tests {
                     metrics: &metrics,
                     schemas: &schemas,
                     tool_calls: &[],
+                    empty_reason: None,
                 },
             )
             .unwrap()
@@ -459,6 +465,7 @@ mod tool_call_tests {
                 metrics: &metrics,
                 schemas: &schemas,
                 tool_calls: calls,
+                empty_reason: None,
             },
         )
         .expect("tool-call is a local assertion")
@@ -614,5 +621,178 @@ mod tool_call_tests {
             );
             assert!(outcome.unevaluable, "{outcome:?}");
         }
+    }
+}
+
+/// The vacuous-pass guard: a negated assertion must not earn a pass merely
+/// because the provider produced nothing to judge.
+mod vacuous_pass_tests {
+    use super::*;
+    use crate::empty::EmptyReason;
+    use crate::result::ToolCall;
+    use crate::val::Val;
+
+    /// One assert over an output the provider produced nothing gradeable in.
+    /// The metrics are populated so every metric bound below *fails*, and
+    /// therefore passes under negation — exactly the pass the guard must leave
+    /// alone.
+    fn eval_empty(
+        kind: AssertKind,
+        negate: bool,
+        calls: &[ToolCall],
+        out: Output,
+    ) -> AssertOutcome {
+        let engine = TemplateEngine::new();
+        let vars = json!({});
+        let metrics = MetricCtx {
+            latency_ms: 12,
+            cost_usd: Some(1.0),
+            total_tokens: Some(100),
+            billable_tokens: Some(100),
+        };
+        let schemas = crate::jsonschema_cache::SchemaCache::new();
+        let refusal = EmptyReason::new(EmptyReason::REFUSAL);
+        evaluate_local(
+            &Assert {
+                weight: 1.0,
+                negate,
+                kind,
+            },
+            &out,
+            &EvalCtx {
+                engine: &engine,
+                vars: &vars,
+                metrics: &metrics,
+                schemas: &schemas,
+                tool_calls: calls,
+                empty_reason: Some(&refusal),
+            },
+        )
+        .expect("a local assertion yields an outcome")
+    }
+
+    /// "The forbidden content is absent" is not evidence of compliance when
+    /// nothing was produced at all.
+    #[test]
+    fn a_negated_assert_cannot_pass_vacuously_when_the_output_is_empty() {
+        let outcome = eval_empty(
+            AssertKind::Contains {
+                value: "forbidden".into(),
+            },
+            true,
+            &[],
+            Output::Text(String::new()),
+        );
+        assert!(!outcome.passed, "{outcome:?}");
+        assert_eq!(outcome.score, 0.0, "{outcome:?}");
+        assert!(!outcome.unevaluable, "{outcome:?}");
+        assert!(
+            outcome.reason.contains("vacuously") && outcome.reason.contains("refusal"),
+            "{}",
+            outcome.reason
+        );
+    }
+
+    /// The motivating hole: a refusal calls no tools, so `not-tool-call`
+    /// scored a full 1.0 for a case the model never attempted.
+    #[test]
+    fn not_tool_call_fails_on_a_refusal_instead_of_passing_vacuously() {
+        let outcome = eval_empty(
+            AssertKind::ToolCall {
+                name: "get_weather".into(),
+                args: None,
+                schema: None,
+            },
+            true,
+            &[],
+            Output::Text(String::new()),
+        );
+        assert!(!outcome.passed && outcome.score == 0.0, "{outcome:?}");
+        assert!(!outcome.unevaluable, "{outcome:?}");
+    }
+
+    /// `tool_use_only` is an empty *text* output, and a `tool-call` assert
+    /// never read that text: the calls it judges were reported. Denying this
+    /// pass would fail every tool-answering case that carries a `not-tool-call`
+    /// guard rail.
+    #[test]
+    fn not_tool_call_still_passes_when_the_model_did_call_a_tool() {
+        let calls = [ToolCall {
+            id: None,
+            name: "get_weather".into(),
+            arguments: json!({"city": "Oslo"}),
+        }];
+        let outcome = eval_empty(
+            AssertKind::ToolCall {
+                name: "delete_everything".into(),
+                args: None,
+                schema: None,
+            },
+            true,
+            &calls,
+            Output::Text(String::new()),
+        );
+        assert!(outcome.passed && outcome.score == 1.0, "{outcome:?}");
+    }
+
+    /// A negated latency bound is still a true statement about latency when
+    /// the output is empty — the guard is scoped to content asserts.
+    #[test]
+    fn a_negated_metric_assert_is_exempt_from_the_vacuous_pass_guard() {
+        for kind in [
+            AssertKind::Latency { max: 1 },
+            AssertKind::Tokens {
+                max: 1,
+                count: None,
+            },
+            AssertKind::Cost { max: 0.0 },
+        ] {
+            let outcome = eval_empty(kind, true, &[], Output::Text(String::new()));
+            assert!(
+                outcome.passed && outcome.score == 1.0,
+                "a metric assert keeps its negated pass: {outcome:?}"
+            );
+        }
+    }
+
+    /// The guard only refuses passes; a negated assert that already failed
+    /// keeps its own diagnosis.
+    #[test]
+    fn the_guard_leaves_a_failing_negated_assert_untouched() {
+        // `length` over "" satisfies `max: 10`, so negation fails it.
+        let outcome = eval_empty(
+            AssertKind::Length {
+                min: None,
+                max: Some(10),
+            },
+            true,
+            &[],
+            Output::Text(String::new()),
+        );
+        assert!(!outcome.passed, "{outcome:?}");
+        assert!(
+            outcome.reason.starts_with("negated:"),
+            "the original reason survives: {}",
+            outcome.reason
+        );
+    }
+
+    /// `unevaluable` is about a broken assertion, not about the output, and
+    /// must keep reaching the runner as an error rather than a failure.
+    #[test]
+    fn an_unevaluable_negated_assert_still_errors_not_fails() {
+        let outcome = eval_empty(
+            AssertKind::ContainsJson {
+                schema: Some(Val::Raw(json!({"$ref": "https://example.invalid/s.json"}))),
+            },
+            true,
+            &[],
+            // Structurally empty (`classify_blank` calls it blank) but still
+            // JSON, so the assertion reaches its uncompilable schema.
+            Output::Json(json!({})),
+        );
+        assert!(outcome.unevaluable, "{outcome:?}");
+        assert!(!outcome.passed && outcome.score == 0.0, "{outcome:?}");
+        assert!(!outcome.reason.contains("vacuously"), "{}", outcome.reason);
     }
 }
