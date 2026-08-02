@@ -117,18 +117,20 @@ pub fn preflight_schema(server_url: Option<&str>) -> Result<(), String> {
         }
     };
 
-    let supported: Vec<u32> = meta
-        .get("supported_schema_versions")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_u64())
-                .map(|v| v as u32)
-                .collect()
-        })
-        .unwrap_or_default();
-    let ours = domarinn_core::RESULT_SCHEMA_VERSION;
-    if supported.is_empty() || supported.contains(&ours) {
+    let Some(supported) = schema_window(&meta) else {
+        // Same family as unreachable and unparsable, and warned about the same
+        // way: the server answered, but not with a window this run can be
+        // outside of. Silence here would be the one case where a preflight that
+        // checked nothing is indistinguishable from one that passed.
+        tracing::warn!(
+            server = %server,
+            "the server did not state a usable schema window, so nothing could \
+             be checked before running; continuing (the upload itself is \
+             authoritative)"
+        );
+        return Ok(());
+    };
+    if supported.contains(&domarinn_core::RESULT_SCHEMA_VERSION) {
         return Ok(());
     }
 
@@ -136,20 +138,49 @@ pub fn preflight_schema(server_url: Option<&str>) -> Result<(), String> {
         .get("version")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    // Which side to upgrade is the whole actionable content of the message, and
-    // it is not guessable from the numbers alone by someone reading in a hurry:
-    // a window entirely below ours is a server too old to store what we write,
-    // anything else is a CLI too old to write what the server now stores.
+    Err(mismatch_message(&server, &supported, server_version))
+}
+
+/// The versions a `/meta` body says it accepts, or `None` if it did not state a
+/// window this CLI can reason about.
+///
+/// All-or-nothing on purpose. Skipping the entries that fail to parse would
+/// narrow `[0, "2"]` to `[0]` and then *confidently refuse* a run over a window
+/// the server never advertised — a false refusal, quoting numbers back at the
+/// operator that they will not find anywhere in their server's response. This
+/// function's entire licence to fail a run is that the mismatch is confirmed, so
+/// anything it cannot read in full it does not read at all.
+fn schema_window(meta: &serde_json::Value) -> Option<Vec<u32>> {
+    let window: Vec<u32> = meta
+        .get("supported_schema_versions")?
+        .as_array()?
+        .iter()
+        .map(|v| v.as_u64().and_then(|n| u32::try_from(n).ok()))
+        .collect::<Option<_>>()?;
+    // An empty window states nothing to be outside of.
+    (!window.is_empty()).then_some(window)
+}
+
+/// The refusal an operator has to act on.
+///
+/// Split out to be testable without a server: which side to upgrade is the whole
+/// actionable content of the message and is not guessable from the numbers alone
+/// by someone reading a failed CI job in a hurry — a window entirely below ours
+/// is a server too old to store what we write, anything else is a CLI too old to
+/// write what the server now stores. Getting that backwards sends them to
+/// upgrade the one thing that was already current.
+fn mismatch_message(server: &str, supported: &[u32], server_version: &str) -> String {
+    let ours = domarinn_core::RESULT_SCHEMA_VERSION;
     let older = if supported.iter().all(|v| *v < ours) {
         "server"
     } else {
         "CLI"
     };
-    Err(format!(
+    format!(
         "server at {server} accepts result schema versions {supported:?} (server \
          v{server_version}); this CLI writes v{ours}. Upgrade the {older} before \
          sharing, or pass --allow-share-failure to run anyway."
-    ))
+    )
 }
 
 /// `GET /api/v1/meta`, parsed as loose JSON.
@@ -241,4 +272,68 @@ async fn upload(server: &str, result: &RunResult) -> Result<String, String> {
         .and_then(|u| u.as_str())
         .map(String::from)
         .ok_or_else(|| "server response missing 'url'".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domarinn_core::RESULT_SCHEMA_VERSION as OURS;
+
+    /// A window entirely below ours is a server too old to store what this CLI
+    /// writes, so the operator has to upgrade the *server*. Only the other arm
+    /// is reachable from the end-to-end tests, and a direction this message gets
+    /// backwards costs an upgrade of the one component that was already current.
+    #[test]
+    fn a_window_below_ours_says_to_upgrade_the_server() {
+        // 0 is below every schema version domarinn has ever written, so this
+        // stays a below-window case across bumps without naming a version.
+        let msg = mismatch_message("http://s", &[0], "0.1.0");
+        assert!(msg.contains("Upgrade the server"), "{msg}");
+    }
+
+    /// The mirror image: a window entirely above ours is a CLI too old to write
+    /// what the server now stores.
+    #[test]
+    fn a_window_above_ours_says_to_upgrade_the_cli() {
+        let msg = mismatch_message("http://s", &[OURS + 1], "9.9.9");
+        assert!(msg.contains("Upgrade the CLI"), "{msg}");
+    }
+
+    /// A window straddling ours — the server accepts both an older and a newer
+    /// version, just not this one — is the CLI's problem: there is a version it
+    /// could write that the server would take.
+    #[test]
+    fn a_window_straddling_ours_says_to_upgrade_the_cli() {
+        let msg = mismatch_message("http://s", &[0, OURS + 1], "9.9.9");
+        assert!(msg.contains("Upgrade the CLI"), "{msg}");
+    }
+
+    /// A window with an entry this CLI cannot read is no window at all. Dropping
+    /// the unreadable entry would leave `[0]`, which does not contain ours — and
+    /// the caller would refuse the run over a window the server never sent.
+    #[test]
+    fn a_window_with_an_unreadable_entry_is_not_a_window() {
+        let meta = serde_json::json!({
+            "supported_schema_versions": [0, OURS.to_string()],
+        });
+        assert_eq!(schema_window(&meta), None);
+    }
+
+    /// An empty or absent window states nothing to be outside of.
+    #[test]
+    fn an_empty_or_absent_window_is_not_a_window() {
+        assert_eq!(
+            schema_window(&serde_json::json!({"supported_schema_versions": []})),
+            None
+        );
+        assert_eq!(schema_window(&serde_json::json!({"name": "stub"})), None);
+    }
+
+    /// The happy path, so the `None`s above are not passing for want of any
+    /// window ever parsing.
+    #[test]
+    fn a_well_formed_window_parses() {
+        let meta = serde_json::json!({"supported_schema_versions": [1, OURS]});
+        assert_eq!(schema_window(&meta), Some(vec![1, OURS]));
+    }
 }

@@ -274,7 +274,7 @@ fn run_share_preflight_refuses_a_version_mismatch_before_running() {
             ("/api/v1/runs", "200 OK", SHARE_OK.to_string()),
         ],
         2,
-        Duration::from_secs(5),
+        Duration::from_secs(2),
     );
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
@@ -285,7 +285,12 @@ fn run_share_preflight_refuses_a_version_mismatch_before_running() {
         .current_dir(dir.path())
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("--share preflight"));
+        .stderr(predicate::str::contains("--share preflight"))
+        // The direction is the actionable half of the message: this server
+        // accepts a *newer* schema than we write, so the CLI is what is behind.
+        // Told the other way round, the operator upgrades the one component that
+        // was already current and hits the same wall again.
+        .stderr(predicate::str::contains("Upgrade the CLI"));
 
     let served = server.join().unwrap();
     assert!(
@@ -342,6 +347,51 @@ fn run_share_preflight_mismatch_is_tolerated_with_allow_share_failure() {
     assert_eq!(
         latest_run(dir.path()).share_url.as_deref(),
         Some("https://domarinn.test/runs/abc")
+    );
+}
+
+/// A window this CLI cannot read in full must not become a refusal. Dropping
+/// the unreadable entry would narrow the window to one that excludes us, and the
+/// run would be refused over versions the server never advertised — the operator
+/// then goes looking for numbers that appear nowhere in their server's response.
+/// End-to-end rather than only on `schema_window`, because the danger is the
+/// *exit code*, not the parse.
+#[test]
+fn run_share_preflight_does_not_refuse_over_an_unreadable_window() {
+    let body = format!(
+        r#"{{"name":"stub","version":"9.9.9","supported_schema_versions":[0,"{ours}"],"result_schema_version":{ours}}}"#,
+        ours = domarinn_core::RESULT_SCHEMA_VERSION
+    );
+    let (url, server) = stub_routes_status(
+        vec![
+            ("/api/v1/meta", "200 OK", body),
+            ("/api/v1/runs", "200 OK", SHARE_OK.to_string()),
+        ],
+        2,
+        Duration::from_secs(30),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+
+    bin()
+        .args(["run", "--share"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        // Proceeding is right, but proceeding *silently* would make a preflight
+        // that checked nothing indistinguishable from one that passed — the
+        // reason this whole branch warns rather than returning a quiet `Ok`.
+        .stderr(predicate::str::contains(
+            "did not state a usable schema window",
+        ));
+
+    let served = server.join().unwrap();
+    assert!(
+        served.iter().any(|r| r.contains("POST /api/v1/runs")),
+        "the preflight refused a window it could not read, so the run never \
+         reached the only authority on whether ingest would take it; \
+         served: {served:?}"
     );
 }
 
