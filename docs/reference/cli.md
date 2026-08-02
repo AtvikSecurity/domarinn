@@ -49,8 +49,10 @@ The exit code is a **contract for CI** — it distinguishes "the model got worse
 |------|------|---------|
 | `0` | OK | Everything passed. |
 | `1` | assertion | An assertion failed, or a run regressed against a `--against` baseline. |
-| `2` | config/usage | Bad config or flags, a suite that fails to load or validate (a *warning* is not one of these), a run that resolved to **zero cases**, or a missing / wrong-shaped provider credential. |
-| `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, the server was unreachable, or a `--cache-only` run could not answer honestly (a miss, or a case whose `latency` assertion always needs a live call). |
+| `2` | config/usage | Bad config or flags, a suite that fails to load or validate (a *warning* is not one of these), a run that resolved to **zero cases**, a missing / wrong-shaped provider credential, or a `--share` **preflight refusal**: the server stated a result-schema window this CLI is outside of, so the run is refused before it spends anything. |
+| `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, the server was unreachable, a `--cache-only` run could not answer honestly (a miss, or a case whose `latency` assertion always needs a live call), or a **`run --share` upload failed** (including no server URL configured) without `--allow-share-failure`. |
+
+Because `3` outranks `1`, a run whose assertions failed *and* whose upload failed exits `3`: the results are graded but not published, and re-running is the wrong response to either half.
 
 ---
 
@@ -80,7 +82,8 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--allow-empty` | Succeed even if the run resolves to zero cases. Without it that is exit 2, because a green result over no cells is indistinguishable from a green result over every cell. Pass it for a sharded matrix where a shard legitimately has no work. |
 | `--against <REF>` | Compare against a baseline run. `server:baseline` uses the baseline pinned for this suite on the results server (the only reference that works in CI); `latest` uses the newest local run *of the same suite*; also accepts a run id or a `result.json` path. A regression sets exit code `1`; a baseline that was requested but could not be resolved sets exit code `2`. |
 | `--summary-md <FILE>` | Write a Markdown summary (headline metrics table, failing cases, and any baseline comparison). Identical to what [`ci-summary`](#domarinn-ci-summary-run-flags) writes, minus the step outputs. |
-| `--share` | Upload the completed run to the configured server, and record the returned URL on the stored run. |
+| `--share` | Upload the completed run to the configured server, and record the returned URL on the stored run. **Fail-closed**: a rejected, unreachable or unconfigured upload — including no server URL at all — logs an `ERROR` naming the run id, suite and case count, and exits `3`. Before the runner starts, `--share` also asks the server what result-schema versions it accepts; a confirmed mismatch prints which side to upgrade and exits `2` having spent nothing. See [Sharing a run](#sharing-a-run). |
+| `--allow-share-failure` | Opt out of the above (requires `--share`): an upload failure becomes a `WARN` and the exit code reflects the assertions alone, and a preflight refusal becomes a warning the run proceeds past. For a fork's pull request with no server credentials, or anywhere publishing is genuinely optional. |
 | `--note <TEXT>` | A short human label for this run ("trying temperature 0.3"). Stored on the run and full-text searchable on the server. Defaults to the suite's `description`. |
 | `--no-provenance` | Do not record the OS username or hostname. Git, CI and version metadata are still recorded, and the run is marked redacted. |
 
@@ -90,6 +93,16 @@ domarinn run --tag safety -j 8 --format junit --out results.xml
 domarinn run --against server:baseline --summary-md summary.md
 domarinn run --note "retry backoff, 3rd attempt"    # label this run
 ```
+
+### Sharing a run
+
+`--share` publishes the completed run to `--server-url` / `DOMARINN_SERVER_URL` and records the returned URL on the stored run, which is where [`ci-summary`](#domarinn-ci-summary-run-flags) reads it from for the PR comment's `View run` link.
+
+**Upload failure fails the run.** Storing the results is the point of the flag in CI, and exiting `0` having stored nothing reports a green job for work nobody can find — a misconfiguration that otherwise survives indefinitely, because the only symptom is a server that quietly stays empty. So a rejected upload, an unreachable server, or **no server URL configured at all** exits `3`. The `ERROR` names the `run_id`, suite and case count, because the run is graded and on disk: the recovery is `domarinn share <run_id>` once the server is reachable, not a re-run that pays for every provider call again.
+
+**The schema preflight.** Before the runner starts, `--share` issues one `GET /api/v1/meta` (5s timeout) and compares the result-schema versions the server accepts against the one this CLI writes. A **confirmed** mismatch exits `2` with a message naming which side to upgrade — a window entirely below ours is a server too old to store what we write; anything else is a CLI too old to write what the server now stores. Everything short of that proceeds with a warning: unreachable, slow, `404`, unparsable, and a response that states no window are all cases where the server has said nothing to be outside of, and the upload itself is the authoritative answer. The preflight only ever refuses; it never makes a run that would have succeeded fail later.
+
+**Opting out.** `--allow-share-failure` (which requires `--share`) demotes both: the upload failure to a `WARN`, and the preflight refusal to a warning the run proceeds past.
 
 ### Run provenance
 
@@ -187,6 +200,8 @@ Upload a completed run to a server and print its view URL. Enriches the run with
 
 - `RUN` — a run id from `domarinn runs`, `latest`, a `result.json`, a run directory, or omitted for the latest run (same references as `view` and `diff`).
 - Server from `--server-url` / `DOMARINN_SERVER_URL`; token from `DOMARINN_TOKEN`.
+
+**This subcommand is the opposite default from [`run --share`](#sharing-a-run), deliberately.** `share` is best-effort unless `--strict`; `run --share` is fatal unless `--allow-share-failure`. The run this command uploads already exists on disk, so a failed upload costs a retry of the upload and nothing else — while `run --share` has just spent a suite's worth of provider calls whose whole destination was the server. `share` also does **not** preflight the server's schema window: there is no run ahead of it to protect from being wasted, and the upload's own response is the authoritative answer either way.
 
 ```sh
 DOMARINN_SERVER_URL=https://evals.example domarinn share --strict

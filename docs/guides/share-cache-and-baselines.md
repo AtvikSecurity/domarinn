@@ -34,6 +34,8 @@ No URL, no credentials — those come from the environment (`DOMARINN_SERVER_URL
 
 If the credentials are missing, domarinn **falls back to local disk with a warning** rather than failing the run. Convenient, and worth knowing about: a misconfigured CI job will look like it is working while paying full price. Check for the warning.
 
+**Uploading a run is the other way round.** The cache degrades because a cold cache still answers the question, only slower and dearer. `domarinn run --share` has no such fallback — the results have exactly one destination — so a failed or unconfigured upload **fails the run with exit `3`**, and a server whose result-schema window excludes the CLI is refused with exit `2` before the suite spends anything. Pass `--allow-share-failure` (the action's `allow-share-failure` input) where publishing is genuinely optional. See [Uploading CI runs](gate-in-ci.md#uploading-ci-runs-to-a-shared-server).
+
 ///
 
 ### What has to match across environments

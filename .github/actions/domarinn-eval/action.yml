@@ -22,6 +22,13 @@
 # regression; 2 = config/usage error; 3 = infrastructure error. This action maps
 # 1 to a failed check only when `fail-on-regression` is true; 2 and 3 always fail
 # the job. The artifact upload and the PR comment run regardless of the result.
+#
+# With `server-url` set, the run is uploaded and a failed upload is one of those
+# infrastructure errors: the job fails (3) rather than going green over results
+# nobody can find. Set `allow-share-failure: "true"` to demote that to a warning.
+# A server that says up front it cannot accept this CLI's result schema is a
+# usage error (2) raised *before* the suite runs, so the skew costs no provider
+# calls; the same input downgrades that refusal to a warning too.
 
 name: domarinn eval
 description: Run a domarinn eval suite, gate on regressions, and comment the result on the PR.
@@ -56,6 +63,17 @@ inputs:
       secret, never a literal. Optional.
     required: false
     default: ""
+  allow-share-failure:
+    description: >-
+      If "true", a failed upload no longer fails the job (appends
+      `--allow-share-failure`). Off by default: with `server-url` set,
+      publishing the run is the point of the step, and a job that goes green
+      having stored nothing reports success for work nobody can find. Turn it
+      on where the upload is genuinely optional — a fork's pull request with no
+      server credentials, say. Ignored without `server-url`, since the flag is
+      only meaningful alongside `--share`.
+    required: false
+    default: "false"
   against:
     description: >-
       Baseline to diff this run against. Use "server:baseline" in CI: it
@@ -262,6 +280,7 @@ runs:
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_AGAINST: ${{ inputs.against }}
         INPUT_ALLOW_EMPTY: ${{ inputs.allow-empty }}
+        INPUT_ALLOW_SHARE_FAILURE: ${{ inputs.allow-share-failure }}
         INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
       run: |
         # `shell: bash` runs as `bash --noprofile --norc -eo pipefail {0}`, so
@@ -278,8 +297,13 @@ runs:
         [ "${INPUT_ALLOW_EMPTY}" = "true" ] && args+=(--allow-empty)
         # Upload the run when a server is configured (token via DOMARINN_TOKEN).
         # `--share` also records the run's URL on the stored run, which is where
-        # the summary step reads it from.
+        # the summary step reads it from. A failed upload is an infrastructure
+        # error (exit 3) unless the caller opts out — and the opt-out only
+        # travels with `--share`, because the CLI rejects it on its own and
+        # would turn an input meant to make the job *more* tolerant into a
+        # usage error (exit 2) that fails it.
         [ -n "${DOMARINN_SERVER_URL}" ] && args+=(--share)
+        [ -n "${DOMARINN_SERVER_URL}" ] && [ "${INPUT_ALLOW_SHARE_FAILURE}" = "true" ] && args+=(--allow-share-failure)
 
         echo "Running: domarinn ${args[*]}"
         # A non-zero exit is the answer here, not a failure to run: the gate
@@ -395,10 +419,17 @@ runs:
             echo "::warning::domarinn reported failures/regressions (exit 1, not gated)"
             ;;
           2)
+            # Also the code for a server whose schema window excludes this CLI,
+            # refused before the suite ran: upgrade one side, or set
+            # `allow-share-failure: "true"` to run anyway.
             echo "::error::domarinn config/usage error (exit 2)"
             exit 2
             ;;
           3)
+            # Includes a failed upload with `server-url` set. The results are
+            # graded and on the runner (see the artifact) — recovery is a
+            # re-share once the server is reachable, not a re-run. Set
+            # `allow-share-failure: "true"` to stop gating on the upload.
             echo "::error::domarinn infrastructure error (exit 3)"
             exit 3
             ;;
