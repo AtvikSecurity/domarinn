@@ -41,50 +41,291 @@ exact:
   # and 2x at the 1-hour TTL. Encoded as absolute numbers rather than
   # multipliers so this file stays a flat price sheet a human can diff against
   # the vendor's own page.
+  claude-fable-5:
+    input: 10.00
+    output: 50.00
+    cache_read: 1.00
+    cache_write_5m: 12.50
+    cache_write_1h: 20.00
+    as_of: "2026-08-02"
+  claude-opus-5:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-08-02"
+  claude-opus-4-8:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-08-02"
+  claude-opus-4-7:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-08-02"
+  claude-opus-4-6:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-08-02"
   claude-opus-4-5:
     input: 5.00
     output: 25.00
     cache_read: 0.50
     cache_write_5m: 6.25
     cache_write_1h: 10.00
-    as_of: "2026-07-28"
+    as_of: "2026-08-02"
+  # The standard rate, deliberately, even though an introductory $2 / $10 is in
+  # force through 2026-08-31. A promotion is a date-bounded exception this row
+  # shape cannot express: shipping it would under-report every call made after
+  # it lapses, and the lapse is the one date nobody re-checks. Over-reporting a
+  # discount you are currently enjoying is the safe direction for a budget gate.
+  claude-sonnet-5:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    as_of: "2026-08-02"
+  claude-sonnet-4-6:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    as_of: "2026-08-02"
   claude-sonnet-4-5:
     input: 3.00
     output: 15.00
     cache_read: 0.30
     cache_write_5m: 3.75
     cache_write_1h: 6.00
-    as_of: "2026-07-28"
+    as_of: "2026-08-02"
   claude-haiku-4-5:
     input: 1.00
     output: 5.00
     cache_read: 0.10
     cache_write_5m: 1.25
     cache_write_1h: 2.00
-    as_of: "2026-07-28"
+    as_of: "2026-08-02"
 
   # ─────────────────────────── OpenAI ───────────────────────────
-  # No cache-write rate: prompt caching is automatic and has no billed write
-  # step, which is why `cache_write_*` is absent rather than zero.
+  # No cache-write rate on these rows: for every model listed here prompt
+  # caching is automatic and has no billed write step, which is why
+  # `cache_write_*` is absent rather than zero. (OpenAI's newest families *do*
+  # bill cache writes — see the note below on why they are not here.)
+  #
+  # Absent on purpose: the GPT-5.4 and later *flagships* (`gpt-5.4`, `gpt-5.5`,
+  # `gpt-5.6-*`) and every `-pro` tier. Their published rates are split by
+  # context length — a second, higher rate applies past ~272K input tokens —
+  # and a row here has no context dimension. Pricing them at the short-context
+  # rate would under-report exactly the long-context calls that cost the most,
+  # silently. Unpriced-and-warned is the better failure. The `-mini` and
+  # `-nano` members of those families have a single rate at every context
+  # length, so they are listed.
+  gpt-5:
+    input: 1.25
+    output: 10.00
+    cache_read: 0.125
+    as_of: "2026-08-02"
+  gpt-5-mini:
+    input: 0.25
+    output: 2.00
+    cache_read: 0.025
+    as_of: "2026-08-02"
+  gpt-5-nano:
+    input: 0.05
+    output: 0.40
+    cache_read: 0.005
+    as_of: "2026-08-02"
+  gpt-5.1:
+    input: 1.25
+    output: 10.00
+    cache_read: 0.125
+    as_of: "2026-08-02"
+  gpt-5.2:
+    input: 1.75
+    output: 14.00
+    cache_read: 0.175
+    as_of: "2026-08-02"
+  gpt-5.4-mini:
+    input: 0.75
+    output: 4.50
+    cache_read: 0.075
+    as_of: "2026-08-02"
+  gpt-5.4-nano:
+    input: 0.20
+    output: 1.25
+    cache_read: 0.02
+    as_of: "2026-08-02"
+  o3:
+    input: 2.00
+    output: 8.00
+    cache_read: 0.50
+    as_of: "2026-08-02"
+  o4-mini:
+    input: 1.10
+    output: 4.40
+    cache_read: 0.275
+    as_of: "2026-08-02"
   gpt-4o:
     input: 2.50
     output: 10.00
     cache_read: 1.25
-    as_of: "2026-07-28"
+    as_of: "2026-08-02"
   gpt-4o-mini:
     input: 0.15
     output: 0.60
     cache_read: 0.075
-    as_of: "2026-07-28"
+    as_of: "2026-08-02"
 
 # Longest-prefix fallbacks, for dated snapshots and point releases that share a
 # family's rates. Longest match wins regardless of the order written here, so a
-# specific family always beats a broader one.
+# specific family always beats a broader one — `gpt-4o-mini-…` gets
+# `gpt-4o-mini`'s rate, not `gpt-4o`'s.
 #
 # Note the resolver already strips a trailing `-YYYYMMDD` and retries an exact
 # match, so a dated snapshot of a listed model needs no entry — these are for
-# families whose members are not enumerated above.
-families: {}
+# families whose members are not enumerated above: `-latest` aliases, point
+# releases, and vendor suffixes nobody has seen yet.
+#
+# ── The rule for a key here ──────────────────────────────────────────────────
+# A key is a **full model stem** and nothing shorter. Matching is a plain
+# `starts_with` with no `-` boundary, so a truncated key like `claude-` or
+# `gpt-` would swallow every future model — including differently-priced ones —
+# and quietly bill them at whatever this row says. That is the failure this file
+# exists to prevent, arriving through the back door.
+#
+# A key also only earns its place when the vendor's current sheet shows **no
+# differently-priced id sharing that prefix**. When a sibling appears later, it
+# gets its own `exact:` row: exact always wins over any family, so one added row
+# fixes it with no key surgery.
+#
+# Four stems are deliberately *not* keys here, because that check fails today:
+#   gpt-5    — `gpt-5-pro` ($15/$120), `gpt-5.1`, `gpt-5.2`, `gpt-5.4`,
+#              `gpt-5.5`, `gpt-5.6-*` all start with it and none share its rate
+#   gpt-5.1  — same shape: a `-pro` tier is the vendor's habit, not an accident
+#   gpt-5.2  — `gpt-5.2-pro` ($21/$168)
+#   o3       — `o3-mini` ($1.10/$4.40) and `o3-pro` ($20/$80)
+# Their exact ids are priced above; anything else in those families reports no
+# cost and warns, which is the loud no-op, not a 4x-wrong invoice.
+families:
+  # ───────────────────────── Anthropic ─────────────────────────
+  claude-fable-5:
+    input: 10.00
+    output: 50.00
+    cache_read: 1.00
+    cache_write_5m: 12.50
+    cache_write_1h: 20.00
+    as_of: "2026-08-02"
+  claude-opus-5:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-08-02"
+  claude-opus-4-8:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-08-02"
+  claude-opus-4-7:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-08-02"
+  claude-opus-4-6:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-08-02"
+  claude-opus-4-5:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    as_of: "2026-08-02"
+  claude-sonnet-5:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    as_of: "2026-08-02"
+  claude-sonnet-4-6:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    as_of: "2026-08-02"
+  claude-sonnet-4-5:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    as_of: "2026-08-02"
+  claude-haiku-4-5:
+    input: 1.00
+    output: 5.00
+    cache_read: 0.10
+    cache_write_5m: 1.25
+    cache_write_1h: 2.00
+    as_of: "2026-08-02"
+
+  # ─────────────────────────── OpenAI ───────────────────────────
+  gpt-5-mini:
+    input: 0.25
+    output: 2.00
+    cache_read: 0.025
+    as_of: "2026-08-02"
+  gpt-5-nano:
+    input: 0.05
+    output: 0.40
+    cache_read: 0.005
+    as_of: "2026-08-02"
+  gpt-5.4-mini:
+    input: 0.75
+    output: 4.50
+    cache_read: 0.075
+    as_of: "2026-08-02"
+  gpt-5.4-nano:
+    input: 0.20
+    output: 1.25
+    cache_read: 0.02
+    as_of: "2026-08-02"
+  o4-mini:
+    input: 1.10
+    output: 4.40
+    cache_read: 0.275
+    as_of: "2026-08-02"
+  gpt-4o:
+    input: 2.50
+    output: 10.00
+    cache_read: 1.25
+    as_of: "2026-08-02"
+  gpt-4o-mini:
+    input: 0.15
+    output: 0.60
+    cache_read: 0.075
+    as_of: "2026-08-02"
 
 # Embedding models, used by `similar` assertions. Their own section, with its
 # own row shape, because an embedding call has exactly one billable component:
@@ -100,7 +341,7 @@ families: {}
 embeddings:
   text-embedding-3-small:
     input: 0.02
-    as_of: "2026-07-28"
+    as_of: "2026-08-02"
   text-embedding-3-large:
     input: 0.13
-    as_of: "2026-07-28"
+    as_of: "2026-08-02"

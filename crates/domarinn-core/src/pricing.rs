@@ -457,6 +457,42 @@ mod tests {
         assert!(built_in_rate("claude-haiku-4-5").is_some());
     }
 
+    /// The coverage floor. Every mechanism above is tested in isolation, and
+    /// all of them were green while the table itself was a model generation
+    /// behind — so the ids a run in 2026 actually names resolved to nothing and
+    /// every `cost:` budget quietly stopped enforcing. This is the test that
+    /// fails when the table goes stale rather than when the resolver breaks:
+    /// it names current ids, in each of the shapes a provider hands us.
+    #[test]
+    fn well_known_current_ids_resolve_to_a_built_in_rate() {
+        for id in [
+            // Anthropic, exact.
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "claude-haiku-4-5",
+            // Dated snapshot -> date-strip.
+            "claude-opus-5-20260315",
+            // Suffixed alias -> longest-prefix `families` fallback.
+            "claude-sonnet-5-latest",
+            // Bedrock decoration -> prefix normalization.
+            "us.anthropic.claude-opus-5",
+            // OpenAI, exact.
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "o3",
+            "o4-mini",
+            // OpenAI's hyphenated snapshot form -> date-strip.
+            "gpt-4o-2024-08-06",
+        ] {
+            assert!(
+                built_in_rate(id).is_some(),
+                "no built-in rate resolves for {id}"
+            );
+        }
+    }
+
     #[test]
     fn a_dated_snapshot_falls_back_to_its_family() {
         let dated = built_in_rate("claude-haiku-4-5-20251001").expect("snapshot resolves");
