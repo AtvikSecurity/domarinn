@@ -491,6 +491,65 @@ mod tests {
                 "no built-in rate resolves for {id}"
             );
         }
+
+        // The pair the longest-prefix rule exists for, on a suffix no date
+        // strip can reach: `gpt-4o-mini-…` must take the mini rate, not the
+        // 16x-more-expensive `gpt-4o` one it also prefix-matches.
+        let mini = built_in_rate("gpt-4o-mini").expect("mini is priced");
+        assert_eq!(
+            built_in_rate("gpt-4o-mini-preview"),
+            Some(mini),
+            "a gpt-4o-mini suffix must beat the broader gpt-4o family"
+        );
+    }
+
+    /// The other half of the coverage floor, and the more important half.
+    ///
+    /// Some ids are absent from the table *on purpose*, and "absent" is a
+    /// claim no positive test can make. Two reasons, both of which produce a
+    /// silently-too-small invoice if they are ever undone:
+    ///
+    /// - **Context-tiered flagships.** `gpt-5.4`, `gpt-5.5` and `gpt-5.6-*`
+    ///   are published at two rates, the higher one applying past ~272K input
+    ///   tokens. A [`ModelRate`] has no context dimension, so any row for them
+    ///   would price the long-context calls — the expensive ones — at the
+    ///   short-context rate.
+    /// - **`-pro` siblings.** `gpt-5-pro` is $15/$120 against `gpt-5`'s
+    ///   $1.25/$10, and `o3-pro`/`o3-mini` likewise diverge from `o3`.
+    ///
+    /// Both stay unpriced so the run warns and `cost_usd` is absent, which is
+    /// the loud no-op this module is built around. The way that gets undone is
+    /// a well-meaning `gpt-5:` or `o3:` key added to `families:` — matching is
+    /// a bare `starts_with`, so one such key bills `gpt-5-pro` at a twelfth of
+    /// its rate and re-admits every context-tiered model at a quarter of
+    /// theirs, with nothing failing. This test is that fence: it fails on the
+    /// key, not on the invoice.
+    #[test]
+    fn deliberately_unpriced_ids_do_not_resolve() {
+        for id in [
+            // Context-tiered: a second, higher rate past ~272K input tokens.
+            "gpt-5.4",
+            "gpt-5.5",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            // `-pro` tiers, several times their base model's rate.
+            "gpt-5-pro",
+            "gpt-5.2-pro",
+            "gpt-5.4-pro",
+            "gpt-5.5-pro",
+            "o3-pro",
+            // Cheaper than its base, so a family key over-bills rather than
+            // under-bills — wrong in the other direction, still wrong.
+            "o3-mini",
+        ] {
+            assert!(
+                built_in_rate(id).is_none(),
+                "{id} is unpriced on purpose, but something now resolves it — \
+                 if a rate was added deliberately, delete this entry; if a \
+                 `families:` key started matching it, that key is the bug"
+            );
+        }
     }
 
     #[test]

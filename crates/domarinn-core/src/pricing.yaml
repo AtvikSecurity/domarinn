@@ -181,6 +181,17 @@ exact:
     output: 10.00
     cache_read: 1.25
     as_of: "2026-08-02"
+  # The one snapshot that does *not* bill at its family's rate: the launch 4o
+  # is twice the input and 1.5x the output of the `gpt-4o` alias it would
+  # otherwise date-strip to. It needs an exact row precisely because exact
+  # resolution runs before the date strip — this row is what stops a pinned
+  # `gpt-4o-2024-05-13` being priced at half what it costs. No `cache_read`:
+  # the sheet publishes no cached-input rate for this snapshot, so a call that
+  # reports cache reads is honestly unpriceable rather than priced short.
+  gpt-4o-2024-05-13:
+    input: 5.00
+    output: 15.00
+    as_of: "2026-08-02"
   gpt-4o-mini:
     input: 0.15
     output: 0.60
@@ -209,14 +220,24 @@ exact:
 # gets its own `exact:` row: exact always wins over any family, so one added row
 # fixes it with no key surgery.
 #
-# Four stems are deliberately *not* keys here, because that check fails today:
+# Three stems fail that check *today*, against ids on the vendor's current
+# sheet, so they are deliberately not keys here:
 #   gpt-5    — `gpt-5-pro` ($15/$120), `gpt-5.1`, `gpt-5.2`, `gpt-5.4`,
 #              `gpt-5.5`, `gpt-5.6-*` all start with it and none share its rate
-#   gpt-5.1  — same shape: a `-pro` tier is the vendor's habit, not an accident
 #   gpt-5.2  — `gpt-5.2-pro` ($21/$168)
 #   o3       — `o3-mini` ($1.10/$4.40) and `o3-pro` ($20/$80)
-# Their exact ids are priced above; anything else in those families reports no
-# cost and warns, which is the loud no-op, not a 4x-wrong invoice.
+#
+# One more is withheld *prospectively* rather than on present evidence:
+#   gpt-5.1  — no `gpt-5.1-*` sibling exists on the sheet today, so the check
+#              passes; it is held back because a `-pro` tier alongside a
+#              numbered release is this vendor's established pattern, and the
+#              cost of guessing wrong here is a silent multiple-times-under
+#              invoice against the cost of a suffix nobody has shipped.
+#
+# Every one of those ids is priced by an `exact:` row above. Anything else in
+# those families reports no cost and warns — the loud no-op, not a 12x-wrong
+# invoice. `deliberately_unpriced_ids_do_not_resolve` in pricing.rs is the
+# fence that keeps it that way.
 families:
   # ───────────────────────── Anthropic ─────────────────────────
   claude-fable-5:

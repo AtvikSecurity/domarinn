@@ -145,7 +145,7 @@ Ids rarely arrive in their plainest form, so three shapes resolve to the same ro
 
 ```
 claude-sonnet-5-latest  →  claude-sonnet-5   ($3.00 / $15.00 per MTok)
-gpt-4o-mini-2024-07-18  →  gpt-4o-mini       (not gpt-4o — the longer stem wins)
+gpt-4o-mini-preview     →  gpt-4o-mini       (not gpt-4o — the longer stem wins)
 ```
 
 That fallback is deliberately narrow. A stem only earns a fallback entry when no differently-priced sibling shares its prefix, which is why `gpt-5` and `o3` have exact rows but no fallback: `gpt-5-pro` and `o3-mini` would inherit a rate that is off by several times. Models whose published price varies with context length — OpenAI's current flagships — are left out for the same reason, since a single rate cannot express two. Those ids stay unpriced and warn, and a `pricing:` block is how you price one anyway.
