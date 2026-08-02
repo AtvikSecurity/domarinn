@@ -89,27 +89,28 @@ pub fn is_local(kind: &AssertKind) -> bool {
     )
 }
 
-/// Whether this assertion judges response content (text or tool calls) rather
-/// than run metrics. The vacuous-pass guard applies only to content asserts:
-/// negating a latency bound over a refusal is still a true statement about
-/// latency.
-fn judges_content(kind: &AssertKind) -> bool {
-    !matches!(
-        kind,
-        AssertKind::Cost { .. } | AssertKind::Latency { .. } | AssertKind::Tokens { .. }
-    )
-}
-
-/// Whether this assertion had evidence to judge *despite* the empty output.
+/// Whether the vacuous-pass guard applies to this assertion — see
+/// [`AssertOutcome::deny_vacuous_negated_pass`]. Shared by both seams (local
+/// here, graded in `runner_asserts`) so they cannot drift, and takes the
+/// evidence rather than a context type because each seam carries its own.
 ///
-/// `tool_use_only` — the model called a tool and said nothing else — is an
-/// empty **text** output, and a `tool-call` assertion never read that text.
-/// `not-tool-call: delete_everything` over a response that called
-/// `get_weather` is a true statement about the calls that were reported, so
-/// the vacuous-pass guard must leave it alone; the hole it exists to close is
-/// the same assertion over *zero* calls.
-fn judged_reported_calls(kind: &AssertKind, ctx: &EvalCtx<'_>) -> bool {
-    matches!(kind, AssertKind::ToolCall { .. }) && !ctx.tool_calls.is_empty()
+/// Two exemptions, both cases where an empty output is not an absence of
+/// evidence:
+///
+/// - **Metric asserts** never read the output. A negated latency bound is
+///   still a true statement about latency when nothing came back.
+/// - **Any assert on a response that reported tool calls.** `tool_use_only` —
+///   the model called a tool and said nothing else — is an empty *text*
+///   output, and the model did act: `not-tool-call: delete_everything` judges
+///   the calls that *were* reported, and a rubric judging behaviour is shown
+///   them too. The hole the guard exists to close is a refusal, which reports
+///   no calls at all.
+pub fn guard_applies(kind: &AssertKind, tool_calls: &[crate::result::ToolCall]) -> bool {
+    tool_calls.is_empty()
+        && !matches!(
+            kind,
+            AssertKind::Cost { .. } | AssertKind::Latency { .. } | AssertKind::Tokens { .. }
+        )
 }
 
 /// Whether one reported call satisfies an assertion's `args`/`schema`
@@ -201,13 +202,11 @@ pub fn evaluate_local(
         return None;
     }
     let outcome = evaluate_kind(&assert.kind, output, ctx).negated(assert.negate);
-    Some(
-        if judges_content(&assert.kind) && !judged_reported_calls(&assert.kind, ctx) {
-            outcome.deny_vacuous_negated_pass(assert.negate, ctx.empty_reason)
-        } else {
-            outcome
-        },
-    )
+    Some(if guard_applies(&assert.kind, ctx.tool_calls) {
+        outcome.deny_vacuous_negated_pass(assert.negate, ctx.empty_reason)
+    } else {
+        outcome
+    })
 }
 
 fn evaluate_kind(kind: &AssertKind, output: &Output, ctx: &EvalCtx<'_>) -> AssertOutcome {

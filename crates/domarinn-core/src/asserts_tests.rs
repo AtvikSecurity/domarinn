@@ -711,17 +711,20 @@ mod vacuous_pass_tests {
         assert!(!outcome.unevaluable, "{outcome:?}");
     }
 
+    fn a_reported_call() -> [ToolCall; 1] {
+        [ToolCall {
+            id: None,
+            name: "get_weather".into(),
+            arguments: json!({"city": "Oslo"}),
+        }]
+    }
+
     /// `tool_use_only` is an empty *text* output, and a `tool-call` assert
     /// never read that text: the calls it judges were reported. Denying this
     /// pass would fail every tool-answering case that carries a `not-tool-call`
     /// guard rail.
     #[test]
     fn not_tool_call_still_passes_when_the_model_did_call_a_tool() {
-        let calls = [ToolCall {
-            id: None,
-            name: "get_weather".into(),
-            arguments: json!({"city": "Oslo"}),
-        }];
         let outcome = eval_empty(
             AssertKind::ToolCall {
                 name: "delete_everything".into(),
@@ -729,7 +732,23 @@ mod vacuous_pass_tests {
                 schema: None,
             },
             true,
-            &calls,
+            &a_reported_call(),
+            Output::Text(String::new()),
+        );
+        assert!(outcome.passed && outcome.score == 1.0, "{outcome:?}");
+    }
+
+    /// The exemption is the *response*, not the assertion kind: a model that
+    /// answered with a tool call produced something, so a negated text assert
+    /// over it is not vacuous either.
+    #[test]
+    fn a_negated_text_assert_still_passes_when_the_model_did_call_a_tool() {
+        let outcome = eval_empty(
+            AssertKind::Contains {
+                value: "forbidden".into(),
+            },
+            true,
+            &a_reported_call(),
             Output::Text(String::new()),
         );
         assert!(outcome.passed && outcome.score == 1.0, "{outcome:?}");

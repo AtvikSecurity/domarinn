@@ -12,7 +12,7 @@ use std::path::Path;
 use serde_json::Value as Json;
 
 use crate::assertion::AssertOutcome;
-use crate::asserts::{evaluate_local, is_local, EvalCtx, MetricCtx};
+use crate::asserts::{evaluate_local, guard_applies, is_local, EvalCtx, MetricCtx};
 use crate::cache::{CacheBackend, CacheMode, Graded};
 use crate::cache_migrate::MigrationProbe;
 use crate::config::{Assert, AssertKind};
@@ -138,13 +138,15 @@ pub(super) async fn evaluate_asserts(
             Some(g) => match graded_verdict(g, ctx, assert, output, vars).await {
                 Ok(graded) => {
                     // Guarded before `scored_of`, so the score the case is
-                    // graded on and the result the drawer shows agree. Every
-                    // graded kind judges content, so there is no kind check.
-                    let outcome = graded
+                    // graded on and the result the drawer shows agree.
+                    let mut outcome = graded
                         .verdict
                         .to_outcome(assert_threshold(assert))
-                        .negated(assert.negate)
-                        .deny_vacuous_negated_pass(assert.negate, ctx.empty_reason);
+                        .negated(assert.negate);
+                    if guard_applies(&assert.kind, ctx.tool_calls) {
+                        outcome =
+                            outcome.deny_vacuous_negated_pass(assert.negate, ctx.empty_reason);
+                    }
                     scored.push(scored_of(assert, &outcome));
                     let mut result =
                         assert_result(assert, &outcome, AssertStatus::from_pass(outcome.passed));

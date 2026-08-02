@@ -138,7 +138,7 @@ This fails asymmetrically, which is what makes it confusing: the system under te
 
 **Cause.** A blank output is a *successful* call. Nothing raises, and every assertion scores zero for a reason that has nothing to do with what you were measuring.
 
-**Fix.** Have the provider report `empty_reason` (`refusal`, `truncated`, `tool_use_only`, …), then list the ones you want excluded in `runner.skip_on_empty_reason`. Those cases become `skip` rather than `fail`. See [example 19](../examples/running-and-reporting.md#example-19--errors-and-retries).
+**Fix.** Have the provider report `empty_reason` (`refusal`, `truncated`, `tool_use_only`, …), then list the ones you want excluded in `runner.skip_on_empty_reason`. Those cases become `skip` rather than `fail`. The list is matched against the *classified* reason each case reports — the value shown in results, which domarinn fills in as `blank` when the provider named none — so list what you see there. See [example 19](../examples/running-and-reporting.md#example-19--errors-and-retries).
 
 ### The reusable Action posts a stub comment on a green run
 
