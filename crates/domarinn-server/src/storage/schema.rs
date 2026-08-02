@@ -494,6 +494,30 @@ fn runs_migrations() -> Migrations<'static> {
         CREATE INDEX idx_run_set_grants_user ON run_set_grants(user_id);
         "#,
         ),
+        // Migration 15: promote why an output came back empty, and how many of a
+        // run's cases did. An empty output is a *successful* provider call, so a
+        // suite that quietly went all-empty looks like a suite that quietly
+        // started failing — the reason is the difference between "raise
+        // max_tokens" and "the model now refuses this prompt", and it was only
+        // readable one decompressed case at a time.
+        //
+        // `empty_reason` is a tri-state exactly like migration 7's `error`, and
+        // for the same reason: NULL is the honest value for the majority of
+        // cases (they had output), so it cannot also mean "not yet backfilled".
+        // NULL = not backfilled, `''` = decoded and there was no reason,
+        // non-empty = the reason. Ingest must therefore write `''`, never NULL.
+        //
+        // `empty_count` is the run-level tally, with -1 as the undecodable-blob
+        // sentinel (migration 6's numeric convention). A blob written before
+        // `empty_reason` existed honestly counts 0: the field is absent from the
+        // document, so no case in it carried one.
+        M::up(
+            r#"
+        ALTER TABLE cases ADD COLUMN empty_reason TEXT;
+        CREATE INDEX idx_cases_run_empty_reason ON cases(run_id, empty_reason);
+        ALTER TABLE runs ADD COLUMN empty_count INTEGER;
+        "#,
+        ),
     ])
 }
 

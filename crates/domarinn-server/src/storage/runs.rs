@@ -157,6 +157,11 @@ struct PreparedCase {
     assert_digest: Option<String>,
     /// Migration-10 column: the structured failure class beside the prose.
     error_class: Option<String>,
+    /// Migration-15 column: why the output was empty. `String`, not
+    /// `Option<String>`, because the column is a tri-state whose NULL is
+    /// reserved for "not yet backfilled" — ingest writes `''` for "no reason"
+    /// (see `storage::backfill`).
+    empty_reason: String,
 }
 
 struct PreparedRun {
@@ -214,6 +219,10 @@ struct PreparedRun {
     cache_write_tokens: Option<i64>,
     cache_savings_microusd: Option<i64>,
     grader_cost_microusd: Option<i64>,
+    /// Migration-15 column: how many of this run's cases came back empty.
+    /// Counted off the cases rather than read from `summary.empty_counts` so an
+    /// older client that omits the summary field still lands the right number.
+    empty_count: i64,
     tags: Vec<String>,
     blob: Vec<u8>,
     cases: Vec<PreparedCase>,
@@ -284,6 +293,11 @@ impl PreparedRun {
                 provider_digest: case.provider_digest.clone(),
                 assert_digest: case.assert_digest.clone(),
                 error_class: case.error_class.as_ref().map(|c| c.as_str().to_string()),
+                empty_reason: case
+                    .empty_reason
+                    .as_ref()
+                    .map(|r| r.as_str().to_string())
+                    .unwrap_or_default(),
             });
         }
 
@@ -336,6 +350,11 @@ impl PreparedRun {
             cache_write_tokens: Some(run.summary.cache_write_tokens as i64),
             cache_savings_microusd: to_microusd(run.summary.cache_savings_usd),
             grader_cost_microusd: to_microusd(run.summary.grader_cost_usd),
+            empty_count: run
+                .cases
+                .iter()
+                .filter(|c| c.empty_reason.is_some())
+                .count() as i64,
             tags: run.filters.tags.clone(),
             blob,
             cases,
@@ -368,7 +387,8 @@ impl PreparedRun {
                 content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
                 actor, host, domarinn_version,
                 prompts_digest, providers_digest, tests_digest, asserts_digest, grader_digest,
-                cache_read_tokens, cache_write_tokens, cache_savings_microusd, grader_cost_microusd
+                cache_read_tokens, cache_write_tokens, cache_savings_microusd, grader_cost_microusd,
+                empty_count
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
@@ -377,7 +397,8 @@ impl PreparedRun {
                 ?21, ?22, ?23, ?24, ?25,
                 ?26, ?27, ?28,
                 ?29, ?30, ?31, ?32, ?33,
-                ?34, ?35, ?36, ?37
+                ?34, ?35, ?36, ?37,
+                ?38
             )",
             params![
                 self.id,
@@ -417,6 +438,7 @@ impl PreparedRun {
                 self.cache_write_tokens,
                 self.cache_savings_microusd,
                 self.grader_cost_microusd,
+                self.empty_count,
             ],
         )?;
 
@@ -440,10 +462,11 @@ impl PreparedRun {
                     latency_ms, detail,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached,
                     error, prompt_digest, provider_digest, assert_digest, error_class,
-                    cache_key
+                    cache_key, empty_reason
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27,
+                    ?28
                 )",
                 params![
                     self.id,
@@ -479,6 +502,9 @@ impl PreparedRun {
                     case.assert_digest,
                     case.error_class,
                     case.cache_key,
+                    // Already `''` rather than NULL for "no reason", for the
+                    // same reason `error` above is (see storage::backfill).
+                    case.empty_reason,
                 ],
             )?;
             for tag in &case.tags {

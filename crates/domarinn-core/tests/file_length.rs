@@ -32,7 +32,11 @@ const SKIP_DIRS: &[&str] = &[
 
 /// Repo-relative paths permitted to exceed the cap (with justification).
 const EXCEPTIONS: &[&str] = &[
-    // (none yet)
+    // One ingest transaction: the prepared row structs and the INSERT that
+    // writes them must stay adjacent, and every promoted column adds a line to
+    // each. Splitting it would separate a column's field, its population and
+    // its bind across files without making any of them easier to read.
+    "crates/domarinn-server/src/storage/runs.rs",
 ];
 
 fn repo_root() -> PathBuf {
