@@ -1,7 +1,7 @@
 //! The `domarinn ci-summary` command: render a stored run as a CI-facing
 //! markdown summary and expose its headline numbers as workflow step outputs.
 //!
-//! This is the CI layer on top of [`crate::output::render_run_md`]: the same
+//! This is the CI layer on top of [`crate::outputmd::render_run_md`]: the same
 //! metrics table every markdown consumer gets, plus the two things only a
 //! workflow can use — links back to the run, and `key=value` pairs a later step
 //! can read.
@@ -20,7 +20,7 @@ use domarinn_core::RunResult;
 
 use crate::exit;
 use crate::loadrun::load_run;
-use crate::output;
+use crate::outputmd;
 
 #[derive(Args)]
 pub struct CiSummaryArgs {
@@ -103,7 +103,7 @@ pub fn execute(args: CiSummaryArgs, server_url: Option<String>) -> u8 {
 /// Shared with `run --summary-md` so a hand-rolled pipeline and the reusable
 /// action emit the same document.
 pub fn render(run: &RunResult, comparison: Option<(&RunResult, &RunDiff)>) -> String {
-    let mut out = output::render_run_md_headline(run);
+    let mut out = outputmd::render_run_md_headline(run);
     match comparison {
         // The comparison tables newly-failing cases with base→head scores,
         // which strictly supersedes the flat failure table.
@@ -111,7 +111,7 @@ pub fn render(run: &RunResult, comparison: Option<(&RunResult, &RunDiff)>) -> St
             out.push('\n');
             out.push_str(&crate::diffrender::render_markdown(base, run, diff));
         }
-        None => out.push_str(&output::render_failures_md(run)),
+        None => out.push_str(&outputmd::render_failures_md(run)),
     }
     out.push_str(&links_md(run));
     out

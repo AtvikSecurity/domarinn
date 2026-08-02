@@ -20,6 +20,7 @@ mod diffrender;
 mod import;
 mod loadrun;
 mod output;
+mod outputmd;
 mod progress;
 mod run;
 mod runscmd;
