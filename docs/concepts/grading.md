@@ -189,6 +189,55 @@ The check runs **when the template is read, at grading time** — not at load. A
 
 ---
 
+## Empty outputs and grading
+
+An empty output is a **successful** provider call. Nothing raises, nothing retries, and no assertion says why — the case simply has no text to grade. Four unrelated causes produce it, and each wants a different fix, so domarinn classifies the case with an `empty_reason`:
+
+| Reason | What happened | Usual fix |
+|---|---|---|
+| `refusal` | The model declined. | Model behaviour, not a harness fault. |
+| `content_filter` | A provider-side safety filter removed the content. | Same. |
+| `truncated` | Cut off by `max_tokens` before any text. | Raise `max_tokens`. |
+| `tool_use_only` | The model called a tool and said nothing else. | [Show the judge the calls](#letting-the-judge-see-tool-calls). |
+| `thinking_only` | It reasoned but never emitted a final message. | Capture reasoning, or raise `max_tokens`. |
+| `no_content_blocks`, `empty_body`, `output_expr_empty`, `blank` | Protocol-shaped faults, or a genuinely blank answer. | Read the raw response. |
+
+**The set is open.** Reasons come from vendor finish reasons and grow at model-release cadence, so an unrecognized value is stored verbatim rather than collapsed to a catch-all. Match on what you see, never on a closed list.
+
+### What an empty output does to the verdict
+
+- **Positive assertions fail naturally.** There is nothing to contain, match, or judge, so they score `0.0` for the ordinary reason.
+- **Negated assertions fail too, rather than passing vacuously.** Absence of forbidden content is not evidence of compliance when nothing was produced. See [the rule and its exact reason string](../reference/assertions.md#a-negated-assertion-cannot-pass-on-an-empty-output). It is a **fail**, never an error — a judgement about the output, not a broken assertion.
+- **A cell that reported tool calls is graded normally.** `tool_use_only` is an empty *text* output by a model that did act, and there is real evidence to judge: the reported calls. Both `not-tool-call` and a rubric with `include_tool_calls: true` see them.
+- **Metric assertions are unaffected.** `cost`, `latency` and `tokens` never read the output, so an empty answer says nothing about whether they hold.
+
+**So a run can honestly report `Result: 300 passed` and `Empty: 4 (refusal × 4)` at the same time** — that is the intended reading, not a contradiction. It happens when the empty cells' only assertions were metric bounds (or when `skip_on_empty_reason` took them out of grading): the cases passed the questions actually asked of them, and the `Empty` row exists precisely so that reading is visible instead of silently flattering the pass rate.
+
+### Excluding them instead
+
+`runner.skip_on_empty_reason` removes matching cells from grading **entirely** — they become `skip`, not `fail`, and no assertion runs against them at all. It is checked before every rule above:
+
+```yaml
+runner:
+  skip_on_empty_reason: ["refusal", "content_filter"]
+```
+
+The list matches the **classified** reason each case reports — the value shown in results, which domarinn fills in as `blank` when the provider named none — so list what you see there, not what you expect the provider to send.
+
+### Where the reasons show up
+
+| Surface | What you get |
+|---|---|
+| `domarinn run` summary and `--ci-summary` | An `Empty` row, broken down by reason (`4 (refusal × 3, truncated × 1)`), printed only when there is one. |
+| `GET /runs/{id}` | `empty_counts`: reason → count for the run. |
+| `GET /runs` | `empty_count` per row. |
+| `GET /runs/{id}/cases?empty_reason=refusal` | Filters cases to one reason (also on the `list_cases` MCP tool). |
+| Web UI | An `Empty` column in the case grid, an `empty: <reason>` chip on the case drawer, and an empty count under **Cases** on the run header. |
+
+Counts are **omitted, never `0`** when there is nothing to report — absence also covers runs stored before the field existed, so it is rendered blank rather than as a zero that would claim the run had none.
+
+---
+
 ## Provider-specific mechanics
 
 ### Anthropic grader

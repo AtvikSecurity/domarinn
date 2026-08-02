@@ -57,6 +57,11 @@ export interface RunStats {
   cache_write_tokens: number;
   cache_savings_usd: number;
   grader_cost_usd: number;
+  /** Empty-output cases tallied by reason, grouped from this run's cases —
+   *  the same derivation the real server uses, so the list count, the detail
+   *  map and the case grid cannot disagree. `{}` when the run had none; the
+   *  projections below drop the key entirely rather than sending it. */
+  empty_counts: Record<string, number>;
   tags: string[];
   assert_labels: string[];
 }
@@ -75,7 +80,11 @@ export function runStats(runId: string): RunStats {
   let cache_hits = 0;
   let cache_misses = 0;
   let cache_savings = 0;
+  const empty_counts: Record<string, number> = {};
   for (const c of cases) {
+    if (c.empty_reason != null) {
+      empty_counts[c.empty_reason] = (empty_counts[c.empty_reason] ?? 0) + 1;
+    }
     if (c.status === "pass") pass++;
     else if (c.status === "fail") fail++;
     else if (c.status === "error") error++;
@@ -134,13 +143,20 @@ export function runStats(runId: string): RunStats {
     // Grading is its own line item and is usually a meaningful fraction of the
     // run — the whole reason it is reported apart from `cost_usd`.
     grader_cost_usd: round4(cost * 0.35),
+    empty_counts,
     tags: meta.tags,
     assert_labels: [...new Set(meta.suiteDef.labels)],
   };
 }
 
+/** The run's empty cases as one number — what the list row carries. */
+function emptyTotal(s: RunStats): number {
+  return Object.values(s.empty_counts).reduce((sum, n) => sum + n, 0);
+}
+
 function toRunListItem(s: RunStats): RunListItem {
   const denom = s.pass_count + s.fail_count + s.error_count;
+  const empty = emptyTotal(s);
   return {
     id: s.id,
     project: s.project,
@@ -160,6 +176,10 @@ function toRunListItem(s: RunStats): RunListItem {
     duration_ms: s.duration_ms,
     cache_hits: s.cache_hits,
     cache_misses: s.cache_misses,
+    // Omitted, never `0`: absence has to keep meaning "nothing to report",
+    // which on the real server also covers a row written before the column
+    // existed. A rendered zero would claim knowledge the row does not have.
+    ...(empty > 0 ? { empty_count: empty } : {}),
     actor: s.actor,
     host: s.host,
     uploaded_by: s.uploaded_by,
@@ -207,6 +227,11 @@ function toRunDetailResponse(s: RunStats): RunDetailResponse {
     domarinn_version: s.domarinn_version,
     tags: s.tags,
     assert_labels: s.assert_labels,
+    // Omitted, never `{}` — same rule as `RunListItem.empty_count` above, so
+    // "absent" means one thing across both shapes.
+    ...(Object.keys(s.empty_counts).length > 0
+      ? { empty_counts: s.empty_counts }
+      : {}),
   };
 }
 

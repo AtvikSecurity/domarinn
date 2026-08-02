@@ -44,4 +44,20 @@ cache_savings_usd?: number,
  * larger model than it tests, this is the bigger of the two, and adding
  * them would hide that rather than report it.
  */
-grader_cost_usd?: number, };
+grader_cost_usd?: number, 
+/**
+ * Cases whose output carried an `empty_reason`, tallied by reason string.
+ *
+ * Open-keyed because the reason set is open (see [`crate::empty`]), and a
+ * `BTreeMap` so serialization is deterministic — the stored document is
+ * content-hashed. Absent when empty, per the byte-stability rule above.
+ *
+ * The `ts` attribute makes the generated TS say `empty_counts?:` rather
+ * than a mandatory field the JSON then omits. It has to go through `as`:
+ * bare `#[ts(optional)]` is a compile error on a non-`Option` field
+ * (ts-rs implements `IsOption` only for `Option<T>`), and the struct-level
+ * `optional_fields` above marks only `Option` fields. Unlike the numeric
+ * counters — where a consumer writing `?? 0` gets the right answer — an
+ * undefined map reaching `Object.entries()` throws.
+ */
+empty_counts?: { [key in string]: number }, };

@@ -128,7 +128,11 @@ export function caseDetail(runId: string, caseKey: string): CaseResult | undefin
     ...(row.tags.length > 0 ? { tags: row.tags } : {}),
     status: row.status,
     score,
-    output: fullOutput(meta, row.seed, row.status),
+    // An empty case has no output to render — that is the whole condition —
+    // so the drawer shows a blank output panel and the `empty_reason` chip
+    // beside the verdict is the only account of it.
+    output: row.empty_reason ? "" : fullOutput(meta, row.seed, row.status),
+    ...(row.empty_reason ? { empty_reason: row.empty_reason } : {}),
     ...v2Fields(meta, row),
     asserts,
     usage: { input_tokens: row.prompt_tokens, output_tokens: row.completion_tokens },

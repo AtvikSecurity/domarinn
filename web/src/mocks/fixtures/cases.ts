@@ -31,6 +31,10 @@ export interface MockCaseRow {
   error: string | null;
   /** What kind of failure it was (migration-10 column). */
   error_class: string | null;
+  /** Why the output had nothing gradeable in it (migration-15 column), or null
+   *  when it was not empty. An empty output is a *successful* call, so this is
+   *  the only field that explains a case with no preview and no error. */
+  empty_reason: string | null;
   asserts: CaseAssertLean[];
   prompt_tokens: number;
   completion_tokens: number;
@@ -165,15 +169,19 @@ function generateFlatCases(meta: RunMeta): MockCaseRow[] {
     const pt = Math.round(180 + rand(meta.suiteKey, i, "pt") * 900);
     const ct = Math.round(40 + rand(meta.suiteKey, i, "cot") * 500);
     const caseKey = `case-${String(i).padStart(4, "0")}`;
+    // An empty output has no preview to show: the row is exactly the one whose
+    // Preview cell is a bare dash, which is what `empty_reason` explains.
+    const emptyReason = caseEmptyReason(meta, i, status);
     rows.push({
       case_key: caseKey,
       idx: i,
       name: caseName(i),
       tags,
       status,
-      output_preview: outputPreview(meta, i, status),
+      output_preview: emptyReason ? null : outputPreview(meta, i, status),
       error: caseError(status, i),
       error_class: caseErrorClass(status, i),
+      empty_reason: emptyReason,
       asserts,
       prompt_tokens: pt,
       completion_tokens: ct,
@@ -230,15 +238,19 @@ function generateMatrixCases(meta: RunMeta, spec: MatrixSpec): MockCaseRow[] {
             flakyCell && rep > 0 && rand(meta.suiteKey, t, provider, prompt, rep, "mut") < 0.5
               ? rep
               : 0;
+          const emptyReason = caseEmptyReason(meta, seed, status);
           rows.push({
             case_key: `case-${String(idx).padStart(4, "0")}`,
             idx,
             name,
             tags,
             status,
-            output_preview: matrixPreview(status, provider, name, rev),
+            output_preview: emptyReason
+              ? null
+              : matrixPreview(status, provider, name, rev),
             error: caseError(status, idx),
             error_class: caseErrorClass(status, idx),
+            empty_reason: emptyReason,
             asserts,
             prompt_tokens: pt,
             completion_tokens: ct,
@@ -285,6 +297,34 @@ function caseError(status: CaseStatus, seed: string | number = 0): string | null
 
 function caseErrorClass(status: CaseStatus, seed: string | number = 0): string | null {
   return status === "error" ? errorKind(seed).class : null;
+}
+
+/**
+ * The empty-output reasons the fixture draws from. More than one on purpose:
+ * "4 empty" is usually several different problems — a refusal, a truncation
+ * and a tool-only reply each call for a different fix — and a fixture with one
+ * reason would render a breakdown that proves nothing.
+ */
+const EMPTY_REASONS = ["refusal", "truncated", "thinking_only", "tool_use_only"] as const;
+
+/**
+ * Why this case came back with nothing gradeable in it, or null when it did
+ * not.
+ *
+ * Kept to failing cases, which is the common shape rather than the only one: a
+ * case whose assertions are all metric bounds can come back empty and still
+ * pass, but the fixture does not model an assertion mix that would show it.
+ * Errored cases are excluded outright — those never produced an output for a
+ * reason to be about.
+ */
+function caseEmptyReason(
+  meta: RunMeta,
+  seed: string | number,
+  status: CaseStatus,
+): string | null {
+  if (status !== "fail") return null;
+  if (rand(meta.suiteKey, seed, "empty") > 0.22) return null;
+  return pick(EMPTY_REASONS, meta.suiteKey, seed, "emptyreason");
 }
 
 function outputPreview(
@@ -488,5 +528,9 @@ export function toCaseListItem(c: MockCaseRow): CaseListItem {
     cached: c.cached,
     error: c.error,
     error_class: c.error_class,
+    // Omitted rather than null when the case was not empty, matching the wire:
+    // the field is `#[ts(optional)]`, and a reader must not read `null` as a
+    // recorded "not empty".
+    ...(c.empty_reason != null ? { empty_reason: c.empty_reason } : {}),
   };
 }

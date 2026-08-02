@@ -68,6 +68,26 @@ An explicit `negate:` written alongside `not-` loses: two spellings of one inten
 
 Both pass when the output does **not** contain `error`.
 
+### A negated assertion cannot pass on an empty output
+
+`not-contains: "credit card number"` over an output that is **empty** is not evidence of compliance. Nothing was produced for the forbidden content to be absent from, and a model that refused, was truncated, or returned only its reasoning would otherwise collect a full `1.0` on every `not-*` assertion in the suite — a green suite that measured nothing.
+
+So when the case reports an [`empty_reason`](../concepts/grading.md#empty-outputs-and-grading) **and the provider reported no tool calls**, a negated assertion that would have passed is turned into a **failure**, scored `0.0`, with the reason it earned:
+
+```
+output was empty (refusal): a negated assertion cannot pass vacuously —
+nothing was produced for the forbidden content to be absent from
+```
+
+It **fails**; it does not error. This is a judgement about the output, so the case lands in Fail — unlike an assertion that cannot be evaluated at all (an uncompilable `schema:`, an unparseable `value:` regex), which is a broken *assertion* and errors the case.
+
+Four things this deliberately does **not** touch:
+
+- **Positive assertions.** `contains: "Paris"` over an empty output already fails on its own terms; nothing special happens.
+- **Metric assertions.** `cost`, `latency` and `tokens` never read the output. A negated latency bound is still a true statement about latency when nothing came back, so it is exempt.
+- **Any assertion on a response that reported tool calls.** `tool_use_only` — the model called a tool and said nothing else — is an empty *text* output by a model that did act. `not-tool-call: delete_everything` judges the calls that were reported, and a rubric with [`include_tool_calls`](../concepts/grading.md#letting-the-judge-see-tool-calls) is shown them too. The hole this closes is a refusal, which reports no calls at all.
+- **Cells you chose to exclude.** `runner.skip_on_empty_reason` removes the cell from grading entirely, before any of this — see [excluding them instead](../concepts/grading.md#excluding-them-instead).
+
 ---
 
 ## Scoring
