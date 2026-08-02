@@ -130,6 +130,38 @@ async fn ingest_rejects_unsupported_schema_version() {
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// The lower half of the window is a promise, not an accident: a CLI one
+/// release behind must still be able to upload (`docs/concepts/architecture.md`
+/// and the `supported_schema_versions` the CLI preflights against both say so).
+/// Without this, narrowing ingest to the current version only would still
+/// satisfy the rejection test below — every version it posts is out of window
+/// either way — while quietly breaking every CLI that had not yet updated.
+#[tokio::test]
+async fn ingest_accepts_one_release_back() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let previous = u64::from(domarinn_core::RESULT_SCHEMA_VERSION) - 1;
+
+    let mut value = run_value(&simple_run("run-one-back"));
+    value["schema_version"] = serde_json::json!(previous);
+    let reply = post_json(&app, "/api/v1/runs", None, &value).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::CREATED,
+        "schema_version {previous} is one release back and must still ingest: {}",
+        reply.json()
+    );
+    assert_eq!(reply.json()["id"], "run-one-back");
+
+    // And it is a real stored run, not just an accepted body.
+    let detail = get(&app, "/api/v1/runs/run-one-back").await;
+    assert_eq!(detail.status, StatusCode::OK);
+    assert_eq!(
+        detail.json()["schema_version"],
+        previous,
+        "the row keeps the version it was uploaded with"
+    );
+}
+
 /// A rejected `schema_version` is a version-skew report, and skew has a
 /// direction: below the window the *uploader* is behind, above it the *server*
 /// is. The bare "supported: 2..=3" the endpoint used to return told an operator
@@ -155,9 +187,10 @@ async fn unsupported_schema_version_names_the_remedy() {
 
         let error = reply.json()["error"].as_str().unwrap().to_string();
         // The number actually sent, so an operator can tell which side they are
-        // on without re-reading their own request.
+        // on without re-reading their own request. Matched with its label, not
+        // as a bare digit — the window bounds are digits in the same string.
         assert!(
-            error.contains(&offending.to_string()),
+            error.contains(&format!("schema_version {offending}")),
             "the 422 must echo the offending version {offending}: {error}"
         );
         assert!(

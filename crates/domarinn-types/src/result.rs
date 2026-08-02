@@ -16,7 +16,8 @@ use crate::types::{Output, RenderedPrompt, TokenUsage};
 ///
 /// Version history:
 /// - v3: `ChatRole::Tool` (added in 0.7.0 without a bump — retroactive
-///   correction); documents otherwise unchanged from v2.
+///   correction); otherwise wire-compatible with v2 — the additive
+///   `RunSummary.empty_counts` is omitted at default.
 pub const RESULT_SCHEMA_VERSION: u32 = 3;
 
 /// Identity of one cell in the provider × prompt × test × repeat matrix.
