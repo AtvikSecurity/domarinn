@@ -415,6 +415,53 @@ async fn list_cases_filters_by_status_and_clamps_its_limit() {
     assert_eq!(clamped["isError"], false);
 }
 
+/// `ListCasesArgs` is `deny_unknown_fields`, so a filter the schema advertises
+/// but the struct forgot is a hard error rather than a silently ignored
+/// argument — this is the test that keeps the two in step for `empty_reason`.
+#[tokio::test]
+async fn list_cases_accepts_an_empty_reason_filter() {
+    let (app, _dir) = open_app().await;
+    let run = make_run(
+        "run-empty",
+        Some("proj"),
+        Some("suite"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("tool_use_only"),
+            CaseSpec::new("openai", "t2", CaseStatus::Pass),
+        ],
+    );
+    let seeded = post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+    assert_eq!(
+        seeded.status,
+        StatusCode::CREATED,
+        "seeding: {:?}",
+        seeded.json()
+    );
+
+    let filtered = tool(
+        &app,
+        None,
+        "list_cases",
+        json!({ "run_id": "run-empty", "empty_reason": "tool_use_only" }),
+    )
+    .await;
+    assert_eq!(filtered["isError"], false, "{:?}", filtered);
+    let cases = filtered["structuredContent"]["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0]["empty_reason"], "tool_use_only");
+    // The reason reaches the text table too: a client that reads only
+    // `content[0].text` still sees why the row is empty.
+    assert!(filtered["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("tool_use_only"));
+}
+
 #[tokio::test]
 async fn list_cases_on_a_missing_run_is_an_error_not_an_empty_page() {
     let (app, _dir) = open_app().await;

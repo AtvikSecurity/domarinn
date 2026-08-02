@@ -512,6 +512,7 @@ pub fn default_case_filter(run_id: RunId) -> CaseListFilter {
         test: None,
         stop_reason: None,
         error_class: None,
+        empty_reason: None,
         cached: None,
         limit: 200,
         cursor: None,

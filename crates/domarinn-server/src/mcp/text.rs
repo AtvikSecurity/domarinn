@@ -223,6 +223,12 @@ pub fn cases_table(cases: &Value, run_id: &str) -> String {
                 header: "stop",
                 key: "stop_reason",
             },
+            // Why the preview is blank, when it is. Absent on every case that
+            // produced output, which is most of them, so it reads as `-`.
+            Column {
+                header: "empty",
+                key: "empty_reason",
+            },
             Column {
                 header: "preview",
                 key: "output_preview",

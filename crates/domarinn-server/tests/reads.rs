@@ -457,3 +457,78 @@ async fn an_unknown_error_class_is_stored_not_rejected() {
     let body = get(&app, "/api/v1/runs/r-future/cases").await.json();
     assert_eq!(body["cases"][0]["error_class"], "invented_by_a_newer_child");
 }
+
+/// Empty outputs are aggregatable and filterable the same way errors are: a run
+/// reporting "14 cases came back empty" has to be able to say that twelve were
+/// refusals. The reason set is open — no `unknown` bucket, unlike `error_class`
+/// — so an unlisted value must store and filter verbatim.
+#[tokio::test]
+async fn cases_carry_and_filter_by_empty_reason() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let run = make_run(
+        "r-empty",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("refusal"),
+            CaseSpec::new("openai", "t2", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("refusal"),
+            CaseSpec::new("openai", "t3", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("tool_use_only"),
+            // An unlisted reason — from a newer client, or an `exec` child this
+            // build does not know about — round-trips rather than failing.
+            CaseSpec::new("openai", "t4", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("weird_new_reason"),
+            CaseSpec::new("openai", "t5", CaseStatus::Pass),
+        ],
+    );
+    post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+
+    let all = get(&app, "/api/v1/runs/r-empty/cases").await.json();
+    let reasons: Vec<Option<&str>> = all["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["empty_reason"].as_str())
+        .collect();
+    assert_eq!(
+        reasons,
+        vec![
+            Some("refusal"),
+            Some("refusal"),
+            Some("tool_use_only"),
+            Some("weird_new_reason"),
+            // A case that produced real output is not empty, and must not be
+            // given a reason.
+            None,
+        ]
+    );
+
+    let refusals = get(&app, "/api/v1/runs/r-empty/cases?empty_reason=refusal").await;
+    assert_eq!(refusals.json()["cases"].as_array().unwrap().len(), 2);
+
+    let weird = get(
+        &app,
+        "/api/v1/runs/r-empty/cases?empty_reason=weird_new_reason",
+    )
+    .await;
+    assert_eq!(weird.json()["cases"].as_array().unwrap().len(), 1);
+
+    // A blank filter value must return nothing, not the complement: `''` is the
+    // storage sentinel for "known: not empty", and it never appears on the wire,
+    // so it must not be selectable through the wire either.
+    let blank = get(&app, "/api/v1/runs/r-empty/cases?empty_reason=").await;
+    assert!(
+        blank.json()["cases"].as_array().unwrap().is_empty(),
+        "a blank empty_reason must not select the not-empty sentinel rows: {:?}",
+        blank.json()
+    );
+}

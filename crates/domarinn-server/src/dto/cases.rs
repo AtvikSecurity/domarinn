@@ -48,6 +48,15 @@ pub struct CaseListItem {
     /// `grader_*` means the eval did not run — instead of read one at a time.
     /// `None` for a case that did not error and for rows written before this.
     pub error_class: Option<String>,
+    /// Why this case's output had nothing gradeable in it (migration-15 `cases`
+    /// column) — a refusal, tool calls only, reasoning only. A case can come
+    /// back empty without erroring, so this is the only column that explains an
+    /// empty `output_preview`. The reason set is open: unrecognized values are
+    /// stored verbatim, so never match on a closed list. Omitted, not null,
+    /// when the case was not empty and for legacy pre-backfill rows.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_reason: Option<String>,
 }
 
 /// `GET /runs/{id}/cases` response.
@@ -97,6 +106,7 @@ mod tests {
             cached: Some(true),
             error: None,
             error_class: None,
+            empty_reason: Some("refusal".to_string()),
         };
         assert_eq!(
             serde_json::to_value(&dto).unwrap(),
@@ -122,6 +132,7 @@ mod tests {
                 "cached": true,
                 "error": null,
                 "error_class": null,
+                "empty_reason": "refusal",
             })
         );
     }
@@ -148,6 +159,7 @@ mod tests {
             cached: None,
             error: None,
             error_class: None,
+            empty_reason: None,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["asserts"], json!([]));
@@ -172,6 +184,12 @@ mod tests {
                 v[key]
             );
         }
+        // `empty_reason` is the exception: it is `#[ts(optional)]`, so "this
+        // case was not empty" is the key being absent, not a null.
+        assert!(
+            v.get("empty_reason").is_none(),
+            "empty_reason must be omitted, not null: {v}"
+        );
     }
 
     #[test]

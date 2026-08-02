@@ -552,6 +552,8 @@ struct CaseQuery {
     stop_reason: Option<String>,
     /// Exact-match on the structured failure class.
     error_class: Option<String>,
+    /// Exact-match on why the case came back empty.
+    empty_reason: Option<String>,
     cached: Option<bool>,
     limit: Option<i64>,
     cursor: Option<String>,
@@ -582,6 +584,7 @@ async fn list_cases(
         test: q.test,
         stop_reason: q.stop_reason,
         error_class: q.error_class,
+        empty_reason: q.empty_reason,
         cached: q.cached,
         limit: clamp_limit(q.limit),
         cursor: q.cursor.as_deref().and_then(|c| c.parse::<i64>().ok()),
