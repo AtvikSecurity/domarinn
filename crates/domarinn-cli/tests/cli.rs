@@ -210,7 +210,12 @@ fn run_json_format_is_valid_json() {
         .unwrap();
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["schema_version"], 2);
+    // Derived, not pinned: `schema_features.rs` owns the version number, and a
+    // bump there should not need an edit here.
+    assert_eq!(
+        value["schema_version"],
+        domarinn_core::RESULT_SCHEMA_VERSION
+    );
     assert_eq!(value["summary"]["passed"], 1);
 }
 

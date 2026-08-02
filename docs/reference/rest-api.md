@@ -20,8 +20,8 @@ Request-body size is capped at **64 MiB**; request bodies may be gzip/deflate co
   "version": "0.1.0",
   "auth_mode": "protect-writes",
   "setup_required": false,
-  "supported_schema_versions": [1, 2],
-  "result_schema_version": 2,
+  "supported_schema_versions": [2, 3],
+  "result_schema_version": 3,
   "cache": { "max_entry_bytes": 4194304, "max_bytes": 1073741824, "max_age_days": 30 }
 }
 ```

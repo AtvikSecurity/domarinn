@@ -12,7 +12,12 @@ use crate::assert_name::AssertName;
 use crate::ids::{CaseKey, RunId};
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
-pub const RESULT_SCHEMA_VERSION: u32 = 2;
+/// Version of the [`RunResult`] wire document.
+///
+/// Version history:
+/// - v3: `ChatRole::Tool` (added in 0.7.0 without a bump — retroactive
+///   correction); documents otherwise unchanged from v2.
+pub const RESULT_SCHEMA_VERSION: u32 = 3;
 
 /// Identity of one cell in the provider × prompt × test × repeat matrix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

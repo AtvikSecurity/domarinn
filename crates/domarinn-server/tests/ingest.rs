@@ -129,3 +129,49 @@ async fn ingest_rejects_unsupported_schema_version() {
     let reply = post_json(&app, "/api/v1/runs", None, &value).await;
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+/// A rejected `schema_version` is a version-skew report, and skew has a
+/// direction: below the window the *uploader* is behind, above it the *server*
+/// is. The bare "supported: 2..=3" the endpoint used to return told an operator
+/// which numbers were legal but not which binary to upgrade — the exact gap a
+/// 0.6.2 server hit when 0.7.0 started emitting `ChatRole::Tool`. Both
+/// boundaries are exercised, and both versions are derived from
+/// `RESULT_SCHEMA_VERSION` so a future bump moves the test with the code.
+#[tokio::test]
+async fn unsupported_schema_version_names_the_remedy() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let current = u64::from(domarinn_core::RESULT_SCHEMA_VERSION);
+    let min = current.saturating_sub(1);
+
+    for offending in [min - 1, current + 1] {
+        let mut value = run_value(&simple_run("run-skew"));
+        value["schema_version"] = serde_json::json!(offending);
+        let reply = post_json(&app, "/api/v1/runs", None, &value).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "schema_version {offending} is outside {min}..={current}"
+        );
+
+        let error = reply.json()["error"].as_str().unwrap().to_string();
+        // The number actually sent, so an operator can tell which side they are
+        // on without re-reading their own request.
+        assert!(
+            error.contains(&offending.to_string()),
+            "the 422 must echo the offending version {offending}: {error}"
+        );
+        assert!(
+            error.contains(&format!("{min}..={current}")),
+            "the 422 must state the accepted window: {error}"
+        );
+        // Both remedies are spelled out, keyed to the boundary that was crossed.
+        assert!(
+            error.contains("upgrade the CLI"),
+            "below the window the uploading CLI is the old one: {error}"
+        );
+        assert!(
+            error.contains("upgrade the server"),
+            "above the window the server is the old one: {error}"
+        );
+    }
+}

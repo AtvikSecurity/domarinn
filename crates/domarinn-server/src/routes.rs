@@ -405,7 +405,12 @@ async fn post_run(
     if schema_version < min || schema_version > current {
         return Err(ApiError::status(
             StatusCode::UNPROCESSABLE_ENTITY,
-            format!("unsupported schema_version {schema_version}; supported: {min}..={current}"),
+            format!(
+                "unsupported schema_version {schema_version}; this server accepts {min}..={current}. \
+                 Below {min}: the uploading CLI is older than this server — upgrade the CLI. \
+                 Above {current}: this server is older than the CLI — upgrade the server \
+                 (or downgrade the CLI to match)."
+            ),
         ));
     }
 
