@@ -265,6 +265,16 @@ fn pass_at_1(cases: &[domarinn_core::result::CaseResult]) -> Option<f64> {
     Some(total / trials.len() as f64)
 }
 
+/// How many cases came back with nothing gradeable, across every reason.
+///
+/// Summed from the per-reason tally rather than tracked as its own counter so
+/// the total and the breakdown can never disagree. It is *not* the same as
+/// `failed + errored`: a refusal can be graded as a pass by a negated assert,
+/// and a provider failure is errored without being empty.
+fn empty_total(s: &RunSummary) -> u64 {
+    s.empty_counts.values().sum()
+}
+
 /// The stats footer line: Wilson pass-rate interval, then pass@1 and the
 /// token/cost/cache segments that are omitted when zero or absent, joined
 /// by ` · `.
@@ -277,6 +287,14 @@ fn stats_line(s: &RunSummary, run_cases: &[domarinn_core::result::CaseResult]) -
         rate.lower * 100.0,
         rate.upper * 100.0,
     ));
+    // Rides directly behind the rate it qualifies, ahead of the cost/cache
+    // trivia: a suite where most cases came back with nothing gradeable still
+    // prints a pass rate, and that number alone reads as a verdict on the model
+    // rather than on a run that never got an answer to grade.
+    let empty = empty_total(s);
+    if empty > 0 {
+        segments.push(format!("{empty} empty"));
+    }
     if s.prompt_tokens > 0 || s.completion_tokens > 0 {
         segments.push(format!(
             "{} in / {} out tokens",
@@ -364,6 +382,22 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
         rate.upper * 100.0,
         rate.total
     ));
+
+    // Placed against the pass rate for the same reason as the terminal
+    // segment, and broken down by reason because "empty" is a family: a
+    // refusal, a truncation and a tool-only reply each call for a different
+    // fix, and one merged total would send a reader looking for the wrong one.
+    // Reasons print in `BTreeMap` order, so the row is stable across runs
+    // rather than reordering with whatever the providers happened to return.
+    let empty = empty_total(s);
+    if empty > 0 {
+        let by_reason: Vec<String> = s
+            .empty_counts
+            .iter()
+            .map(|(reason, count)| format!("{} × {count}", md_cell(reason)))
+            .collect();
+        out.push_str(&format!("| Empty | {empty} ({}) |\n", by_reason.join(", ")));
+    }
 
     // `cache_misses` counts every case not served from cache, not lookups the
     // cache actually performed — under `--no-cache` it equals the case count.
@@ -677,6 +711,60 @@ mod tests {
         assert!(line.contains("$0.4200"));
         assert!(line.contains("3 cache hits"));
         assert!(line.contains(" · "));
+    }
+
+    /// The run-level empty tally has to reach the terminal footer: a suite where
+    /// most cases came back with nothing gradeable still prints a pass rate, and
+    /// without this segment that number is the only thing a reader sees.
+    #[test]
+    fn terminal_summary_notes_empty_cases() {
+        let s = RunSummary {
+            total: 6,
+            passed: 4,
+            failed: 2,
+            empty_counts: std::collections::BTreeMap::from([("refusal".to_string(), 2)]),
+            ..Default::default()
+        };
+        assert!(stats_line(&s, &[]).contains("2 empty"));
+
+        // Nothing came back empty: the segment is absent rather than `0 empty`,
+        // the same rule every other optional segment follows.
+        let clean = RunSummary {
+            total: 6,
+            passed: 6,
+            ..Default::default()
+        };
+        assert!(!stats_line(&clean, &[]).contains("empty"));
+    }
+
+    /// The ci-summary body is [`render_run_md_headline`] plus links, so the row
+    /// added there is what a PR comment shows — asserted through `cisummary`
+    /// rather than the renderer to prove the composition really carries it.
+    #[test]
+    fn ci_summary_notes_empty_cases() {
+        let mut run = sample_run();
+        run.summary.empty_counts = std::collections::BTreeMap::from([("refusal".to_string(), 2)]);
+        let md = crate::cisummary::render(&run, None);
+        assert!(md.contains("| Empty | 2 (refusal × 2) |"), "got:\n{md}");
+        // Exactly once: the headline row is the only place it is stated.
+        assert_eq!(md.matches("| Empty |").count(), 1, "got:\n{md}");
+
+        // A run with nothing empty omits the row entirely.
+        let clean = sample_run();
+        assert!(!crate::cisummary::render(&clean, None).contains("| Empty |"));
+    }
+
+    /// Every reason gets its own term, in `BTreeMap` order — collapsing them
+    /// into a bare total would hide that "empty" covers refusals, truncations
+    /// and tool-only replies, which call for different fixes.
+    #[test]
+    fn render_run_md_lists_every_empty_reason_in_order() {
+        let mut run = sample_run();
+        run.summary.empty_counts = std::collections::BTreeMap::from([
+            ("truncated".to_string(), 1),
+            ("refusal".to_string(), 3),
+        ]);
+        assert!(render_run_md(&run).contains("| Empty | 4 (refusal × 3, truncated × 1) |"));
     }
 
     #[test]
