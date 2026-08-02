@@ -142,11 +142,50 @@ fn run_share_failure_exits_infra_by_default() {
         .assert()
         .code(3)
         .stderr(predicate::str::contains("share failed"));
-    server.join().unwrap();
+
+    // Guard against a vacuous pass: exit 3 must be the *upload's* rejection, not
+    // some earlier failure that never reached the network. This is also where
+    // the stub's request budget is stated — adding the preflight to `share_stub`
+    // means raising its `count`, and this assertion is what notices if the POST
+    // stops being served.
+    let served = server.join().unwrap();
+    assert!(
+        served.iter().any(|r| r.contains("POST /api/v1/runs")),
+        "the run never POSTed to ingest, so the exit code proves nothing about \
+         upload failure; served: {served:?}"
+    );
 
     // The run is still on disk and still graded — only the publish leg failed.
     assert_eq!(latest_run(dir.path()).summary.passed, 1);
     assert_eq!(latest_run(dir.path()).share_url, None);
+}
+
+/// A failed upload outranks failing assertions. Both are true here, and only one
+/// exit code fits: 1 would say "the suite is red, the results are filed", which
+/// is the half of the story that sends someone to a run that was never stored.
+/// Pinned because the ladder's order is invisible at the call site — reordering
+/// the `||`, or slipping an `else if` above it, silently downgrades this to 1.
+#[test]
+fn share_failure_outranks_assertion_failures_in_the_exit_code() {
+    let (url, server) = share_stub("500 Internal Server Error", r#"{"error":"nope"}"#);
+    let dir = tempfile::tempdir().unwrap();
+    // Asserts on "NOPE" against an output of "hello", so the case genuinely
+    // fails; without `--share` this run exits 1.
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "NOPE")).unwrap();
+
+    bin()
+        .args(["run", "--share"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(dir.path())
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("share failed"));
+    server.join().unwrap();
+
+    // The precondition the exit code is being tested against: the run really did
+    // fail its assertions, so 3 is a precedence result rather than a run that
+    // happened to be green.
+    assert_eq!(latest_run(dir.path()).summary.failed, 1);
 }
 
 /// The opt-out for a job where publishing is genuinely optional (a fork's PR
