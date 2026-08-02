@@ -288,6 +288,12 @@ async fn the_listing_aggregates_over_every_visible_run_of_the_project() {
     assert_eq!(open["pass_count"], json!(4));
     assert_eq!(open["fail_count"], json!(3));
     assert_eq!(open["error_count"], json!(0));
+    // No run in this fixture had an empty output, so the key is absent rather
+    // than `0` — the same rule the run rows follow.
+    assert!(
+        open.get("empty_count").is_none(),
+        "a set with nothing to report omits empty_count: {open:?}"
+    );
     assert!(
         open["last_run_at"].as_i64().is_some(),
         "last_run_at is epoch-ms: {open:?}"
@@ -919,4 +925,47 @@ async fn suite_scoped_grants_are_separate_from_project_scoped_ones() {
     assert_eq!(suite.json()["grants"].as_array().unwrap().len(), 1);
     let project = get_auth(&f.app, "/api/v1/sets/open/access", Some(&f.admin)).await;
     assert_eq!(project.json()["grants"], json!([]));
+}
+
+/// The set rows roll the per-run empty tally up, at all three depths a browser
+/// walks: project row, suite row inside a project, and the suite addressed
+/// directly. Nothing to report stays absent (asserted on the shared fixture
+/// above); here there is something to report.
+#[tokio::test]
+async fn set_rows_tally_empty_cases() {
+    let f = fixture().await;
+    // A project of its own, so the shared fixture's counts stay untouched.
+    for (id, offset, reason) in [("e1", 0, "refusal"), ("e2", 10, "tool_use_only")] {
+        let run = make_run(
+            id,
+            Some("emptyish"),
+            Some("only"),
+            vec![],
+            None,
+            offset,
+            &[
+                CaseSpec::new("openai", "t1", CaseStatus::Skip)
+                    .output(Some(""))
+                    .empty_reason(reason),
+                CaseSpec::new("openai", "t2", CaseStatus::Pass),
+            ],
+        );
+        f.storage
+            .ingest_run(run, Some("root".into()))
+            .await
+            .unwrap();
+    }
+
+    let projects = sets(&f.app, Some(&f.admin)).await;
+    assert_eq!(find(&projects, "emptyish")["empty_count"], json!(2));
+
+    let detail = get_auth(&f.app, "/api/v1/sets/emptyish", Some(&f.admin))
+        .await
+        .json();
+    assert_eq!(detail["suites"][0]["empty_count"], json!(2));
+
+    let suite = get_auth(&f.app, "/api/v1/sets/emptyish/suites/only", Some(&f.admin))
+        .await
+        .json();
+    assert_eq!(suite["empty_count"], json!(2));
 }

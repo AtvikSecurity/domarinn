@@ -35,15 +35,16 @@ const PROJECT_SPARK_CAP: usize = 20;
 /// The per-run aggregate columns, in the order every reader below unpacks them.
 const AGGREGATES: &str = "COUNT(*), MAX(created_at), \
      COALESCE(SUM(pass_count), 0), COALESCE(SUM(fail_count), 0), \
-     COALESCE(SUM(error_count), 0), COALESCE(SUM(case_count), 0)";
+     COALESCE(SUM(error_count), 0), COALESCE(SUM(case_count), 0), \
+     COALESCE(SUM(CASE WHEN empty_count > 0 THEN empty_count ELSE 0 END), 0)";
 
 /// A run's pass rate, as SQL. A run with no cases is 0.0 rather than NULL: the
 /// sparkline is a `number[]`, and "no cases" is not a gap in the series.
 const PASS_RATE: &str =
     "CASE WHEN case_count > 0 THEN CAST(pass_count AS REAL) / case_count ELSE 0.0 END";
 
-/// `COUNT(*), MAX(created_at), SUM(pass), SUM(fail), SUM(error), SUM(cases)`,
-/// read from `row` starting at `offset`.
+/// `COUNT(*), MAX(created_at), SUM(pass), SUM(fail), SUM(error), SUM(cases),
+/// SUM(empty)`, read from `row` starting at `offset`.
 struct Aggregates {
     run_count: i64,
     last_run_at: Option<i64>,
@@ -51,6 +52,12 @@ struct Aggregates {
     fail_count: i64,
     error_count: i64,
     case_count: i64,
+    /// The `CASE` in [`AGGREGATES`] is what makes `runs.empty_count`'s
+    /// tri-state safe to sum: a NULL (pre-backfill) or `-1` (undecodable blob)
+    /// run adds nothing instead of poisoning the total or, worse, subtracting
+    /// one from it. Zero here means "no run had anything to report", which the
+    /// DTO omits — see [`crate::dto::sets`]'s header.
+    empty_count: i64,
 }
 
 impl Aggregates {
@@ -62,7 +69,14 @@ impl Aggregates {
             fail_count: row.get(offset + 3)?,
             error_count: row.get(offset + 4)?,
             case_count: row.get(offset + 5)?,
+            empty_count: row.get(offset + 6)?,
         })
+    }
+
+    /// The set's empty tally as the wire carries it: absent when no visible run
+    /// reported one.
+    fn reportable_empty_count(&self) -> Option<u64> {
+        (self.empty_count > 0).then_some(self.empty_count as u64)
     }
 }
 
@@ -156,6 +170,7 @@ fn list_run_sets(conn: &Connection, vis: &RunVisibility) -> anyhow::Result<SetsR
             fail_count: agg.fail_count,
             error_count: agg.error_count,
             case_count: agg.case_count,
+            empty_count: agg.reportable_empty_count(),
             recent_pass_rates,
             restricted: restricted(conn, Some(&project), None)?,
             my_level: my_level(conn, vis, &project, None)?,
@@ -262,6 +277,7 @@ fn run_set_project(
             fail_count: agg.fail_count,
             error_count: agg.error_count,
             case_count: agg.case_count,
+            empty_count: agg.reportable_empty_count(),
             latest_pass_rate: sparkline.last().copied(),
             sparkline,
             baseline_run_id: read_baseline(conn, project, &suite, vis)?,
@@ -312,6 +328,7 @@ fn run_set_suite(
         fail_count: agg.fail_count,
         error_count: agg.error_count,
         case_count: agg.case_count,
+        empty_count: agg.reportable_empty_count(),
         latest_pass_rate: sparkline.last().copied(),
         sparkline,
         baseline_run_id: read_baseline(conn, project, suite, vis)?,

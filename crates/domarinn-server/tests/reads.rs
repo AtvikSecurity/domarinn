@@ -532,3 +532,101 @@ async fn cases_carry_and_filter_by_empty_reason() {
         blank.json()
     );
 }
+
+/// The run-level empty tally has to reach the wire in two shapes: one number on
+/// the list row (the `runs.empty_count` column) and the per-reason map on the
+/// detail (the stored `summary.empty_counts`). Both are omitted, never zeroed,
+/// when there is nothing to report — a dashboard must not invent "0 empty" for
+/// a legacy row whose tally was never recorded.
+#[tokio::test]
+async fn runs_report_empty_count_and_empty_counts() {
+    let (app, dir) = test_app(Settings::default()).await;
+
+    let empties = make_run(
+        "r-tally",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("refusal"),
+            CaseSpec::new("openai", "t2", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("refusal"),
+            CaseSpec::new("openai", "t3", CaseStatus::Pass),
+        ],
+    );
+    post_json(&app, "/api/v1/runs", None, &run_value(&empties)).await;
+
+    let clean = make_run(
+        "r-noempty",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        10,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Pass)],
+    );
+    post_json(&app, "/api/v1/runs", None, &run_value(&clean)).await;
+
+    let listed = get(&app, "/api/v1/runs").await.json();
+    let row = |id: &str| -> serde_json::Value {
+        listed["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no row for {id} in {listed}"))
+            .clone()
+    };
+    assert_eq!(row("r-tally")["empty_count"], serde_json::json!(2));
+    assert!(
+        row("r-noempty").get("empty_count").is_none(),
+        "a run with no empty cases omits the key: {}",
+        row("r-noempty")
+    );
+
+    let detail = get(&app, "/api/v1/runs/r-tally").await.json();
+    assert_eq!(
+        detail["empty_counts"],
+        serde_json::json!({ "refusal": 2 }),
+        "detail tallies by reason: {detail}"
+    );
+    let clean_detail = get(&app, "/api/v1/runs/r-noempty").await.json();
+    assert!(
+        clean_detail.get("empty_counts").is_none(),
+        "a run with no empty cases omits the map: {clean_detail}"
+    );
+
+    // Unknown is not zero. A legacy row (NULL) and an undecodable blob (the -1
+    // sentinel) must both render as absent rather than as a number.
+    let db = rusqlite::Connection::open(dir.path().join("domarinn.db")).unwrap();
+    db.execute(
+        "UPDATE runs SET empty_count = NULL WHERE id = 'r-tally'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE runs SET empty_count = -1 WHERE id = 'r-noempty'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let listed = get(&app, "/api/v1/runs").await.json();
+    for id in ["r-tally", "r-noempty"] {
+        let row = listed["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap();
+        assert!(
+            row.get("empty_count").is_none(),
+            "unknown must not render as a number for {id}: {row}"
+        );
+    }
+}

@@ -1,5 +1,7 @@
 //! Run ingest (content-hash idempotency) and run list / detail / export queries.
 
+use std::collections::BTreeMap;
+
 use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
@@ -606,7 +608,7 @@ impl RunListFilter {
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
                     cache_hits, cache_misses,
                     actor, host, uploaded_by, ci_provider, ci_run_url,
-                    description, domarinn_version
+                    description, domarinn_version, empty_count
              FROM runs",
         );
         let mut clauses: Vec<String> = Vec::new();
@@ -745,6 +747,7 @@ impl RunListFilter {
                 ci_run_url: row.get(21)?,
                 description: row.get(22)?,
                 domarinn_version: row.get(23)?,
+                empty_count: row.get(24)?,
             })
         })?;
         let mut collected: Vec<RunRow> = Vec::new();
@@ -801,12 +804,22 @@ struct RunRow {
     ci_run_url: Option<String>,
     description: Option<String>,
     domarinn_version: Option<String>,
+    empty_count: Option<i64>,
 }
 
 /// Map a stored cache counter to its wire value: NULL (legacy, pre-backfill)
 /// and the -1 undecodable-blob sentinel both surface as `None`.
 fn clean_cache_count(v: Option<i64>) -> Option<i64> {
     v.filter(|n| *n >= 0)
+}
+
+/// Map a stored `runs.empty_count` to its wire value: the key is present only
+/// when there is something to report. NULL (legacy, pre-backfill) and the `-1`
+/// undecodable-blob sentinel are *unknown*, and a plain `0` is "known: none" —
+/// all three surface as `None` so the wire has one meaning for absent. See
+/// [`RunListItem::empty_count`] for why a reader must not render that as `0`.
+fn reportable_empty_count(v: Option<i64>) -> Option<u64> {
+    v.filter(|n| *n > 0).map(|n| n as u64)
 }
 
 impl RunRow {
@@ -835,6 +848,7 @@ impl RunRow {
             duration_ms: self.duration_ms,
             cache_hits: clean_cache_count(self.cache_hits),
             cache_misses: clean_cache_count(self.cache_misses),
+            empty_count: reportable_empty_count(self.empty_count),
             actor: self.actor.clone(),
             host: self.host.clone(),
             uploaded_by: self.uploaded_by.clone(),
@@ -918,6 +932,7 @@ fn get_run_detail(
                 // Filled in below, after the row is loaded.
                 tags: Vec::new(),
                 assert_labels: Vec::new(),
+                empty_counts: None,
             })
         })
         // Never `.ok()`: a fault must not read as a missing run (see `sets`).
@@ -929,7 +944,52 @@ fn get_run_detail(
 
     detail.tags = load_run_tags(conn, id.as_str())?;
     detail.assert_labels = distinct_assert_labels(conn, id.as_str())?;
+    detail.empty_counts = stored_empty_counts(conn, id, vis)?;
     Ok(Some(detail))
+}
+
+/// The stored document's `summary.empty_counts`, or `None` when the run
+/// reported no empty output.
+///
+/// Deliberately *not* the `runs.empty_count` column the list row reads. That
+/// column is counted off the cases at ingest and answers "how many"; this map
+/// is the producer's own breakdown and answers "why". For every run this
+/// codebase writes the two agree by construction — they can diverge only for an
+/// externally authored blob whose summary contradicts its own cases, and then
+/// each surface reports what its own source said rather than inventing a
+/// reconciliation nobody asked for.
+///
+/// A missing, corrupt, or shape-surprising blob degrades to `None` and a warn
+/// rather than failing the whole detail — the same call the `asserts` column
+/// gets in [`distinct_assert_labels`].
+fn stored_empty_counts(
+    conn: &Connection,
+    id: &RunId,
+    vis: &RunVisibility,
+) -> anyhow::Result<Option<BTreeMap<String, u64>>> {
+    let Some(blob) = load_run_blob(conn, id, vis)? else {
+        return Ok(None);
+    };
+    let read = || -> anyhow::Result<BTreeMap<String, u64>> {
+        let value: serde_json::Value = serde_json::from_slice(&decompress(&blob)?)?;
+        // A client older than the field simply has nothing to report.
+        let Some(raw) = value.get("summary").and_then(|s| s.get("empty_counts")) else {
+            return Ok(BTreeMap::new());
+        };
+        Ok(serde_json::from_value(raw.clone())?)
+    };
+    match read() {
+        Ok(counts) if counts.is_empty() => Ok(None),
+        Ok(counts) => Ok(Some(counts)),
+        Err(e) => {
+            tracing::warn!(
+                run_id = %id,
+                error = %e,
+                "unreadable stored summary.empty_counts; reporting none"
+            );
+            Ok(None)
+        }
+    }
 }
 
 fn distinct_assert_labels(conn: &Connection, run_id: &str) -> anyhow::Result<Vec<String>> {

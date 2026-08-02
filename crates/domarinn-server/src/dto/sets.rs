@@ -19,6 +19,20 @@
 //! Unlike the legacy [`crate::dto::projects`] DTOs, which emit RFC3339 strings,
 //! every timestamp here is integer epoch-ms — the same unit `created_at` uses on
 //! grants, so the browser formats one kind of value.
+//!
+//! # `empty_count` is a lower bound, and omitted when there is nothing to say
+//!
+//! Every other count here is a plain `i64` summed over the set's runs.
+//! `empty_count` is not, because `runs.empty_count` is tri-state: a legacy row
+//! that predates migration 15 is NULL, and one whose blob would not decode
+//! carries `-1`. Neither is zero, so neither is summed — such runs contribute
+//! nothing, which makes the total a **lower bound** on a corpus that still has
+//! un-backfilled runs.
+//!
+//! The field is then omitted, not zeroed, when that total is `0` — the same
+//! rule [`crate::dto::runs::RunListItem::empty_count`] follows, so "absent"
+//! means "nothing to report" on both the run row and the set row it rolls up
+//! into. A reader must render absence as blank, never as `0`.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -42,6 +56,10 @@ pub struct ProjectSetView {
     pub fail_count: i64,
     pub error_count: i64,
     pub case_count: i64,
+    /// Empty-output cases across the set's runs — see this module's header.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_count: Option<u64>,
     /// One latest pass rate per suite, suites in name order, capped — enough
     /// for a sparkline of the project's spread, not a time series.
     pub recent_pass_rates: Vec<f64>,
@@ -71,6 +89,10 @@ pub struct SuiteSetView {
     pub fail_count: i64,
     pub error_count: i64,
     pub case_count: i64,
+    /// Empty-output cases across the set's runs — see this module's header.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_count: Option<u64>,
     /// The newest run's pass rate — the last element of `sparkline`.
     pub latest_pass_rate: Option<f64>,
     /// The last 20 runs' pass rates, **oldest first** — the order the web
@@ -106,6 +128,10 @@ pub struct SuiteSetDetailResponse {
     pub fail_count: i64,
     pub error_count: i64,
     pub case_count: i64,
+    /// Empty-output cases across the set's runs — see this module's header.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_count: Option<u64>,
     pub latest_pass_rate: Option<f64>,
     /// The last 20 runs' pass rates, oldest first — see `SuiteSetView`.
     pub sparkline: Vec<f64>,
@@ -157,6 +183,7 @@ mod tests {
                 fail_count: 3,
                 error_count: 0,
                 case_count: 7,
+                empty_count: Some(2),
                 recent_pass_rates: vec![0.5, 1.0],
                 restricted: true,
                 my_level: Some(GrantLevel::Manage),
@@ -175,6 +202,7 @@ mod tests {
                         "fail_count": 3,
                         "error_count": 0,
                         "case_count": 7,
+                        "empty_count": 2,
                         "recent_pass_rates": [0.5, 1.0],
                         "restricted": true,
                         "my_level": "manage",
@@ -195,6 +223,7 @@ mod tests {
             fail_count: 0,
             error_count: 0,
             case_count: 0,
+            empty_count: None,
             recent_pass_rates: vec![],
             restricted: false,
             my_level: None,
@@ -205,6 +234,12 @@ mod tests {
             assert!(v[key].is_null(), "expected {key} null, got {:?}", v[key]);
         }
         assert_eq!(v["recent_pass_rates"], json!([]));
+        // `empty_count` is the one field here that is omitted rather than
+        // nulled when it has nothing to say — see this module's header.
+        assert!(
+            v.get("empty_count").is_none(),
+            "empty_count must be omitted, not null: {v}"
+        );
     }
 
     #[test]
@@ -221,6 +256,7 @@ mod tests {
                 fail_count: 1,
                 error_count: 0,
                 case_count: 4,
+                empty_count: Some(1),
                 latest_pass_rate: Some(1.0),
                 sparkline: vec![0.5, 1.0],
                 baseline_run_id: Some(RunId::new("r-1")),
@@ -243,6 +279,7 @@ mod tests {
                         "fail_count": 1,
                         "error_count": 0,
                         "case_count": 4,
+                        "empty_count": 1,
                         "latest_pass_rate": 1.0,
                         "sparkline": [0.5, 1.0],
                         "baseline_run_id": "r-1",
@@ -267,6 +304,7 @@ mod tests {
             fail_count: 0,
             error_count: 0,
             case_count: 0,
+            empty_count: None,
             latest_pass_rate: None,
             sparkline: vec![],
             baseline_run_id: None,
@@ -284,6 +322,8 @@ mod tests {
                 "fail_count": 0,
                 "error_count": 0,
                 "case_count": 0,
+                // No `empty_count`: the key is absent, not null, when the set
+                // has nothing to report.
                 "latest_pass_rate": null,
                 "sparkline": [],
                 "baseline_run_id": null,
