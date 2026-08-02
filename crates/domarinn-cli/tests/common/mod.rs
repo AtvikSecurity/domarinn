@@ -115,6 +115,19 @@ pub fn latest_run(dir: &Path) -> domarinn_core::result::RunResult {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// A `/api/v1/meta` body advertising this CLI's schema version as supported.
+///
+/// Derived from `RESULT_SCHEMA_VERSION` rather than hardcoded so a schema bump
+/// does not quietly turn every `run --share` test into a rejected-preflight
+/// test.
+pub fn meta_ok_body() -> String {
+    format!(
+        r#"{{"name":"stub","version":"0.0.0","supported_schema_versions":[{prev},{cur}],"result_schema_version":{cur}}}"#,
+        prev = domarinn_core::RESULT_SCHEMA_VERSION - 1,
+        cur = domarinn_core::RESULT_SCHEMA_VERSION
+    )
+}
+
 /// Offset just past the `\r\n\r\n` that ends a request head, once it has all
 /// arrived.
 fn head_end(buf: &[u8]) -> Option<usize> {
@@ -236,6 +249,28 @@ pub fn stub_routes(
     )
 }
 
+/// [`stub_routes`] where each route also names the status it answers with.
+///
+/// The status is the whole subject of some tests rather than scenery: `run
+/// --share` now fails the run when ingest rejects the upload, and a router that
+/// can only answer 200 cannot state that case at all. [`stub_server`] can, but
+/// only for a client that makes exactly one request — which stops being true the
+/// moment a preflight is added ahead of the upload.
+pub fn stub_routes_status(
+    routes: Vec<(&'static str, &'static str, String)>,
+    count: usize,
+    deadline: std::time::Duration,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    serve(
+        routes
+            .into_iter()
+            .map(|(f, s, b)| (f, s, vec![b]))
+            .collect(),
+        count,
+        deadline,
+    )
+}
+
 /// [`stub_routes`] where each route answers a *sequence* of bodies — one per
 /// matching request, repeating the last once the script runs out.
 ///
@@ -249,6 +284,20 @@ pub fn stub_routes(
 /// `runner.concurrency` must be driven with `-j 1` to rely on a script.
 pub fn stub_script(
     routes: Vec<(&'static str, Vec<String>)>,
+    count: usize,
+    deadline: std::time::Duration,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    serve(
+        routes.into_iter().map(|(f, b)| (f, "200 OK", b)).collect(),
+        count,
+        deadline,
+    )
+}
+
+/// The socket handling behind every routing stub: one implementation, so a
+/// status or a script can be added without a second copy drifting from it.
+fn serve(
+    routes: Vec<(&'static str, &'static str, Vec<String>)>,
     count: usize,
     deadline: std::time::Duration,
 ) -> (String, std::thread::JoinHandle<Vec<String>>) {
@@ -283,13 +332,13 @@ pub fn stub_script(
 
             let response = match routes
                 .iter()
-                .position(|(fragment, _)| line.contains(fragment))
+                .position(|(fragment, _, _)| line.contains(fragment))
             {
                 Some(i) => {
-                    let script = &routes[i].1;
+                    let script = &routes[i].2;
                     let at = cursor[i].min(script.len().saturating_sub(1));
                     cursor[i] += 1;
-                    http_response("200 OK", &script[at])
+                    http_response(routes[i].1, &script[at])
                 }
                 // Named, not blank: an unmatched request becomes an errored
                 // cell, and the operator needs the path to know what went

@@ -3,6 +3,13 @@
 //! Best-effort by default (a failed upload warns and exits 0); `--strict` makes
 //! upload failure fail the command. Git and CI metadata are attached
 //! automatically when available.
+//!
+//! `run --share` is the other way round — strict by default, with
+//! `--allow-share-failure` to opt out. The asymmetry is deliberate: `share` is
+//! run by hand against a run that already exists on disk, so a failed upload
+//! costs a retry, while `run --share` is a CI step whose whole purpose is to
+//! store the results, and exiting 0 having stored nothing reports a green job
+//! for work that went nowhere.
 
 use std::path::Path;
 
@@ -32,7 +39,7 @@ pub fn execute(args: ShareArgs, server_url: Option<String>) -> u8 {
             return exit::USAGE;
         }
     };
-    match upload_run(&result, server_url.as_deref(), args.strict) {
+    match upload_run(&result, server_url.as_deref()) {
         Ok(_) => exit::OK,
         Err(e) => {
             if args.strict {
@@ -50,13 +57,10 @@ pub fn execute(args: ShareArgs, server_url: Option<String>) -> u8 {
 ///
 /// Returns the view URL on success, so `run --share` can record it on the run
 /// it is about to persist; returns an error if no server is configured or the
-/// upload fails, and callers decide whether that is fatal (`--strict`) or
-/// best-effort.
-pub fn upload_run(
-    result: &RunResult,
-    server_url: Option<&str>,
-    _strict: bool,
-) -> Result<String, String> {
+/// upload fails. Whether that is fatal is the caller's policy, not this
+/// function's — `share` is best-effort unless `--strict`, `run --share` is fatal
+/// unless `--allow-share-failure` — so it takes no flag of its own.
+pub fn upload_run(result: &RunResult, server_url: Option<&str>) -> Result<String, String> {
     let server = server_url
         .map(String::from)
         .or_else(|| std::env::var("DOMARINN_SERVER_URL").ok())

@@ -4,16 +4,42 @@
 
 mod common;
 
+use std::thread::JoinHandle;
+use std::time::Duration;
+
 use assert_cmd::prelude::*;
-use common::{bin, latest_run, run_to, stub_server, suite};
+use common::{bin, latest_run, meta_ok_body, run_to, stub_routes_status, stub_server, suite};
 use predicates::prelude::*;
+
+/// A `{"url": ...}` ingest response for a run that lands at `abc`.
+const SHARE_OK: &str = r#"{"url":"https://domarinn.test/runs/abc"}"#;
+
+/// The server `run --share` talks to: the ingest POST answering `status` with
+/// `body`, plus the `/meta` route the upload's preflight consults.
+///
+/// A routing stub rather than [`stub_server`] because the share leg is on its
+/// way to making more than one request; registering `/meta` here now means the
+/// preflight lands without every one of these tests having to be rewritten. The
+/// count is today's request total (the POST alone) so `join` still returns as
+/// soon as the client is done rather than idling to the deadline — adding the
+/// preflight means bumping it to 2.
+fn share_stub(status: &'static str, body: &'static str) -> (String, JoinHandle<Vec<String>>) {
+    stub_routes_status(
+        vec![
+            ("/api/v1/meta", "200 OK", meta_ok_body()),
+            ("/api/v1/runs", status, body.to_string()),
+        ],
+        1,
+        Duration::from_secs(30),
+    )
+}
 
 /// `--share` must record the URL the server returned onto the persisted run,
 /// so a later `ci-summary` can link to it without re-uploading or scraping
 /// stdout.
 #[test]
 fn run_share_persists_the_returned_run_url() {
-    let (url, server) = stub_server("200 OK", r#"{"url":"https://domarinn.test/runs/abc"}"#);
+    let (url, server) = share_stub("200 OK", SHARE_OK);
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
 
@@ -41,8 +67,7 @@ fn run_share_persists_the_returned_run_url() {
 /// stays local and never travels with the run.
 #[test]
 fn re_sharing_a_recorded_run_does_not_upload_its_own_url() {
-    let (first, first_server) =
-        stub_server("200 OK", r#"{"url":"https://domarinn.test/runs/abc"}"#);
+    let (first, first_server) = share_stub("200 OK", SHARE_OK);
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
 
@@ -99,11 +124,14 @@ fn run_without_share_persists_no_run_url() {
     assert!(!raw.contains("share_url"));
 }
 
-/// A failed upload must not cost the run: the summary/exit path still completes
-/// and the persisted run simply carries no URL.
+/// A rejected upload fails the run. `run --share` in CI exists to *store* the
+/// results, so exiting 0 having stored nothing reports a green job for work that
+/// went nowhere — the workflow moves on, and the gap is only noticed when
+/// someone goes looking for the run. The grading still stands: the run is
+/// persisted locally, and simply carries no URL.
 #[test]
-fn run_share_failure_leaves_the_run_intact() {
-    let (url, server) = stub_server("500 Internal Server Error", r#"{"error":"nope"}"#);
+fn run_share_failure_exits_infra_by_default() {
+    let (url, server) = share_stub("500 Internal Server Error", r#"{"error":"nope"}"#);
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
 
@@ -112,10 +140,93 @@ fn run_share_failure_leaves_the_run_intact() {
         .env("DOMARINN_SERVER_URL", &url)
         .current_dir(dir.path())
         .assert()
+        .code(3)
+        .stderr(predicate::str::contains("share failed"));
+    server.join().unwrap();
+
+    // The run is still on disk and still graded — only the publish leg failed.
+    assert_eq!(latest_run(dir.path()).summary.passed, 1);
+    assert_eq!(latest_run(dir.path()).share_url, None);
+}
+
+/// The opt-out for a job where publishing is genuinely optional (a fork's PR
+/// with no credentials): the upload still fails, and the run still exits on its
+/// own merits.
+#[test]
+fn run_share_failure_is_tolerated_with_allow_share_failure() {
+    let (url, server) = share_stub("500 Internal Server Error", r#"{"error":"nope"}"#);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+
+    bin()
+        .args(["run", "--share", "--allow-share-failure"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(dir.path())
+        .assert()
         .success();
     server.join().unwrap();
 
     assert_eq!(latest_run(dir.path()).share_url, None);
+}
+
+/// A server that never answers is the same failure as one that says no — a
+/// misconfigured URL is far likelier in CI than a rejecting server, and it must
+/// not be the quieter of the two.
+#[test]
+fn run_share_with_unreachable_server_exits_infra() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+    // Port 1 is reserved and unbindable without privileges, so nothing is
+    // listening and the connect is refused immediately rather than timing out.
+    let unreachable = "http://127.0.0.1:1";
+
+    bin()
+        .args(["run", "--share"])
+        .env("DOMARINN_SERVER_URL", unreachable)
+        .current_dir(dir.path())
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("share failed"));
+
+    bin()
+        .args(["run", "--share", "--allow-share-failure"])
+        .env("DOMARINN_SERVER_URL", unreachable)
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+/// `--share` with nowhere to share to is a failure, not a no-op. This was the
+/// quietest hole of the three: the missing-URL error never reached the network,
+/// so a workflow that forgot `DOMARINN_SERVER_URL` passed its gate, uploaded
+/// nothing, and printed one warning nobody reads.
+#[test]
+fn run_share_without_a_server_url_exits_infra() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+
+    bin()
+        .args(["run", "--share"])
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("no server URL"));
+}
+
+/// The opt-out only means anything alongside `--share`; on its own it reads as
+/// "tolerate a failure of something I never asked for", so clap rejects it.
+#[test]
+fn allow_share_failure_without_share_is_a_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+
+    bin()
+        .args(["run", "--allow-share-failure"])
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--share"));
 }
 
 /// `ci-summary` renders the headline table for the latest run, defaulting to
@@ -233,7 +344,7 @@ fn ci_summary_appends_to_an_existing_github_output_file() {
 /// A shared run links to itself; the CI run URL comes from the workflow env.
 #[test]
 fn ci_summary_links_to_the_shared_run_and_the_ci_run() {
-    let (url, server) = stub_server("200 OK", r#"{"url":"https://domarinn.test/runs/abc"}"#);
+    let (url, server) = share_stub("200 OK", SHARE_OK);
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
     bin()
