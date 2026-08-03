@@ -240,3 +240,103 @@ async fn history_reports_baseline_run_id_once_set() {
     assert_eq!(resp.status, StatusCode::OK);
     assert_eq!(resp.json()["baseline_run_id"], "r2");
 }
+
+/// Seed one fresh run and one whose response was replayed from cache.
+async fn seed_replay(app: &axum::Router) {
+    let fresh = make_run(
+        "r-fresh",
+        Some("proj"),
+        Some("suite"),
+        vec![],
+        Some("main"),
+        0,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Pass).output(Some("v1"))],
+    );
+    let replayed = make_run(
+        "r-replayed",
+        Some("proj"),
+        Some("suite"),
+        vec![],
+        Some("main"),
+        10,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Pass)
+            .output(Some("v1"))
+            .cached(true)],
+    );
+    for run in [&fresh, &replayed] {
+        let reply = post_json(app, "/api/v1/runs", None, &run_value(run)).await;
+        assert_eq!(reply.status, StatusCode::CREATED);
+    }
+}
+
+/// The timeline collapses consecutive replayed points into one marker instead
+/// of hiding them, so every point has to say whether it was replayed.
+#[tokio::test]
+async fn history_points_report_whether_each_run_was_replayed() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    seed_replay(&app).await;
+    let ck = t1_case_key();
+
+    let resp = get(
+        &app,
+        &format!("/api/v1/projects/proj/suites/suite/cases/{ck}/history"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK);
+    let body = resp.json();
+    let points = body["points"].as_array().unwrap();
+
+    assert_eq!(points[0]["run_id"], "r-replayed");
+    assert_eq!(points[0]["cached"], true);
+    assert_eq!(points[1]["run_id"], "r-fresh");
+    assert_eq!(points[1]["cached"], false);
+
+    // Nothing is filtered out of the history, which is the whole reason
+    // collapsing beats hiding: the replayed point still participates in the
+    // output_changed chain, so "changed" keeps meaning "differs from the run
+    // immediately before it" rather than "differs from the last one we chose
+    // to show".
+    assert_eq!(points[0]["output_changed"], false);
+}
+
+/// A row we cannot classify must report `null`, never `false`. Claiming a
+/// pre-backfill run was freshly measured invents a measurement nobody made.
+#[tokio::test]
+async fn history_reports_an_unclassifiable_run_as_unknown_not_fresh() {
+    let (app, dir) = test_app(Settings::default()).await;
+    seed_replay(&app).await;
+
+    let db = rusqlite::Connection::open(dir.path().join("domarinn.db")).unwrap();
+    // NULL is the legacy pre-backfill state; -1 is the undecodable-blob
+    // sentinel. Both mean "cannot tell".
+    db.execute(
+        "UPDATE cases SET cached = NULL WHERE run_id = 'r-fresh'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE cases SET cached = -1 WHERE run_id = 'r-replayed'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let ck = t1_case_key();
+    let resp = get(
+        &app,
+        &format!("/api/v1/projects/proj/suites/suite/cases/{ck}/history"),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::OK);
+    let body = resp.json();
+    let points = body["points"].as_array().unwrap();
+
+    for p in points {
+        assert!(
+            p["cached"].is_null(),
+            "unclassifiable run {} reported cached={:?}, expected null",
+            p["run_id"],
+            p["cached"]
+        );
+    }
+}

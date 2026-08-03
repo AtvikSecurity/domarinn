@@ -16,4 +16,21 @@ created_at: string, status: CaseStatus, score: number | null, output_hash: strin
  * run's (i.e. the next-older point, `points[i + 1]`). `None` for the oldest
  * returned point and whenever either side's `output_hash` is NULL.
  */
-output_changed: boolean | null, prompt_tokens: number | null, completion_tokens: number | null, cost_usd: number | null, latency_ms: number | null, git_commit: string | null, config_digest: string | null, };
+output_changed: boolean | null, 
+/**
+ * Whether this run's response for the case came from the provider cache
+ * (the migration-6 `cases.cached` column).
+ *
+ * `None` means unknown, not fresh: legacy pre-backfill rows are NULL and
+ * undecodable blobs carry the `-1` sentinel, and neither may be reported
+ * as `false` — that would claim a measurement nobody made.
+ *
+ * The timeline uses this to collapse a run of consecutive cached points
+ * into one marker rather than hiding them. Hiding would misreport how
+ * long a verdict held; a replayed result is still evidence the case was
+ * green on that date, just weaker evidence than a fresh call.
+ *
+ * Note this is deliberately *not* a filter: no history point is ever
+ * dropped, so `output_changed` keeps comparing genuinely adjacent runs.
+ */
+cached: boolean | null, prompt_tokens: number | null, completion_tokens: number | null, cost_usd: number | null, latency_ms: number | null, git_commit: string | null, config_digest: string | null, };

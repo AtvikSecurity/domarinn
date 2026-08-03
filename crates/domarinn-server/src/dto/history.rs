@@ -39,6 +39,21 @@ pub struct CaseHistoryPoint {
     /// run's (i.e. the next-older point, `points[i + 1]`). `None` for the oldest
     /// returned point and whenever either side's `output_hash` is NULL.
     pub output_changed: Option<bool>,
+    /// Whether this run's response for the case came from the provider cache
+    /// (the migration-6 `cases.cached` column).
+    ///
+    /// `None` means unknown, not fresh: legacy pre-backfill rows are NULL and
+    /// undecodable blobs carry the `-1` sentinel, and neither may be reported
+    /// as `false` — that would claim a measurement nobody made.
+    ///
+    /// The timeline uses this to collapse a run of consecutive cached points
+    /// into one marker rather than hiding them. Hiding would misreport how
+    /// long a verdict held; a replayed result is still evidence the case was
+    /// green on that date, just weaker evidence than a fresh call.
+    ///
+    /// Note this is deliberately *not* a filter: no history point is ever
+    /// dropped, so `output_changed` keeps comparing genuinely adjacent runs.
+    pub cached: Option<bool>,
     pub prompt_tokens: Option<i64>,
     pub completion_tokens: Option<i64>,
     pub cost_usd: Option<f64>,
@@ -66,6 +81,7 @@ mod tests {
                 score: Some(1.0),
                 output_hash: Some("abc123".to_string()),
                 output_changed: Some(true),
+                cached: Some(false),
                 prompt_tokens: Some(10),
                 completion_tokens: Some(20),
                 cost_usd: Some(0.0025),
@@ -89,6 +105,7 @@ mod tests {
                         "score": 1.0,
                         "output_hash": "abc123",
                         "output_changed": true,
+                        "cached": false,
                         "prompt_tokens": 10,
                         "completion_tokens": 20,
                         "cost_usd": 0.0025,
@@ -115,6 +132,7 @@ mod tests {
                 score: None,
                 output_hash: None,
                 output_changed: None,
+                cached: None,
                 prompt_tokens: None,
                 completion_tokens: None,
                 cost_usd: None,
@@ -136,6 +154,7 @@ mod tests {
             "score",
             "output_hash",
             "output_changed",
+            "cached",
             "prompt_tokens",
             "completion_tokens",
             "cost_usd",

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import type { CaseHistoryPoint, CaseHistoryResponse, CaseStatus } from "@/api";
 import { useCaseHistory } from "@/api/queries";
@@ -16,6 +16,8 @@ import {
   shortRunId,
 } from "@/lib/format";
 import {
+  collapseCachedRuns,
+  type HistorySegment,
   HISTORY_METRICS,
   historySeries,
   historySummary,
@@ -166,6 +168,11 @@ function formatMetric(metric: HistoryMetric, v: number): string {
   }
 }
 
+/** One column of the timeline: a single run, or a folded run of replayed ones. */
+type TimelineSlot =
+  | { kind: "point"; point: CaseHistoryPoint }
+  | { kind: "streak"; segment: HistorySegment };
+
 function HistoryTimeline({
   data,
   runId,
@@ -182,13 +189,57 @@ function HistoryTimeline({
   showTable: boolean;
 }) {
   // Payload is newest-first; reverse to oldest→newest for the timeline.
-  const chronological = [...data.points].reverse();
+  const chronological = useMemo(() => [...data.points].reverse(), [data.points]);
   const spec = metricSpec(metric);
-  // Nulls are kept as gaps rather than dropped, so the sparkline's x-positions
-  // stay tied to the squares above it.
-  const series = historySeries(chronological, metric);
-  const present = series.filter((s): s is number => s != null);
   const baselineRunId = data.baseline_run_id;
+
+  // A suite re-running unchanged in CI emits a queue of replayed runs. Shown
+  // one square each they make a fortnight of "nothing happened" look like a
+  // fortnight of activity and push the runs that measured something out of the
+  // scroll window. Folded, they say the same thing in one marker — and still
+  // say it, which hiding them would not: six replayed runs are six occasions
+  // the case held green.
+  const segments = useMemo(() => collapseCachedRuns(chronological), [chronological]);
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
+
+  // A streak containing the run being viewed, or the suite's baseline, is not
+  // background: folding it would hide the marker the reader opened the drawer
+  // to look at, and the current-run ring is how they locate themselves on the
+  // timeline. Those open on their own and cannot be re-folded.
+  const pinned = useMemo(() => {
+    const out = new Set<number>();
+    for (const segment of segments) {
+      if (!segment.collapsed) continue;
+      const holdsAnchor = segment.points.some(
+        (p) => p.run_id === runId || p.run_id === baselineRunId,
+      );
+      if (holdsAnchor) out.add(segment.start);
+    }
+    return out;
+  }, [segments, runId, baselineRunId]);
+
+  const slots = useMemo<TimelineSlot[]>(
+    () =>
+      segments.flatMap((segment): TimelineSlot[] =>
+        segment.collapsed &&
+        !expanded.has(segment.start) &&
+        !pinned.has(segment.start)
+          ? [{ kind: "streak", segment }]
+          : segment.points.map((point) => ({ kind: "point", point })),
+      ),
+    [segments, expanded, pinned],
+  );
+
+  // The sparkline follows the same slots so its x-positions stay tied to the
+  // squares above it — the reason nulls are kept as gaps rather than dropped.
+  // A folded streak contributes its newest point: every run in it replayed the
+  // same provider output, so the series is flat across it and the last value
+  // is the one that is still true when the streak ends.
+  const representative = slots.map((s) =>
+    s.kind === "point" ? s.point : s.segment.points[s.segment.points.length - 1]!,
+  );
+  const series = historySeries(representative, metric);
+  const present = series.filter((s): s is number => s != null);
 
   const first = present[0];
   const last = present[present.length - 1];
@@ -196,15 +247,27 @@ function HistoryTimeline({
   return (
     <div className="space-y-2">
       <div className="flex items-start gap-1 overflow-x-auto overscroll-x-contain px-0.5 py-0.5">
-        {chronological.map((p) => (
-          <HistorySquare
-            key={p.run_id}
-            point={p}
-            isCurrent={p.run_id === runId}
-            isBaseline={baselineRunId != null && p.run_id === baselineRunId}
-            caseKey={caseKey}
-          />
-        ))}
+        {slots.map((slot) =>
+          slot.kind === "point" ? (
+            <HistorySquare
+              key={slot.point.run_id}
+              point={slot.point}
+              isCurrent={slot.point.run_id === runId}
+              isBaseline={
+                baselineRunId != null && slot.point.run_id === baselineRunId
+              }
+              caseKey={caseKey}
+            />
+          ) : (
+            <ReplayedStreak
+              key={`streak-${slot.segment.start}`}
+              segment={slot.segment}
+              onExpand={() =>
+                setExpanded((prev) => new Set(prev).add(slot.segment.start))
+              }
+            />
+          ),
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -215,7 +278,7 @@ function HistoryTimeline({
               {...(spec.min !== undefined ? { min: spec.min } : {})}
               {...(spec.max !== undefined ? { max: spec.max } : {})}
               higherIsBetter={spec.higherIsBetter}
-              width={Math.max(96, chronological.length * PITCH)}
+              width={Math.max(96, slots.length * PITCH)}
               height={22}
               title={`${spec.label} trend`}
             />
@@ -249,6 +312,68 @@ function HistoryTimeline({
           caseKey={caseKey}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * A folded stretch of consecutive replayed runs.
+ *
+ * Stacked and sized like a `HistorySquare` so the row keeps one rhythm, but
+ * drawn as a dashed outline rather than a status tint: this is not a verdict,
+ * it is a span of time across which the verdict was never re-tested. The count
+ * is on the face because it is the fact being communicated — "seven runs, none
+ * of which measured anything new" — and folding it to a bare ellipsis would
+ * trade one kind of missing information for another.
+ */
+function ReplayedStreak({
+  segment,
+  onExpand,
+}: {
+  segment: HistorySegment;
+  onExpand: () => void;
+}) {
+  const n = segment.points.length;
+  const oldest = segment.points[0]!;
+  const newest = segment.points[n - 1]!;
+  const lastVerified = formatRelative(newest.created_at);
+
+  const tooltip = (
+    <div className="space-y-0.5">
+      <div>{n} replayed runs</div>
+      <div>
+        {formatDate(oldest.created_at)} → {formatDate(newest.created_at)}
+      </div>
+      <div>Responses came from cache · last verified {lastVerified}</div>
+      <div className="text-muted">Select to show all {n}</div>
+    </div>
+  );
+
+  return (
+    <div className="flex shrink-0 flex-col items-center gap-0.5">
+      <Tooltip content={tooltip}>
+        <button
+          type="button"
+          onClick={onExpand}
+          data-replayed-streak=""
+          data-count={n}
+          aria-label={`${n} replayed runs, last verified ${lastVerified}. Select to show all ${n}.`}
+          className="grid h-6 min-w-6 place-items-center rounded-[5px] px-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span
+            aria-hidden
+            className="grid h-3.5 min-w-3.5 place-items-center rounded-[3px] border border-dashed border-border px-0.5 text-[8px] font-medium leading-none tabular-nums text-muted transition hover:brightness-110"
+          >
+            {n}
+          </span>
+        </button>
+      </Tooltip>
+
+      {/* Transparent placeholders matching a square's baseline and
+          output-changed markers, so a streak does not shorten its column and
+          jog the row. */}
+      <span aria-hidden className="h-0.5 w-3.5 rounded-full bg-transparent" />
+      <span aria-hidden className="h-2" />
     </div>
   );
 }

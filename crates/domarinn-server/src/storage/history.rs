@@ -53,7 +53,8 @@ fn case_history(
     let sql = format!(
         "SELECT r.id, r.created_at, r.git_commit, r.config_digest,
                 c.status, c.score, c.output_hash,
-                c.prompt_tokens, c.completion_tokens, c.cost_microusd, c.latency_ms
+                c.prompt_tokens, c.completion_tokens, c.cost_microusd, c.latency_ms,
+                c.cached
          FROM cases c JOIN runs r ON r.id = c.run_id
          WHERE c.case_key = ?1 AND r.project = ?2 AND r.suite = ?3 AND {visible}
          ORDER BY r.created_at DESC, r.id DESC
@@ -80,6 +81,14 @@ fn case_history(
             completion_tokens: row.get::<_, Option<i64>>(8)?,
             cost_usd: from_microusd(row.get::<_, Option<i64>>(9)?),
             latency_ms: row.get::<_, Option<i64>>(10)?,
+            // Same mapping as `CaseListItem::cached`: only 1 and 0 are claims.
+            // NULL (pre-backfill) and the -1 undecodable-blob sentinel both
+            // mean "cannot tell", and must not be flattened into `false`.
+            cached: match row.get::<_, Option<i64>>(11)? {
+                Some(1) => Some(true),
+                Some(0) => Some(false),
+                _ => None,
+            },
         })
     })?;
     let mut points: Vec<CaseHistoryPoint> = rows.collect::<Result<_, _>>()?;
