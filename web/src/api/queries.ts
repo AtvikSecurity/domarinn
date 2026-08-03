@@ -49,6 +49,7 @@ import {
   type CaseFilters,
   type RunsFilters,
 } from "@/lib/filters";
+import { useCachedPref } from "@/lib/cachedPref";
 
 export const qk = {
   meta: ["meta"] as const,
@@ -107,10 +108,15 @@ export function useMe() {
 }
 
 export function useRuns(filters: RunsFilters) {
-  // URL state → request params: the hidden-by-default `cached` mapping lives
-  // in `runsRequestFilters`; keying the query on the mapped value keeps the
-  // cache identity equal to the request identity.
-  const request = runsRequestFilters(filters);
+  // URL state → request params: the `cached` mapping lives in
+  // `runsRequestFilters`; keying the query on the mapped value keeps the cache
+  // identity equal to the request identity.
+  //
+  // Subscribing to the preference here rather than at each call site is what
+  // makes one setting reach every run list: a caller that passes no `cached`
+  // adopts it, and a caller that passes one explicitly still wins.
+  const pref = useCachedPref();
+  const request = runsRequestFilters(filters, pref);
   return useInfiniteQuery({
     queryKey: qk.runs(request),
     initialPageParam: undefined as string | undefined,

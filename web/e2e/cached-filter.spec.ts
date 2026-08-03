@@ -1,4 +1,8 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+/** The filter bar's cached facet — a segmented control, not a select. */
+const cachedFacet = (page: Page) =>
+  page.getByRole("radiogroup", { name: "Cached runs" });
 
 // The stable suite (SuiteDef.stable in src/mocks/fixtures/suites.ts): run 01
 // is fresh, runs 02-07 are fully cached and all-pass — the six runs the
@@ -37,12 +41,10 @@ test.describe("Cached-runs filter", () => {
     await expect(cachedRow.getByText("cached", { exact: true })).toBeVisible();
   });
 
-  test("the filter bar select narrows to only cached runs", async ({ page }) => {
+  test("the filter bar narrows to only cached runs", async ({ page }) => {
     await page.goto("/runs");
 
-    await page
-      .getByRole("combobox", { name: "Cached runs" })
-      .selectOption("only");
+    await cachedFacet(page).getByRole("radio", { name: "Only" }).click();
     await expect(page).toHaveURL(/cached=only/);
     await expect(
       page.getByRole("link", { name: CANARY_CACHED, exact: true }),
@@ -51,6 +53,64 @@ test.describe("Cached-runs filter", () => {
     await expect(
       page.getByRole("link", { name: CANARY_FRESH, exact: true }),
     ).toBeHidden();
+  });
+
+  test("the revealed view offers a way back", async ({ page }) => {
+    await page.goto("/runs?cached=all");
+
+    await expect(page.getByText(/Showing cached runs/)).toBeVisible();
+    await page.getByRole("button", { name: "Hide", exact: true }).click();
+    // An explicit token rather than a bare URL: the view has to survive being
+    // shared with someone whose own preference is to show them.
+    await expect(page).toHaveURL(/cached=exclude/);
+    await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
+  });
+
+  test("the filter bar sets a preference that outlives the URL", async ({
+    page,
+  }) => {
+    await page.goto("/runs");
+    await cachedFacet(page).getByRole("radio", { name: "Shown" }).click();
+    await expect(page).toHaveURL(/cached=all/);
+
+    // Arrive with nothing in the URL: the stored preference decides, which is
+    // what carries the choice to every other run surface.
+    await page.goto("/runs");
+    await expect(page).not.toHaveURL(/cached=/);
+    await expect(
+      page.getByRole("link", { name: CANARY_CACHED, exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText(/fully cached runs hidden/)).toBeHidden();
+  });
+
+  test("an explicit URL beats a stored preference", async ({ page }) => {
+    await page.goto("/runs");
+    await cachedFacet(page).getByRole("radio", { name: "Shown" }).click();
+
+    // A shared link has to mean the same thing to whoever opens it, whatever
+    // they normally prefer.
+    await page.goto("/runs?cached=exclude");
+    await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: CANARY_CACHED, exact: true }),
+    ).toBeHidden();
+  });
+
+  test("the per-view toggle does not retrain the preference", async ({
+    page,
+  }) => {
+    await page.goto("/runs");
+    await page.getByRole("button", { name: "Show", exact: true }).click();
+    await expect(page).toHaveURL(/cached=all/);
+
+    // Revealing once is a one-view override, not a standing choice...
+    expect(
+      await page.evaluate(() => localStorage.getItem("domarinn.cached.mode")),
+    ).toBeNull();
+
+    // ...so the next visit without a param hides them again.
+    await page.goto("/runs");
+    await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
   });
 
   test("a fully cached run's detail page shows the cache tile and per-case pills", async ({

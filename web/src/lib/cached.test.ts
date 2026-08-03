@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hiddenByCachedExclude, isFullyCached } from "./cached";
+import {
+  hiddenByCachedExclude,
+  isCachedFilter,
+  isFullyCached,
+  resolveCached,
+} from "./cached";
 
 /** A run whose every provider call was served from cache, and which passed. */
 function cachedPassing() {
@@ -75,5 +80,44 @@ describe("hiddenByCachedExclude", () => {
         cache_misses: null,
       }),
     ).toBe(false);
+  });
+});
+
+describe("isCachedFilter", () => {
+  it("accepts the three tokens the server understands", () => {
+    expect(isCachedFilter("exclude")).toBe(true);
+    expect(isCachedFilter("only")).toBe(true);
+    expect(isCachedFilter("all")).toBe(true);
+  });
+
+  it("rejects anything else", () => {
+    expect(isCachedFilter("banana")).toBe(false);
+    expect(isCachedFilter("")).toBe(false);
+    expect(isCachedFilter(null)).toBe(false);
+    expect(isCachedFilter(undefined)).toBe(false);
+  });
+});
+
+describe("resolveCached", () => {
+  // A shared link must show the same runs to whoever opens it, whatever their
+  // own preference says. That is the whole reason the URL wins.
+  it("takes an explicit URL value over the preference", () => {
+    expect(resolveCached("all", "exclude")).toBe("all");
+    expect(resolveCached("exclude", "all")).toBe("exclude");
+    expect(resolveCached("only", "all")).toBe("only");
+  });
+
+  // Absence is what every link written before this feature carries, and what
+  // "Clear filters" leaves behind. It must mean "whatever I normally want".
+  it("falls back to the preference when the URL is silent", () => {
+    expect(resolveCached(undefined, "exclude")).toBe("exclude");
+    expect(resolveCached(null, "all")).toBe("all");
+    expect(resolveCached("", "only")).toBe("only");
+  });
+
+  // A typo in a pasted URL should show the page, not a 400 from the server.
+  it("falls back to the preference for a junk URL value", () => {
+    expect(resolveCached("banana", "exclude")).toBe("exclude");
+    expect(resolveCached("Exclude", "all")).toBe("all");
   });
 });

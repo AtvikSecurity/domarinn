@@ -1,6 +1,9 @@
 // URL-as-state helpers. All pure so they can be unit-tested and reused by both
 // the router-connected hooks and the api layer.
 
+import type { CachedFilter } from "@/api";
+import { DEFAULT_CACHED, resolveCached } from "@/lib/cached";
+
 export const RUNS_FILTER_KEYS = [
   "project",
   "suite",
@@ -125,17 +128,25 @@ export function parseRunsFilters(sp: URLSearchParams): RunsFilters {
 /**
  * Map parsed runs-list URL state to the request's filter params. The URL's
  * `cached` key means "what the user asked to see"; the request's means "what
- * the server should return" — and the default (no `cached` in the URL) is to
- * HIDE fully-cached passing runs, so absence maps to `cached=exclude`. An
- * explicit `cached=all` reveal sends no param (the server's no-op default),
- * `only` passes through, and junk values fall back to the hidden default
- * instead of a server-side 400.
+ * the server should return".
+ *
+ * `fallback` is the caller's stored preference, and is what a URL that says
+ * nothing resolves to — that indirection is what lets one setting reach every
+ * surface instead of each page hard-coding its own answer. It defaults to
+ * `exclude` so a caller with no preference to offer behaves as the runs list
+ * always has.
+ *
+ * An `all` result sends no param at all rather than `cached=all`: that is the
+ * server's no-op default, and saying nothing keeps the request (and so the
+ * react-query key) identical to what an unfiltered caller produces.
  */
-export function runsRequestFilters(filters: RunsFilters): RunsFilters {
+export function runsRequestFilters(
+  filters: RunsFilters,
+  fallback: CachedFilter = DEFAULT_CACHED,
+): RunsFilters {
   const { cached, ...rest } = filters;
-  if (cached === "all") return rest;
-  if (cached === "only") return { ...rest, cached };
-  return { ...rest, cached: "exclude" };
+  const resolved = resolveCached(cached, fallback);
+  return resolved === "all" ? rest : { ...rest, cached: resolved };
 }
 
 export function parseCaseFilters(sp: URLSearchParams): CaseFilters {

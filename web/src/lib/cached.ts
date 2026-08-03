@@ -8,9 +8,15 @@
  * question the same way. Parity with the *server* is guarded separately, by
  * the Rust tests over `FULLY_CACHED` in `storage/runs.rs`.
  *
- * Both functions take structural shapes rather than `RunListItem`, so fixtures
+ * Both predicates take structural shapes rather than `RunListItem`, so fixtures
  * and search hits can use them without first being widened into a full run.
+ *
+ * Everything here is pure. The stored preference that `resolveCached` reads
+ * against lives in `cachedPref.ts`, keeping storage effects out of the rules —
+ * the same split `drawerWidth.ts` uses.
  */
+
+import type { CachedFilter } from "@/api";
 
 /** The two migration-6 counters, as they arrive on the wire. */
 export interface CacheCounters {
@@ -52,4 +58,41 @@ export function isFullyCached(r: CacheCounters): boolean {
  */
 export function hiddenByCachedExclude(r: CachedRunVerdict): boolean {
   return isFullyCached(r) && r.fail_count === 0 && r.error_count === 0;
+}
+
+/** The three tokens `GET /runs?cached=` accepts. */
+export const CACHED_FILTERS: readonly CachedFilter[] = ["exclude", "only", "all"];
+
+/** What an untouched install does: keep the CI re-run noise out of the list. */
+export const DEFAULT_CACHED: CachedFilter = "exclude";
+
+export function isCachedFilter(v: unknown): v is CachedFilter {
+  return (
+    typeof v === "string" && (CACHED_FILTERS as readonly string[]).includes(v)
+  );
+}
+
+/**
+ * Which cached-run view a surface should render, given its URL and the user's
+ * stored preference.
+ *
+ * The URL wins whenever it names a real filter. That is what makes a shared
+ * link mean the same thing to whoever opens it — if the preference could
+ * override it, two people reading the same URL would see different runs, and
+ * the difference would be invisible to both.
+ *
+ * Absence falls through to the preference rather than to a hard-coded default,
+ * which is what lets one setting reach every surface. It also keeps every link
+ * written before this existed working: the shipped default preference is
+ * `exclude`, so a bare `/runs` still means "hidden" for anyone who has not
+ * deliberately chosen otherwise.
+ *
+ * Junk resolves to the preference rather than being passed through, so a typo
+ * in a pasted URL shows the page instead of a 400 from the server.
+ */
+export function resolveCached(
+  urlValue: string | null | undefined,
+  pref: CachedFilter,
+): CachedFilter {
+  return isCachedFilter(urlValue) ? urlValue : pref;
 }

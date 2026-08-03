@@ -5,7 +5,9 @@ import type { RunListItem } from "@/api";
 import { mergeParams, parseRunsFilters } from "@/lib/filters";
 import { suitePassRateSeries } from "@/lib/suites";
 import { previousRun } from "@/lib/compare";
-import { hiddenByCachedExclude, isFullyCached } from "@/lib/cached";
+import { hiddenByCachedExclude, isFullyCached, resolveCached } from "@/lib/cached";
+import { useCachedPref } from "@/lib/cachedPref";
+import { CachedRunsToggle } from "@/components/CachedRunsToggle";
 import {
   formatCost,
   formatDateAbsolute,
@@ -94,9 +96,11 @@ export function RunsList() {
     [q.data],
   );
   const groups = useMemo(() => groupRuns(runs), [runs]);
-  // Present only on the first page of the default (hidden) view; the reveal
-  // link keeps the suppression discoverable and one click away.
+  // Present only on the first page of the hidden view; the toggle keeps the
+  // suppression discoverable and one click away.
   const cachedHidden = q.data?.pages[0]?.cached_hidden ?? 0;
+  const cachedPref = useCachedPref();
+  const resolvedCached = resolveCached(params.get("cached"), cachedPref);
 
   return (
     <div className="space-y-5">
@@ -109,21 +113,13 @@ export function RunsList() {
 
       <RunsFilterBar />
 
-      {cachedHidden > 0 ? (
-        <p className="text-xs text-muted">
-          {cachedHidden} fully cached run{cachedHidden === 1 ? "" : "s"} hidden
-          {" · "}
-          <button
-            type="button"
-            className="font-medium text-accent hover:underline"
-            onClick={() =>
-              setParams(mergeParams(params, { cached: "all" }), { replace: true })
-            }
-          >
-            Show
-          </button>
-        </p>
-      ) : null}
+      <CachedRunsToggle
+        resolved={resolvedCached}
+        hiddenCount={cachedHidden}
+        onChange={(next) =>
+          setParams(mergeParams(params, { cached: next }), { replace: true })
+        }
+      />
 
       {q.isPending ? (
         <CenteredSpinner label="Loading runs…" />
