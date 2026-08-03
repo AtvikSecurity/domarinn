@@ -14,7 +14,35 @@ import { Chip } from "@/components/ui/Chip";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState } from "@/components/States";
+import { ColumnGroup } from "@/components/ui/ColumnGroup";
+import { ResizableTh } from "@/components/ui/ResizableTh";
+import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
+import { useColumnPrefs } from "@/lib/useColumnPrefs";
+import { cn } from "@/lib/cn";
 import { formatDate, isoFromEpoch } from "@/lib/format";
+
+const ACCESS_TABLE_ID = "access";
+
+/**
+ * Resizable, but deliberately no column picker.
+ *
+ * All three columns are structural — who holds the grant, what it is, and the
+ * control that revokes it — so a picker here would offer an empty list. The
+ * widths are still worth dragging: a long username and a wide level select
+ * compete for a panel narrower than any page.
+ */
+const GRANT_COLUMNS: ColumnDef[] = [
+  { id: "person", label: "Person", track: "auto", min: 160, alwaysVisible: true },
+  { id: "level", label: "Level", track: "130px", min: 110, alwaysVisible: true },
+  {
+    id: "actions",
+    label: "Actions",
+    track: "110px",
+    min: 90,
+    numeric: true,
+    alwaysVisible: true,
+  },
+];
 
 /** Every level a grant can hold, least privileged first (`GrantLevel`). */
 const LEVELS: GrantLevel[] = ["view", "upload", "manage"];
@@ -98,6 +126,7 @@ export function AccessPanel({
   const inherited = coveringRestricted && !restrictedHere;
   const scope = suite === null ? "project" : "suite";
   const grants = access.data?.grants ?? [];
+  const colPrefs = useColumnPrefs(ACCESS_TABLE_ID);
   const granted = new Set(grants.map((g) => g.user_id));
   const addable = (users.data ?? []).filter((u) => !granted.has(u.id));
 
@@ -258,14 +287,30 @@ export function AccessPanel({
                       `sr-only` header, which is `position: absolute` and
                       escapes a scroller that is not a containing block. See
                       SetsPage for the full account. */}
-                  <table className="w-full min-w-[420px] text-sm">
+                  <table className="w-full min-w-[420px] table-fixed text-sm">
+                    <ColumnGroup columns={GRANT_COLUMNS} prefs={colPrefs} />
                     <thead>
                       <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                        <th className="py-2 pr-3 font-medium">Person</th>
-                        <th className="px-3 py-2 font-medium">Level</th>
-                        <th className="py-2 pl-3 text-right font-medium">
-                          <span className="sr-only">Actions</span>
-                        </th>
+                        {visibleColumns(GRANT_COLUMNS, colPrefs).map((c) => (
+                          <ResizableTh
+                            key={c.id}
+                            def={c}
+                            tableId={ACCESS_TABLE_ID}
+                            prefs={colPrefs}
+                            className={cn(
+                              "py-2 font-medium",
+                              c.id === "person" && "pr-3",
+                              c.id === "level" && "px-3",
+                              c.id === "actions" && "pl-3 text-right",
+                            )}
+                          >
+                            {c.id === "actions" ? (
+                              <span className="sr-only">Actions</span>
+                            ) : (
+                              c.label
+                            )}
+                          </ResizableTh>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
@@ -276,8 +321,8 @@ export function AccessPanel({
                           className="border-b border-border/60 last:border-0"
                         >
                           <td className="py-2 pr-3">
-                            <div className="font-medium">{g.username}</div>
-                            <div className="text-[11px] text-muted">
+                            <div className="truncate font-medium">{g.username}</div>
+                            <div className="truncate text-[11px] text-muted">
                               added {formatDate(isoFromEpoch(g.created_at))}
                               {g.created_by ? ` by ${g.created_by}` : null}
                             </div>
