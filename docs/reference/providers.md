@@ -144,11 +144,10 @@ A model the table does not know reports **no cost at all** rather than a guessed
 Ids rarely arrive in their plainest form, so three shapes resolve to the same row before that gives up. A dated snapshot has its date stripped (`claude-opus-5-20260315`, `gpt-4o-2024-08-06`); a Bedrock or Vertex decoration is peeled off (`us.anthropic.claude-opus-5`, `claude-haiku-4-5@20251001`); and anything left over falls back to the **longest matching model stem**, which is what prices suffixed aliases and point releases nobody enumerated:
 
 ```
-claude-sonnet-5-latest  →  claude-sonnet-5   ($3.00 / $15.00 per MTok)
-gpt-4o-mini-preview     →  gpt-4o-mini       (not gpt-4o — the longer stem wins)
+claude-sonnet-5-latest  →  claude-sonnet-5     ($3.00 / $15.00 per MTok)
 ```
 
-That fallback is deliberately narrow. A stem only earns a fallback entry when no differently-priced sibling shares its prefix, which is why `gpt-5` and `o3` have exact rows but no fallback: `gpt-5-pro` and `o3-mini` would inherit a rate that is off by several times. Models whose published price varies with context length — OpenAI's current flagships — are left out for the same reason, since a single rate cannot express two. Those ids stay unpriced and warn, and a `pricing:` block is how you price one anyway.
+That fallback is deliberately narrow. A stem only earns a fallback entry when no differently-priced sibling shares its prefix, which is why `gpt-5`, `o3`, `gpt-4o` and `gpt-4o-mini` have exact rows but no fallback: `gpt-5-pro`, `o3-mini`, and the `gpt-4o-*` audio-pipeline models (`gpt-4o-mini-tts`, `gpt-4o-mini-transcribe`) would inherit a rate that is off by several times. Models whose published price varies with context length — OpenAI's current flagships — are left out for the same reason, since a single rate cannot express two. Those ids stay unpriced and warn, and a `pricing:` block is how you price one anyway.
 
 Override the rates, or price a model the table has never heard of, with `pricing` (USD per **million** tokens, merged field-wise over any built-in row):
 

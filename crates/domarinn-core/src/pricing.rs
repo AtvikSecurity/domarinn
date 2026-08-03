@@ -491,16 +491,6 @@ mod tests {
                 "no built-in rate resolves for {id}"
             );
         }
-
-        // The pair the longest-prefix rule exists for, on a suffix no date
-        // strip can reach: `gpt-4o-mini-…` must take the mini rate, not the
-        // 16x-more-expensive `gpt-4o` one it also prefix-matches.
-        let mini = built_in_rate("gpt-4o-mini").expect("mini is priced");
-        assert_eq!(
-            built_in_rate("gpt-4o-mini-preview"),
-            Some(mini),
-            "a gpt-4o-mini suffix must beat the broader gpt-4o family"
-        );
     }
 
     /// The other half of the coverage floor, and the more important half.
@@ -542,6 +532,17 @@ mod tests {
             // Cheaper than its base, so a family key over-bills rather than
             // under-bills — wrong in the other direction, still wrong.
             "o3-mini",
+            // The `gpt-4o` audio pipeline: same stems, own price sheet. These
+            // are what a `gpt-4o`/`gpt-4o-mini` family key would silently bill
+            // at the chat rate — tts is 4x the mini input, transcribe ~8x, the
+            // retired realtime-preview pair 2-4x.
+            "gpt-4o-mini-tts",
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-realtime-preview",
+            "gpt-4o-mini-realtime-preview",
+            // Roughly double its base's rate, and no longer on the sheet page —
+            // exactly the id an `o4-mini` family key would price silently.
+            "o4-mini-deep-research",
         ] {
             assert!(
                 built_in_rate(id).is_none(),
@@ -610,6 +611,34 @@ mod tests {
         assert_eq!(strip_snapshot_date("gpt-4o-mini-2"), None);
         assert_eq!(strip_snapshot_date("some-model-11-20"), None);
         assert_eq!(strip_snapshot_date("some-model-24-11-20"), None);
+    }
+
+    /// Most family stems deliberately duplicate their `exact:` row: the exact
+    /// section is the one a human scans (and the one the withheld-stem
+    /// comments reference), while the family copy is what dated snapshots and
+    /// `-latest` aliases resolve through. That duplication is only safe while
+    /// the two copies agree — exact wins for the bare id, so a divergence
+    /// would go unnoticed until the first *suffixed* alias resolved through
+    /// the stale family copy at a different rate. This is the cross-check the
+    /// next price update relies on to be told it edited only one of the two.
+    #[test]
+    fn a_family_key_never_disagrees_with_its_exact_row() {
+        let mut checked = 0;
+        for (stem, family_rate) in TABLE.families.iter() {
+            if let Some(exact_rate) = TABLE.exact.get(stem) {
+                assert_eq!(
+                    exact_rate, family_rate,
+                    "{stem}: the exact and families rates have diverged — a \
+                     price update must edit both copies (or drop one)"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 0,
+            "no family stem has an exact twin any more; if that is deliberate, \
+             delete this test"
+        );
     }
 
     #[test]

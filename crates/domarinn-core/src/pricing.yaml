@@ -220,19 +220,29 @@ exact:
 # gets its own `exact:` row: exact always wins over any family, so one added row
 # fixes it with no key surgery.
 #
-# Three stems fail that check *today*, against ids on the vendor's current
+# Five stems fail that check *today*, against ids on the vendor's current
 # sheet, so they are deliberately not keys here:
-#   gpt-5    — `gpt-5-pro` ($15/$120), `gpt-5.1`, `gpt-5.2`, `gpt-5.4`,
-#              `gpt-5.5`, `gpt-5.6-*` all start with it and none share its rate
-#   gpt-5.2  — `gpt-5.2-pro` ($21/$168)
-#   o3       — `o3-mini` ($1.10/$4.40) and `o3-pro` ($20/$80)
+#   gpt-5       — `gpt-5-pro` ($15/$120), `gpt-5.1`, `gpt-5.2`, `gpt-5.4`,
+#                 `gpt-5.5`, `gpt-5.6-*` all start with it and none share its
+#                 rate
+#   gpt-5.2     — `gpt-5.2-pro` ($21/$168)
+#   o3          — `o3-mini` ($1.10/$4.40) and `o3-pro` ($20/$80)
+#   gpt-4o      — `gpt-4o-mini` ($0.15/$0.60) shares the prefix at a sixteenth
+#                 of the rate, and the `gpt-4o-*` audio-pipeline ids are their
+#                 own price sheet entirely
+#   gpt-4o-mini — `gpt-4o-mini-tts` ($0.60 text input) and
+#                 `gpt-4o-mini-transcribe` ($1.25/$5) share the prefix at
+#                 several times the rate
 #
-# One more is withheld *prospectively* rather than on present evidence:
+# Two more are withheld *prospectively* rather than on present evidence:
 #   gpt-5.1  — no `gpt-5.1-*` sibling exists on the sheet today, so the check
 #              passes; it is held back because a `-pro` tier alongside a
 #              numbered release is this vendor's established pattern, and the
 #              cost of guessing wrong here is a silent multiple-times-under
 #              invoice against the cost of a suffix nobody has shipped.
+#   o4-mini  — `o4-mini-deep-research` shipped at roughly double this rate and
+#              has since left the vendor's sheet page, which makes it exactly
+#              the id a family key would price silently instead of loudly.
 #
 # Every one of those ids is priced by an `exact:` row above. Anything else in
 # those families reports no cost and warns — the loud no-op, not a 12x-wrong
@@ -332,22 +342,6 @@ families:
     output: 1.25
     cache_read: 0.02
     as_of: "2026-08-02"
-  o4-mini:
-    input: 1.10
-    output: 4.40
-    cache_read: 0.275
-    as_of: "2026-08-02"
-  gpt-4o:
-    input: 2.50
-    output: 10.00
-    cache_read: 1.25
-    as_of: "2026-08-02"
-  gpt-4o-mini:
-    input: 0.15
-    output: 0.60
-    cache_read: 0.075
-    as_of: "2026-08-02"
-
 # Embedding models, used by `similar` assertions. Their own section, with its
 # own row shape, because an embedding call has exactly one billable component:
 # there are no output tokens and no prompt cache. Writing `output: 0.0` into the
