@@ -25,6 +25,15 @@ pub enum FactoryError {
         #[source]
         source: crate::resolve::ResolveError,
     },
+    /// A `request:` block whose templates could not be rendered, or a malformed
+    /// [`crate::request_cfg::GLOBAL_HEADERS_ENV`]. Fatal at build time so the
+    /// whole run fails before the first case rather than on every case.
+    #[error("provider '{id}': {source}")]
+    Request {
+        id: String,
+        #[source]
+        source: crate::request_cfg::RequestError,
+    },
 }
 
 /// Build a provider trait object from its config.
@@ -68,42 +77,67 @@ pub fn build_provider(
             api_key_env,
             params,
             pricing,
-        } => Ok(Box::new(AnthropicProvider::new(
-            cfg.id.clone(),
-            model.clone(),
-            base_url.clone(),
-            api_key_env.clone(),
-            params.clone(),
-            pricing.as_deref().cloned(),
-        ))),
+            request,
+            cache_salt,
+        } => Ok(Box::new(
+            AnthropicProvider::new(
+                cfg.id.clone(),
+                model.clone(),
+                base_url.clone(),
+                api_key_env.clone(),
+                params.clone(),
+                pricing.as_deref().cloned(),
+            )
+            .with_request(request.as_deref(), cache_salt.clone())
+            .map_err(|source| FactoryError::Request {
+                id: cfg.id.clone(),
+                source,
+            })?,
+        )),
         ProviderKind::Openai {
             model,
             base_url,
             api_key_env,
             params,
             pricing,
-        } => Ok(Box::new(OpenAiProvider::new(
-            cfg.id.clone(),
-            model.clone(),
-            base_url.clone(),
-            api_key_env.clone(),
-            params.clone(),
-            pricing.as_deref().cloned(),
-        ))),
+            request,
+            cache_salt,
+        } => Ok(Box::new(
+            OpenAiProvider::new(
+                cfg.id.clone(),
+                model.clone(),
+                base_url.clone(),
+                api_key_env.clone(),
+                params.clone(),
+                pricing.as_deref().cloned(),
+            )
+            .with_request(request.as_deref(), cache_salt.clone())
+            .map_err(|source| FactoryError::Request {
+                id: cfg.id.clone(),
+                source,
+            })?,
+        )),
         ProviderKind::Http {
             url,
             method,
             headers,
             body,
             output_expr,
-        } => Ok(Box::new(HttpProvider::new(
-            cfg.id.clone(),
-            url.clone(),
-            *method,
-            headers.clone(),
-            body.clone(),
-            output_expr.clone(),
-        ))),
+        } => Ok(Box::new(
+            HttpProvider::new(
+                cfg.id.clone(),
+                url.clone(),
+                *method,
+                headers.clone(),
+                body.clone(),
+                output_expr.clone(),
+            )
+            .with_global_headers()
+            .map_err(|source| FactoryError::Request {
+                id: cfg.id.clone(),
+                source,
+            })?,
+        )),
         ProviderKind::Embeddings { .. } => Err(FactoryError::Unsupported {
             id: cfg.id.clone(),
             kind: "embeddings",
@@ -121,14 +155,26 @@ pub fn build_embeddings(suite: &Suite) -> Option<EmbeddingsProvider> {
             api_key_env,
             params,
             pricing,
-        } => Some(EmbeddingsProvider::new(
+            request,
+            cache_salt,
+        } => EmbeddingsProvider::new(
             &p.id,
             model.clone(),
             base_url.clone(),
             api_key_env.clone(),
             params.clone(),
             pricing.as_deref(),
-        )),
+        )
+        .with_request(&p.id, request.as_deref(), cache_salt.clone())
+        // A template that will not render is reported when the `similar`
+        // assertion runs, where the grader can surface it: this function has no
+        // error channel, and inventing one would put a `Result` on a path whose
+        // only other failure mode is "the suite declares no embeddings
+        // provider".
+        .inspect_err(
+            |e| tracing::error!(provider = %p.id, error = %e, "embeddings `request:` block"),
+        )
+        .ok(),
         _ => None,
     })
 }

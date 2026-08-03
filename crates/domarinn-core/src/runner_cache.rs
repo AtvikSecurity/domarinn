@@ -17,8 +17,9 @@ use chrono::Utc;
 use serde_json::Value as Json;
 
 use crate::cache::{CacheBackend, CacheEntry, CacheKey, CacheMode, EntryKind};
+use crate::cache_adopt::MigrationProbe;
 use crate::cache_key::request_cache_key;
-use crate::cache_migrate::{legacy_provider_key, MigrationProbe};
+use crate::cache_migrate::legacy_provider_key;
 use crate::error_class::ErrorClass;
 use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
 use crate::retry::{with_retry, RetryPolicy, RetryStats};
@@ -37,6 +38,7 @@ pub(super) struct CacheRunState {
     /// Provider ids already warned about a program that has been rebuilt since
     /// its entries were written.
     drift_warned: Mutex<HashSet<String>>,
+    address_warned: Mutex<HashSet<String>>,
 }
 
 impl CacheRunState {
@@ -44,6 +46,7 @@ impl CacheRunState {
         CacheRunState {
             migration,
             drift_warned: Mutex::new(HashSet::new()),
+            address_warned: Mutex::new(HashSet::new()),
         }
     }
 
@@ -54,6 +57,17 @@ impl CacheRunState {
     /// diagnostic, so this reports "already warned".
     fn claim_drift_warning(&self, provider_id: &str) -> bool {
         self.drift_warned
+            .lock()
+            .map(|mut seen| seen.insert(provider_id.to_string()))
+            .unwrap_or(false)
+    }
+
+    /// The same, for the endpoint-drift warning.
+    ///
+    /// A separate set rather than a shared one: a provider can have both a
+    /// rebuilt program and a moved endpoint, and the two say different things.
+    fn claim_address_warning(&self, provider_id: &str) -> bool {
+        self.address_warned
             .lock()
             .map(|mut seen| seen.insert(provider_id.to_string()))
             .unwrap_or(false)
@@ -177,6 +191,27 @@ pub(super) async fn call_with_cache(
             }
             Ok(None) => {
                 tracing::debug!(%key, "cache miss");
+                // An entry written under an earlier *canonical request* — same
+                // key function, older document. Tried first: every store written
+                // between 0.5.0 and 0.7.x has these, where only a ≤0.4.x store
+                // has the fingerprint-keyed kind below.
+                if let Some((_, mut entry)) =
+                    adopt_legacy_canonical(provider, req, repeat, cache, state).await
+                {
+                    if mode == CacheMode::ReadWrite {
+                        // Re-filed under today's key with today's request, so the
+                        // next run hits directly and the probe budget is not
+                        // spent again.
+                        entry.request = Some(request_to_persist(canonical));
+                        if let Err(e) = cache.put(key, &entry).await {
+                            tracing::warn!(
+                                error = %e,
+                                "adopting an entry under an earlier canonical request: write failed"
+                            );
+                        }
+                    }
+                    return Ok(hit(provider, entry, state, key));
+                }
                 // Before paying for this, check whether an older domarinn already
                 // answered it under the key shape that has since changed.
                 if let Some(mut entry) = adopt_legacy(provider, req, repeat, cache, state).await {
@@ -276,6 +311,7 @@ fn hit(
     key: &CacheKey,
 ) -> CallOutcome {
     warn_on_program_drift(provider, &entry, state);
+    warn_on_address_drift(provider, &entry, state);
     let attempts = entry.attempts;
     let provider_latency_ms = entry.provider_latency_ms;
     CallOutcome {
@@ -285,6 +321,39 @@ fn hit(
         provider_latency_ms,
         cache_key: Some(key.clone()),
     }
+}
+
+/// Say so, once per provider, when these answers came from a different endpoint
+/// than the one now configured.
+///
+/// The compensation for keeping `base_url` out of the cache key. Pointing a
+/// suite at a gateway must not re-run it, and pointing it at a local stub must
+/// not silently replay a vendor's answers; keying the host would fix the second
+/// by breaking the first. Recording and reporting fixes the second and keeps the
+/// first, which is the same bargain `warn_on_program_drift` strikes for an
+/// `exec` provider's bytes.
+///
+/// Nothing is invalidated. Deciding that a different endpoint answers a
+/// different question is the suite's call, and `cache_salt` is how it says so.
+fn warn_on_address_drift(provider: &dyn Provider, entry: &CacheEntry, state: &CacheRunState) {
+    let (Some(live), Some(stored)) = (provider.address(), entry.address.as_deref()) else {
+        // An entry written before the field existed, or a provider with no fixed
+        // address. Absence is not evidence of a change.
+        return;
+    };
+    if live == stored || !state.claim_address_warning(provider.id()) {
+        return;
+    }
+    tracing::warn!(
+        provider = %provider.id(),
+        stored = %stored,
+        configured = %live,
+        "replaying cached answers that came from a different endpoint. `base_url` is \
+         not part of the cache key, so a gateway and a direct connection share \
+         entries — which is usually what you want. If these two endpoints answer \
+         differently (a local stub standing in for a vendor, say), give them \
+         different `cache_salt` values so they stop sharing."
+    );
 }
 
 /// Say so, once per provider, when the program on disk is not the one that
@@ -328,6 +397,47 @@ fn warn_on_program_drift(provider: &dyn Provider, entry: &CacheEntry, state: &Ca
 /// is where it earns the most, since a run with no live call to fall back on
 /// would otherwise report an infrastructure failure over an answer the store
 /// already holds.
+/// Look for this request under a *canonical request* an earlier version
+/// published.
+///
+/// The same key function as the live path over an older document, where
+/// [`adopt_legacy`] reconstructs a different key function entirely. Tried first
+/// because it is the more likely of the two: every store written between 0.5.0
+/// and 0.7.x has these, where only a ≤0.4.x store has the other.
+async fn adopt_legacy_canonical(
+    provider: &dyn Provider,
+    req: &ProviderRequest,
+    repeat: u32,
+    cache: &dyn CacheBackend,
+    state: &CacheRunState,
+) -> Option<(CacheKey, CacheEntry)> {
+    let shapes = provider.legacy_canonical_requests(req);
+    if shapes.is_empty() || !state.migration.should_probe() {
+        return None;
+    }
+    for canonical in shapes {
+        let key = crate::cache_key::request_cache_key(
+            &canonical,
+            repeat,
+            provider.cache_salt(),
+            req.case_salt.as_deref(),
+        );
+        match cache.get(&key).await {
+            Ok(Some(entry)) => {
+                state.migration.record_adoption();
+                tracing::debug!(%key, "adopted an entry under an earlier canonical request");
+                return Some((key, entry));
+            }
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::debug!(error = %e, %key, "legacy canonical probe failed; ignoring");
+                continue;
+            }
+        }
+    }
+    None
+}
+
 async fn adopt_legacy(
     provider: &dyn Provider,
     req: &ProviderRequest,
@@ -463,6 +573,8 @@ pub(super) fn response_to_entry(
         // Which build answered — recorded, never keyed. See
         // `warn_on_program_drift` for what reads it back.
         program_digest: provider.program_digest().map(str::to_string),
+        // Where it came from — recorded, never keyed. See `warn_on_address_drift`.
+        address: provider.address(),
         output: response.output.clone(),
         usage: response.usage.clone(),
         cost_usd: response.cost_usd,

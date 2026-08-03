@@ -462,7 +462,7 @@ tests:
 }
 
 #[tokio::test]
-async fn a_vendor_provider_is_separated_by_model_base_url_and_params() {
+async fn a_vendor_provider_is_separated_by_model_and_params() {
     const KEY: &str = "DOMARINN_KEYS_VENDOR_KEY";
     std::env::set_var(KEY, "sk-test");
     let server = always_answers().await;
@@ -493,8 +493,9 @@ async fn a_vendor_provider_is_separated_by_model_base_url_and_params() {
             "{kind}: params change the request"
         );
 
-        // A different base_url reaches a different server, so the second run's
-        // calls land there — count them where they arrive.
+        // …but a different base_url does *not*. Pointing a suite at a gateway
+        // must not make it re-pay for answers it already has, so the second run
+        // is served from cache and the other server is never called.
         let cache = MemCache::default();
         run_suite(&base, &cache).await;
         let before = calls(&other).await;
@@ -505,8 +506,37 @@ async fn a_vendor_provider_is_separated_by_model_base_url_and_params() {
         .await;
         assert_eq!(
             calls(&other).await - before,
+            0,
+            "{kind}: a gateway and a direct connection share the cache"
+        );
+    }
+}
+
+/// …and `cache_salt` is how a suite opts back out.
+///
+/// The safety valve for the property above. Two endpoints that answer the same
+/// question should share entries; two that answer *differently* — a local stub
+/// standing in for a vendor — must not, and since `base_url` no longer separates
+/// them, this is the mechanism that does. A run also warns on the mismatch, but
+/// a warning is a report and this is a guarantee.
+#[tokio::test]
+async fn a_cache_salt_separates_two_endpoints_that_share_a_key() {
+    const KEY: &str = "DOMARINN_KEYS_SALT_KEY";
+    std::env::set_var(KEY, "sk-test");
+    let server = always_answers().await;
+
+    for kind in ["anthropic", "openai"] {
+        let plain = vendor_suite(kind, &server.uri(), "model-a", "{}", KEY);
+        let salted = plain.replace(
+            "    model: \"model-a\"",
+            "    model: \"model-a\"\n    cache_salt: \"local-stub\"",
+        );
+        assert_ne!(plain, salted, "{kind}: the fixture must actually differ");
+
+        assert_eq!(
+            live_calls_for_second(&server, &plain, &salted).await,
             1,
-            "{kind}: a different gateway is a different provider"
+            "{kind}: a salted provider does not replay an unsalted one's answers"
         );
     }
 }

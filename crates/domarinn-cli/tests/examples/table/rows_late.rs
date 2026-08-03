@@ -446,4 +446,29 @@ pub const ROWS: &[Example] = &[
             cache_hits: 0,
         }],
     },
+    Example {
+        dir: "43-custom-request",
+        shows: "`request:` — the auth scheme, headers, query and body overlay a gateway needs",
+        env: &[
+            ("CLAUDE_GATEWAY_URL", Env::StubBase),
+            (
+                "CLAUDE_OAUTH_TOKEN",
+                Env::Literal("sk-ant-oat01-stub-not-real"),
+            ),
+        ],
+        stub: &[Route {
+            fragment: "/v1/messages",
+            bodies: &[stubs::ANTHROPIC_TEXT],
+        }],
+        stub_calls: 1,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(1),
+            case_ids: &["policy/return-window"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
 ];

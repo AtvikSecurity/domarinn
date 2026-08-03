@@ -62,6 +62,11 @@ const HOST_ENV: &[&str] = &[
     "DOMARINN_SMOKE_MODEL",
     "DOMARINN_SMOKE_API_KEY",
     "ORDERS_API_URL",
+    "CLAUDE_GATEWAY_URL",
+    "CLAUDE_OAUTH_TOKEN",
+    "MODEL_TIER",
+    "TENANT_TOKEN",
+    "DOMARINN_PROVIDER_HEADERS",
 ];
 
 fn repo_root() -> PathBuf {

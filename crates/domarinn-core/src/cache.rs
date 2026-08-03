@@ -349,6 +349,21 @@ pub struct CacheEntry {
     /// network-backed provider, where no such artifact exists to digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_digest: Option<String>,
+    /// The URL this response actually came from, when the provider has a fixed
+    /// one.
+    ///
+    /// Evidence, not identity — the exact role [`Self::program_digest`] plays for
+    /// an `exec` provider's bytes. `base_url` is deliberately absent from the
+    /// cache key so that a gateway and a direct connection to the same API share
+    /// entries instead of paying twice; this is what keeps that from being
+    /// silent. On a hit it is compared against where the request is *now*
+    /// addressed, and a mismatch is reported once per provider.
+    ///
+    /// Absent on entries written before this field existed, and on `exec` and
+    /// `http` providers — the first has no URL, the second puts its templated
+    /// one in the canonical request already.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     /// Present only on a ≤0.4.x grader-verdict entry, adopted forward.
     ///
     /// It marks an era rather than a kind, and the distinction changed in

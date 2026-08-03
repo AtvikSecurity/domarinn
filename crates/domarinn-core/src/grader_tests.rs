@@ -3,6 +3,13 @@
 //! this is still the grader's private child module (`use super::*`).
 
 use super::*;
+
+/// A judge with no `request:` block — the shape every one of these tests means
+/// unless it says otherwise.
+fn judge_default() -> crate::request_cfg::ResolvedRequest {
+    let (path, auth) = Judge::Anthropic.defaults();
+    crate::request_cfg::ResolvedRequest::vendor_default(path, auth)
+}
 use crate::config::Grader;
 use crate::config::ParamMap;
 use crate::error_class::ErrorClass;
@@ -57,6 +64,8 @@ fn anthropic_grader(uri: &str) -> Grader {
             api_key_env: Some("GRADER_TEST_KEY".into()),
             params: None,
             pricing: None,
+            request: None,
+            cache_salt: None,
         },
         template: None,
         verdict_mode: None,
@@ -249,6 +258,8 @@ async fn thinking_params_are_rejected() {
             api_key_env: Some("GRADER_TEST_KEY".into()),
             params: Some(params),
             pricing: None,
+            request: None,
+            cache_salt: None,
         },
         template: None,
         verdict_mode: None,
@@ -425,7 +436,9 @@ fn editing_a_grader_template_moves_the_judge_request() {
             None,
         )
         .unwrap();
-        Judge::Anthropic.request("judge", None, None, &user).1
+        Judge::Anthropic
+            .request("judge", None, None, &user, &judge_default())
+            .body
     };
 
     std::fs::write(&path, "Be lenient. {{rubric}} {{output}}").unwrap();
@@ -437,20 +450,17 @@ fn editing_a_grader_template_moves_the_judge_request() {
 /// The judge request carries everything the deleted `grading_fingerprint`
 /// enumerated by hand, so each of those inputs still separates two gradings —
 /// and the credential still does not appear, because it is a header.
+///
+/// `base_url` is the one member that left: it addresses the request rather than
+/// asking it. See `a_judge_behind_a_gateway_keys_the_same_as_one_going_direct`.
 #[test]
 fn the_judge_request_separates_what_the_fingerprint_used_to() {
     let base = |model: &str, url: Option<&str>, params: Option<&ParamMap>, user: &str| {
-        Judge::Anthropic.request(model, url, params, user)
+        Judge::Anthropic.request(model, url, params, user, &judge_default())
     };
     let reference = base("judge", None, None, "RUBRIC:\nbe good");
     for other in [
         base("judge-2", None, None, "RUBRIC:\nbe good"),
-        base(
-            "judge",
-            Some("https://elsewhere.test"),
-            None,
-            "RUBRIC:\nbe good",
-        ),
         base(
             "judge",
             None,
@@ -463,13 +473,43 @@ fn the_judge_request_separates_what_the_fingerprint_used_to() {
         assert_ne!(reference, other, "these gradings must not share an entry");
     }
     // The system prompt is in the body, so an edit to it would move every key.
-    assert_eq!(reference.1["system"], json!(SYSTEM_PROMPT));
+    assert_eq!(reference.body["system"], json!(SYSTEM_PROMPT));
     // …and no credential is anywhere in it.
     assert!(
-        !serde_json::to_string(&reference.1).unwrap().contains("key"),
+        !serde_json::to_string(&reference.body)
+            .unwrap()
+            .contains("key"),
         "{:?}",
-        reference.1
+        reference.body
     );
+}
+
+/// The deliberate exception to the rule above, and the reason `base_url` is not
+/// in `path`: two judges differing only in where the request is *addressed* are
+/// asking the same question, so they share an entry. A team behind a gateway and
+/// a teammate going direct must not pay for the same grading twice. When two
+/// endpoints genuinely answer differently, `cache_salt` separates them.
+#[test]
+fn a_judge_behind_a_gateway_keys_the_same_as_one_going_direct() {
+    let direct =
+        Judge::Anthropic.request("judge", None, None, "RUBRIC:\nbe good", &judge_default());
+    let gateway = Judge::Anthropic.request(
+        "judge",
+        Some("https://llm-gw.corp.internal/anthropic"),
+        None,
+        "RUBRIC:\nbe good",
+        &judge_default(),
+    );
+
+    assert_ne!(
+        direct.url, gateway.url,
+        "they are posted to different hosts"
+    );
+    assert_eq!(
+        direct.path, gateway.path,
+        "but keyed identically, so the cache is shared"
+    );
+    assert_eq!(direct.body, gateway.body);
 }
 
 /// The opt-in's whole point: with the flag unset, a cell that made tool calls
@@ -614,7 +654,9 @@ fn an_output_containing_the_tool_calls_placeholder_is_not_expanded() {
 fn the_judge_request_separates_gradings_that_saw_different_tool_calls() {
     let body = |grader: &Grader, calls: &[crate::result::ToolCall]| {
         let user = grading_user_message(grader, None, "be good", "an answer", calls).unwrap();
-        Judge::Anthropic.request("judge", None, None, &user).1
+        Judge::Anthropic
+            .request("judge", None, None, &user, &judge_default())
+            .body
     };
     let off = anthropic_grader("http://judge.test");
     let mut on = off.clone();

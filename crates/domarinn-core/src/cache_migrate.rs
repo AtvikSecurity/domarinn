@@ -47,7 +47,7 @@
 //! | `similar` | **deliberately not adopted** — see [`legacy_graded_payload`] | — |
 //!
 //! Both spaces are deleted on the same timeline (below), and both are probed
-//! out of one [`MigrationProbe`] budget: a store either has ≤0.4.x entries in it
+//! out of one [`crate::cache_adopt::MigrationProbe`] budget: a store either has ≤0.4.x entries in it
 //! or it does not, and which half found the first one says nothing useful.
 //!
 //! The ≤0.4.0 shape of each is, by construction, whatever
@@ -64,7 +64,7 @@
 //!
 //! Probing costs one extra `get` per historical shape per miss, which against a
 //! remote backend is latency nobody asked for on a cache that has nothing to
-//! migrate. [`MigrationProbe`] therefore spends a small budget of cases and
+//! migrate. [`crate::cache_adopt::MigrationProbe`] therefore spends a small budget of cases and
 //! stops if none of them adopt anything: an empty or already-migrated store pays
 //! a few dozen lookups once, and a store worth migrating keeps probing for as
 //! long as it keeps paying off.
@@ -78,7 +78,6 @@
 //! to match a current shape would defeat the point.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use serde_json::Value as Json;
 
@@ -337,79 +336,6 @@ pub fn legacy_graded_payload(assert: &Assert, graded: &LegacyGraded<'_>) -> Opti
             "provider": {"id": graded.provider_id},
         })),
         _ => None,
-    }
-}
-
-/// Cases allowed to probe for legacy entries before giving up, when none of
-/// them has adopted anything.
-///
-/// Small because the common case is a store with nothing to migrate, where
-/// every probe is pure waste. Not zero because a cold local disk makes the
-/// probes nearly free and the payoff — a warm shared cache surviving an upgrade
-/// — is worth several orders of magnitude more than the lookups.
-const PROBE_BUDGET: i64 = 8;
-
-/// Whether a run should still look for entries under a previous key shape.
-///
-/// Shared across the whole run, so the budget is spent globally rather than per
-/// provider: one adopted entry anywhere is evidence the store is worth reading,
-/// and no adoptions after a handful of cases is evidence it is not.
-#[derive(Debug)]
-pub struct MigrationProbe {
-    remaining: AtomicI64,
-    adopted_any: AtomicBool,
-    enabled: bool,
-}
-
-impl MigrationProbe {
-    /// A probe that spends [`PROBE_BUDGET`] cases looking for something to adopt.
-    pub fn new() -> Self {
-        MigrationProbe {
-            remaining: AtomicI64::new(PROBE_BUDGET),
-            adopted_any: AtomicBool::new(false),
-            enabled: true,
-        }
-    }
-
-    /// A probe that never fires — `--no-cache-migration`, and the default for
-    /// embedders that have no legacy store to read.
-    pub fn disabled() -> Self {
-        MigrationProbe {
-            remaining: AtomicI64::new(0),
-            adopted_any: AtomicBool::new(false),
-            enabled: false,
-        }
-    }
-
-    /// Claim the right to probe for one case. False once the budget is spent
-    /// with nothing to show for it.
-    pub fn should_probe(&self) -> bool {
-        if !self.enabled {
-            return false;
-        }
-        // Once anything has been adopted the store has clearly earned the
-        // lookups, so stop counting.
-        if self.adopted_any.load(Ordering::Relaxed) {
-            return true;
-        }
-        self.remaining.fetch_sub(1, Ordering::Relaxed) > 0
-    }
-
-    /// Record that a probe found and adopted an entry.
-    pub fn record_adoption(&self) {
-        self.adopted_any.store(true, Ordering::Relaxed);
-    }
-
-    /// Whether this run adopted anything, so the caller can say so once at the
-    /// end rather than per entry.
-    pub fn adopted_any(&self) -> bool {
-        self.adopted_any.load(Ordering::Relaxed)
-    }
-}
-
-impl Default for MigrationProbe {
-    fn default() -> Self {
-        MigrationProbe::new()
     }
 }
 

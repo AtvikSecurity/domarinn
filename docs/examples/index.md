@@ -71,6 +71,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 40  | [A rubric that sees the tool calls](models-grading-and-budgets.md#example-40--a-rubric-that-sees-the-tool-calls) | `include_tool_calls`, for grading the delegation decision instead of the prose. |
 | 41  | [Per-case conversation history](templates-and-test-data.md#example-41--per-case-conversation-history) | Each case brings its own prior turns, spliced at the prompt's `history` marker. |
 | 42  | [Replaying a tool-using transcript](templates-and-test-data.md#example-42--replaying-a-tool-using-transcript) | A turn that IS a tool call, the result that came back, and the reasoning behind it. |
+| 43  | [Reaching a model through a gateway](models-grading-and-budgets.md#example-43--reaching-a-model-through-a-gateway) | `request:` — the auth scheme, headers, query and body overlay a gateway needs. |
 
 ## See also
 

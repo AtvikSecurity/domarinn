@@ -50,6 +50,7 @@ fn entry() -> CacheEntry {
         provider_latency_ms: None,
         model: None,
         program_digest: None,
+        address: None,
         verdict: None,
         reasoning: None,
         empty_reason: None,

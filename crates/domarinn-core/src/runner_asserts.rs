@@ -14,7 +14,7 @@ use serde_json::Value as Json;
 use crate::assertion::AssertOutcome;
 use crate::asserts::{evaluate_local, is_local, negate_and_guard, EvalCtx, MetricCtx};
 use crate::cache::{CacheBackend, CacheMode, Graded};
-use crate::cache_migrate::MigrationProbe;
+use crate::cache_adopt::MigrationProbe;
 use crate::config::{Assert, AssertKind};
 use crate::error_class::ErrorClass;
 use crate::errors::Classify;

@@ -8,16 +8,21 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
-use crate::config::ParamMap;
+use crate::config::{AuthMode, ParamMap, RequestCfg};
 use crate::empty::EmptyReason;
 use crate::error_class::ErrorClass;
 use crate::net::{api_key, http_client, parse_retry_after, status_error, transport_error};
 use crate::provider::{
-    http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
+    http_canonical_request, http_request_preview, CallCtx, Provider, ProviderError,
+    ProviderRequest, ProviderResponse,
 };
+use crate::request_cfg::{RequestError, ResolvedRequest};
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+/// The chat-completions endpoint, appended to `base_url` unless `request.path`
+/// says otherwise.
+const DEFAULT_PATH: &str = "/chat/completions";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct OpenAiProvider {
@@ -30,6 +35,10 @@ pub struct OpenAiProvider {
     /// The effective rate for `model`, resolved once at construction. `None`
     /// means this provider's calls cannot be priced, so `cost_usd` stays absent.
     rate: Option<crate::pricing::ModelRate>,
+    /// The suite's `request:` block, rendered for both the wire and the cache.
+    /// [`ResolvedRequest::vendor_default`] until [`Self::with_request`] runs.
+    request: ResolvedRequest,
+    cache_salt: Option<String>,
 }
 
 impl OpenAiProvider {
@@ -56,7 +65,22 @@ impl OpenAiProvider {
             params: params.unwrap_or_default(),
             client: http_client(DEFAULT_TIMEOUT),
             rate,
+            request: ResolvedRequest::vendor_default(DEFAULT_PATH, AuthMode::Bearer),
+            cache_salt: None,
         }
+    }
+
+    /// Apply the suite's `request:` block and `cache_salt`. See
+    /// [`crate::anthropic::AnthropicProvider::with_request`] for why this is a
+    /// builder rather than two more constructor parameters.
+    pub fn with_request(
+        mut self,
+        cfg: Option<&RequestCfg>,
+        cache_salt: Option<String>,
+    ) -> Result<Self, RequestError> {
+        self.request = crate::request_cfg::resolve(&self.id, cfg, DEFAULT_PATH, AuthMode::Bearer)?;
+        self.cache_salt = cache_salt;
+        Ok(self)
     }
 
     fn build_body(&self, prompt: &RenderedPrompt, tools: &[crate::config::ToolDef]) -> Json {
@@ -95,9 +119,23 @@ impl OpenAiProvider {
         Json::Object(body)
     }
 
-    /// The chat-completions endpoint, trimmed the same way `call` trims it.
+    /// The chat-completions endpoint, as sent.
     fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            self.request.path()
+        )
+    }
+
+    /// The endpoint with call-time `env` values replaced by their placeholders,
+    /// for the two documents that get persisted.
+    fn redacted_endpoint(&self) -> String {
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            self.request.keyed_path()
+        )
     }
 }
 
@@ -131,18 +169,21 @@ impl Provider for OpenAiProvider {
                 anyhow::anyhow!("openai provider requires a prompt"),
             )
         })?;
-        let key = api_key(&self.api_key_env)?;
-        let body = self.build_body(prompt, &req.tools);
+        let key = match self.request.auth().needs_credential() {
+            true => Some(api_key(&self.api_key_env)?),
+            // `auth: none` means the credential rides in a declared header, so
+            // requiring `api_key_env` to resolve would fail a correct config.
+            false => None,
+        };
+        let mut body = self.build_body(prompt, &req.tools);
+        self.request.apply_body(&mut body);
         let url = self.endpoint();
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(transport_error)?;
+        let mut request = self.client.post(&url).json(&body);
+        for (name, value) in self.request.call_headers(&[], key.as_deref()) {
+            request = request.header(name, value);
+        }
+        let response = request.send().await.map_err(transport_error)?;
 
         let status = response.status();
         if !status.is_success() {
@@ -157,10 +198,15 @@ impl Provider for OpenAiProvider {
 
     fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
         let prompt = req.prompt.as_ref()?;
+        let mut body = self.build_body(prompt, &req.tools);
+        // The *keyed* overlay, not the wire one: this document is persisted into
+        // a `--share`d run, so a `request.body` field reading `{{ env.X }}` must
+        // land here as its placeholder.
+        self.request.apply_keyed_body(&mut body);
         Some(http_request_preview(
             "POST",
-            &self.endpoint(),
-            self.build_body(prompt, &req.tools),
+            &self.redacted_endpoint(),
+            body,
         ))
     }
 
@@ -177,11 +223,39 @@ impl Provider for OpenAiProvider {
     /// preview` fails instead of every cache entry silently re-keying.
     fn canonical_request(&self, req: &ProviderRequest) -> Option<Json> {
         let prompt = req.prompt.as_ref()?;
-        Some(http_request_preview(
-            "POST",
-            &self.endpoint(),
-            self.build_body(prompt, &req.tools),
-        ))
+        let mut body = self.build_body(prompt, &req.tools);
+        self.request.apply_keyed_body(&mut body);
+        let mut canonical = http_canonical_request("POST", self.request.keyed_path(), body);
+        // Only when the suite declared a header. Adding the member
+        // unconditionally would re-key every `openai` provider that customizes
+        // nothing — see `cache_key`'s module docs.
+        if let Some(digest) = self.request.headers_digest() {
+            canonical
+                .as_object_mut()
+                .expect("json! object literal")
+                .insert(
+                    "headers_digest".to_string(),
+                    Json::String(digest.to_string()),
+                );
+        }
+        Some(canonical)
+    }
+
+    fn cache_salt(&self) -> Option<&str> {
+        self.cache_salt.as_deref()
+    }
+
+    /// The redacted endpoint, not the sent one: this is persisted into every
+    /// cache entry, so a `request.path` reading `{{ env.X }}` must land here as
+    /// its placeholder.
+    fn address(&self) -> Option<String> {
+        Some(self.redacted_endpoint())
+    }
+
+    /// The document this provider published before `base_url` left the key. See
+    /// [`crate::anthropic::legacy_url_shape`].
+    fn legacy_canonical_requests(&self, req: &ProviderRequest) -> Vec<Json> {
+        crate::anthropic::legacy_url_shape(self.canonical_request(req), &self.redacted_endpoint())
     }
 }
 
@@ -603,27 +677,62 @@ mod tests {
     /// is correlation metadata, so the keyed request and the previewed one are
     /// the same document.
     #[test]
-    fn the_canonical_request_is_the_preview() {
+    fn the_canonical_request_is_the_preview_minus_its_address() {
         let p = OpenAiProvider::new("g", "gpt-x", None, None, None, None);
         let req = text_request();
-        assert_eq!(p.canonical_request(&req), p.request_preview(&req));
+        let canonical = p.canonical_request(&req).unwrap();
+        let preview = p.request_preview(&req).unwrap();
+
+        assert_eq!(canonical["body"], preview["body"]);
+        assert_eq!(canonical["method"], preview["method"]);
+        // The one divergence: the preview is addressed so a developer can lift
+        // it into `curl`; the keyed request is not, so a gateway and a direct
+        // connection share entries. See `http_canonical_request`.
+        assert_eq!(canonical["path"], json!(DEFAULT_PATH));
+        assert_eq!(
+            preview["url"],
+            json!("https://api.openai.com/v1/chat/completions")
+        );
+        assert!(canonical.get("url").is_none());
         assert!(p.canonical_request(&ProviderRequest::default()).is_none());
     }
 
-    /// A cache split that used to be real: `base_url: https://gw/v1` and
-    /// `https://gw/v1/` name one endpoint, and `endpoint()` already trims — so
-    /// the keyed request must too, or two spellings of one gateway pay twice.
+    /// `base_url` is not in the keyed request at all, so a self-hosted gateway,
+    /// a trailing slash, and the vendor's own host all key identically. That is
+    /// the point: pointing a suite at a proxy must not make it re-pay for every
+    /// answer it already has.
+    ///
+    /// The cost of that trade is a local stub silently serving a vendor's cached
+    /// answers, which is why the `base_url` is recorded on each entry and
+    /// reported on a mismatch — and why `cache_salt` exists for suites that need
+    /// them separated outright.
     #[test]
-    fn a_trailing_slash_on_base_url_does_not_change_the_canonical_request() {
-        let of = |base: &str| {
-            OpenAiProvider::new("g", "gpt-x", Some(base.into()), None, None, None)
+    fn base_url_does_not_reach_the_canonical_request() {
+        let of = |base: Option<&str>| {
+            OpenAiProvider::new("g", "gpt-x", base.map(Into::into), None, None, None)
                 .canonical_request(&text_request())
                 .unwrap()
         };
-        assert_eq!(of("https://gw.example/v1"), of("https://gw.example/v1/"));
+        let direct = of(None);
+        assert_eq!(direct, of(Some("https://gw.example/v1")));
+        assert_eq!(direct, of(Some("https://gw.example/v1/")));
+        assert_eq!(direct, of(Some("http://127.0.0.1:8000/v1")));
+        assert_eq!(direct["path"], json!(DEFAULT_PATH));
+    }
+
+    /// The wire address still joins cleanly whichever way `base_url` is spelled.
+    #[test]
+    fn the_endpoint_is_trimmed_once() {
+        let of = |base: &str| {
+            OpenAiProvider::new("g", "gpt-x", Some(base.into()), None, None, None).endpoint()
+        };
         assert_eq!(
-            of("https://gw.example/v1")["url"],
-            json!("https://gw.example/v1/chat/completions")
+            of("https://gw.example/v1"),
+            "https://gw.example/v1/chat/completions"
+        );
+        assert_eq!(
+            of("https://gw.example/v1/"),
+            "https://gw.example/v1/chat/completions"
         );
     }
 

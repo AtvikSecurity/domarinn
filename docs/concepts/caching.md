@@ -149,11 +149,44 @@ A suite can read the environment two ways, and they behave differently for cachi
 | `${env:VAR}` | at load time, before the provider is built | **yes** — the substituted value is part of the request | anything that changes the answer: a model, an endpoint, a mode |
 | `{{ env.VAR }}` | at call time, per request | **no** — the request is keyed with the value replaced by a literal `${env:NAME}` placeholder | credentials |
 
-The split is deliberate. A credential must *not* separate two teammates' entries, or a shared cache silently becomes a private one per API key. A model selector must separate them, or two models share one set of answers. domarinn cannot tell which is which, so it does not guess: `${env:VAR}` is keyed, `{{ env.VAR }}` is not, and an `http` provider whose url, headers or body reference `{{ env.X }}` warns at startup pointing at the keyed form.
+The split is deliberate. A credential must *not* separate two teammates' entries, or a shared cache silently becomes a private one per API key. A model selector must separate them, or two models share one set of answers. domarinn cannot tell which is which, so it does not guess: `${env:VAR}` is keyed, `{{ env.VAR }}` is not, and a provider whose url, headers or body reference `{{ env.X }}` warns at startup pointing at the keyed form.
+
+Both syntaxes work inside a vendor provider's [`request:` block](../reference/providers.md#customizing-the-request) and follow exactly this table. A `request.headers` entry is keyed as a **digest** rather than verbatim, because a header is where a literal secret sits and the key is persisted into every entry.
 
 /// danger | The placeholder covers one hop, and one only
 
 `{{ env.X }}` is withheld where a **provider's** url, headers or body render it. A *case var* defined as `{{ env.SECRET }}` is resolved long before a provider renders anything, so its value reaches the request in the clear — it is keyed, it is stored on the entry, and it is published in `CaseResult.vars`. That is by design: vars are case data. A credential therefore belongs in a provider's own templates, never routed through a case var.
+
+///
+
+### `base_url` is not part of the key {#base-url-is-not-keyed}
+
+Where a request is *addressed* is not part of what makes two calls interchangeable. A team behind a corporate gateway and a teammate connecting directly are asking the same question, and keying the host would make them pay for the same answers twice — so `base_url` is deliberately absent from a vendor provider's cache key. Only the endpoint path domarinn itself selects (`/v1/messages`, `/chat/completions`, `/embeddings`), any `request.path` override, and `request.query` are keyed.
+
+This is the same call the key makes about the model a vendor *reports* having served: keying it would discard every entry the day a snapshot rolls, which is the opposite of useful.
+
+The cost is real and is handled the way `exec` handles a rebuilt program. The `base_url` is recorded on every cache entry, and a hit whose stored address differs from where the provider now points **warns**, naming both:
+
+```
+replaying cached answers that came from a different endpoint.
+  stored=https://api.openai.com/v1/chat/completions
+  configured=http://127.0.0.1:8000/v1/chat/completions
+```
+
+/// warning | A local stub is not the vendor
+
+The case that bites: point a suite at `http://localhost:8000/v1` to develop offline, and it will serve the answers the real API gave you. The assertions pass — they passed against the real API — and the stub is never called.
+
+The warning above says so. When you need a **guarantee** rather than a report, give the two endpoints different `cache_salt` values and they stop sharing entirely:
+
+```yaml
+providers:
+  - id: gpt
+    type: openai
+    model: gpt-4o
+    base_url: "${env:OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    cache_salt: "${env:OPENAI_ENDPOINT_ID:-vendor}"   # "local-stub" offline
+```
 
 ///
 

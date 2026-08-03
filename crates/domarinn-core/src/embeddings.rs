@@ -5,12 +5,17 @@ use std::time::Duration;
 
 use serde_json::{json, Value as Json};
 
-use crate::config::ParamMap;
+use crate::config::{AuthMode, ParamMap, RequestCfg};
 use crate::net::{api_key, http_client};
 use crate::pricing::{MicroUsd, ModelRate};
+use crate::provider::VendorCall;
+use crate::request_cfg::{RequestError, ResolvedRequest};
 use crate::types::TokenUsage;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+/// The embeddings endpoint, appended to `base_url` unless `request.path` says
+/// otherwise.
+const DEFAULT_PATH: &str = "/embeddings";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One embedding call's vector plus what it cost.
@@ -31,6 +36,10 @@ pub struct EmbeddingsProvider {
     /// the chat providers follow, and the reason neither needs global state.
     rate: Option<ModelRate>,
     client: reqwest::Client,
+    /// The suite's `request:` block, rendered for both the wire and the cache.
+    /// [`ResolvedRequest::vendor_default`] until [`Self::with_request`] runs.
+    request: ResolvedRequest,
+    cache_salt: Option<String>,
 }
 
 impl EmbeddingsProvider {
@@ -50,7 +59,41 @@ impl EmbeddingsProvider {
             api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".into()),
             params: params.unwrap_or_default(),
             client: http_client(DEFAULT_TIMEOUT),
+            request: ResolvedRequest::vendor_default(DEFAULT_PATH, AuthMode::Bearer),
+            cache_salt: None,
         }
+    }
+
+    /// Apply the suite's `request:` block and `cache_salt`. See
+    /// [`crate::anthropic::AnthropicProvider::with_request`] for why this is a
+    /// builder rather than two more constructor parameters.
+    pub fn with_request(
+        mut self,
+        provider_id: &str,
+        cfg: Option<&RequestCfg>,
+        cache_salt: Option<String>,
+    ) -> Result<Self, RequestError> {
+        self.request =
+            crate::request_cfg::resolve(provider_id, cfg, DEFAULT_PATH, AuthMode::Bearer)?;
+        self.cache_salt = cache_salt;
+        Ok(self)
+    }
+
+    /// This provider's cache pin, when it has one.
+    pub fn cache_salt(&self) -> Option<&str> {
+        self.cache_salt.as_deref()
+    }
+
+    /// The document [`Self::request`] published before `base_url` left the key.
+    pub fn legacy_canonical(&self, call: &VendorCall) -> Vec<Json> {
+        crate::anthropic::legacy_url_shape(
+            Some(crate::provider::http_canonical_request(
+                "POST",
+                &call.path,
+                call.body.clone(),
+            )),
+            &call.url,
+        )
     }
 
     /// The url and body one embedding call would post.
@@ -62,17 +105,24 @@ impl EmbeddingsProvider {
     /// being embedded. That is why a `similar` assertion now caches the *two
     /// embeddings* rather than only the cosine of them: a vector is reusable by
     /// any later comparison, a cosine is not.
-    pub fn request(&self, text: &str) -> (String, Json) {
+    pub fn request(&self, text: &str) -> VendorCall {
         let mut body = serde_json::Map::new();
         for (k, v) in &self.params {
             body.insert(k.clone(), v.clone());
         }
         body.insert("model".into(), json!(self.model));
         body.insert("input".into(), json!(text));
-        (
-            format!("{}/embeddings", self.base_url.trim_end_matches('/')),
-            Json::Object(body),
-        )
+        let mut body = Json::Object(body);
+        self.request.apply_keyed_body(&mut body);
+        VendorCall {
+            url: format!(
+                "{}{}",
+                self.base_url.trim_end_matches('/'),
+                self.request.path()
+            ),
+            path: self.request.keyed_path().to_string(),
+            body,
+        }
     }
 
     /// Post a built embedding request and return the raw payload.
@@ -80,15 +130,15 @@ impl EmbeddingsProvider {
     /// The only step that reads the credential, so a warm `similar` assertion
     /// never asks for one.
     pub async fn post(&self, url: &str, body: &Json) -> Result<Json, String> {
-        let key = api_key(&self.api_key_env).map_err(|e| e.to_string())?;
-        let resp = self
-            .client
-            .post(url)
-            .bearer_auth(key)
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let key = match self.request.auth().needs_credential() {
+            true => Some(api_key(&self.api_key_env).map_err(|e| e.to_string())?),
+            false => None,
+        };
+        let mut request = self.client.post(url).json(body);
+        for (name, value) in self.request.call_headers(&[], key.as_deref()) {
+            request = request.header(name, value);
+        }
+        let resp = request.send().await.map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!(
                 "HTTP {}: {}",
