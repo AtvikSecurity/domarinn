@@ -113,6 +113,25 @@ test.describe("Cached-runs filter", () => {
     await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
   });
 
+  test("a suite page hides cached runs too, and reconciles its own count", async ({
+    page,
+  }) => {
+    await page.goto("/sets/checkout-agent/canary");
+
+    // The header's run count is a server aggregate over every run, so a table
+    // that hides some has to say how many, or the two numbers simply disagree.
+    await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: CANARY_CACHED, exact: true }),
+    ).toBeHidden();
+
+    await page.getByRole("button", { name: "Show", exact: true }).click();
+    await expect(page).toHaveURL(/cached=all/);
+    await expect(
+      page.getByRole("link", { name: CANARY_CACHED, exact: true }),
+    ).toBeVisible();
+  });
+
   // Two surfaces deliberately never hide cached runs, because hiding would
   // cost them information rather than noise. Both are easy to "fix" into a
   // regression by someone making the app consistent, so both are pinned.

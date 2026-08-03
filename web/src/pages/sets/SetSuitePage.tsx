@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { useRuns, useSetSuite } from "@/api/queries";
 import type { RunListItem } from "@/api";
 import { ApiError } from "@/api/client";
@@ -18,7 +18,10 @@ import { PassRateBadge, RateBadge } from "@/components/PassRateBadge";
 import { RunOriginCell } from "@/components/RunOriginCell";
 import { Sparkline } from "@/components/Sparkline";
 import { previousRun } from "@/lib/compare";
-import { hiddenByCachedExclude, isFullyCached } from "@/lib/cached";
+import { hiddenByCachedExclude, isFullyCached, resolveCached } from "@/lib/cached";
+import { useCachedPref } from "@/lib/cachedPref";
+import { mergeParams } from "@/lib/filters";
+import { CachedRunsToggle } from "@/components/CachedRunsToggle";
 import {
   formatDateAbsolute,
   formatDuration,
@@ -63,14 +66,19 @@ function comparePair(
  */
 export function SetSuitePage() {
   const { project = "", suite = "" } = useParams();
+  const [params, setParams] = useSearchParams();
   const view = useAuthView();
   const q = useSetSuite(project, suite);
   const [accessOpen, setAccessOpen] = useState(false);
 
-  // `cached: "all"`, unlike the runs list's default: this page is the suite's
-  // whole record, and hiding its fully-cached CI re-runs here would silently
-  // disagree with the run count in the header two lines above.
-  const runsQ = useRuns({ project, suite, cached: "all" });
+  // This page used to force `cached: "all"`, because hiding a suite's
+  // fully-cached CI re-runs made the table disagree with the run count in the
+  // header two lines above. The disagreement was the problem, not the hiding —
+  // so the page now honours the same preference as everywhere else and states
+  // the difference instead of avoiding it.
+  const cachedPref = useCachedPref();
+  const resolvedCached = resolveCached(params.get("cached"), cachedPref);
+  const runsQ = useRuns({ project, suite, cached: resolvedCached });
   const runs = useMemo(
     () => runsQ.data?.pages.flatMap((p) => p.runs) ?? [],
     [runsQ.data],
@@ -88,7 +96,9 @@ export function SetSuitePage() {
   const last = isoFromEpoch(detail.last_run_at);
   const canOpenAccess = view.canAdmin || detail.my_level === "manage";
   const pair = comparePair(runs, selected);
-  const runsHref = runsFilterHref(project, suite);
+  // Carry this page's own view through, so the stream opens showing what the
+  // table above it was showing rather than always widening to everything.
+  const runsHref = runsFilterHref(project, suite, resolvedCached);
 
   function toggle(id: string) {
     setSelected((prev) =>
@@ -223,6 +233,17 @@ export function SetSuitePage() {
             View in Runs →
           </Link>
         </div>
+
+        {/* The header's run count comes from the server's aggregate and counts
+            every run, so whenever this table hides some it has to say so —
+            otherwise the two numbers just disagree and the page looks wrong. */}
+        <CachedRunsToggle
+          resolved={resolvedCached}
+          hiddenCount={runsQ.data?.pages[0]?.cached_hidden ?? 0}
+          onChange={(next) =>
+            setParams(mergeParams(params, { cached: next }), { replace: true })
+          }
+        />
 
         {runsQ.isPending ? (
           <CenteredSpinner label="Loading runs…" />

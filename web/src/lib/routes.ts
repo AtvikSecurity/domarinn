@@ -1,3 +1,5 @@
+import type { CachedFilter } from "@/api";
+
 /**
  * Client route builders.
  *
@@ -54,9 +56,18 @@ export function comparePath(baseId: string, headId: string): string {
  * into issues and chat, and silently rewriting every shareable link is not
  * worth the tidier call.
  *
- * `cached=all` because the stream hides fully-cached passing runs as noise;
- * arriving from a status surface, the counts have to agree.
+ * `cached` is always written, never left to the reader's preference: the whole
+ * point of these links is that the destination agrees with the count you just
+ * clicked, and a preference could disagree with it.
+ *
+ * It defaults to `all` for the status surfaces, whose cards count every run.
+ * A caller that is itself filtering passes what it is showing, so the stream
+ * it opens matches the table it came from.
  */
-export function runsFilterHref(project: string, suite: string): string {
-  return `/runs?project=${encodeURIComponent(project)}&suite=${encodeURIComponent(suite)}&cached=all`;
+export function runsFilterHref(
+  project: string,
+  suite: string,
+  cached: CachedFilter = "all",
+): string {
+  return `/runs?project=${encodeURIComponent(project)}&suite=${encodeURIComponent(suite)}&cached=${cached}`;
 }
