@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/AtvikSecurity/domarinn/compare/0.7.0...0.7.1) (2026-08-03)
+
+
+### Features
+
+* **core:** refresh pricing table to current-gen Anthropic and OpenAI models ([645cc7e](https://github.com/AtvikSecurity/domarinn/commit/645cc7e6f4a622a219ff2ee13fd5e294f1e9c0d8))
+
 ## [0.7.0](https://github.com/AtvikSecurity/domarinn/compare/0.6.2...0.7.0) (2026-08-01)
 
 

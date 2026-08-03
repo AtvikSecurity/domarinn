@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "The domarinn LLM eval harness as a Claude Code plugin: its MCP endpoint plus the skills to author, run, and triage evals.",
-    "version": "0.7.0"
+    "version": "0.7.1"
   },
   "plugins": [
     {
       "name": "domarinn",
       "source": "./plugin",
       "description": "Read eval history from a domarinn server over MCP, and author/run/triage eval suites with the domarinn CLI.",
-      "version": "0.7.0",
+      "version": "0.7.1",
       "keywords": [
         "evals",
         "llm",
