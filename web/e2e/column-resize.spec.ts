@@ -1,16 +1,22 @@
 import { expect, test, type Page } from "@playwright/test";
 import { MONEY_RUN } from "./helpers";
 
+/**
+ * The runs list renders one table per suite group, all sharing a single
+ * preference, so a column id is not unique on the page. The first instance is
+ * representative — that they move together is the point.
+ */
+const resizeHandle = (page: Page, columnId: string) =>
+  page.locator(`[data-column-resizer="${columnId}"]`).first();
+
 /** Width of the header cell owning a column, as laid out. */
 async function headerWidth(page: Page, columnId: string): Promise<number> {
-  const handle = page.locator(`[data-column-resizer="${columnId}"]`);
-  const cell = handle.locator("xpath=..");
-  const box = await cell.boundingBox();
+  const box = await resizeHandle(page, columnId).locator("xpath=..").boundingBox();
   return box?.width ?? 0;
 }
 
 async function dragHandle(page: Page, columnId: string, dx: number) {
-  const handle = page.locator(`[data-column-resizer="${columnId}"]`);
+  const handle = resizeHandle(page, columnId);
   const box = await handle.boundingBox();
   if (!box) throw new Error(`no resize handle for ${columnId}`);
   const y = box.y + box.height / 2;
@@ -78,9 +84,7 @@ test.describe("Column resizing", () => {
     await expect(page.getByRole("grid")).toBeVisible();
 
     const before = await headerWidth(page, "tokens");
-    const slider = page
-      .locator('[data-column-resizer="tokens"]')
-      .getByRole("slider");
+    const slider = resizeHandle(page, "tokens").getByRole("slider");
     await slider.focus();
     for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
 
@@ -101,8 +105,48 @@ test.describe("Column resizing", () => {
       .poll(() => headerWidth(page, "tokens"))
       .toBeGreaterThan(before + 40);
 
-    await page.locator('[data-column-resizer="tokens"]').dblclick();
+    await resizeHandle(page, "tokens").dblclick();
     await expect.poll(() => headerWidth(page, "tokens")).toBeCloseTo(before, 0);
+  });
+});
+
+test.describe("Columns on a real <table>", () => {
+  test("the runs list hides a column and its cells together", async ({
+    page,
+  }) => {
+    await page.goto("/runs?cached=all");
+    await expect(
+      page.getByRole("columnheader", { name: "Tokens" }).first(),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: /Columns/ }).click();
+    await page.getByRole("checkbox", { name: "Tokens" }).uncheck();
+
+    // Header and cells go together — with a <colgroup> in play a stray cell
+    // would shift every column after it out of alignment.
+    await expect(page.getByRole("columnheader", { name: "Tokens" })).toHaveCount(
+      0,
+    );
+    const headers = await page.getByRole("columnheader").count();
+    const firstRowCells = await page
+      .getByRole("row")
+      .filter({ hasNot: page.getByRole("columnheader") })
+      .first()
+      .getByRole("cell")
+      .count();
+    const groups = await page.getByRole("table").count();
+    expect(headers).toBe(firstRowCells * groups);
+  });
+
+  test("a runs column resizes and the width persists", async ({ page }) => {
+    await page.goto("/runs?cached=all");
+    const before = await headerWidth(page, "when");
+    await dragHandle(page, "when", 70);
+    await expect.poll(() => headerWidth(page, "when")).toBeGreaterThan(before);
+
+    const widened = await headerWidth(page, "when");
+    await page.reload();
+    await expect.poll(() => headerWidth(page, "when")).toBeCloseTo(widened, 0);
   });
 });
 

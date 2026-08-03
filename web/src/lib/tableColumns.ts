@@ -126,6 +126,22 @@ export function trackFor(def: ColumnDef, prefs: TablePrefs): string {
   return share ? `minmax(${px}px, ${share})` : `${px}px`;
 }
 
+/**
+ * The `<col>` width for a real `<table>` under `table-layout: fixed`.
+ *
+ * `undefined` means "emit no width", which is how a column takes the leftover
+ * space — the `<table>` analogue of an `fr` share, since `<col>` accepts only
+ * lengths and percentages. Such columns declare `track: "auto"`.
+ */
+export function tableWidthFor(
+  def: ColumnDef,
+  prefs: TablePrefs,
+): string | undefined {
+  const stored = prefs.width[def.id];
+  if (stored !== undefined) return `${clampWidth(def, stored)}px`;
+  return def.track === "auto" ? undefined : def.track;
+}
+
 export function gridTemplateFor(
   defs: readonly ColumnDef[],
   prefs: TablePrefs,
