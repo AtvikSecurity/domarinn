@@ -537,6 +537,50 @@ async fn backfill_does_not_count_a_blank_reason_as_empty() {
     );
 }
 
+/// The migration-15 upgrade shape — a run missing *only* `empty_count` — is
+/// every run in the store on the first open after upgrading, so it must be
+/// filled by counting the (already-backfilled) case rows, not by decoding the
+/// run blob. Proven by corrupting the run blob: the blob path would stamp the
+/// `-1` sentinel, so getting the real count back means the blob was never read.
+#[tokio::test]
+async fn empty_count_backfill_counts_case_rows_instead_of_decoding_the_run_blob() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(empty_reason_run("run-bf-fast", "refusal"), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    {
+        let conn = raw(dir.path());
+        // Only the migration-15 run column is missing; the case rows are
+        // nulled too, so the count must come from what `backfill_cases` has
+        // just re-stamped, in order — not from what ingest left behind.
+        conn.execute_batch(
+            "UPDATE cases SET empty_reason = NULL;
+             UPDATE runs SET empty_count = NULL;",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE run_blobs SET body = ?1 WHERE run_id='run-bf-fast'",
+            rusqlite::params![vec![0xde_u8, 0xad, 0xbe, 0xef]],
+        )
+        .unwrap();
+    }
+
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        empty_count(&conn, "run-bf-fast"),
+        Some(1),
+        "an upgrade-shaped run must get its count from the case rows; -1 here \
+         means the blob path ran (and hit the corrupt blob) instead"
+    );
+}
+
 #[tokio::test]
 async fn backfill_stamps_empty_sentinels_for_corrupt_blobs_and_stops_rescanning() {
     let dir = TempDir::new().unwrap();

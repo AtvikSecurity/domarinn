@@ -27,6 +27,11 @@
 //! A blob written before `empty_reason` existed honestly backfills to `''` per
 //! case and `0` for the run: the field is absent from the document, so no case
 //! in it carried one. That is the right answer, not a gap.
+//!
+//! A run missing *only* `empty_count` — the shape every run in the store has on
+//! the first open after the migration-15 upgrade — is filled by one SQL COUNT
+//! over its (already-backfilled) case rows instead of a blob decode; see
+//! `backfill_runs`.
 
 use anyhow::Context;
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -125,6 +130,36 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
 }
 
 fn backfill_runs(conn: &mut Connection) -> anyhow::Result<()> {
+    // Fast path for the migration-15 upgrade shape: every column but
+    // `empty_count` already populated — which on the first open after that
+    // upgrade is *every run in the store*, so letting these fall through to
+    // the loop below would zstd-decode every run blob to fill one countable
+    // column and hold startup for minutes on a large database. This depends
+    // on `backfill_cases` having already run (see `run`): `cases.empty_reason`
+    // is fully stamped by then, the migration-15 index covers the correlated
+    // COUNT, and a count derived from the case rows agrees with the detail
+    // view's per-reason GROUP BY by construction — the blob could disagree
+    // with both. Runs carrying an undecodable case row (`cached = -1` is that
+    // sentinel) are left to the blob path: their case rows no longer know the
+    // truth, but the run blob still might.
+    let fast = conn.execute(
+        "UPDATE runs
+         SET empty_count = (
+             SELECT COUNT(*) FROM cases
+             WHERE cases.run_id = runs.id AND cases.empty_reason <> ''
+         )
+         WHERE empty_count IS NULL
+           AND config_digest IS NOT NULL
+           AND cache_hits IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM cases
+               WHERE cases.run_id = runs.id AND cases.cached = -1
+           )",
+        [],
+    )?;
+    if fast > 0 {
+        tracing::debug!(runs = fast, "backfill: counted empty cases from case rows");
+    }
     loop {
         let chunk: Vec<(String, Vec<u8>)> = {
             let mut stmt = conn.prepare(
