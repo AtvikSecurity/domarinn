@@ -20,9 +20,9 @@ import {
   formatTokens,
 } from "@/lib/format";
 import {
-  clampWidth,
   type ColumnDef,
   cssVarsFor,
+  effectiveWidth,
   gridTemplateFor,
   minWidthFor,
   visibleColumns as pickVisible,
@@ -584,7 +584,7 @@ export function CaseGrid({
                   {def ? (
                     <ColumnResizer
                       def={def}
-                      width={clampWidth(def, prefs.width[def.id] ?? def.min)}
+                      width={effectiveWidth(def, prefs)}
                       headerId={labelId}
                       onResize={(px) => setColumnWidth(TABLE_ID, def.id, px)}
                       onReset={() => resetColumnWidth(TABLE_ID, def.id)}

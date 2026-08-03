@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { ColumnResizer } from "@/components/ui/ColumnResizer";
-import { clampWidth, type ColumnDef, type TablePrefs } from "@/lib/tableColumns";
+import { type ColumnDef, effectiveWidth, type TablePrefs } from "@/lib/tableColumns";
 import {
   resetColumnWidth,
   setColumnWidth,
@@ -41,7 +41,7 @@ export function ResizableTh({
       <span id={labelId}>{children}</span>
       <ColumnResizer
         def={def}
-        width={clampWidth(def, prefs.width[def.id] ?? def.min)}
+        width={effectiveWidth(def, prefs)}
         headerId={labelId}
         onResize={(px) => setColumnWidth(tableId, def.id, px)}
         onReset={() => resetColumnWidth(tableId, def.id)}

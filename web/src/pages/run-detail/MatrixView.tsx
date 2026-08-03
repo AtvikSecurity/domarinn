@@ -10,6 +10,13 @@ import {
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { cn } from "@/lib/cn";
+import { ColumnResizer } from "@/components/ui/ColumnResizer";
+import { type ColumnDef, effectiveWidth } from "@/lib/tableColumns";
+import {
+  resetColumnWidth,
+  setColumnWidth,
+  useColumnPrefs,
+} from "@/lib/useColumnPrefs";
 import { MatrixCellPopover } from "./MatrixCellPopover";
 import { ProviderCompare } from "./ProviderCompare";
 
@@ -18,6 +25,31 @@ const STATUS_DOT: Record<CaseStatus, string> = {
   fail: "bg-fail",
   error: "bg-error",
   skip: "bg-skip",
+};
+
+const MATRIX_TABLE_ID = "matrix";
+
+/**
+ * The sticky Test column, and only it.
+ *
+ * There is no column picker here and no `<colgroup>`, on purpose. The provider
+ * columns are derived from the run's own data — a different run has different
+ * ones — so a remembered per-column preference would key on identifiers that
+ * may not exist next time, and the page already has `?provider=` and `?prompt=`
+ * filters, which *are* its hide-columns mechanism. The two-tier
+ * `rowSpan`/`colSpan` header cannot be described by a flat `<colgroup>` either.
+ *
+ * The Test column is the exception worth having: it is the one column that is
+ * the same on every run, it is what everything else is read against, and it is
+ * where long test names get cut off.
+ */
+const TEST_COLUMN: ColumnDef = {
+  id: "test",
+  label: "Test",
+  track: "256px", // the `max-w-[16rem]` this column carried before
+  min: 140,
+  max: 560,
+  alwaysVisible: true,
 };
 
 /**
@@ -52,6 +84,12 @@ export function MatrixView({
   const displayCols = useMemo(() => groups.flatMap((g) => g.columns), [groups]);
   const grouped = groups.length > 1;
   const showPrompt = distinctPrompts(q.data?.pages[0]).length > 1;
+  const colPrefs = useColumnPrefs(MATRIX_TABLE_ID);
+  const testWidth = effectiveWidth(TEST_COLUMN, colPrefs);
+  // `width` and `maxWidth` together: under `table-layout: auto` a width is
+  // advisory and content can still push the column wider, which is exactly
+  // what the long test names in here would do.
+  const testStyle = { width: testWidth, maxWidth: testWidth };
 
   // Which (test, prompt) the compare modal shows — component state, not URL.
   const [compare, setCompare] = useState<{ testId: string; promptId: string | null } | null>(
@@ -84,9 +122,14 @@ export function MatrixView({
                 <th
                   rowSpan={2}
                   scope="col"
+                  style={testStyle}
+                  // No `relative`: a sticky element is already positioned and
+                  // is its own containing block, so the handle resolves
+                  // against it — adding `relative` would cancel the stickiness.
                   className="sticky left-0 top-0 z-30 bg-surface-2 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted"
                 >
-                  Test
+                  <span id="matrix-h-test">Test</span>
+                  <TestResizer width={testWidth} />
                 </th>
                 {groups.map((g) => (
                   <th
@@ -120,9 +163,11 @@ export function MatrixView({
             <tr className="border-b border-border">
               <th
                 scope="col"
+                style={testStyle}
                 className="sticky left-0 top-0 z-30 bg-surface-2 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted"
               >
-                Test
+                <span id="matrix-h-test">Test</span>
+                <TestResizer width={testWidth} />
               </th>
               {displayCols.map((c, i) => (
                 <th
@@ -143,7 +188,8 @@ export function MatrixView({
               <tr key={row.test_id} className="border-b border-border/60 last:border-b-0">
                 <th
                   scope="row"
-                  className="sticky left-0 z-10 max-w-[16rem] truncate bg-surface px-3 py-1.5 text-left font-medium"
+                  style={testStyle}
+                  className="sticky left-0 z-10 truncate bg-surface px-3 py-1.5 text-left font-medium"
                   title={testLabel}
                 >
                   <span className="block truncate">{testLabel}</span>
@@ -196,6 +242,22 @@ export function MatrixView({
         }
       />
     </div>
+  );
+}
+
+/**
+ * The Test column's drag handle. A component only because the header exists in
+ * two branches — grouped (`rowSpan=2`) and flat — and both must offer it.
+ */
+function TestResizer({ width }: { width: number }) {
+  return (
+    <ColumnResizer
+      def={TEST_COLUMN}
+      width={width}
+      headerId="matrix-h-test"
+      onResize={(px) => setColumnWidth(MATRIX_TABLE_ID, TEST_COLUMN.id, px)}
+      onReset={() => resetColumnWidth(MATRIX_TABLE_ID, TEST_COLUMN.id)}
+    />
   );
 }
 

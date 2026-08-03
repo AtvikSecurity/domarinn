@@ -12,8 +12,10 @@ test.describe("Admin — user management", () => {
     await expect(page.getByTestId("user-row-admin")).toBeVisible();
     await expect(page.getByTestId("user-row-member")).toBeVisible();
 
-    // Create a new member.
-    await page.getByLabel("Username").fill("tester");
+    // Create a new member. By role, not by label alone: the Username column's
+    // resize handle is named "Resize Username", so a bare label lookup now
+    // matches the slider too.
+    await page.getByRole("textbox", { name: "Username" }).fill("tester");
     await page.getByLabel("Password").fill("pw123456");
     await page.getByLabel("New user role").selectOption("member");
     await page.getByRole("button", { name: "Create user" }).click();

@@ -18,8 +18,8 @@ import { cn } from "@/lib/cn";
 import { ColumnPicker } from "@/components/ui/ColumnPicker";
 import { ColumnResizer } from "@/components/ui/ColumnResizer";
 import {
-  clampWidth,
   type ColumnDef,
+  effectiveWidth,
   gridTemplateFor,
   minWidthFor,
   visibleColumns,
@@ -465,7 +465,7 @@ function DeltaTable({
               <span id={labelId}>{c.label}</span>
               <ColumnResizer
                 def={c}
-                width={clampWidth(c, prefs.width[c.id] ?? c.min)}
+                width={effectiveWidth(c, prefs)}
                 headerId={labelId}
                 onResize={(px) => setColumnWidth(DELTA_TABLE_ID, c.id, px)}
                 onReset={() => resetColumnWidth(DELTA_TABLE_ID, c.id)}
