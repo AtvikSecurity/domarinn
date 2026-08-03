@@ -80,13 +80,16 @@ output was empty (refusal): a negated assertion cannot pass vacuously — nothin
 
 It **fails**; it does not error. This is a judgement about the output, so the case lands in Fail — unlike an assertion that cannot be evaluated at all (an uncompilable `schema:`, an unparseable `value:` regex), which is a broken *assertion* and errors the case.
 
-Three things this deliberately does **not** touch:
+Four things this deliberately does **not** touch:
 
 - **Positive assertions.** `contains: "Paris"` over an empty output already fails on its own terms; nothing special happens.
 - **Metric assertions.** `cost`, `latency` and `tokens` never read the output. A negated latency bound is still a true statement about latency when nothing came back, so it is exempt.
 - **Any assertion on a response that reported tool calls.** `tool_use_only` — the model called a tool and said nothing else — is an empty *text* output by a model that did act. `not-tool-call: delete_everything` judges the calls that were reported, and a rubric with [`include_tool_calls`](../concepts/grading.md#letting-the-judge-see-tool-calls) is shown them too. The hole this closes is a refusal, which reports no calls at all.
+- **An output that is not actually blank.** `empty_reason` is a *claim* — an [`exec` provider](providers.md#exec)'s child reports its own and is honoured verbatim, even beside real text — so the guard re-checks the output before calling it empty. A negated assertion that evaluated genuine content keeps its verdict, whatever the case's reason says.
 
-`runner.skip_on_empty_reason` is **not** a fourth exemption. It overrides the *verdict* — the case is reported `skip` rather than `fail` — but the assertions still run, and this guard still fires during evaluation, before the skip decision is taken. See [excluding them from the verdict](../concepts/grading.md#excluding-them-from-the-verdict).
+`runner.skip_on_empty_reason` is **not** a fifth exemption. It overrides the *verdict* — the case is reported `skip` rather than `fail` — but the assertions still run, and this guard still fires during evaluation, before the skip decision is taken. See [excluding them from the verdict](../concepts/grading.md#excluding-them-from-the-verdict).
+
+**If silence is what the suite wants**, say so positively. A must-refuse suite whose cases carried only `not-contains: "Sure, here is"` used to pass on a refusal *because of this hole*, and now fails on exactly the response it wants — the fix is not `skip_on_empty_reason` (that reports the case `skip`, and a suite where every case skips [exits `2`](cli.md#exit-codes), not `0`). Assert the emptiness itself: `equals: ""` or `length: {max: 0}` **passes** on a genuinely empty refusal and fails the moment the model answers, which is the assertion such a suite meant to write all along. Keep the `not-contains` beside it if partial leakage next to a refusal is also worth catching.
 
 ---
 

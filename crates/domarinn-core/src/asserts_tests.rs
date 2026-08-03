@@ -738,6 +738,25 @@ mod vacuous_pass_tests {
         assert!(outcome.passed && outcome.score == 1.0, "{outcome:?}");
     }
 
+    /// `empty_reason` is a claim, and an exec child's claim is honoured even
+    /// beside real text — so the guard re-checks the output before calling it
+    /// empty. A negated assert that evaluated genuine content keeps its pass:
+    /// failing it with "output was empty" would contradict the positive
+    /// asserts judging that same text on the same case.
+    #[test]
+    fn a_claimed_empty_reason_over_real_text_does_not_fire_the_guard() {
+        let outcome = eval_empty(
+            AssertKind::Contains {
+                value: "forbidden".into(),
+            },
+            true,
+            &[],
+            Output::Text("a genuine, compliant answer".into()),
+        );
+        assert!(outcome.passed && outcome.score == 1.0, "{outcome:?}");
+        assert!(!outcome.reason.contains("vacuously"), "{}", outcome.reason);
+    }
+
     /// The exemption is the *response*, not the assertion kind: a model that
     /// answered with a tool call produced something, so a negated text assert
     /// over it is not vacuous either.

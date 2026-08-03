@@ -184,8 +184,13 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
         }
         // Keyed on the reason string, not a variant: the set is open, so an
         // unknown vendor reason has to tally under its own name rather than
-        // collapse into a catch-all.
-        if let Some(reason) = &c.empty_reason {
+        // collapse into a catch-all. An empty-string reason is excluded: no
+        // provider path produces one (the exec parser filters it at the seam),
+        // but a hand-authored document can carry it, and `''` is the "known:
+        // not empty" sentinel every server-side tally already excludes —
+        // counting it here would render a nameless `( × 1)` entry and make the
+        // CLI's footer disagree with the server about the same document.
+        if let Some(reason) = c.empty_reason.as_ref().filter(|r| !r.as_str().is_empty()) {
             *s.empty_counts
                 .entry(reason.as_str().to_string())
                 .or_default() += 1;
@@ -275,6 +280,16 @@ mod tests {
     #[test]
     fn summarize_leaves_empty_counts_empty_when_no_case_is_empty() {
         let summary = summarize(&[case("a", CaseStatus::Pass, None)]);
+        assert!(summary.empty_counts.is_empty());
+    }
+
+    /// `""` is the storage layer's "known: not empty" sentinel, and the server
+    /// excludes it from every tally. A hand-authored document carrying one must
+    /// not make the CLI's footer say "1 empty" (with a nameless markdown row)
+    /// for a run the server reports as having none.
+    #[test]
+    fn summarize_does_not_tally_an_empty_string_reason() {
+        let summary = summarize(&[case("a", CaseStatus::Fail, Some(""))]);
         assert!(summary.empty_counts.is_empty());
     }
 }
