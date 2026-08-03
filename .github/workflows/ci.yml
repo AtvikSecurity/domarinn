@@ -2,7 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `renovate/**` is here because Renovate is configured for branch-based
+    # automerge (`:automergeBranch` in renovate.json5): it pushes the update to
+    # a branch and fast-forwards main once that branch's checks pass, WITHOUT
+    # ever opening a pull request. A push to such a branch matches neither
+    # `branches: [main]` nor `pull_request`, so before this entry those
+    # branches carried zero check runs — the only status on them was Renovate's
+    # own `renovate/stability-days` soak timer. That made the "CI is the gate"
+    # premise documented in renovate.json5 vacuous: an update could reach main
+    # having been verified by nothing but the 3-day wait.
+    branches: [main, "renovate/**"]
   pull_request:
 
 # Least privilege: CI only needs to read the repo.
@@ -107,7 +116,11 @@ jobs:
     # is the only commit since the last release, no release pull request is
     # created at all. This is the gate; the lefthook commit-msg hook is the
     # same checker run earlier, and skips when node deps are absent.
-    if: github.event_name == 'pull_request'
+    # Also runs on Renovate's automerge branches: those fast-forward onto main
+    # without ever being a pull request, so this is the only point at which
+    # their messages can be checked. Skipped on push to main itself — by then
+    # the commit has landed and there is nothing left to gate.
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/renovate/')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
@@ -127,12 +140,22 @@ jobs:
         run: |
           node web/scripts/check-commit-msg.mjs --self-test
           pnpm -C web run check-commit-msg -- --self-test
-      - name: Check every commit in this pull request
+      - name: Check every commit in this change
         env:
+          # Both are empty on a push event — there is no pull_request payload.
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          if [ -z "${BASE:-}" ]; then
+            # Renovate automerge branch: derive the range from main instead.
+            # `origin/main` is present because checkout above uses
+            # fetch-depth: 0, which fetches every branch. If it is somehow
+            # missing this fails loudly rather than checking an empty range —
+            # a gate that silently passes is worse than no gate.
+            BASE="$(git merge-base origin/main HEAD)"
+            HEAD="$(git rev-parse HEAD)"
+          fi
           failed=0
           msg="$(mktemp)"
           for sha in $(git rev-list "$BASE..$HEAD"); do

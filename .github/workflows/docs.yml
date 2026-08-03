@@ -2,17 +2,23 @@ name: Docs
 
 on:
   push:
-    branches: [main]
+    # See the matching note on ci.yml's trigger: Renovate's automerge branches
+    # never become pull requests, so without `renovate/**` here a dependency
+    # bump could break the docs build and still fast-forward onto main.
+    branches: [main, "renovate/**"]
   pull_request:
   workflow_dispatch:
 
 # Serialize Pages deploys (matches the official GitHub Pages flow) and never
 # cancel an in-flight one — a half-deployed site is worse than a stale one.
-# Deliberately NOT keyed on `github.ref` like the CI workflow's concurrency
-# group: two deploys racing for the same environment is exactly what this
-# prevents.
+# The deploying ref (main) keeps the single shared `pages` group: two deploys
+# racing for the same environment is exactly what this prevents. Refs that only
+# ever build — pull requests and Renovate branches — get a per-ref group
+# instead, because sharing `pages` with `cancel-in-progress: false` would make
+# a dozen Renovate branches queue single-file behind each other and stall the
+# automerge gate for hours.
 concurrency:
-  group: pages
+  group: ${{ github.ref == 'refs/heads/main' && 'pages' || format('pages-{0}', github.ref) }}
   cancel-in-progress: false
 
 # Least privilege at the top; the publish job widens it for itself only.
@@ -43,9 +49,10 @@ jobs:
         with:
           key: docs
 
-      # Only needed for deployment (it configures the base path); skip on PRs.
+      # Only needed for deployment (it configures the base path); skip anywhere
+      # that does not deploy.
       - name: Configure Pages
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0 # pin to SHA
 
       # `mise run docs` is the same command a developer runs, so a green PR here
@@ -56,7 +63,7 @@ jobs:
         run: mise run docs
 
       - name: Upload artifact
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         # MkDocs builds into site/, with rustdoc nested under site/rustdoc/ and
         # the CNAME that pins docs.domarinn.com written alongside.
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0 # pin to SHA
@@ -65,9 +72,17 @@ jobs:
 
   publish:
     name: publish to GitHub Pages
-    # PRs build for breakage detection but must never deploy — a fork PR would
-    # otherwise publish arbitrary content to the production domain.
-    if: github.event_name != 'pull_request'
+    # Everything that is not main builds for breakage detection but must never
+    # deploy — a fork PR would otherwise publish arbitrary content to the
+    # production domain.
+    #
+    # This is an allow-list (`ref == main`) rather than the deny-list it used
+    # to be (`event_name != 'pull_request'`) on purpose. The deny-list was only
+    # ever safe because the push trigger was restricted to main; adding
+    # `renovate/**` to that trigger would have silently turned every Renovate
+    # branch into a production Pages deploy. Keyed on the ref, the guard cannot
+    # be widened by a change to the trigger list.
+    if: github.ref == 'refs/heads/main'
     needs: [build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
