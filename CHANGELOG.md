@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.8.0](https://github.com/AtvikSecurity/domarinn/compare/0.7.1...0.8.0) (2026-08-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core:** `base_url` is no longer part of the cache key for the vendor providers. A gateway and a direct connection to the same API now share entries instead of paying for the same answers twice — the same call `cache_key` already made about the model a vendor reports having served. The address is recorded on each entry and a hit from a different one warns, exactly as `program_digest` reports a rebuilt `exec` program; `cache_salt` (new on these variants) separates two endpoints outright when a warning is not enough.
+
+### Features
+
+* **core:** customize provider requests via `request:`, and stop keying base_url ([#65](https://github.com/AtvikSecurity/domarinn/issues/65)) ([56f9298](https://github.com/AtvikSecurity/domarinn/commit/56f92986328da0f3cc9a4b752c0fb818ced8a017))
+
 ## [0.7.1](https://github.com/AtvikSecurity/domarinn/compare/0.7.0...0.7.1) (2026-08-03)
 
 
