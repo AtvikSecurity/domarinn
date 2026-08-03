@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 use super::runs::{finish, internal, structured_with_budget};
 use super::{clamp_limit, parse_args, read_only_annotations, ToolResult};
+use crate::domain::CachedFilter;
 use crate::mcp::budget;
 use crate::mcp::text;
 use crate::runsets::RunVisibility;
@@ -43,6 +44,7 @@ pub(super) struct CompareRunsArgs {
 pub(super) struct SearchArgs {
     pub q: String,
     pub limit: Option<i64>,
+    pub cached: Option<CachedFilter>,
 }
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -93,6 +95,11 @@ pub(super) fn definitions() -> Vec<Value> {
                     "limit": {
                         "type": "integer", "minimum": 1, "maximum": SEARCH_MAX_LIMIT,
                         "description": "Max hits per group. Default 10."
+                    },
+                    "cached": {
+                        "type": "string", "enum": ["exclude", "only", "all"],
+                        "description": "Filter by the owning run's cache provenance. \
+                            'exclude' drops hits from fully-cached passing runs (replay noise)."
                     }
                 },
                 "required": ["q"],
@@ -195,6 +202,7 @@ pub(super) async fn search(state: &AppState, vis: &RunVisibility, args: Value) -
             args.q.clone(),
             clamp_limit(args.limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT),
             vis.clone(),
+            args.cached,
         )
         .await
     {

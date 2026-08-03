@@ -42,6 +42,7 @@ use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
+use crate::domain::CachedFilter;
 use crate::dto::runs::CaseAssertLean;
 
 mod auth;
@@ -268,6 +269,44 @@ pub(super) fn from_microusd(micro: Option<i64>) -> Option<f64> {
 /// `runs.config_digest`.
 pub(super) fn empty_to_none(value: Option<String>) -> Option<String> {
     value.filter(|s| !s.is_empty())
+}
+
+/// "Every provider call in this run was served from cache", against a `runs`
+/// row reachable as `alias`.
+///
+/// Deliberately bare — no `COALESCE`, no function call of any kind around the
+/// columns. Wrapping them is semantically identical and stops SQLite matching
+/// the `idx_runs_cached_passing` partial index (migration 11), which turns the
+/// hottest read in the product back into an unbounded scan. The unaliased twin
+/// of this string lives in `runs.rs` as `FULLY_CACHED`; the two must agree, and
+/// `tests/cached_filter.rs` pins the behaviour of both.
+pub(super) fn fully_cached_sql(alias: &str) -> String {
+    format!("{alias}.cache_misses = 0 AND {alias}.cache_hits > 0")
+}
+
+/// What `cached=exclude` suppresses: fully cached **and** passing. A cached run
+/// that failed stays visible, because grader verdicts are not cached — only
+/// provider responses are — so re-running an unchanged config can still surface
+/// a regression.
+pub(super) fn cached_hidden_sql(alias: &str) -> String {
+    format!(
+        "({} AND {alias}.fail_count = 0 AND {alias}.error_count = 0)",
+        fully_cached_sql(alias)
+    )
+}
+
+/// A trailing ` AND ...` fragment applying a cached filter, or empty for the
+/// no-op cases.
+pub(super) fn cached_clause_sql(alias: &str, cached: Option<CachedFilter>) -> String {
+    match cached {
+        // `IS NOT 1`, never `NOT (...)`. A legacy row with NULL counters makes
+        // the predicate NULL; `NOT NULL` is NULL; SQLite filters that out —
+        // hiding exactly the rows we cannot classify and have promised never
+        // to hide.
+        Some(CachedFilter::Exclude) => format!(" AND {} IS NOT 1", cached_hidden_sql(alias)),
+        Some(CachedFilter::Only) => format!(" AND ({})", fully_cached_sql(alias)),
+        Some(CachedFilter::All) | None => String::new(),
+    }
 }
 
 /// Parse a case row's stored `asserts` JSON, degrading gracefully.

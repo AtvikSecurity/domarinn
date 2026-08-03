@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   createColumnHelper,
   flexRender,
@@ -20,16 +20,35 @@ import {
   formatTokens,
 } from "@/lib/format";
 import {
-  ALWAYS_VISIBLE,
-  isAssertColumn,
-  isVisible,
-  loadColumnVisibility,
-  saveColumnVisibility,
-  type ColumnVisibility,
-} from "@/lib/gridColumns";
+  clampWidth,
+  type ColumnDef,
+  cssVarsFor,
+  gridTemplateFor,
+  minWidthFor,
+  visibleColumns as pickVisible,
+} from "@/lib/tableColumns";
+import {
+  resetColumns,
+  resetColumnWidth,
+  setColumnVisible,
+  setColumnWidth,
+  useColumnPrefs,
+} from "@/lib/useColumnPrefs";
 import { compareStatus } from "@/lib/sort";
 import { cn } from "@/lib/cn";
-import { CaseColumnPicker, type PickableColumn } from "./CaseColumnPicker";
+import { ColumnPicker } from "@/components/ui/ColumnPicker";
+import { ColumnResizer } from "@/components/ui/ColumnResizer";
+
+/** This grid's slot in the shared column-preference store. */
+const TABLE_ID = "cases";
+
+/** Per-assertion columns are `assert:<label>`. */
+function isAssertColumn(id: string): boolean {
+  return id.startsWith("assert:");
+}
+
+/** Structural columns: never offered to the picker, never hidden. */
+const ALWAYS_VISIBLE = new Set(["status", "name"]);
 
 /** Human labels for the non-assertion columns in the picker. */
 const COLUMN_LABEL: Record<string, string> = {
@@ -354,40 +373,45 @@ export function CaseGrid({
     ];
   }, [assertLabels, showProvider, showPrompt]);
 
-  const [visibility, setVisibility] = useState<ColumnVisibility>(() =>
-    loadColumnVisibility(),
-  );
+  const prefs = useColumnPrefs(TABLE_ID);
 
-  function setColumnVisible(id: string, visible: boolean) {
-    setVisibility((prev) => {
-      const next = { ...prev, [id]: visible };
-      saveColumnVisibility(next);
-      return next;
-    });
-  }
-
-  function resetColumns() {
-    setVisibility({});
-    saveColumnVisibility({});
-  }
-
-  const visibleColumns = useMemo(
-    () => columns.filter((c) => isVisible(c.id ?? "", visibility)),
-    [columns, visibility],
-  );
-
-  const pickable = useMemo<PickableColumn[]>(
+  // The layout spec, the picker labels and the visibility defaults were three
+  // parallel lookups keyed by the same id. One descriptor per column now feeds
+  // all three, so a column added to one cannot go missing from another.
+  const columnDefs = useMemo<ColumnDef[]>(
     () =>
-      columns
-        .map((c) => c.id ?? "")
-        .filter((id) => id && !ALWAYS_VISIBLE.has(id))
-        .map((id) => ({
+      columns.map((c) => {
+        const id = c.id ?? "";
+        const assert = isAssertColumn(id);
+        const s = spec(id);
+        return {
           id,
-          label: isAssertColumn(id) ? id.slice("assert:".length) : COLUMN_LABEL[id] ?? id,
-          group: isAssertColumn(id) ? ("assertions" as const) : ("columns" as const),
-        })),
+          label: assert ? id.slice("assert:".length) : (COLUMN_LABEL[id] ?? id),
+          track: s.track,
+          min: s.min,
+          ...(assert ? { group: "Assertions" } : {}),
+          ...(s.numeric ? { numeric: true } : {}),
+          ...(s.sticky ? { sticky: true } : {}),
+          ...(ALWAYS_VISIBLE.has(id) ? { alwaysVisible: true } : {}),
+          // Per-assertion columns start hidden: each test uses one or two of
+          // the run's assertion types, so the rest are columns of em-dashes,
+          // and the combined strip says the same thing in a twelfth of the
+          // width. The picker is where anyone who disagrees puts them back.
+          ...(assert ? { defaultVisible: false } : {}),
+        };
+      }),
     [columns],
   );
+
+  const defsById = useMemo(
+    () => new Map(columnDefs.map((d) => [d.id, d])),
+    [columnDefs],
+  );
+
+  const visibleColumns = useMemo(() => {
+    const ids = new Set(pickVisible(columnDefs, prefs).map((d) => d.id));
+    return columns.filter((c) => ids.has(c.id ?? ""));
+  }, [columns, columnDefs, prefs]);
 
   const table = useReactTable({
     data: cases,
@@ -416,19 +440,21 @@ export function CaseGrid({
   // Both the header and every body row lay out on this one template, derived
   // from the live column ids so provider/prompt columns (when present) shift
   // everything after them consistently.
-  const columnIds = useMemo(
-    () => visibleColumns.map((c) => c.id ?? ""),
-    [visibleColumns],
-  );
   const gridTemplate = useMemo(
-    () => columnIds.map((id) => spec(id).track).join(" "),
-    [columnIds],
+    () => gridTemplateFor(columnDefs, prefs),
+    [columnDefs, prefs],
   );
   // + the container's own horizontal padding: without it the intrinsic width is
   // under-reported and the last column is clipped rather than scrolled to.
   const minWidth = useMemo(
-    () => columnIds.reduce((sum, id) => sum + spec(id).min, 0) + GRID_INSET,
-    [columnIds],
+    () => minWidthFor(columnDefs, prefs, GRID_INSET),
+    [columnDefs, prefs],
+  );
+  // Widths as custom properties on the scrolling ancestor: a drag updates this
+  // one style object and every cell reflows in CSS, with no row re-rendering.
+  const columnVars = useMemo(
+    () => cssVarsFor(columnDefs, prefs),
+    [columnDefs, prefs],
   );
 
   const virtualItems = rowVirtualizer.getVirtualItems();
@@ -464,11 +490,11 @@ export function CaseGrid({
             </span>
           ) : null}
         </p>
-        <CaseColumnPicker
-          columns={pickable}
-          visibility={visibility}
-          onChange={setColumnVisible}
-          onReset={resetColumns}
+        <ColumnPicker
+          columns={columnDefs}
+          prefs={prefs}
+          onChange={(id, visible) => setColumnVisible(TABLE_ID, id, visible)}
+          onReset={() => resetColumns(TABLE_ID)}
         />
       </div>
 
@@ -490,7 +516,7 @@ export function CaseGrid({
           // the loaded count is not the total.
           aria-rowcount={hasNextPage ? -1 : rows.length + 1}
         >
-        <div style={{ minWidth }}>
+        <div style={{ minWidth, ...columnVars }}>
           {/* Header */}
           <div
             className="sticky top-0 z-20 grid items-center border-b border-border bg-surface-2 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted"
@@ -503,11 +529,15 @@ export function CaseGrid({
               const sorted = header.column.getIsSorted(); // false | "asc" | "desc"
               const s = spec(header.column.id);
               const numeric = s.numeric ?? false;
+              const def = defsById.get(header.column.id);
+              const labelId = `casegrid-h-${header.column.id}`;
               return (
                 <div
                   key={header.id}
                   className={cn(
-                    "min-w-0 px-1",
+                    // `relative` so the resize handle can straddle this
+                    // cell's right edge.
+                    "relative min-w-0 px-1",
                     // The pinned cell must carry its own background or the
                     // columns scrolling underneath show through it.
                     s.sticky && "sticky left-0 z-10 bg-surface-2",
@@ -532,7 +562,7 @@ export function CaseGrid({
                         numeric ? "justify-end" : "justify-start",
                       )}
                     >
-                      <span className="truncate">
+                      <span id={labelId} className="truncate">
                         {flexRender(
                           header.column.columnDef.header,
                           header.getContext(),
@@ -541,13 +571,25 @@ export function CaseGrid({
                       <SortArrow dir={sorted} />
                     </button>
                   ) : (
-                    <div className="truncate">
+                    <div id={labelId} className="truncate">
                       {flexRender(
                         header.column.columnDef.header,
                         header.getContext(),
                       )}
                     </div>
                   )}
+                  {/* Rendered as a SIBLING of the sort button, never inside
+                      it: a pointerdown that bubbles into the sort toggle is
+                      the classic table-resizer bug. */}
+                  {def ? (
+                    <ColumnResizer
+                      def={def}
+                      width={clampWidth(def, prefs.width[def.id] ?? def.min)}
+                      headerId={labelId}
+                      onResize={(px) => setColumnWidth(TABLE_ID, def.id, px)}
+                      onReset={() => resetColumnWidth(TABLE_ID, def.id)}
+                    />
+                  ) : null}
                 </div>
               );
             })}

@@ -8,6 +8,9 @@ import {
   RUNS_FILTER_KEYS,
 } from "@/lib/filters";
 import { cn } from "@/lib/cn";
+import { resolveCached } from "@/lib/cached";
+import { setCachedPref, useCachedPref } from "@/lib/cachedPref";
+import type { CachedFilter } from "@/api";
 import { Button } from "./ui/Button";
 import { SegmentedControl } from "./ui/SegmentedControl";
 
@@ -56,6 +59,7 @@ export function RunsFilterBar() {
   const filters = parseRunsFilters(params);
   const projects = useProjects();
   const suites = useSuites(filters.project);
+  const cachedPref = useCachedPref();
 
   function patch(next: Record<string, string | undefined>) {
     // Changing a filter resets pagination and, when project changes, suite.
@@ -71,12 +75,10 @@ export function RunsFilterBar() {
     { value: "error", label: "Has errors" },
   ];
 
-  // Absent = the hidden default (see `runsRequestFilters`): fully-cached
-  // passing runs — CI noise — stay out of the list until explicitly shown.
-  const cachedOptions = [
-    { value: "", label: "Hidden (default)" },
+  const cachedOptions: readonly { value: CachedFilter; label: string }[] = [
+    { value: "exclude", label: "Hidden" },
     { value: "all", label: "Shown" },
-    { value: "only", label: "Only cached" },
+    { value: "only", label: "Only" },
   ];
 
   return (
@@ -244,18 +246,25 @@ export function RunsFilterBar() {
           </select>
         </Field>
 
+        {/* Three mutually exclusive states, worth seeing at once — the same
+            reasoning as Origin above, which this used to disagree with by
+            being a select.
+
+            Unlike every other control here, this one is not only a filter:
+            it also stores the choice as the standing preference, so the suite
+            pages, search and the case drawer stop hiding (or start hiding)
+            cached runs too. It writes the URL as well, so the view it produces
+            stays shareable and beats whatever preference the recipient holds. */}
         <Field label="Cached runs">
-          <select
-            className={controlCls}
-            value={filters.cached ?? ""}
-            onChange={(e) => patch({ cached: e.target.value || undefined })}
-          >
-            {cachedOptions.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+          <SegmentedControl<CachedFilter>
+            ariaLabel="Cached runs"
+            value={resolveCached(filters.cached, cachedPref)}
+            onChange={(v) => {
+              setCachedPref(v);
+              patch({ cached: v });
+            }}
+            options={cachedOptions}
+          />
         </Field>
 
         {activeCount > 0 ? (

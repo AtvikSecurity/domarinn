@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { useRuns, useSetSuite } from "@/api/queries";
 import type { RunListItem } from "@/api";
 import { ApiError } from "@/api/client";
@@ -18,6 +18,16 @@ import { PassRateBadge, RateBadge } from "@/components/PassRateBadge";
 import { RunOriginCell } from "@/components/RunOriginCell";
 import { Sparkline } from "@/components/Sparkline";
 import { previousRun } from "@/lib/compare";
+import { hiddenByCachedExclude, isFullyCached, resolveCached } from "@/lib/cached";
+import { useCachedPref } from "@/lib/cachedPref";
+import { mergeParams } from "@/lib/filters";
+import { CachedRunsToggle } from "@/components/CachedRunsToggle";
+import { ColumnGroup } from "@/components/ui/ColumnGroup";
+import { ColumnPicker } from "@/components/ui/ColumnPicker";
+import { ResizableTh } from "@/components/ui/ResizableTh";
+import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
+import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
+import { cn } from "@/lib/cn";
 import {
   formatDateAbsolute,
   formatDuration,
@@ -52,10 +62,20 @@ function comparePair(
   return { baseId: older.id, headId: newer.id };
 }
 
-/** Mirrors the server's FULLY_CACHED predicate (storage/runs.rs). */
-function isFullyCached(r: RunListItem): boolean {
-  return r.cache_misses === 0 && (r.cache_hits ?? 0) > 0;
-}
+/** This table's slot in the shared column-preference store. Distinct from the
+ *  runs list's: a different column set, for a page with a different job. */
+const SUITE_RUNS_TABLE_ID = "setSuiteRuns";
+
+const SUITE_RUN_COLUMNS: ColumnDef[] = [
+  { id: "select", label: "Select", track: "40px", min: 40, alwaysVisible: true },
+  { id: "run", label: "Run", track: "auto", min: 240, alwaysVisible: true },
+  { id: "when", label: "When", track: "130px", min: 110 },
+  { id: "who", label: "Who", track: "150px", min: 110 },
+  { id: "pass_rate", label: "Pass rate", track: "130px", min: 110 },
+  { id: "cases", label: "Cases", track: "80px", min: 70, numeric: true },
+  { id: "duration", label: "Duration", track: "110px", min: 90, numeric: true },
+  { id: "compare", label: "Compare", track: "110px", min: 100, numeric: true },
+];
 
 /**
  * One suite: what it is, who may reach it, and its runs.
@@ -67,14 +87,28 @@ function isFullyCached(r: RunListItem): boolean {
  */
 export function SetSuitePage() {
   const { project = "", suite = "" } = useParams();
+  const [params, setParams] = useSearchParams();
   const view = useAuthView();
   const q = useSetSuite(project, suite);
   const [accessOpen, setAccessOpen] = useState(false);
 
-  // `cached: "all"`, unlike the runs list's default: this page is the suite's
-  // whole record, and hiding its fully-cached CI re-runs here would silently
-  // disagree with the run count in the header two lines above.
-  const runsQ = useRuns({ project, suite, cached: "all" });
+  // This page used to force `cached: "all"`, because hiding a suite's
+  // fully-cached CI re-runs made the table disagree with the run count in the
+  // header two lines above. The disagreement was the problem, not the hiding —
+  // so the page now honours the same preference as everywhere else and states
+  // the difference instead of avoiding it.
+  const cachedPref = useCachedPref();
+  const resolvedCached = resolveCached(params.get("cached"), cachedPref);
+  const runsQ = useRuns({ project, suite, cached: resolvedCached });
+  const colPrefs = useColumnPrefs(SUITE_RUNS_TABLE_ID);
+  const shownCols = useMemo(
+    () => visibleColumns(SUITE_RUN_COLUMNS, colPrefs),
+    [colPrefs],
+  );
+  const shownColIds = useMemo(
+    () => new Set(shownCols.map((c) => c.id)),
+    [shownCols],
+  );
   const runs = useMemo(
     () => runsQ.data?.pages.flatMap((p) => p.runs) ?? [],
     [runsQ.data],
@@ -92,7 +126,9 @@ export function SetSuitePage() {
   const last = isoFromEpoch(detail.last_run_at);
   const canOpenAccess = view.canAdmin || detail.my_level === "manage";
   const pair = comparePair(runs, selected);
-  const runsHref = runsFilterHref(project, suite);
+  // Carry this page's own view through, so the stream opens showing what the
+  // table above it was showing rather than always widening to everything.
+  const runsHref = runsFilterHref(project, suite, resolvedCached);
 
   function toggle(id: string) {
     setSelected((prev) =>
@@ -228,6 +264,27 @@ export function SetSuitePage() {
           </Link>
         </div>
 
+        {/* The header's run count comes from the server's aggregate and counts
+            every run, so whenever this table hides some it has to say so —
+            otherwise the two numbers just disagree and the page looks wrong. */}
+        <div className="flex items-center justify-between gap-3">
+          <CachedRunsToggle
+            resolved={resolvedCached}
+            hiddenCount={runsQ.data?.pages[0]?.cached_hidden ?? 0}
+            onChange={(next) =>
+              setParams(mergeParams(params, { cached: next }), { replace: true })
+            }
+          />
+          <ColumnPicker
+            columns={SUITE_RUN_COLUMNS}
+            prefs={colPrefs}
+            onChange={(id, visible) =>
+              setColumnVisible(SUITE_RUNS_TABLE_ID, id, visible)
+            }
+            onReset={() => resetColumns(SUITE_RUNS_TABLE_ID)}
+          />
+        </div>
+
         {runsQ.isPending ? (
           <CenteredSpinner label="Loading runs…" />
         ) : runsQ.isError ? (
@@ -241,29 +298,39 @@ export function SetSuitePage() {
                   `position: absolute` and escape a scroller that is not a
                   containing block. See SetsPage for the full account. */}
               <div className="relative overflow-x-auto scroll-hint">
-                <table className="w-full min-w-[900px] text-sm">
+                <table className="w-full min-w-[900px] table-fixed text-sm">
+                  <ColumnGroup columns={SUITE_RUN_COLUMNS} prefs={colPrefs} />
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                      <th className="w-8 px-3 py-2 font-medium">
-                        <span className="sr-only">Select</span>
-                      </th>
-                      <th className="px-4 py-2 font-medium">Run</th>
-                      <th className="px-3 py-2 font-medium">When</th>
-                      <th className="px-3 py-2 font-medium">Who</th>
-                      <th className="px-3 py-2 font-medium">Pass rate</th>
-                      <th className="px-3 py-2 text-right font-medium">Cases</th>
-                      <th className="px-3 py-2 text-right font-medium">Duration</th>
-                      <th className="px-3 py-2 text-right font-medium">Compare</th>
+                      {shownCols.map((c) => (
+                        <ResizableTh
+                          key={c.id}
+                          def={c}
+                          tableId={SUITE_RUNS_TABLE_ID}
+                          prefs={colPrefs}
+                          className={cn(
+                            "py-2 font-medium",
+                            c.id === "run" ? "px-4" : "px-3",
+                            c.numeric && "text-right",
+                          )}
+                        >
+                          {c.id === "select" ? (
+                            <span className="sr-only">Select</span>
+                          ) : (
+                            c.label
+                          )}
+                        </ResizableTh>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
                     {runs.map((r) => {
                       const compareTarget = previousRun(runs, r.id);
                       const fullyCached = isFullyCached(r);
-                      // Dim only cached AND passing rows: a cached run that
-                      // failed is real signal and must read as such.
-                      const dimmed =
-                        fullyCached && r.fail_count === 0 && r.error_count === 0;
+                      // Dim exactly what `cached=exclude` would have hidden. A
+                      // cached run that failed is real signal (verdicts are
+                      // never cached) and stays at full contrast.
+                      const dimmed = hiddenByCachedExclude(r);
                       return (
                         <tr
                           key={r.id}
@@ -274,84 +341,100 @@ export function SetSuitePage() {
                           {...rowNav(runPath(r.id))}
                           className={`cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2${dimmed ? " opacity-60" : ""}`}
                         >
-                          <td className="px-3 py-2">
-                            {/* The label is the hit target: an input's own 16px
-                                box is under WCAG 2.2's 24px minimum. */}
-                            <label className="flex size-6 cursor-pointer items-center justify-center">
-                              <input
-                                type="checkbox"
-                                aria-label={`Select run ${r.id}`}
-                                checked={selected.includes(r.id)}
-                                onChange={() => toggle(r.id)}
-                                className="size-4 accent-[var(--color-accent)]"
-                              />
-                            </label>
-                          </td>
-                          <td className="px-4 py-2">
-                            <span className="flex items-center gap-1">
-                              <Link
-                                to={runPath(r.id)}
-                                className="font-medium text-accent hover:underline"
-                              >
-                                {r.id}
-                              </Link>
-                              <CopyButton value={r.id} label="Copy run id" iconOnly />
-                              {r.id === detail.baseline_run_id ? (
-                                <Chip
-                                  tone="accent"
-                                  title="Pinned comparison baseline for this suite"
+                          {shownColIds.has("select") && (
+                            <td className="px-3 py-2">
+                              {/* The label is the hit target: an input's own 16px
+                                  box is under WCAG 2.2's 24px minimum. */}
+                              <label className="flex size-6 cursor-pointer items-center justify-center">
+                                <input
+                                  type="checkbox"
+                                  aria-label={`Select run ${r.id}`}
+                                  checked={selected.includes(r.id)}
+                                  onChange={() => toggle(r.id)}
+                                  className="size-4 accent-[var(--color-accent)]"
+                                />
+                              </label>
+                            </td>
+                          )}
+                          {shownColIds.has("run") && (
+                            <td className="px-4 py-2">
+                              <span className="flex items-center gap-1">
+                                <Link
+                                  to={runPath(r.id)}
+                                  className="font-medium text-accent hover:underline"
                                 >
-                                  baseline
-                                </Chip>
-                              ) : null}
-                              {fullyCached ? (
-                                <Chip title="Every provider call in this run was a cache hit">
-                                  cached
-                                </Chip>
-                              ) : null}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 text-muted">
-                            <Tooltip content={formatDateAbsolute(r.created_at)}>
-                              <time dateTime={r.created_at}>
-                                {formatRelative(r.created_at)}
-                              </time>
-                            </Tooltip>
-                          </td>
-                          <td className="px-3 py-2">
-                            <RunOriginCell run={r} />
-                          </td>
-                          <td className="px-3 py-2">
-                            <PassRateBadge
-                              pass={r.pass_count}
-                              fail={r.fail_count}
-                              error={r.error_count}
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-right tabular-nums">
-                            {r.case_count}
-                          </td>
-                          <td className="px-3 py-2 text-right tabular-nums text-muted">
-                            {formatDuration(r.duration_ms)}
-                          </td>
-                          <td className="px-3 py-2 text-right">
-                            {compareTarget ? (
-                              <Link
-                                to={comparePath(compareTarget.id, r.id)}
-                                className="text-xs font-medium text-accent hover:underline"
-                                title={`Compare against ${compareTarget.id}`}
-                              >
-                                Compare
-                              </Link>
-                            ) : (
-                              <span
-                                className="text-xs text-muted"
-                                title="No earlier loaded run in this suite to compare against"
-                              >
-                                —
+                                  {r.id}
+                                </Link>
+                                <CopyButton value={r.id} label="Copy run id" iconOnly />
+                                {r.id === detail.baseline_run_id ? (
+                                  <Chip
+                                    tone="accent"
+                                    title="Pinned comparison baseline for this suite"
+                                  >
+                                    baseline
+                                  </Chip>
+                                ) : null}
+                                {fullyCached ? (
+                                  <Chip title="Every provider call in this run was a cache hit">
+                                    cached
+                                  </Chip>
+                                ) : null}
                               </span>
-                            )}
-                          </td>
+                            </td>
+                          )}
+                          {shownColIds.has("when") && (
+                            <td className="px-3 py-2 text-muted">
+                              <Tooltip content={formatDateAbsolute(r.created_at)}>
+                                <time dateTime={r.created_at}>
+                                  {formatRelative(r.created_at)}
+                                </time>
+                              </Tooltip>
+                            </td>
+                          )}
+                          {shownColIds.has("who") && (
+                            <td className="px-3 py-2">
+                              <RunOriginCell run={r} />
+                            </td>
+                          )}
+                          {shownColIds.has("pass_rate") && (
+                            <td className="px-3 py-2">
+                              <PassRateBadge
+                                pass={r.pass_count}
+                                fail={r.fail_count}
+                                error={r.error_count}
+                              />
+                            </td>
+                          )}
+                          {shownColIds.has("cases") && (
+                            <td className="px-3 py-2 text-right tabular-nums">
+                              {r.case_count}
+                            </td>
+                          )}
+                          {shownColIds.has("duration") && (
+                            <td className="px-3 py-2 text-right tabular-nums text-muted">
+                              {formatDuration(r.duration_ms)}
+                            </td>
+                          )}
+                          {shownColIds.has("compare") && (
+                            <td className="px-3 py-2 text-right">
+                              {compareTarget ? (
+                                <Link
+                                  to={comparePath(compareTarget.id, r.id)}
+                                  className="text-xs font-medium text-accent hover:underline"
+                                  title={`Compare against ${compareTarget.id}`}
+                                >
+                                  Compare
+                                </Link>
+                              ) : (
+                                <span
+                                  className="text-xs text-muted"
+                                  title="No earlier loaded run in this suite to compare against"
+                                >
+                                  —
+                                </span>
+                              )}
+                            </td>
+                          )}
                         </tr>
                       );
                     })}

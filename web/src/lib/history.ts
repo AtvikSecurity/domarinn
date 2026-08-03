@@ -122,6 +122,64 @@ export function historySummary(
   return summary;
 }
 
+export interface HistorySegment {
+  /** The points in this segment, in the order they were given. */
+  points: CaseHistoryPoint[];
+  /** Index of this segment's first point in the source window. */
+  start: number;
+  /** True when this is a folded streak of consecutive replayed runs. */
+  collapsed: boolean;
+}
+
+/** A streak has to be at least this long before folding it saves anything. */
+const MIN_COLLAPSED_RUN = 2;
+
+/**
+ * Group a history window so that consecutive replayed runs read as one fact.
+ *
+ * A suite that re-runs unchanged in CI produces a queue of points whose
+ * provider responses all came from cache. Rendering them individually makes a
+ * fortnight of "nothing happened" look like a fortnight of activity and pushes
+ * the runs that *did* measure something off the visible window.
+ *
+ * They are folded rather than hidden, which is the important distinction. Six
+ * replayed runs are evidence the case held green across six occasions; drop
+ * them and the timeline claims the verdict is six runs younger than it is.
+ * Folded, they say the true thing — "still green, not re-measured since" —
+ * in the space of one marker. This is also why no point is ever removed from
+ * the response: `output_changed` keeps comparing genuinely adjacent runs.
+ *
+ * A lone replayed run is left expanded: folding one point into a "×1" marker
+ * costs a click and saves no space. A run of unknown provenance (`cached` is
+ * `null`, the legacy and undecodable-blob cases) is never folded and breaks a
+ * streak rather than joining it — folding it would assert a replay that
+ * nobody recorded.
+ *
+ * Order-agnostic: it groups on adjacency, so it works on either the API's
+ * newest-first points or the chronological order the rest of this module uses.
+ */
+export function collapseCachedRuns(
+  points: readonly CaseHistoryPoint[],
+  minRun: number = MIN_COLLAPSED_RUN,
+): HistorySegment[] {
+  const segments: HistorySegment[] = [];
+  let i = 0;
+  while (i < points.length) {
+    if (points[i]?.cached === true) {
+      let end = i;
+      while (points[end]?.cached === true) end++;
+      if (end - i >= minRun) {
+        segments.push({ points: points.slice(i, end), start: i, collapsed: true });
+        i = end;
+        continue;
+      }
+    }
+    segments.push({ points: [points[i]!], start: i, collapsed: false });
+    i++;
+  }
+  return segments;
+}
+
 /**
  * Prompt/completion split for a token total. A prompt-heavy case is a cost
  * problem; an output-heavy one is a truncation risk. Summed, they are

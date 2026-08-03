@@ -9,6 +9,7 @@ import type {
   RunTotals,
 } from "@/api";
 import { DELTA_LABEL, formatScoreDelta } from "@/lib/compare";
+import { isFullyCached } from "@/lib/cached";
 import { mergeParams } from "@/lib/filters";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
@@ -63,9 +64,16 @@ export function ComparePage() {
   // row via the existing `useRun` hook once the compare response resolves.
   const baseRun = useRun(compare.data?.base ?? "", { enabled: !!compare.data });
   const headRun = useRun(compare.data?.head ?? "", { enabled: !!compare.data });
+  // `cached: "all"` explicitly: these rows fill the base/head pickers, and a
+  // run missing from a picker is indistinguishable from a run that does not
+  // exist. Comparing against a fully-cached run is a legitimate thing to want
+  // — that is how you check a config change against a known-identical
+  // baseline. Cached options are labelled rather than withheld. This used to
+  // inherit the hidden default by passing no `cached` at all.
   const suiteRuns = useRuns({
     project: headRun.data?.project ?? undefined,
     suite: headRun.data?.suite ?? undefined,
+    cached: "all",
   });
 
   const rows = useMemo(() => {
@@ -119,6 +127,11 @@ export function ComparePage() {
   const base = baseRun.data;
   const head = headRun.data;
   const runOptions = suiteRuns.data?.pages.flatMap((p) => p.runs) ?? [];
+  // A native <option> renders text and nothing else, so the cached marker that
+  // is a Chip everywhere else has to be part of the label here. Marking beats
+  // omitting: a run absent from the picker reads as a run that never happened.
+  const runOptionLabel = (r: (typeof runOptions)[number]) =>
+    isFullyCached(r) ? `${r.id} · cached` : r.id;
   const configChanged = config.changed === true;
   // Name what moved when the component digests can say; fall back to the
   // generic label when one side predates them.
@@ -156,7 +169,7 @@ export function ComparePage() {
             ) : (
               runOptions.map((r) => (
                 <option key={r.id} value={r.id} disabled={r.id === head.id}>
-                  {r.id}
+                  {runOptionLabel(r)}
                 </option>
               ))
             )}
@@ -179,7 +192,7 @@ export function ComparePage() {
             ) : (
               runOptions.map((r) => (
                 <option key={r.id} value={r.id} disabled={r.id === base.id}>
-                  {r.id}
+                  {runOptionLabel(r)}
                 </option>
               ))
             )}

@@ -14,4 +14,14 @@ created_at: string,
  * Matched-field excerpt with [`SNIPPET_OPEN`]/[`SNIPPET_CLOSE`] around
  * each matched token.
  */
-snippet: string, };
+snippet: string, 
+/**
+ * Whether every provider call in the run was served from cache.
+ *
+ * `None` is "cannot tell", not "fresh": legacy pre-backfill rows carry
+ * NULL counters and failed-backfill rows carry the `-1` sentinel. The
+ * query computes this with an explicit unknown branch rather than letting
+ * the bare predicate answer, which would report `false` — a claim — for
+ * rows nobody ever classified.
+ */
+cached: boolean | null, };

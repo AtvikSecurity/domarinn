@@ -29,6 +29,7 @@ function point(over: Partial<CaseHistoryPoint> & { run_id: string }): CaseHistor
     score: 0.9,
     output_hash: "h",
     output_changed: null,
+    cached: false,
     prompt_tokens: 10,
     completion_tokens: 5,
     cost_usd: 0.001,
@@ -229,5 +230,87 @@ describe("CaseHistoryRail", () => {
 
     expect(screen.getByText("Case history is unavailable.")).toBeInTheDocument();
     expect(squareRunIds()).toHaveLength(0);
+  });
+});
+
+describe("CaseHistoryRail replayed streaks", () => {
+  beforeEach(() => {
+    mockUseCaseHistory.mockReset();
+  });
+
+  /** Newest-first, as the server returns it. */
+  const replayed = (id: string) => point({ run_id: id, cached: true });
+  const fresh = (id: string) => point({ run_id: id, cached: false });
+
+  it("folds a run of replayed runs into one counted marker", () => {
+    // Newest-first: the current run, then four replays, then a fresh run.
+    mockUseCaseHistory.mockReturnValue(
+      loaded([
+        fresh(CURRENT),
+        replayed("run-r4"),
+        replayed("run-r3"),
+        replayed("run-r2"),
+        replayed("run-r1"),
+        fresh("run-old"),
+      ]),
+    );
+    renderSection();
+
+    const streak = document.querySelector("[data-replayed-streak]");
+    expect(streak).not.toBeNull();
+    expect(streak?.getAttribute("data-count")).toBe("4");
+
+    // The four folded runs are gone from the square row; the two measured ones
+    // and the baseline remain.
+    expect(squareRunIds()).not.toContain("run-r2");
+    expect(squareRunIds()).toContain(CURRENT);
+    expect(squareRunIds()).toContain("run-old");
+  });
+
+  it("restores every folded run when the marker is selected", async () => {
+    const user = userEvent.setup();
+    mockUseCaseHistory.mockReturnValue(
+      loaded([
+        fresh(CURRENT),
+        replayed("run-r3"),
+        replayed("run-r2"),
+        replayed("run-r1"),
+      ]),
+    );
+    renderSection();
+
+    await user.click(screen.getByRole("button", { name: /3 replayed runs/ }));
+
+    expect(document.querySelector("[data-replayed-streak]")).toBeNull();
+    for (const id of ["run-r1", "run-r2", "run-r3"]) {
+      expect(squareRunIds()).toContain(id);
+    }
+  });
+
+  // Folding away the run the drawer is open on would hide the current-run ring,
+  // which is how a reader locates themselves on the timeline.
+  it("never folds a streak containing the run being viewed", () => {
+    mockUseCaseHistory.mockReturnValue(
+      loaded([
+        replayed(CURRENT),
+        replayed("run-r2"),
+        replayed("run-r1"),
+        fresh("run-old"),
+      ]),
+    );
+    renderSection();
+
+    expect(document.querySelector("[data-replayed-streak]")).toBeNull();
+    expect(squareRunIds()).toContain(CURRENT);
+  });
+
+  it("leaves a window of freshly measured runs untouched", () => {
+    mockUseCaseHistory.mockReturnValue(
+      loaded([fresh(CURRENT), fresh("run-b"), fresh("run-a")]),
+    );
+    renderSection();
+
+    expect(document.querySelector("[data-replayed-streak]")).toBeNull();
+    expect(squareRunIds()).toHaveLength(3);
   });
 });

@@ -5,6 +5,15 @@ import type { RunListItem } from "@/api";
 import { mergeParams, parseRunsFilters } from "@/lib/filters";
 import { suitePassRateSeries } from "@/lib/suites";
 import { previousRun } from "@/lib/compare";
+import { hiddenByCachedExclude, isFullyCached, resolveCached } from "@/lib/cached";
+import { useCachedPref } from "@/lib/cachedPref";
+import { CachedRunsToggle } from "@/components/CachedRunsToggle";
+import { ColumnGroup } from "@/components/ui/ColumnGroup";
+import { ColumnPicker } from "@/components/ui/ColumnPicker";
+import { ResizableTh } from "@/components/ui/ResizableTh";
+import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
+import { cn } from "@/lib/cn";
+import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
 import {
   formatCost,
   formatDateAbsolute,
@@ -43,12 +52,34 @@ function comparePair(
   return { baseId: older.id, headId: newer.id };
 }
 
-/** Mirrors the server's FULLY_CACHED predicate (storage/runs.rs): every
- *  provider call in the run was a cache hit. Legacy rows (null counters)
- *  never count as cached. */
-function isFullyCached(r: RunListItem): boolean {
-  return r.cache_misses === 0 && (r.cache_hits ?? 0) > 0;
-}
+/** This table's slot in the shared column-preference store. */
+const RUNS_TABLE_ID = "runs";
+
+/**
+ * Thirteen columns at a 1080px floor — the strongest case in the app for
+ * letting people choose. `auto` means "take the leftover space", the `<table>`
+ * analogue of an `fr` share.
+ *
+ * `select` and `run` are structural: without the checkbox there is no way to
+ * pick runs to compare, and a row that does not say which run it is is not a
+ * row. Both carry explicit widths anyway — once a `<colgroup>` exists, a
+ * column with no width collapses to nothing, and `select`'s header is
+ * `sr-only`, so it has no content to be sized from.
+ */
+const RUNS_COLUMNS: ColumnDef[] = [
+  { id: "select", label: "Select", track: "40px", min: 40, alwaysVisible: true },
+  { id: "run", label: "Run", track: "auto", min: 240, alwaysVisible: true },
+  { id: "when", label: "When", track: "120px", min: 100 },
+  { id: "who", label: "Who", track: "150px", min: 110 },
+  { id: "branch", label: "Branch", track: "180px", min: 120 },
+  { id: "pass_rate", label: "Pass rate", track: "130px", min: 110 },
+  { id: "cases", label: "Cases", track: "80px", min: 70, numeric: true },
+  { id: "tokens", label: "Tokens", track: "90px", min: 80, numeric: true },
+  { id: "cost", label: "Cost", track: "90px", min: 80, numeric: true },
+  { id: "duration", label: "Duration", track: "100px", min: 90, numeric: true },
+  { id: "tags", label: "Tags", track: "auto", min: 120 },
+  { id: "compare", label: "Compare", track: "110px", min: 100, numeric: true },
+];
 
 interface Group {
   key: string;
@@ -100,9 +131,12 @@ export function RunsList() {
     [q.data],
   );
   const groups = useMemo(() => groupRuns(runs), [runs]);
-  // Present only on the first page of the default (hidden) view; the reveal
-  // link keeps the suppression discoverable and one click away.
+  // Present only on the first page of the hidden view; the toggle keeps the
+  // suppression discoverable and one click away.
   const cachedHidden = q.data?.pages[0]?.cached_hidden ?? 0;
+  const cachedPref = useCachedPref();
+  const resolvedCached = resolveCached(params.get("cached"), cachedPref);
+  const runsColumnPrefs = useColumnPrefs(RUNS_TABLE_ID);
 
   return (
     <div className="space-y-5">
@@ -115,21 +149,25 @@ export function RunsList() {
 
       <RunsFilterBar />
 
-      {cachedHidden > 0 ? (
-        <p className="text-xs text-muted">
-          {cachedHidden} fully cached run{cachedHidden === 1 ? "" : "s"} hidden
-          {" · "}
-          <button
-            type="button"
-            className="font-medium text-accent hover:underline"
-            onClick={() =>
-              setParams(mergeParams(params, { cached: "all" }), { replace: true })
-            }
-          >
-            Show
-          </button>
-        </p>
-      ) : null}
+      {/* One picker for the page, not one per suite group: the groups are the
+          same table repeated, and a per-group control would imply otherwise. */}
+      <div className="flex items-center justify-between gap-3">
+        <CachedRunsToggle
+          resolved={resolvedCached}
+          hiddenCount={cachedHidden}
+          onChange={(next) =>
+            setParams(mergeParams(params, { cached: next }), { replace: true })
+          }
+        />
+        <ColumnPicker
+          columns={RUNS_COLUMNS}
+          prefs={runsColumnPrefs}
+          onChange={(id, visible) =>
+            setColumnVisible(RUNS_TABLE_ID, id, visible)
+          }
+          onReset={() => resetColumns(RUNS_TABLE_ID)}
+        />
+      </div>
 
       {q.isPending ? (
         <CenteredSpinner label="Loading runs…" />
@@ -164,6 +202,13 @@ export function RunsList() {
 function SuiteGroup({ group }: { group: Group }) {
   const [selected, setSelected] = useState<string[]>([]);
   const rowNav = useRowNav();
+  // Every suite group on the page reads the same preference, so hiding a
+  // column hides it in all of them rather than only where you clicked.
+  const prefs = useColumnPrefs(RUNS_TABLE_ID);
+  const shown = useMemo(() => visibleColumns(RUNS_COLUMNS, prefs), [prefs]);
+  // Cells must be omitted, not merely blanked: with a <colgroup> in play a
+  // stray <td> shifts every column after it out of alignment.
+  const shownIds = useMemo(() => new Set(shown.map((c) => c.id)), [shown]);
 
   // Prefer the server's authoritative pass-rate series + pinned baseline
   // (deduped per project by TanStack Query). Fall back to the client-computed
@@ -263,23 +308,32 @@ function SuiteGroup({ group }: { group: Group }) {
           today only because that column is leftmost; see SetsPage, where the
           same markup in a trailing column gave the page a sideways scroll. */}
       <div className="relative overflow-x-auto scroll-hint">
-        <table className="w-full min-w-[1080px] text-sm">
+        {/* `table-layout: fixed` is what makes the <colgroup> widths
+            authoritative; under the default `auto` a column's width is
+            advisory and a resize does nothing. */}
+        <table className="w-full min-w-[1080px] table-fixed text-sm">
+          <ColumnGroup columns={RUNS_COLUMNS} prefs={prefs} />
           <thead>
             <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-              <th className="w-8 px-3 py-2 font-medium">
-                <span className="sr-only">Select</span>
-              </th>
-              <th className="px-4 py-2 font-medium">Run</th>
-              <th className="px-3 py-2 font-medium">When</th>
-              <th className="px-3 py-2 font-medium">Who</th>
-              <th className="px-3 py-2 font-medium">Branch</th>
-              <th className="px-3 py-2 font-medium">Pass rate</th>
-              <th className="px-3 py-2 text-right font-medium">Cases</th>
-              <th className="px-3 py-2 text-right font-medium">Tokens</th>
-              <th className="px-3 py-2 text-right font-medium">Cost</th>
-              <th className="px-3 py-2 text-right font-medium">Duration</th>
-              <th className="px-3 py-2 font-medium">Tags</th>
-              <th className="px-3 py-2 text-right font-medium">Compare</th>
+              {shown.map((c) => (
+                <ResizableTh
+                  key={c.id}
+                  def={c}
+                  tableId={RUNS_TABLE_ID}
+                  prefs={prefs}
+                  className={cn(
+                    "py-2 font-medium",
+                    c.id === "run" ? "px-4" : "px-3",
+                    c.numeric && "text-right",
+                  )}
+                >
+                  {c.id === "select" ? (
+                    <span className="sr-only">Select</span>
+                  ) : (
+                    c.label
+                  )}
+                </ResizableTh>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -290,10 +344,11 @@ function SuiteGroup({ group }: { group: Group }) {
               // link is hidden rather than pointing at one.
               const compareTarget = previousRun(group.runs, r.id);
               const fullyCached = isFullyCached(r);
-              // Dim only cached AND passing rows: a cached run that failed is
-              // real signal (verdicts are never cached) and must read as such.
-              const dimmed =
-                fullyCached && r.fail_count === 0 && r.error_count === 0;
+              // Dim exactly what `cached=exclude` would have hidden, so the
+              // revealed view reads as "these are the ones you normally don't
+              // see". A cached run that failed is real signal (verdicts are
+              // never cached) and stays at full contrast.
+              const dimmed = hiddenByCachedExclude(r);
               return (
               <tr
                 key={r.id}
@@ -302,121 +357,145 @@ function SuiteGroup({ group }: { group: Group }) {
                 {...rowNav(runPath(r.id))}
                 className={`cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2${dimmed ? " opacity-60" : ""}`}
               >
-                <td className="px-3 py-2">
-                  {/* The label is the hit target: padding a parent does not
-                      extend an input's own 16px box, which is under WCAG 2.2's
-                      24px minimum. */}
-                  <label className="flex size-6 cursor-pointer items-center justify-center">
-                    <input
-                      type="checkbox"
-                      aria-label={`Select run ${r.id}`}
-                      checked={selected.includes(r.id)}
-                      onChange={() => toggle(r.id)}
-                      className="size-4 accent-[var(--color-accent)]"
-                    />
-                  </label>
-                </td>
-                <td className="px-4 py-2">
-                  <span className="flex items-center gap-1">
-                    <Link
-                      to={runPath(r.id)}
-                      className="font-medium text-accent hover:underline"
-                    >
-                      {r.id}
-                    </Link>
-                    <CopyButton value={r.id} label="Copy run id" iconOnly />
-                    {r.id === baselineRunId ? (
-                      <Chip
-                        tone="accent"
-                        title="Pinned comparison baseline for this suite"
+                {shownIds.has("select") && (
+                  <td className="px-3 py-2">
+                    {/* The label is the hit target: padding a parent does not
+                        extend an input's own 16px box, which is under WCAG 2.2's
+                        24px minimum. */}
+                    <label className="flex size-6 cursor-pointer items-center justify-center">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select run ${r.id}`}
+                        checked={selected.includes(r.id)}
+                        onChange={() => toggle(r.id)}
+                        className="size-4 accent-[var(--color-accent)]"
+                      />
+                    </label>
+                  </td>
+                )}
+                {shownIds.has("run") && (
+                  <td className="px-4 py-2">
+                    <span className="flex items-center gap-1">
+                      <Link
+                        to={runPath(r.id)}
+                        className="font-medium text-accent hover:underline"
                       >
-                        baseline
-                      </Chip>
-                    ) : null}
-                    {fullyCached ? (
-                      <Chip title="Every provider call in this run was a cache hit">
-                        cached
-                      </Chip>
-                    ) : null}
-                  </span>
-                </td>
-                <td className="px-3 py-2 text-muted">
-                  <Tooltip content={formatDateAbsolute(r.created_at)}>
-                    <time dateTime={r.created_at}>
-                      {formatRelative(r.created_at)}
-                    </time>
-                  </Tooltip>
-                </td>
-                <td className="px-3 py-2">
-                  <RunOriginCell run={r} />
-                </td>
-                <td className="px-3 py-2">
-                  <span className="font-mono text-xs">{r.git_branch ?? "-"}</span>
-                  {r.git_commit ? (
-                    <Tooltip content={r.git_commit}>
-                      <span className="ml-1 font-mono text-[11px] text-muted">
-                        @{r.git_commit.slice(0, 7)}
-                      </span>
-                    </Tooltip>
-                  ) : null}
-                  {/* An uncommitted worktree means this result cannot be
-                      reproduced from the commit next to it — the one piece of
-                      trust information a shared board most needs. */}
-                  {r.git_dirty ? (
-                    <Tooltip content="Ran against an uncommitted worktree; not reproducible from this commit">
-                      <span className="ml-1 text-[11px] text-amber" aria-label="dirty worktree">
-                        ⟡
-                      </span>
-                    </Tooltip>
-                  ) : null}
-                </td>
-                <td className="px-3 py-2">
-                  <PassRateBadge
-                    pass={r.pass_count}
-                    fail={r.fail_count}
-                    error={r.error_count}
-                  />
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums">{r.case_count}</td>
-                <td className="px-3 py-2 text-right tabular-nums text-muted">
-                  {formatTokens(r.prompt_tokens + r.completion_tokens)}
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums text-muted">
-                  {formatCost(r.cost_usd)}
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums text-muted">
-                  {formatDuration(r.duration_ms)}
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex flex-wrap gap-1">
-                    {r.tags.map((t) => (
-                      <span
-                        key={t}
-                        className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted"
-                      >
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {compareTarget ? (
-                    <Link
-                      to={comparePath(compareTarget.id, r.id)}
-                      className="text-xs font-medium text-accent hover:underline"
-                      title={`Compare against ${compareTarget.id}`}
-                    >
-                      Compare
-                    </Link>
-                  ) : (
-                    <span
-                      className="text-xs text-muted"
-                      title="No earlier run in this suite to compare against"
-                    >
-                      —
+                        {r.id}
+                      </Link>
+                      <CopyButton value={r.id} label="Copy run id" iconOnly />
+                      {r.id === baselineRunId ? (
+                        <Chip
+                          tone="accent"
+                          title="Pinned comparison baseline for this suite"
+                        >
+                          baseline
+                        </Chip>
+                      ) : null}
+                      {fullyCached ? (
+                        <Chip title="Every provider call in this run was a cache hit">
+                          cached
+                        </Chip>
+                      ) : null}
                     </span>
-                  )}
-                </td>
+                  </td>
+                )}
+                {shownIds.has("when") && (
+                  <td className="px-3 py-2 text-muted">
+                    <Tooltip content={formatDateAbsolute(r.created_at)}>
+                      <time dateTime={r.created_at}>
+                        {formatRelative(r.created_at)}
+                      </time>
+                    </Tooltip>
+                  </td>
+                )}
+                {shownIds.has("who") && (
+                  <td className="px-3 py-2">
+                    <RunOriginCell run={r} />
+                  </td>
+                )}
+                {shownIds.has("branch") && (
+                  <td className="px-3 py-2">
+                    <span className="font-mono text-xs">{r.git_branch ?? "-"}</span>
+                    {r.git_commit ? (
+                      <Tooltip content={r.git_commit}>
+                        <span className="ml-1 font-mono text-[11px] text-muted">
+                          @{r.git_commit.slice(0, 7)}
+                        </span>
+                      </Tooltip>
+                    ) : null}
+                    {/* An uncommitted worktree means this result cannot be
+                        reproduced from the commit next to it — the one piece of
+                        trust information a shared board most needs. */}
+                    {r.git_dirty ? (
+                      <Tooltip content="Ran against an uncommitted worktree; not reproducible from this commit">
+                        <span className="ml-1 text-[11px] text-amber" aria-label="dirty worktree">
+                          ⟡
+                        </span>
+                      </Tooltip>
+                    ) : null}
+                  </td>
+                )}
+                {shownIds.has("pass_rate") && (
+                  <td className="px-3 py-2">
+                    <PassRateBadge
+                      pass={r.pass_count}
+                      fail={r.fail_count}
+                      error={r.error_count}
+                    />
+                  </td>
+                )}
+                {shownIds.has("cases") && (
+                  <td className="px-3 py-2 text-right tabular-nums">{r.case_count}</td>
+                )}
+                {shownIds.has("tokens") && (
+                  <td className="px-3 py-2 text-right tabular-nums text-muted">
+                    {formatTokens(r.prompt_tokens + r.completion_tokens)}
+                  </td>
+                )}
+                {shownIds.has("cost") && (
+                  <td className="px-3 py-2 text-right tabular-nums text-muted">
+                    {formatCost(r.cost_usd)}
+                  </td>
+                )}
+                {shownIds.has("duration") && (
+                  <td className="px-3 py-2 text-right tabular-nums text-muted">
+                    {formatDuration(r.duration_ms)}
+                  </td>
+                )}
+                {shownIds.has("tags") && (
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      {r.tags.map((t) => (
+                        <span
+                          key={t}
+                          className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                )}
+                {shownIds.has("compare") && (
+                  <td className="px-3 py-2 text-right">
+                    {compareTarget ? (
+                      <Link
+                        to={comparePath(compareTarget.id, r.id)}
+                        className="text-xs font-medium text-accent hover:underline"
+                        title={`Compare against ${compareTarget.id}`}
+                      >
+                        Compare
+                      </Link>
+                    ) : (
+                      <span
+                        className="text-xs text-muted"
+                        title="No earlier run in this suite to compare against"
+                      >
+                        —
+                      </span>
+                    )}
+                  </td>
+                )}
               </tr>
               );
             })}

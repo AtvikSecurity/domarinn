@@ -698,6 +698,10 @@ async fn compare_runs(
 struct SearchQuery {
     q: String,
     limit: Option<i64>,
+    /// Narrow hits by the owning run's cache provenance. Absent is a no-op —
+    /// the hiding default lives in the web client, not here, so an API caller
+    /// that says nothing keeps getting everything.
+    cached: Option<CachedFilter>,
 }
 
 async fn search(
@@ -708,7 +712,7 @@ async fn search(
     let limit = clamp_limit(q.limit);
     let res: SearchResponse = state
         .storage
-        .search(q.q, limit, RunVisibility::of(&scope.identity))
+        .search(q.q, limit, RunVisibility::of(&scope.identity), q.cached)
         .await?;
     Ok(Json(res).into_response())
 }

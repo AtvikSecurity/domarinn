@@ -49,6 +49,8 @@ import {
   type CaseFilters,
   type RunsFilters,
 } from "@/lib/filters";
+import { useCachedPref } from "@/lib/cachedPref";
+import { resolveCached } from "@/lib/cached";
 
 export const qk = {
   meta: ["meta"] as const,
@@ -66,7 +68,8 @@ export const qk = {
   matrixAll: (id: string) => ["matrix", id, "all"] as const,
   compare: (id: string, other?: string) => ["compare", id, other ?? null] as const,
   runConfig: (id: string) => ["runConfig", id] as const,
-  search: (q: string, limit: number) => ["search", q, limit] as const,
+  search: (q: string, limit: number, cached?: string) =>
+    ["search", q, limit, cached] as const,
   projects: ["projects"] as const,
   suites: (project: string) => ["suites", project] as const,
   // The whole run-set browser nests under ["sets"], so one invalidate after a
@@ -107,10 +110,15 @@ export function useMe() {
 }
 
 export function useRuns(filters: RunsFilters) {
-  // URL state → request params: the hidden-by-default `cached` mapping lives
-  // in `runsRequestFilters`; keying the query on the mapped value keeps the
-  // cache identity equal to the request identity.
-  const request = runsRequestFilters(filters);
+  // URL state → request params: the `cached` mapping lives in
+  // `runsRequestFilters`; keying the query on the mapped value keeps the cache
+  // identity equal to the request identity.
+  //
+  // Subscribing to the preference here rather than at each call site is what
+  // makes one setting reach every run list: a caller that passes no `cached`
+  // adopts it, and a caller that passes one explicitly still wins.
+  const pref = useCachedPref();
+  const request = runsRequestFilters(filters, pref);
   return useInfiniteQuery({
     queryKey: qk.runs(request),
     initialPageParam: undefined as string | undefined,
@@ -234,15 +242,25 @@ export function useCaseDetail(
  */
 export function useSearch(
   q: string,
-  opts: { enabled?: boolean; limit?: number } = {},
+  opts: { enabled?: boolean; limit?: number; cached?: string | null } = {},
 ) {
   const query = q.trim();
   const limit = opts.limit ?? 20;
   const enabled = (opts.enabled ?? true) && query.length > 0;
+  // Resolved here rather than at each call site, so the header dropdown and
+  // the results page cannot drift apart. `all` sends nothing — the server's
+  // no-op default — which also keeps the query key identical to an unfiltered
+  // caller's rather than inventing a second cache entry for the same request.
+  const pref = useCachedPref();
+  const resolved = resolveCached(opts.cached, pref);
+  const cached = resolved === "all" ? undefined : resolved;
   return useQuery({
-    queryKey: qk.search(query, limit),
+    queryKey: qk.search(query, limit, cached),
     queryFn: ({ signal }) =>
-      apiRequest<SearchResponse>("/search", { params: { q: query, limit }, signal }),
+      apiRequest<SearchResponse>("/search", {
+        params: { q: query, limit, cached },
+        signal,
+      }),
     enabled,
     staleTime: 30_000,
     placeholderData: keepPreviousData,

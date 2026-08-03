@@ -7,31 +7,11 @@ import { TooltipProvider } from "@/components/ui/Tooltip";
 import { shortCacheKey } from "@/lib/format";
 import * as fx from "@/mocks/fixtures";
 import { CacheEntriesPage } from "./CacheEntriesPage";
+import { installVirtualizerShims } from "@/test/virtualizer";
 
-// jsdom has no layout, so `useVirtualizer` sees a zero-height viewport and
-// renders no rows at all — which is why the repo's other virtualized grid is
-// covered only by Playwright. Two shims fix that here.
-//
-// The measurement one has to be `offsetWidth`/`offsetHeight` specifically:
-// virtual-core's `getRect` reads those, not `getBoundingClientRect`, and jsdom
-// hardcodes both to 0. Mocking the wrong one looks right and changes nothing.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver;
-
-  for (const [prop, value] of [
-    ["offsetWidth", 1200],
-    ["offsetHeight", 800],
-  ] as const) {
-    Object.defineProperty(HTMLElement.prototype, prop, {
-      configurable: true,
-      get: () => value,
-    });
-  }
-});
+// Without these the virtualizer sees a zero-height viewport and renders no
+// rows, so every assertion below would pass against an empty grid.
+beforeAll(() => installVirtualizerShims());
 
 function renderPage(initialEntry = "/cache/entries") {
   const client = new QueryClient({

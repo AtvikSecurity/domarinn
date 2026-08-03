@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CaseHistoryPoint } from "@/api";
 import {
   changePoints,
+  collapseCachedRuns,
   historySeries,
   historySummary,
   metricSpec,
@@ -16,6 +17,7 @@ function point(over: Partial<CaseHistoryPoint> = {}): CaseHistoryPoint {
     score: 1,
     output_hash: null,
     output_changed: false,
+    cached: false,
     prompt_tokens: null,
     completion_tokens: null,
     cost_usd: null,
@@ -156,5 +158,64 @@ describe("tokenSplit", () => {
   it("returns null when there is no usage at all", () => {
     expect(tokenSplit(undefined)).toBeNull();
     expect(tokenSplit(null)).toBeNull();
+  });
+});
+
+describe("collapseCachedRuns", () => {
+  /** `n` points, chronological, with the given cached flags. */
+  const window = (flags: (boolean | null)[]) =>
+    flags.map((cached, i) => point({ run_id: `run-0${i}`, cached }));
+
+  it("leaves a window of freshly measured runs alone", () => {
+    const segments = collapseCachedRuns(window([false, false, false]));
+    expect(segments).toHaveLength(3);
+    expect(segments.every((s) => !s.collapsed)).toBe(true);
+  });
+
+  // The point of collapsing is that N replayed runs are one fact — "still
+  // green, not re-measured since" — rather than N facts.
+  it("folds consecutive replayed runs into one segment", () => {
+    const segments = collapseCachedRuns(window([false, true, true, true]));
+    expect(segments).toHaveLength(2);
+    expect(segments[0]).toMatchObject({ collapsed: false, start: 0 });
+    expect(segments[1]).toMatchObject({ collapsed: true, start: 1 });
+    expect(segments[1]?.points).toHaveLength(3);
+  });
+
+  // Collapsing one point into a "×1" marker costs a click and saves nothing.
+  it("leaves a lone replayed run expanded", () => {
+    const segments = collapseCachedRuns(window([false, true, false]));
+    expect(segments).toHaveLength(3);
+    expect(segments.every((s) => !s.collapsed)).toBe(true);
+  });
+
+  // `null` is "we cannot tell", and a legacy row must not be folded away on a
+  // claim nobody made. It also breaks a streak rather than joining it.
+  it("never collapses runs of unknown provenance", () => {
+    const segments = collapseCachedRuns(window([true, null, true]));
+    expect(segments).toHaveLength(3);
+    expect(segments.every((s) => !s.collapsed)).toBe(true);
+  });
+
+  it("splits a streak around a freshly measured run", () => {
+    const segments = collapseCachedRuns(window([true, true, false, true, true]));
+    expect(segments.map((s) => s.collapsed)).toEqual([true, false, true]);
+    expect(segments.map((s) => s.start)).toEqual([0, 2, 3]);
+  });
+
+  it("collapses a window that is entirely replayed", () => {
+    const segments = collapseCachedRuns(window([true, true, true, true]));
+    expect(segments).toHaveLength(1);
+    expect(segments[0]?.points).toHaveLength(4);
+  });
+
+  it("preserves every point exactly once, in order", () => {
+    const points = window([false, true, true, null, true, true, false]);
+    const flattened = collapseCachedRuns(points).flatMap((s) => s.points);
+    expect(flattened).toEqual(points);
+  });
+
+  it("handles an empty window", () => {
+    expect(collapseCachedRuns([])).toEqual([]);
   });
 });

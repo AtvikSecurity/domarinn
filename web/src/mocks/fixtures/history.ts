@@ -65,6 +65,7 @@ export function caseHistory(
     score: caseScore(row),
     output_hash: row.output_hash,
     output_changed: null, // filled in below, once neighbours are known
+    cached: row.cached,
     prompt_tokens: row.prompt_tokens,
     completion_tokens: row.completion_tokens,
     cost_usd: row.cost_usd,

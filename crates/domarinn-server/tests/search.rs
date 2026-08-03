@@ -271,17 +271,17 @@ async fn reopen_backfills_search_rows_for_unindexed_runs() {
     let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
 
     let res = storage
-        .search("gronkle".to_string(), 20, RunVisibility::Full)
+        .search("gronkle".to_string(), 20, RunVisibility::Full, None)
         .await
         .unwrap();
     assert_eq!(res.cases.len(), 1, "prompt text reindexed from the blob");
     let res = storage
-        .search("frobnicate".to_string(), 20, RunVisibility::Full)
+        .search("frobnicate".to_string(), 20, RunVisibility::Full, None)
         .await
         .unwrap();
     assert_eq!(res.cases.len(), 1, "error text reindexed from the blob");
     let res = storage
-        .search("nightly".to_string(), 20, RunVisibility::Full)
+        .search("nightly".to_string(), 20, RunVisibility::Full, None)
         .await
         .unwrap();
     assert_eq!(res.runs.len(), 1, "run metadata reindexed");
@@ -291,4 +291,221 @@ fn wipe_fts(dir: &Path) {
     let conn = Connection::open(dir.join("domarinn.db")).expect("open raw runs db");
     conn.execute("DELETE FROM runs_fts", []).unwrap();
     conn.execute("DELETE FROM cases_fts", []).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Cache provenance: the filter, and the per-hit flags.
+//
+// `run_hits` and `case_hits` are independent SQL statements over independent
+// FTS tables, so every rule below is asserted against BOTH groups. A fix to one
+// does not fix the other, and a filter that silently applies to only half the
+// response is worse than one that does not exist.
+// ---------------------------------------------------------------------------
+
+/// Two runs sharing a marker word: one freshly measured, one a pure replay.
+async fn seed_cache_mix(app: &axum::Router) {
+    let fresh = make_run(
+        "s-fresh",
+        Some("checkout"),
+        Some("regression"),
+        vec!["quibble"],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "checkout/quibble", CaseStatus::Pass)
+                .output(Some("quibble measured")),
+        ],
+    );
+    let replayed = make_run(
+        "s-replayed",
+        Some("checkout"),
+        Some("regression"),
+        vec!["quibble"],
+        Some("main"),
+        10,
+        &[
+            CaseSpec::new("openai", "checkout/quibble", CaseStatus::Pass)
+                .output(Some("quibble replayed"))
+                .cached(true),
+        ],
+    );
+    // A replay that FAILED. Grader verdicts are not cached, so this one is
+    // real signal and must survive `exclude`.
+    let replayed_failing = make_run(
+        "s-replayed-fail",
+        Some("checkout"),
+        Some("regression"),
+        vec!["quibble"],
+        Some("main"),
+        20,
+        &[
+            CaseSpec::new("openai", "checkout/quibble", CaseStatus::Fail)
+                .output(Some("quibble regressed"))
+                .cached(true),
+        ],
+    );
+    for run in [&fresh, &replayed, &replayed_failing] {
+        let reply = post_json(app, "/api/v1/runs", None, &run_value(run)).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "seed {}", run.run_id);
+    }
+}
+
+/// Run ids appearing anywhere in the response, either group.
+fn all_hit_run_ids(body: &serde_json::Value) -> Vec<String> {
+    let mut ids = run_hit_ids(body);
+    ids.extend(case_hits(body).into_iter().map(|(id, _)| id));
+    ids
+}
+
+#[tokio::test]
+async fn search_cached_exclude_drops_hits_from_replayed_passing_runs() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    seed_cache_mix(&app).await;
+
+    let body = get(&app, "/api/v1/search?q=quibble&cached=exclude")
+        .await
+        .json();
+    let ids = all_hit_run_ids(&body);
+
+    assert!(ids.contains(&"s-fresh".to_string()), "got {ids:?}");
+    assert!(
+        !ids.contains(&"s-replayed".to_string()),
+        "a fully cached passing run's hits must be suppressed, got {ids:?}"
+    );
+    // Both groups had something to suppress, so both were exercised.
+    assert!(!run_hit_ids(&body).is_empty());
+    assert!(!case_hits(&body).is_empty());
+}
+
+#[tokio::test]
+async fn search_cached_exclude_keeps_a_replayed_run_that_failed() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    seed_cache_mix(&app).await;
+
+    let body = get(&app, "/api/v1/search?q=quibble&cached=exclude")
+        .await
+        .json();
+    let ids = all_hit_run_ids(&body);
+
+    // Verdicts are not cached: a replayed run can still surface a regression,
+    // and hiding it would hide exactly what the re-run was for.
+    assert!(
+        ids.contains(&"s-replayed-fail".to_string()),
+        "a fully cached FAILING run must stay visible, got {ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn search_cached_only_returns_replayed_runs_whatever_their_verdict() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    seed_cache_mix(&app).await;
+
+    let body = get(&app, "/api/v1/search?q=quibble&cached=only")
+        .await
+        .json();
+    let ids = all_hit_run_ids(&body);
+
+    assert!(ids.contains(&"s-replayed".to_string()), "got {ids:?}");
+    assert!(ids.contains(&"s-replayed-fail".to_string()), "got {ids:?}");
+    assert!(!ids.contains(&"s-fresh".to_string()), "got {ids:?}");
+}
+
+/// The `IS NOT 1` rule. `NOT (...)` would evaluate to NULL for a legacy row and
+/// SQLite would filter it out — hiding precisely the rows we cannot classify
+/// and have promised never to hide.
+#[tokio::test]
+async fn search_never_hides_a_run_it_cannot_classify() {
+    let (app, dir) = test_app(Settings::default()).await;
+    seed_cache_mix(&app).await;
+
+    let db = Connection::open(dir.path().join("domarinn.db")).unwrap();
+    db.execute(
+        "UPDATE runs SET cache_hits = NULL, cache_misses = NULL WHERE id = 's-replayed'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let body = get(&app, "/api/v1/search?q=quibble&cached=exclude")
+        .await
+        .json();
+    let ids = all_hit_run_ids(&body);
+    assert!(
+        ids.contains(&"s-replayed".to_string()),
+        "a legacy (NULL) run must stay visible under cached=exclude, got {ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn search_hits_report_cache_provenance_for_runs_and_cases() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    seed_cache_mix(&app).await;
+
+    let body = get(&app, "/api/v1/search?q=quibble").await.json();
+
+    let run_cached: std::collections::HashMap<&str, &serde_json::Value> = body["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["id"].as_str().unwrap(), &r["cached"]))
+        .collect();
+    assert_eq!(run_cached["s-replayed"], &serde_json::json!(true));
+    assert_eq!(run_cached["s-fresh"], &serde_json::json!(false));
+
+    // The case-level flag answers a different question — was THIS response a
+    // cache hit — and comes from a different column.
+    for case in body["cases"].as_array().unwrap() {
+        let expected = case["run_id"].as_str().unwrap() != "s-fresh";
+        assert_eq!(case["cached"], serde_json::json!(expected));
+    }
+}
+
+/// A row we cannot classify reports `null`, never `false`. Reporting `false`
+/// would assert a fresh measurement nobody made.
+#[tokio::test]
+async fn search_run_hits_report_unknown_provenance_as_null_not_fresh() {
+    let (app, dir) = test_app(Settings::default()).await;
+    seed_cache_mix(&app).await;
+
+    let db = Connection::open(dir.path().join("domarinn.db")).unwrap();
+    // NULL is the legacy pre-backfill state; -1 is the undecodable-blob
+    // sentinel. Both mean "cannot tell".
+    db.execute(
+        "UPDATE runs SET cache_hits = NULL, cache_misses = NULL WHERE id = 's-fresh'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE runs SET cache_hits = -1, cache_misses = -1 WHERE id = 's-replayed'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE cases SET cached = -1 WHERE run_id = 's-replayed'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let body = get(&app, "/api/v1/search?q=quibble").await.json();
+    for run in body["runs"].as_array().unwrap() {
+        let id = run["id"].as_str().unwrap();
+        if id == "s-fresh" || id == "s-replayed" {
+            assert!(run["cached"].is_null(), "{id} reported {:?}", run["cached"]);
+        }
+    }
+    for case in body["cases"].as_array().unwrap() {
+        if case["run_id"].as_str().unwrap() == "s-replayed" {
+            assert!(case["cached"].is_null());
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_invalid_cached_value_is_a_400_not_a_silent_no_op() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    seed_cache_mix(&app).await;
+
+    let resp = get(&app, "/api/v1/search?q=quibble&cached=banana").await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST);
 }

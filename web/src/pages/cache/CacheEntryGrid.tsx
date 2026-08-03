@@ -13,6 +13,23 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/cn";
+import { ColumnPicker } from "@/components/ui/ColumnPicker";
+import { ColumnResizer } from "@/components/ui/ColumnResizer";
+import {
+  clampWidth,
+  type ColumnDef as TableColumnDef,
+  cssVarsFor,
+  gridTemplateFor,
+  minWidthFor,
+  visibleColumns as pickVisible,
+} from "@/lib/tableColumns";
+import {
+  resetColumns,
+  resetColumnWidth,
+  setColumnVisible,
+  setColumnWidth,
+  useColumnPrefs,
+} from "@/lib/useColumnPrefs";
 import {
   formatBytes,
   formatCost,
@@ -23,39 +40,59 @@ import {
 } from "@/lib/format";
 
 /**
- * A column's track, its intrinsic minimum, and how it behaves.
+ * This grid's columns.
  *
- * The same shape as the case grid's spec, and deliberately a copy rather than a
- * shared abstraction: only about 160 of that component's 600 lines are generic,
- * it is the most e2e-covered component in the app, and the two grids differ
- * where it counts — no status column to pin, no assert columns, no picker, and
- * a server-side sort. Two instances is not evidence for an abstraction.
+ * The layout spec used to be a deliberate copy of the case grid's, on the
+ * grounds that two instances are not evidence for an abstraction. A third
+ * consumer changed that calculus, and only the part that was genuinely
+ * duplicated moved: the descriptor, the template derivation, the picker and
+ * the resize handle are now shared. The 400 lines that make this grid *this*
+ * grid — its cell renderers, its server-side sort, its lack of a status column
+ * to pin — stay right here.
  */
-interface ColumnSpec {
-  track: string;
-  min: number;
-  numeric?: boolean;
-  sticky?: boolean;
+const COLUMNS: TableColumnDef[] = [
+  {
+    id: "key",
+    label: "Key",
+    track: "minmax(200px, 1fr)",
+    min: 200,
+    sticky: true,
+    alwaysVisible: true,
+  },
+  { id: "kind", label: "Kind", track: "104px", min: 104 },
+  { id: "model", label: "Model", track: "minmax(160px, 1fr)", min: 160 },
+  { id: "summary", label: "Summary", track: "minmax(220px, 1.6fr)", min: 220 },
+  { id: "tokens", label: "Tokens", track: "84px", min: 84, numeric: true },
+  { id: "cost", label: "Cost", track: "84px", min: 84, numeric: true },
+  { id: "size", label: "Size", track: "84px", min: 84, numeric: true },
+  { id: "created", label: "Created", track: "112px", min: 112, numeric: true },
+  {
+    id: "last_access",
+    label: "Last access",
+    track: "112px",
+    min: 112,
+    numeric: true,
+  },
+];
+
+const COLUMNS_BY_ID = new Map(COLUMNS.map((c) => [c.id, c]));
+
+const FALLBACK_COLUMN: TableColumnDef = {
+  id: "",
+  label: "",
+  track: "minmax(120px, 1fr)",
+  min: 120,
+};
+
+function spec(id: string): TableColumnDef {
+  return COLUMNS_BY_ID.get(id) ?? FALLBACK_COLUMN;
 }
+
+/** This grid's slot in the shared column-preference store. */
+const TABLE_ID = "cacheEntries";
 
 /** Horizontal padding the grid reserves outside the tracks. */
 const GRID_INSET = 24;
-
-const COLUMN_SPEC: Record<string, ColumnSpec> = {
-  key: { track: "minmax(200px, 1fr)", min: 200, sticky: true },
-  kind: { track: "104px", min: 104 },
-  model: { track: "minmax(160px, 1fr)", min: 160 },
-  summary: { track: "minmax(220px, 1.6fr)", min: 220 },
-  tokens: { track: "84px", min: 84, numeric: true },
-  cost: { track: "84px", min: 84, numeric: true },
-  size: { track: "84px", min: 84, numeric: true },
-  created: { track: "112px", min: 112, numeric: true },
-  last_access: { track: "112px", min: 112, numeric: true },
-};
-
-function spec(id: string): ColumnSpec {
-  return COLUMN_SPEC[id] ?? { track: "minmax(120px, 1fr)", min: 120 };
-}
 
 /**
  * Columns the server can order by — the three literal indexed columns, plus
@@ -221,9 +258,15 @@ export function CacheEntryGrid({
     [],
   );
 
+  const prefs = useColumnPrefs(TABLE_ID);
+  const visibleColumns = useMemo(() => {
+    const ids = new Set(pickVisible(COLUMNS, prefs).map((d) => d.id));
+    return columns.filter((c) => ids.has(c.id ?? ""));
+  }, [columns, prefs]);
+
   const table = useReactTable({
     data: entries,
-    columns,
+    columns: visibleColumns,
     state: { sorting },
     // The server does the ordering. Without this react-table would re-sort the
     // loaded page on top of the server's answer and the two would disagree at
@@ -239,12 +282,13 @@ export function CacheEntryGrid({
   });
 
   const rows = table.getRowModel().rows;
-  const columnIds = table.getAllLeafColumns().map((c) => c.id);
-  const gridTemplate = columnIds.map((id) => spec(id).track).join(" ");
+  const gridTemplate = useMemo(() => gridTemplateFor(COLUMNS, prefs), [prefs]);
   const minWidth = useMemo(
-    () => columnIds.reduce((sum, id) => sum + spec(id).min, 0) + GRID_INSET,
-    [columnIds],
+    () => minWidthFor(COLUMNS, prefs, GRID_INSET),
+    [prefs],
   );
+  // One style object on the scroll container rather than a style per cell.
+  const columnVars = useMemo(() => cssVarsFor(COLUMNS, prefs), [prefs]);
 
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
@@ -282,6 +326,15 @@ export function CacheEntryGrid({
         ) : null}
       </p>
 
+      <div className="flex shrink-0 justify-end">
+        <ColumnPicker
+          columns={COLUMNS}
+          prefs={prefs}
+          onChange={(id, visible) => setColumnVisible(TABLE_ID, id, visible)}
+          onReset={() => resetColumns(TABLE_ID)}
+        />
+      </div>
+
       <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-surface lg:min-h-0 lg:flex-1">
         <div
           ref={parentRef}
@@ -293,7 +346,7 @@ export function CacheEntryGrid({
           aria-busy={busy}
           aria-rowcount={hasNextPage ? -1 : rows.length + 1}
         >
-          <div style={{ minWidth }}>
+          <div style={{ minWidth, ...columnVars }}>
             <div
               className="sticky top-0 z-20 grid items-center border-b border-border bg-surface-2 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted"
               style={{ gridTemplateColumns: gridTemplate }}
@@ -313,7 +366,9 @@ export function CacheEntryGrid({
                   <div
                     key={header.id}
                     className={cn(
-                      "min-w-0 px-1",
+                      // `relative` so the resize handle can straddle the
+                      // cell's right edge.
+                      "relative min-w-0 px-1",
                       s.sticky && "sticky left-0 z-10 bg-surface-2",
                       s.numeric && "text-right",
                     )}
@@ -337,14 +392,26 @@ export function CacheEntryGrid({
                         style={{ justifyContent: s.numeric ? "flex-end" : undefined }}
                         onClick={header.column.getToggleSortingHandler()}
                       >
-                        <span className="truncate">{label}</span>
+                        <span id={`cachegrid-h-${id}`} className="truncate">
+                          {label}
+                        </span>
                         <span aria-hidden="true" className="text-[10px]">
                           {sorted === "asc" ? "▲" : sorted === "desc" ? "▼" : "↕"}
                         </span>
                       </button>
                     ) : (
-                      <div className="truncate">{label}</div>
+                      <div id={`cachegrid-h-${id}`} className="truncate">
+                        {label}
+                      </div>
                     )}
+                    {/* Sibling of the sort button, never inside it. */}
+                    <ColumnResizer
+                      def={s}
+                      width={clampWidth(s, prefs.width[id] ?? s.min)}
+                      headerId={`cachegrid-h-${id}`}
+                      onResize={(px) => setColumnWidth(TABLE_ID, id, px)}
+                      onReset={() => resetColumnWidth(TABLE_ID, id)}
+                    />
                   </div>
                 );
               })}

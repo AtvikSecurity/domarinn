@@ -62,7 +62,7 @@ describe("pickParams / parseRunsFilters", () => {
 });
 
 describe("runsRequestFilters", () => {
-  it("defaults to excluding cached runs when the URL says nothing", () => {
+  it("excludes cached runs when neither the URL nor a preference says otherwise", () => {
     expect(runsRequestFilters({})).toEqual({ cached: "exclude" });
     expect(runsRequestFilters({ project: "alpha" })).toEqual({
       project: "alpha",
@@ -78,10 +78,38 @@ describe("runsRequestFilters", () => {
     expect(runsRequestFilters({ cached: "only" })).toEqual({ cached: "only" });
   });
 
-  it("sanitizes junk cached values back to the hidden default", () => {
+  it("passes an explicit exclude through", () => {
+    expect(runsRequestFilters({ cached: "exclude" })).toEqual({
+      cached: "exclude",
+    });
+  });
+
+  it("sanitizes junk cached values back to the fallback", () => {
     expect(runsRequestFilters({ cached: "banana" })).toEqual({
       cached: "exclude",
     });
+  });
+
+  // The second argument is the user's stored preference. A URL that says
+  // nothing adopts it, which is how one setting reaches every surface.
+  it("falls back to the caller's preference when the URL is silent", () => {
+    expect(runsRequestFilters({}, "all")).toEqual({});
+    expect(runsRequestFilters({}, "only")).toEqual({ cached: "only" });
+    expect(runsRequestFilters({ project: "alpha" }, "all")).toEqual({
+      project: "alpha",
+    });
+  });
+
+  // Shared links must not change meaning based on who opens them.
+  it("lets an explicit URL value beat the preference", () => {
+    expect(runsRequestFilters({ cached: "exclude" }, "all")).toEqual({
+      cached: "exclude",
+    });
+    expect(runsRequestFilters({ cached: "all" }, "only")).toEqual({});
+  });
+
+  it("sanitizes junk against the preference, not the shipped default", () => {
+    expect(runsRequestFilters({ cached: "banana" }, "all")).toEqual({});
   });
 });
 

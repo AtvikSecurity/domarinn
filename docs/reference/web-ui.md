@@ -76,6 +76,10 @@ Each row carries the run ULID (with a copy button), when it ran, who ran it (`lo
 
 By default the list **hides fully-cached passing runs** and says so in one line: `N fully cached runs hidden · Show`. Verdicts are never cached, so a fully-cached run that *failed* stays visible — only the ones that replayed and passed are folded away. This capture is taken at `/runs?cached=all` so you can see the whole seeded stream at once; on a real server the default keeps re-runs out of your way.
 
+The `Cached runs` control in the filter bar is the only one that is more than a filter: it also **stores the choice**, and every other surface that lists runs adopts it — the suite pages, search, and the header search box. The one-line `Show` / `Hide` affordance above a list is a *per-view* override: it changes what you are looking at now, writes that into the URL so the view stays shareable, and deliberately does not retrain the default.
+
+Two places never hide cached runs, whatever you have chosen. The overview's suite cards keep reporting a fully-cached latest run — it still has a real verdict, and skipping it would promote an older run to "latest" and state a stale number as current. The compare page's base and head pickers keep listing every run, because a run missing from a picker is indistinguishable from a run that never happened. Both mark such runs with a `cached` label instead.
+
 ///
 
 ---
@@ -113,7 +117,7 @@ The matrix pivots on providers and prompts, so it needs more than one of them to
 
 Click any case row or matrix cell and the drawer slides in with everything recorded about that one case. It is the answer to "why did this pass?", and it is where an eval stops being a number.
 
-Top to bottom: the verdict and score, with the case's suite tags and a `cached` marker when the answer was replayed; the tokens, cost and latency for this cell alone; a **history rail** across previous runs of the same case key, with a window selector (`20 / 50 / 100 / All runs`) and a choice of metric to plot — that rail is how you tell a genuine regression from a case that has always been flaky. Then `ASSERTIONS`, one card per assertion, each showing the criteria **as authored in your suite** alongside the result sentence the engine produced; here an `icontains` looking for `refund`, and the reason `output contains "refund" (case-insensitive)`.
+Top to bottom: the verdict and score, with the case's suite tags and a `cached` marker when the answer was replayed; the tokens, cost and latency for this cell alone; a **history rail** across previous runs of the same case key, with a window selector (`20 / 50 / 100 / All runs`) and a choice of metric to plot — that rail is how you tell a genuine regression from a case that has always been flaky. A stretch of consecutive runs whose responses were all replayed from cache folds into a single counted marker — select it to expand. They are folded rather than hidden on purpose: six replayed runs are six occasions on which the case held green, and dropping them would make the timeline claim the verdict is six runs younger than it is. A streak containing the run you are looking at, or the suite's baseline, never folds. Then `ASSERTIONS`, one card per assertion, each showing the criteria **as authored in your suite** alongside the result sentence the engine produced; here an `icontains` looking for `refund`, and the reason `output contains "refund" (case-insensitive)`.
 
 Under that is the evidence: the full `OUTPUT` (with wrap and copy), and the `INPUT` — the endpoint the request went to, the variables substituted into the prompt, and a `Rendered / Raw` switch so you can see either the prompt as sent or the template it came from. `Copy link` at the top yields a URL that reopens this exact drawer, which is what you paste into the bug report.
 
