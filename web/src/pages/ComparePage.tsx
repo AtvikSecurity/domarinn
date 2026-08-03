@@ -15,6 +15,22 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { cn } from "@/lib/cn";
+import { ColumnPicker } from "@/components/ui/ColumnPicker";
+import { ColumnResizer } from "@/components/ui/ColumnResizer";
+import {
+  clampWidth,
+  type ColumnDef,
+  gridTemplateFor,
+  minWidthFor,
+  visibleColumns,
+} from "@/lib/tableColumns";
+import {
+  resetColumnWidth,
+  resetColumns,
+  setColumnVisible,
+  setColumnWidth,
+  useColumnPrefs,
+} from "@/lib/useColumnPrefs";
 import { CompareRowExpansion } from "./compare/CompareRowExpansion";
 import { AggregateDeltas, type AggregateStatsInput } from "./compare/AggregateDeltas";
 import { McNemarPanel } from "./compare/McNemarPanel";
@@ -334,9 +350,24 @@ function StatusCell({ status }: { status: CaseStatus | null }) {
   return <StatusBadge status={status} size="xs" />;
 }
 
-/** Shared column template for the delta table header + rows (they must match):
- *  Case / Base / Head / Delta / Δ score / Output. */
-const DELTA_GRID_COLUMNS = "1.5fr 76px 76px 140px 84px 76px";
+const DELTA_TABLE_ID = "compareDelta";
+
+/**
+ * The delta table's columns. Header and rows both derive their
+ * `grid-template-columns` from this one list, which is what keeps them
+ * aligned — they were previously kept in step by a shared string constant.
+ *
+ * `case` and `delta` are structural: the row has to say which case it is, and
+ * the delta is the entire reason the page exists.
+ */
+const DELTA_COLUMNS: ColumnDef[] = [
+  { id: "case", label: "Case", track: "minmax(240px, 1.5fr)", min: 200, alwaysVisible: true },
+  { id: "base", label: "Base", track: "76px", min: 64 },
+  { id: "head", label: "Head", track: "76px", min: 64 },
+  { id: "delta", label: "Delta", track: "140px", min: 120, alwaysVisible: true },
+  { id: "score_delta", label: "Δ score", track: "84px", min: 70 },
+  { id: "output", label: "Output", track: "76px", min: 70, numeric: true },
+];
 
 const deltaTone: Record<string, string> = {
   newly_failing: "text-fail",
@@ -365,6 +396,17 @@ function DeltaTable({
   onDiffModeChange: (mode: DiffMode) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
+  const prefs = useColumnPrefs(DELTA_TABLE_ID);
+  const shown = useMemo(() => visibleColumns(DELTA_COLUMNS, prefs), [prefs]);
+  // Cells are omitted, not blanked: a stray one shifts every column after it
+  // out of alignment with the header above.
+  const shownIds = useMemo(() => new Set(shown.map((c) => c.id)), [shown]);
+  const gridTemplate = useMemo(
+    () => gridTemplateFor(DELTA_COLUMNS, prefs),
+    [prefs],
+  );
+  // `px-4` on both sides of the header and every row.
+  const minWidth = useMemo(() => minWidthFor(DELTA_COLUMNS, prefs, 32), [prefs]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -395,18 +437,44 @@ function DeltaTable({
       data-testid="delta-table"
       className="overflow-hidden rounded-xl border border-border bg-surface"
     >
+      <div className="flex justify-end border-b border-border px-4 py-2">
+        <ColumnPicker
+          columns={DELTA_COLUMNS}
+          prefs={prefs}
+          onChange={(id, visible) =>
+            setColumnVisible(DELTA_TABLE_ID, id, visible)
+          }
+          onReset={() => resetColumns(DELTA_TABLE_ID)}
+        />
+      </div>
+      {/* One horizontal scroller around the header AND the body. They are
+          separate elements — the body owns the vertical scroll the virtualizer
+          measures — so a column dragged past the container's width has to move
+          both, or the labels drift off the values they name. */}
+      <div className="overflow-x-auto">
+        <div style={{ minWidth }}>
       <div
         className="grid items-center border-b border-border bg-surface-2/95 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted"
-        style={{ gridTemplateColumns: DELTA_GRID_COLUMNS }}
+        style={{ gridTemplateColumns: gridTemplate }}
       >
-        <span>Case</span>
-        <span>Base</span>
-        <span>Head</span>
-        <span>Delta</span>
-        <span>Δ score</span>
-        <span className="text-right">Output</span>
+        {shown.map((c) => {
+          const labelId = `delta-h-${c.id}`;
+          return (
+            // `relative` so the handle can straddle this cell's right edge.
+            <span key={c.id} className={cn("relative", c.numeric && "text-right")}>
+              <span id={labelId}>{c.label}</span>
+              <ColumnResizer
+                def={c}
+                width={clampWidth(c, prefs.width[c.id] ?? c.min)}
+                headerId={labelId}
+                onResize={(px) => setColumnWidth(DELTA_TABLE_ID, c.id, px)}
+                onReset={() => resetColumnWidth(DELTA_TABLE_ID, c.id)}
+              />
+            </span>
+          );
+        })}
       </div>
-      <div ref={parentRef} className="max-h-[64vh] overflow-auto">
+      <div ref={parentRef} className="max-h-[64vh] overflow-y-auto">
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((vi) => {
             const row = rows[vi.index];
@@ -431,7 +499,7 @@ function DeltaTable({
                     "grid w-full items-center px-4 py-2 text-left text-sm outline-none hover:bg-surface-2 focus-visible:bg-surface-2",
                     isOpen && "bg-surface-2",
                   )}
-                  style={{ gridTemplateColumns: DELTA_GRID_COLUMNS }}
+                  style={{ gridTemplateColumns: gridTemplate }}
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <svg
@@ -454,8 +522,8 @@ function DeltaTable({
                       </span>
                     </span>
                   </span>
-                  <StatusCell status={row.base_status} />
-                  <StatusCell status={row.head_status} />
+                  {shownIds.has("base") && <StatusCell status={row.base_status} />}
+                  {shownIds.has("head") && <StatusCell status={row.head_status} />}
                   <span className="flex min-w-0 flex-wrap items-center gap-1.5">
                     <span className={cn("text-xs font-medium", deltaTone[row.delta])}>
                       {DELTA_LABEL[row.delta]}
@@ -466,16 +534,20 @@ function DeltaTable({
                       </span>
                     ) : null}
                   </span>
-                  <ScoreDeltaCell delta={row.score_delta} />
-                  <span className="text-right">
-                    {row.output_changed ? (
-                      <span className="rounded-full bg-amber/12 px-2 py-0.5 text-[11px] font-medium text-amber ring-1 ring-inset ring-amber/25">
-                        changed
-                      </span>
-                    ) : (
-                      <span className="text-[11px] text-muted">same</span>
-                    )}
-                  </span>
+                  {shownIds.has("score_delta") && (
+                    <ScoreDeltaCell delta={row.score_delta} />
+                  )}
+                  {shownIds.has("output") && (
+                    <span className="text-right">
+                      {row.output_changed ? (
+                        <span className="rounded-full bg-amber/12 px-2 py-0.5 text-[11px] font-medium text-amber ring-1 ring-inset ring-amber/25">
+                          changed
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-muted">same</span>
+                      )}
+                    </span>
+                  )}
                 </button>
                 {isOpen ? (
                   <CompareRowExpansion
@@ -490,6 +562,8 @@ function DeltaTable({
               </div>
             );
           })}
+        </div>
+      </div>
         </div>
       </div>
     </div>
