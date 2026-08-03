@@ -56,9 +56,10 @@ function comparePair(
 const RUNS_TABLE_ID = "runs";
 
 /**
- * Thirteen columns at a 1080px floor — the strongest case in the app for
- * letting people choose. `auto` means "take the leftover space", the `<table>`
- * analogue of an `fr` share.
+ * Twelve columns that want more width than any laptop has — the strongest case
+ * in the app for letting people choose. `auto` means "take the leftover space",
+ * the `<table>` analogue of an `fr` share, and exactly one column may sensibly
+ * have it.
  *
  * `select` and `run` are structural: without the checkbox there is no way to
  * pick runs to compare, and a row that does not say which run it is is not a
@@ -68,17 +69,22 @@ const RUNS_TABLE_ID = "runs";
  */
 const RUNS_COLUMNS: ColumnDef[] = [
   { id: "select", label: "Select", track: "40px", min: 40, alwaysVisible: true },
-  { id: "run", label: "Run", track: "auto", min: 240, alwaysVisible: true },
-  { id: "when", label: "When", track: "120px", min: 100 },
-  { id: "who", label: "Who", track: "150px", min: 110 },
-  { id: "branch", label: "Branch", track: "180px", min: 120 },
+  // A stated width, not `auto`. Under `table-layout: fixed` an `auto` column
+  // gets only what the declared ones leave over, and this cell is a 26-char
+  // ULID plus a copy button plus up to two chips — with twelve columns
+  // competing there is not enough slack, and the content spills into `when`
+  // rather than shrinking. `tags` is the one that flexes: it truncates.
+  { id: "run", label: "Run", track: "340px", min: 240, alwaysVisible: true },
+  { id: "when", label: "When", track: "110px", min: 100 },
+  { id: "who", label: "Who", track: "130px", min: 110 },
+  { id: "branch", label: "Branch", track: "200px", min: 120 },
   { id: "pass_rate", label: "Pass rate", track: "130px", min: 110 },
-  { id: "cases", label: "Cases", track: "80px", min: 70, numeric: true },
-  { id: "tokens", label: "Tokens", track: "90px", min: 80, numeric: true },
-  { id: "cost", label: "Cost", track: "90px", min: 80, numeric: true },
-  { id: "duration", label: "Duration", track: "100px", min: 90, numeric: true },
-  { id: "tags", label: "Tags", track: "auto", min: 120 },
-  { id: "compare", label: "Compare", track: "110px", min: 100, numeric: true },
+  { id: "cases", label: "Cases", track: "70px", min: 70, numeric: true },
+  { id: "tokens", label: "Tokens", track: "80px", min: 80, numeric: true },
+  { id: "cost", label: "Cost", track: "80px", min: 80, numeric: true },
+  { id: "duration", label: "Duration", track: "90px", min: 90, numeric: true },
+  { id: "tags", label: "Tags", track: "auto", min: 90 },
+  { id: "compare", label: "Compare", track: "100px", min: 100, numeric: true },
 ];
 
 interface Group {
@@ -311,12 +317,13 @@ function SuiteGroup({ group }: { group: Group }) {
         {/* `table-layout: fixed` is what makes the <colgroup> widths
             authoritative; under the default `auto` a column's width is
             advisory and a resize does nothing. */}
-        <table className="w-full min-w-[1080px] table-fixed text-sm">
+        <table className="w-full min-w-[1460px] table-fixed text-sm">
           <ColumnGroup columns={RUNS_COLUMNS} prefs={prefs} />
           <thead>
             <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-              {shown.map((c) => (
+              {shown.map((c, i, arr) => (
                 <ResizableTh
+                  isLast={i === arr.length - 1}
                   key={c.id}
                   def={c}
                   tableId={RUNS_TABLE_ID}
@@ -374,11 +381,15 @@ function SuiteGroup({ group }: { group: Group }) {
                   </td>
                 )}
                 {shownIds.has("run") && (
-                  <td className="px-4 py-2">
-                    <span className="flex items-center gap-1">
+                  // `overflow-hidden` + `min-w-0` + `truncate`: this cell is a
+                  // fixed-width flex row, so without them a run carrying both
+                  // chips overlaps the next column instead of clipping — and
+                  // the column is now something the reader can drag narrower.
+                  <td className="overflow-hidden px-4 py-2">
+                    <span className="flex min-w-0 items-center gap-1">
                       <Link
                         to={runPath(r.id)}
-                        className="font-medium text-accent hover:underline"
+                        className="truncate font-medium text-accent hover:underline"
                       >
                         {r.id}
                       </Link>

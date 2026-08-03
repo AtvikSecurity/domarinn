@@ -173,7 +173,11 @@ for (const theme of THEMES) {
     test("set-suite", async ({ page }) => {
       // The suite scripts/seed-docs-runs.sh restricts and grants — every other
       // suite's access list is empty, which is a picture of nothing.
-      await page.goto("/sets/examples/baselines-and-diff");
+      // `?cached=all` for the same reason the runs shot above uses it: the
+      // seed replays from a cache that survives between runs, so both of this
+      // suite's runs are fully cached and the default view is the
+      // "2 fully cached runs hidden" line rather than the table.
+      await page.goto("/sets/examples/baselines-and-diff?cached=all");
       await expect(
         page.getByRole("heading", { name: "baselines-and-diff" }),
       ).toBeVisible();
@@ -195,7 +199,10 @@ for (const theme of THEMES) {
     test("search", async ({ page }) => {
       // "Hello" is example 01's assertion word (the output literally contains
       // it), so it is guaranteed to have hits once the offline block is seeded.
-      await page.goto("/search?q=Hello");
+      // `?cached=all` for the same reason as the runs and set-suite shots: the
+      // seeded runs are cache replays, and hits are filtered by the cache
+      // provenance of the run that owns them.
+      await page.goto("/search?q=Hello&cached=all");
       await expect(page.getByText(/Cases \(/)).toBeVisible();
       await shoot(page, "search", theme);
     });

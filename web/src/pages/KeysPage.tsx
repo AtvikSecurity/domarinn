@@ -26,13 +26,13 @@ const KEYS_TABLE_ID = "keys";
  * that cannot say which is which is worse than no list.
  */
 const KEY_COLUMNS: ColumnDef[] = [
-  { id: "name", label: "Name", track: "auto", min: 140, alwaysVisible: true },
-  { id: "prefix", label: "Prefix", track: "120px", min: 90 },
-  { id: "scope", label: "Scope", track: "110px", min: 90 },
-  { id: "created", label: "Created", track: "150px", min: 110 },
-  { id: "last_used", label: "Last used", track: "130px", min: 100 },
-  { id: "status", label: "Status", track: "110px", min: 90, alwaysVisible: true },
-  { id: "actions", label: "Actions", track: "120px", min: 100, numeric: true, alwaysVisible: true },
+  { id: "name", label: "Name", track: "auto", min: 120, alwaysVisible: true },
+  { id: "prefix", label: "Prefix", track: "95px", min: 80 },
+  { id: "scope", label: "Scope", track: "90px", min: 80 },
+  { id: "created", label: "Created", track: "125px", min: 100 },
+  { id: "last_used", label: "Last used", track: "105px", min: 90 },
+  { id: "status", label: "Status", track: "100px", min: 85, alwaysVisible: true },
+  { id: "actions", label: "Actions", track: "110px", min: 100, numeric: true, alwaysVisible: true },
 ];
 
 export function KeysPage() {
@@ -176,12 +176,15 @@ export function KeysPage() {
               />
             </div>
             <div className="overflow-x-auto scroll-hint">
-              <table className="w-full min-w-[720px] table-fixed text-sm">
+              {/* 745px is the declared tracks' sum, kept under the page's own
+                  `max-w-3xl` (768px) so the table scrolls rather than clips. */}
+              <table className="w-full min-w-[745px] table-fixed text-sm">
                 <ColumnGroup columns={KEY_COLUMNS} prefs={colPrefs} />
                 <thead>
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                    {shownCols.map((c) => (
+                    {shownCols.map((c, i, arr) => (
                       <ResizableTh
+                        isLast={i === arr.length - 1}
                         key={c.id}
                         def={c}
                         tableId={KEYS_TABLE_ID}

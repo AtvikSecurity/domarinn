@@ -291,8 +291,9 @@ export function AccessPanel({
                     <ColumnGroup columns={GRANT_COLUMNS} prefs={colPrefs} />
                     <thead>
                       <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                        {visibleColumns(GRANT_COLUMNS, colPrefs).map((c) => (
+                        {visibleColumns(GRANT_COLUMNS, colPrefs).map((c, i, arr) => (
                           <ResizableTh
+                            isLast={i === arr.length - 1}
                             key={c.id}
                             def={c}
                             tableId={ACCESS_TABLE_ID}

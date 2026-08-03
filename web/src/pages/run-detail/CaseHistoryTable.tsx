@@ -91,8 +91,9 @@ export function CaseHistoryTable({
         <ColumnGroup columns={HISTORY_COLUMNS} prefs={colPrefs} />
         <thead>
           <tr className="text-muted">
-            {shownCols.map((c) => (
+            {shownCols.map((c, i, arr) => (
               <ResizableTh
+                isLast={i === arr.length - 1}
                 key={c.id}
                 def={c}
                 tableId={HISTORY_TABLE_ID}

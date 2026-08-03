@@ -32,14 +32,14 @@ const USERS_TABLE_ID = "admin";
  * surface into a list.
  */
 const USER_COLUMNS: ColumnDef[] = [
-  { id: "username", label: "Username", track: "auto", min: 180, alwaysVisible: true },
-  { id: "role", label: "Role", track: "150px", min: 120 },
-  { id: "status", label: "Status", track: "110px", min: 90, alwaysVisible: true },
-  { id: "created", label: "Created", track: "150px", min: 110 },
+  { id: "username", label: "Username", track: "auto", min: 160, alwaysVisible: true },
+  { id: "role", label: "Role", track: "140px", min: 120 },
+  { id: "status", label: "Status", track: "100px", min: 90, alwaysVisible: true },
+  { id: "created", label: "Created", track: "140px", min: 110 },
   {
     id: "actions",
     label: "Actions",
-    track: "320px",
+    track: "300px",
     min: 280,
     numeric: true,
     alwaysVisible: true,
@@ -151,14 +151,16 @@ export function AdminPage() {
             />
           </div>
           <div className="overflow-x-auto scroll-hint">
-            {/* 910px is the declared tracks' sum; the three row actions need
-                the width they were previously getting from content sizing. */}
-            <table className="w-full min-w-[910px] table-fixed text-sm">
+            {/* 840px is the declared tracks' sum, and has to stay under the
+                page's own `max-w-4xl` (896px) — a floor above it would clip
+                the row actions against the card rather than scroll to them. */}
+            <table className="w-full min-w-[840px] table-fixed text-sm">
               <ColumnGroup columns={USER_COLUMNS} prefs={colPrefs} />
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                  {shownCols.map((c) => (
+                  {shownCols.map((c, i, arr) => (
                     <ResizableTh
+                      isLast={i === arr.length - 1}
                       key={c.id}
                       def={c}
                       tableId={USERS_TABLE_ID}

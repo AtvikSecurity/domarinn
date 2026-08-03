@@ -129,12 +129,13 @@ export function SetProjectPage() {
             which is `position: absolute` and would otherwise widen the page
             instead of this scroller. See SetsPage for the full account. */}
         <div className="relative overflow-x-auto scroll-hint">
-          <table className="w-full min-w-[820px] table-fixed text-sm">
+          <table className="w-full min-w-[880px] table-fixed text-sm">
             <ColumnGroup columns={SUITE_COLUMNS} prefs={colPrefs} />
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                {shownCols.map((c) => (
+                {shownCols.map((c, i, arr) => (
                   <ResizableTh
+                    isLast={i === arr.length - 1}
                     key={c.id}
                     def={c}
                     tableId={SUITES_TABLE_ID}

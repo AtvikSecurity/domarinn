@@ -93,14 +93,15 @@ export function SetsPage() {
               /sets a sideways scrollbar at phone widths. Making the scroll
               container the containing block keeps that overflow in here. */}
           <div className="relative overflow-x-auto scroll-hint">
-            <table className="w-full min-w-[760px] table-fixed text-sm">
+            <table className="w-full min-w-[840px] table-fixed text-sm">
               <ColumnGroup columns={SET_COLUMNS} prefs={colPrefs} />
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
                   {/* "Suite pass rates", not "pass rate": one latest rate per
                       suite, a spread across the project rather than a trend. */}
-                  {shownCols.map((c) => (
+                  {shownCols.map((c, i, arr) => (
                     <ResizableTh
+                      isLast={i === arr.length - 1}
                       key={c.id}
                       def={c}
                       tableId={SETS_TABLE_ID}

@@ -32,6 +32,7 @@ export function ColumnResizer({
   def,
   width,
   headerId,
+  edge = false,
   onResize,
   onReset,
 }: {
@@ -40,6 +41,13 @@ export function ColumnResizer({
   width: number;
   /** Id of the header cell's label, so the announcement names the column. */
   headerId: string;
+  /**
+   * This is the last column, so the handle sits fully inside its cell rather
+   * than straddling the edge. Half of a straddling handle hangs past the table
+   * itself, and a scroller then reports content wider than it is — a scrollbar
+   * under every table, promising columns that are not there.
+   */
+  edge?: boolean;
   onResize: (px: number) => void;
   /** Double-click / Home: back to the layout's own track. */
   onReset: () => void;
@@ -79,7 +87,15 @@ export function ColumnResizer({
       data-column-resizer={def.id}
       // A 1px seam is the right look and an unusable target, so the hit area
       // is wider and invisible, straddling the column boundary.
-      className="group absolute inset-y-0 right-0 z-20 flex w-3 translate-x-1/2 cursor-col-resize items-stretch justify-center"
+      //
+      // On the last column it does not straddle — it tucks against the inside
+      // of the edge, and clips: `sr-only` carries `margin: -1px`, so the
+      // hidden label and range would each bleed a pixel past the table and the
+      // scroller would report content wider than itself.
+      className={cn(
+        "group absolute inset-y-0 right-0 z-20 flex w-3 cursor-col-resize items-stretch",
+        edge ? "justify-end overflow-hidden" : "translate-x-1/2 justify-center",
+      )}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}

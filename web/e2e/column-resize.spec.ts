@@ -150,6 +150,30 @@ test.describe("Columns on a real <table>", () => {
   });
 });
 
+test.describe("The handle does not widen the table", () => {
+  // The handle straddles its column's right edge, so on the LAST column half
+  // of it hangs past the table and its scroller reports content wider than
+  // itself — a scrollbar under every converted table, promising columns that
+  // are not there.
+  // The admin table, because its declared tracks genuinely fit its page — the
+  // runs list wants more width than the viewport has and scrolls for real.
+  test("a table that fits its container does not scroll sideways", async ({
+    page,
+  }) => {
+    await page.goto("/admin");
+    await expect(
+      page.getByRole("columnheader", { name: "Username" }).first(),
+    ).toBeVisible();
+
+    const overflow = await page.evaluate(() => {
+      const el = document.querySelector(".scroll-hint");
+      if (!el) throw new Error("no scroller");
+      return el.scrollWidth - el.clientWidth;
+    });
+    expect(overflow).toBe(0);
+  });
+});
+
 test.describe("Columns on the two remaining substrates", () => {
   // The delta table's header and body are separate elements — the body owns
   // the vertical scroll the virtualizer measures — so this is the one place a

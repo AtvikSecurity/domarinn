@@ -457,7 +457,7 @@ function DeltaTable({
         className="grid items-center border-b border-border bg-surface-2/95 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted"
         style={{ gridTemplateColumns: gridTemplate }}
       >
-        {shown.map((c) => {
+        {shown.map((c, i, arr) => {
           const labelId = `delta-h-${c.id}`;
           return (
             // `relative` so the handle can straddle this cell's right edge.
@@ -467,6 +467,8 @@ function DeltaTable({
                 def={c}
                 width={effectiveWidth(c, prefs)}
                 headerId={labelId}
+
+                edge={i === arr.length - 1}
                 onResize={(px) => setColumnWidth(DELTA_TABLE_ID, c.id, px)}
                 onReset={() => resetColumnWidth(DELTA_TABLE_ID, c.id)}
               />

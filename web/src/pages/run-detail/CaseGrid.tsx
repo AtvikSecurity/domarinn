@@ -524,7 +524,7 @@ export function CaseGrid({
             role="row"
             aria-rowindex={1}
           >
-            {table.getFlatHeaders().map((header) => {
+            {table.getFlatHeaders().map((header, i, arr) => {
               const canSort = header.column.getCanSort();
               const sorted = header.column.getIsSorted(); // false | "asc" | "desc"
               const s = spec(header.column.id);
@@ -586,6 +586,8 @@ export function CaseGrid({
                       def={def}
                       width={effectiveWidth(def, prefs)}
                       headerId={labelId}
+
+                      edge={i === arr.length - 1}
                       onResize={(px) => setColumnWidth(TABLE_ID, def.id, px)}
                       onReset={() => resetColumnWidth(TABLE_ID, def.id)}
                     />
