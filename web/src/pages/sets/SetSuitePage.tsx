@@ -18,6 +18,7 @@ import { PassRateBadge, RateBadge } from "@/components/PassRateBadge";
 import { RunOriginCell } from "@/components/RunOriginCell";
 import { Sparkline } from "@/components/Sparkline";
 import { previousRun } from "@/lib/compare";
+import { hiddenByCachedExclude, isFullyCached } from "@/lib/cached";
 import {
   formatDateAbsolute,
   formatDuration,
@@ -50,11 +51,6 @@ function comparePair(
   const [older, newer] = sorted;
   if (!older || !newer) return null;
   return { baseId: older.id, headId: newer.id };
-}
-
-/** Mirrors the server's FULLY_CACHED predicate (storage/runs.rs). */
-function isFullyCached(r: RunListItem): boolean {
-  return r.cache_misses === 0 && (r.cache_hits ?? 0) > 0;
 }
 
 /**
@@ -260,10 +256,10 @@ export function SetSuitePage() {
                     {runs.map((r) => {
                       const compareTarget = previousRun(runs, r.id);
                       const fullyCached = isFullyCached(r);
-                      // Dim only cached AND passing rows: a cached run that
-                      // failed is real signal and must read as such.
-                      const dimmed =
-                        fullyCached && r.fail_count === 0 && r.error_count === 0;
+                      // Dim exactly what `cached=exclude` would have hidden. A
+                      // cached run that failed is real signal (verdicts are
+                      // never cached) and stays at full contrast.
+                      const dimmed = hiddenByCachedExclude(r);
                       return (
                         <tr
                           key={r.id}

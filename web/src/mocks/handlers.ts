@@ -23,6 +23,9 @@ import type {
   UserListResponse,
 } from "@/api";
 import { scopeAtLeast } from "@/lib/authz";
+// The same predicates the UI uses, so a mock run can never be classified one
+// way by the fixture server and another by the component rendering it.
+import { hiddenByCachedExclude, isFullyCached } from "@/lib/cached";
 import { parseTimestamp } from "@/lib/format";
 import * as fx from "./fixtures";
 import type { MockCaseRow } from "./fixtures";
@@ -164,17 +167,6 @@ function filterCacheEntries(
   });
 }
 
-/** Mirrors the server's FULLY_CACHED predicate (storage/runs.rs). */
-function fullyCached(r: RunListItem): boolean {
-  return r.cache_misses === 0 && (r.cache_hits ?? 0) > 0;
-}
-
-/** What `cached=exclude` hides: fully cached AND passing (verdicts are never
- *  cached, so a fully-cached failing run always stays visible). */
-function hiddenByCachedExclude(r: RunListItem): boolean {
-  return fullyCached(r) && r.fail_count === 0 && r.error_count === 0;
-}
-
 function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
   const project = p.get("project");
   const suite = p.get("suite");
@@ -195,7 +187,7 @@ function filterRuns(runs: RunListItem[], p: URLSearchParams): RunListItem[] {
     if (until && parseTimestamp(r.created_at) > Number(until)) return false;
     if (status && derivedRunStatus(r) !== status) return false;
     if (cached === "exclude" && hiddenByCachedExclude(r)) return false;
-    if (cached === "only" && !fullyCached(r)) return false;
+    if (cached === "only" && !isFullyCached(r)) return false;
     // Mirrors the server: `ci_provider IS NOT NULL` is the exact CI predicate,
     // and `actor` matches either who ran a run or who uploaded it.
     if (origin === "ci" && r.ci_provider == null) return false;

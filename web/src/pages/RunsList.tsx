@@ -5,6 +5,7 @@ import type { RunListItem } from "@/api";
 import { mergeParams, parseRunsFilters } from "@/lib/filters";
 import { suitePassRateSeries } from "@/lib/suites";
 import { previousRun } from "@/lib/compare";
+import { hiddenByCachedExclude, isFullyCached } from "@/lib/cached";
 import {
   formatCost,
   formatDateAbsolute,
@@ -41,13 +42,6 @@ function comparePair(
   const [older, newer] = sorted;
   if (!older || !newer) return null;
   return { baseId: older.id, headId: newer.id };
-}
-
-/** Mirrors the server's FULLY_CACHED predicate (storage/runs.rs): every
- *  provider call in the run was a cache hit. Legacy rows (null counters)
- *  never count as cached. */
-function isFullyCached(r: RunListItem): boolean {
-  return r.cache_misses === 0 && (r.cache_hits ?? 0) > 0;
 }
 
 interface Group {
@@ -290,10 +284,11 @@ function SuiteGroup({ group }: { group: Group }) {
               // link is hidden rather than pointing at one.
               const compareTarget = previousRun(group.runs, r.id);
               const fullyCached = isFullyCached(r);
-              // Dim only cached AND passing rows: a cached run that failed is
-              // real signal (verdicts are never cached) and must read as such.
-              const dimmed =
-                fullyCached && r.fail_count === 0 && r.error_count === 0;
+              // Dim exactly what `cached=exclude` would have hidden, so the
+              // revealed view reads as "these are the ones you normally don't
+              // see". A cached run that failed is real signal (verdicts are
+              // never cached) and stays at full contrast.
+              const dimmed = hiddenByCachedExclude(r);
               return (
               <tr
                 key={r.id}
