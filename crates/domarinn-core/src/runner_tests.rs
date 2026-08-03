@@ -537,3 +537,228 @@ fn a_reason_this_build_has_never_heard_of_can_still_be_skipped() {
         &["invented_next_year".to_string()]
     ));
 }
+
+// ── The vacuous-pass guard, end to end ───────────────────────────────────────
+
+/// A provider that produces nothing gradeable: an empty output, whatever
+/// reason it cares to report, and whatever calls it made on the way.
+struct EmptyProvider {
+    empty_reason: Option<crate::empty::EmptyReason>,
+    tool_calls: Vec<crate::result::ToolCall>,
+}
+
+impl EmptyProvider {
+    /// Declined outright: nothing said, nothing done.
+    fn refusing() -> Self {
+        EmptyProvider {
+            empty_reason: Some(crate::empty::EmptyReason::new(
+                crate::empty::EmptyReason::REFUSAL,
+            )),
+            tool_calls: Vec::new(),
+        }
+    }
+
+    /// Answered with a tool call and said nothing else — an empty *text*
+    /// output over a response that did something.
+    fn tool_only() -> Self {
+        EmptyProvider {
+            empty_reason: Some(crate::empty::EmptyReason::new(
+                crate::empty::EmptyReason::TOOL_USE_ONLY,
+            )),
+            tool_calls: vec![crate::result::ToolCall {
+                id: None,
+                name: "get_weather".into(),
+                arguments: serde_json::json!({"city": "Oslo"}),
+            }],
+        }
+    }
+
+    /// Blank with no vendor reason at all, so `classify_empty` is what supplies
+    /// one — the case where the raw field and the classified reason differ.
+    fn blank() -> Self {
+        EmptyProvider {
+            empty_reason: None,
+            tool_calls: Vec::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for EmptyProvider {
+    fn id(&self) -> &str {
+        "empty"
+    }
+    fn fingerprint(&self) -> Json {
+        serde_json::json!({ "type": "empty" })
+    }
+    async fn call(
+        &self,
+        _req: &ProviderRequest,
+        _ctx: &CallCtx,
+    ) -> Result<ProviderResponse, ProviderError> {
+        Ok(ProviderResponse {
+            empty_reason: self.empty_reason.clone(),
+            tool_calls: self.tool_calls.clone(),
+            ..ProviderResponse::text("")
+        })
+    }
+}
+
+fn not_contains() -> crate::config::AssertKind {
+    crate::config::AssertKind::Contains {
+        value: "forbidden".into(),
+    }
+}
+
+fn rubric() -> crate::config::AssertKind {
+    crate::config::AssertKind::LlmRubric {
+        value: "is rude".into(),
+        grader: None,
+        threshold: None,
+        params: None,
+    }
+}
+
+/// A grader whose judgement is always "the output did not satisfy the rubric"
+/// — which a negated assert would otherwise turn into a pass.
+struct FailingGrader;
+
+#[async_trait]
+impl AssertGrader for FailingGrader {
+    async fn grade(
+        &self,
+        _assert: &crate::config::Assert,
+        _output: &crate::types::Output,
+        _ctx: &GradeCtx<'_>,
+    ) -> Result<crate::cache::Graded, crate::errors::GraderError> {
+        Ok(crate::cache::Graded::unpriced(
+            crate::cache::GradedVerdict::Rubric {
+                score: 0.0,
+                pass: false,
+                reasoning: "nothing to judge".into(),
+            },
+        ))
+    }
+}
+
+/// Run one cell against an [`EmptyProvider`] with a single assert.
+async fn empty_case(
+    provider: &EmptyProvider,
+    kind: crate::config::AssertKind,
+    negate: bool,
+    skip_on_empty_reason: &[String],
+) -> CaseResult {
+    let engine = TemplateEngine::new();
+    let cache = NoopCache;
+    let schemas = crate::jsonschema_cache::SchemaCache::new();
+    let aborted = AbortFlag::default();
+    let cache_state = crate::runner::runner_cache::CacheRunState::default();
+    let test = crate::config::TestCase {
+        id: Some("t1".into()),
+        assert: vec![crate::config::Assert {
+            weight: 1.0,
+            negate,
+            kind,
+        }],
+        ..Default::default()
+    };
+    run_cell(
+        provider,
+        None,
+        &test,
+        0,
+        &engine,
+        &cache,
+        Some(&FailingGrader),
+        &CallCtx::default(),
+        Path::new("."),
+        CacheMode::Disabled,
+        false,
+        &RetryPolicy::default(),
+        &schemas,
+        false,
+        &aborted,
+        skip_on_empty_reason,
+        &[],
+        &cache_state,
+    )
+    .await
+}
+
+/// The hole this closes: `not-contains` over a refusal scored 1.00 and the
+/// case reported green, for a run the model never attempted.
+#[tokio::test]
+async fn a_refusal_with_negated_asserts_lands_in_fail_not_pass() {
+    let case = empty_case(&EmptyProvider::refusing(), not_contains(), true, &[]).await;
+    assert_eq!(case.status, CaseStatus::Fail, "{:?}", case.asserts);
+    assert_eq!(case.score, 0.0);
+    assert!(
+        case.asserts[0].reason.contains("vacuously"),
+        "{}",
+        case.asserts[0].reason
+    );
+}
+
+/// `skip_on_empty_reason` is checked before the verdict, so a suite that opted
+/// out of grading refusals still gets `Skip` rather than the guard's `Fail`.
+#[tokio::test]
+async fn skip_on_empty_reason_still_wins_over_the_vacuous_pass_guard() {
+    let case = empty_case(
+        &EmptyProvider::refusing(),
+        not_contains(),
+        true,
+        &[crate::empty::EmptyReason::REFUSAL.to_string()],
+    )
+    .await;
+    assert_eq!(case.status, CaseStatus::Skip, "{:?}", case.asserts);
+}
+
+/// The graded seam: a negated `llm-rubric` over a refusal is the same vacuous
+/// pass, and the guard has to sit before the score the case is graded on.
+#[tokio::test]
+async fn a_negated_graded_assert_cannot_pass_vacuously_either() {
+    let case = empty_case(&EmptyProvider::refusing(), rubric(), true, &[]).await;
+    assert_eq!(case.status, CaseStatus::Fail, "{:?}", case.asserts);
+    assert_eq!(case.score, 0.0, "the scored verdict agrees with the result");
+    assert!(
+        case.asserts[0].reason.contains("vacuously"),
+        "{}",
+        case.asserts[0].reason
+    );
+}
+
+/// ...and the graded seam honours the same exemption as the local one: the
+/// judge is shown the tool calls, so a verdict over a tool-only response is a
+/// judgement about something the model actually did.
+#[tokio::test]
+async fn a_negated_graded_assert_keeps_its_verdict_when_the_model_called_a_tool() {
+    let case = empty_case(&EmptyProvider::tool_only(), rubric(), true, &[]).await;
+    assert_eq!(case.status, CaseStatus::Pass, "{:?}", case.asserts);
+    assert_eq!(case.score, 1.0);
+}
+
+/// `skip_on_empty_reason` matches the reason the case *reports*, which for a
+/// blank answer no provider diagnosed is the one `classify_empty` supplied.
+/// Reading the raw provider field instead made `["blank"]` match nothing.
+#[tokio::test]
+async fn a_blank_output_is_skippable_by_the_reason_the_case_reports() {
+    let provider = EmptyProvider::blank();
+    // Un-negated and failing, so `Skip` is the ladder's doing and not the
+    // vacuous-pass guard's.
+    let graded = empty_case(&provider, not_contains(), false, &[]).await;
+    assert_eq!(graded.status, CaseStatus::Fail);
+    assert_eq!(
+        graded.empty_reason.as_ref().map(|r| r.as_str()),
+        Some(crate::empty::EmptyReason::BLANK),
+        "the case reports the classified reason"
+    );
+
+    let skipped = empty_case(
+        &provider,
+        not_contains(),
+        false,
+        &[crate::empty::EmptyReason::BLANK.to_string()],
+    )
+    .await;
+    assert_eq!(skipped.status, CaseStatus::Skip, "{:?}", skipped.asserts);
+}

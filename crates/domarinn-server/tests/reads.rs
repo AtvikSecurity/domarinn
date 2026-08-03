@@ -457,3 +457,249 @@ async fn an_unknown_error_class_is_stored_not_rejected() {
     let body = get(&app, "/api/v1/runs/r-future/cases").await.json();
     assert_eq!(body["cases"][0]["error_class"], "invented_by_a_newer_child");
 }
+
+/// Empty outputs are aggregatable and filterable the same way errors are: a run
+/// reporting "14 cases came back empty" has to be able to say that twelve were
+/// refusals. The reason set is open — no `unknown` bucket, unlike `error_class`
+/// — so an unlisted value must store and filter verbatim.
+#[tokio::test]
+async fn cases_carry_and_filter_by_empty_reason() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let run = make_run(
+        "r-empty",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("refusal"),
+            CaseSpec::new("openai", "t2", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("refusal"),
+            CaseSpec::new("openai", "t3", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("tool_use_only"),
+            // An unlisted reason — from a newer client, or an `exec` child this
+            // build does not know about — round-trips rather than failing.
+            CaseSpec::new("openai", "t4", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("weird_new_reason"),
+            CaseSpec::new("openai", "t5", CaseStatus::Pass),
+        ],
+    );
+    post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+
+    let all = get(&app, "/api/v1/runs/r-empty/cases").await.json();
+    let reasons: Vec<Option<&str>> = all["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["empty_reason"].as_str())
+        .collect();
+    assert_eq!(
+        reasons,
+        vec![
+            Some("refusal"),
+            Some("refusal"),
+            Some("tool_use_only"),
+            Some("weird_new_reason"),
+            // A case that produced real output is not empty, and must not be
+            // given a reason.
+            None,
+        ]
+    );
+
+    let refusals = get(&app, "/api/v1/runs/r-empty/cases?empty_reason=refusal").await;
+    assert_eq!(refusals.json()["cases"].as_array().unwrap().len(), 2);
+
+    let weird = get(
+        &app,
+        "/api/v1/runs/r-empty/cases?empty_reason=weird_new_reason",
+    )
+    .await;
+    assert_eq!(weird.json()["cases"].as_array().unwrap().len(), 1);
+
+    // A blank filter value must return nothing, not the complement: `''` is the
+    // storage sentinel for "known: not empty", and it never appears on the wire,
+    // so it must not be selectable through the wire either.
+    let blank = get(&app, "/api/v1/runs/r-empty/cases?empty_reason=").await;
+    assert!(
+        blank.json()["cases"].as_array().unwrap().is_empty(),
+        "a blank empty_reason must not select the not-empty sentinel rows: {:?}",
+        blank.json()
+    );
+}
+
+/// The run-level empty tally has to reach the wire in two shapes: one number on
+/// the list row (the `runs.empty_count` column) and the per-reason map on the
+/// detail (the stored `summary.empty_counts`). Both are omitted, never zeroed,
+/// when there is nothing to report — a dashboard must not invent "0 empty" for
+/// a legacy row whose tally was never recorded.
+#[tokio::test]
+async fn runs_report_empty_count_and_empty_counts() {
+    let (app, dir) = test_app(Settings::default()).await;
+
+    let empties = make_run(
+        "r-tally",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("refusal"),
+            CaseSpec::new("openai", "t2", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("refusal"),
+            CaseSpec::new("openai", "t3", CaseStatus::Pass),
+        ],
+    );
+    post_json(&app, "/api/v1/runs", None, &run_value(&empties)).await;
+
+    let clean = make_run(
+        "r-noempty",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        10,
+        &[CaseSpec::new("openai", "t1", CaseStatus::Pass)],
+    );
+    post_json(&app, "/api/v1/runs", None, &run_value(&clean)).await;
+
+    let listed = get(&app, "/api/v1/runs").await.json();
+    let row = |id: &str| -> serde_json::Value {
+        listed["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no row for {id} in {listed}"))
+            .clone()
+    };
+    assert_eq!(row("r-tally")["empty_count"], serde_json::json!(2));
+    assert!(
+        row("r-noempty").get("empty_count").is_none(),
+        "a run with no empty cases omits the key: {}",
+        row("r-noempty")
+    );
+
+    let detail = get(&app, "/api/v1/runs/r-tally").await.json();
+    assert_eq!(
+        detail["empty_counts"],
+        serde_json::json!({ "refusal": 2 }),
+        "detail tallies by reason: {detail}"
+    );
+    let clean_detail = get(&app, "/api/v1/runs/r-noempty").await.json();
+    assert!(
+        clean_detail.get("empty_counts").is_none(),
+        "a run with no empty cases omits the map: {clean_detail}"
+    );
+
+    // Unknown is not zero. A legacy row (NULL) and an undecodable blob (the -1
+    // sentinel) must both render as absent rather than as a number.
+    let db = rusqlite::Connection::open(dir.path().join("domarinn.db")).unwrap();
+    db.execute(
+        "UPDATE runs SET empty_count = NULL WHERE id = 'r-tally'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE runs SET empty_count = -1 WHERE id = 'r-noempty'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let listed = get(&app, "/api/v1/runs").await.json();
+    for id in ["r-tally", "r-noempty"] {
+        let row = listed["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap();
+        assert!(
+            row.get("empty_count").is_none(),
+            "unknown must not render as a number for {id}: {row}"
+        );
+    }
+}
+
+/// `empty_reason` is an open string, so nothing stops a hand-authored document
+/// from sending `""` — and `""` is exactly the storage sentinel for "known: not
+/// empty". Storage flattens it to that sentinel, which means the detail
+/// `GROUP BY`, the case grid and the wire filter all drop the case; the list
+/// count is the one place that could disagree, and must not. A present-but-blank
+/// reason is not a reason.
+#[tokio::test]
+async fn a_blank_empty_reason_counts_as_not_empty_everywhere() {
+    let (app, _dir) = test_app(Settings::default()).await;
+
+    let run = make_run(
+        "r-blank",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Skip)
+                .output(Some(""))
+                .empty_reason("refusal"),
+            CaseSpec::new("openai", "t2", CaseStatus::Skip).output(Some("")),
+            CaseSpec::new("openai", "t3", CaseStatus::Pass),
+        ],
+    );
+    let mut value = run_value(&run);
+    // The hand-authored part: a reason field that is present and blank.
+    value["cases"][1]["empty_reason"] = serde_json::json!("");
+    let reply = post_json(&app, "/api/v1/runs", None, &value).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+
+    let listed = get(&app, "/api/v1/runs").await.json();
+    let row = listed["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "r-blank")
+        .unwrap_or_else(|| panic!("no row for r-blank in {listed}"));
+    assert_eq!(
+        row["empty_count"],
+        serde_json::json!(1),
+        "the blank reason must not be counted: {row}"
+    );
+
+    // The other three readers, which the count has to agree with.
+    let detail = get(&app, "/api/v1/runs/r-blank").await.json();
+    assert_eq!(
+        detail["empty_counts"],
+        serde_json::json!({ "refusal": 1 }),
+        "detail must omit the blank reason: {detail}"
+    );
+
+    let cases = get(&app, "/api/v1/runs/r-blank/cases").await.json();
+    let reasons: Vec<Option<&str>> = cases["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["empty_reason"].as_str())
+        .collect();
+    assert_eq!(
+        reasons,
+        vec![Some("refusal"), None, None],
+        "a blank reason reads back as absent, never as \"\": {cases}"
+    );
+
+    let blank = get(&app, "/api/v1/runs/r-blank/cases?empty_reason=").await;
+    assert!(
+        blank.json()["cases"].as_array().unwrap().is_empty(),
+        "the blank reason must not be selectable: {:?}",
+        blank.json()
+    );
+}

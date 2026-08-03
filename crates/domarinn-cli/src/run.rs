@@ -103,8 +103,23 @@ pub struct RunArgs {
     pub summary_md: Option<PathBuf>,
 
     /// Upload the run to the server after it completes.
+    ///
+    /// Fail-closed: a rejected or unreachable upload exits 3. A server that
+    /// says up front it cannot accept this CLI's result schema — or no server
+    /// URL configured at all — exits 2 *before* the run executes, so the
+    /// misconfiguration costs no provider calls.
+    /// Pass `--allow-share-failure` to tolerate any of these.
     #[arg(long)]
     pub share: bool,
+
+    /// Do not fail the run when its `--share` upload does.
+    ///
+    /// Publishing is the point of `--share` in CI, so its failure is the run's
+    /// failure by default. Pass this where the upload is genuinely optional — a
+    /// fork's pull request with no server credentials, say — and the exit code
+    /// goes back to reflecting the assertions alone.
+    #[arg(long, requires = "share")]
+    pub allow_share_failure: bool,
 
     /// Do not persist raw provider metadata or the provider request in the
     /// result document.
@@ -171,6 +186,22 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
             eprintln!("  - {issue}");
         }
         return exit::USAGE;
+    }
+
+    // Before the runner, not after: `--share` failing closed already catches a
+    // version-skewed server, but only once every provider call has been billed
+    // and the graded results have nowhere to go. One GET here turns that into a
+    // refusal that costs a round trip. Anything short of a confirmed mismatch
+    // proceeds — see `preflight_schema`.
+    if args.share {
+        if let Err(msg) = crate::share::preflight_schema(server_url.as_deref()) {
+            if args.allow_share_failure {
+                tracing::warn!("{msg}");
+            } else {
+                eprintln!("error: --share preflight: {msg}");
+                return exit::USAGE;
+            }
+        }
     }
 
     let suite_file = domarinn_core::loader::resolve_suite_path(&args.path);
@@ -328,15 +359,40 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
     // but after the human output above, so a slow upload never holds back the
     // table. On success the URL is recorded on the run and re-persisted, which
     // is how a later `ci-summary` links to it.
+    //
+    // An upload that did not happen is tracked rather than returned, on the same
+    // reasoning as `baseline_unresolved`: the results are real, so the run still
+    // writes its summary — only the exit code below refuses to call the job
+    // green. The no-server-URL arm of `upload_run` is reachable here only under
+    // `--allow-share-failure`: in strict mode the preflight above already
+    // refused that certain failure before the run spent anything.
+    let mut share_failed = false;
     if args.share {
-        match crate::share::upload_run(&result, server_url.as_deref(), false) {
+        match crate::share::upload_run(&result, server_url.as_deref()) {
             Ok(url) => {
                 result.share_url = Some(url);
                 if let Err(e) = output::persist(&result) {
                     tracing::warn!(error = %e, "could not persist run URL");
                 }
             }
-            Err(e) => tracing::warn!(error = %e, "share failed"),
+            Err(e) => {
+                if args.allow_share_failure {
+                    tracing::warn!(error = %e, "share failed (--allow-share-failure: continuing)");
+                } else {
+                    share_failed = true;
+                    // Name the run the operator has to go and find: it is
+                    // graded and on disk, so the recovery is a `domarinn share`
+                    // once the server is reachable, not a re-run.
+                    tracing::error!(
+                        error = %e,
+                        run_id = %result.run_id,
+                        suite = result.suite.as_deref().unwrap_or(""),
+                        cases = result.summary.total,
+                        "share failed; the run's results are graded but not uploaded — \
+                         failing with the infra code (pass --allow-share-failure to tolerate)"
+                    );
+                }
+            }
         }
     }
 
@@ -347,10 +403,13 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         }
     }
 
-    // Exit code: infra errors win over everything, then an unresolved baseline
-    // (the gate could not do its job, so its silence means nothing), then a run
-    // that graded nothing, then assertion failures and regressions.
-    if result.summary.errored > 0 {
+    // Exit code: infra errors win over everything — including a failed share,
+    // which is infrastructure the same way an errored cell is, and which must
+    // outrank an assertion failure so a red run cannot mask an upload that never
+    // happened. Then an unresolved baseline (the gate could not do its job, so
+    // its silence means nothing), then a run that graded nothing, then assertion
+    // failures and regressions.
+    if result.summary.errored > 0 || share_failed {
         exit::INFRA
     } else if baseline_unresolved {
         exit::USAGE

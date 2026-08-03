@@ -364,6 +364,279 @@ async fn backfill_repopulates_the_case_error_for_pre_migration_rows() {
     assert_eq!(unstamped, 0, "backfill must stamp every row, error or not");
 }
 
+/// A two-case run where the first case's output came back empty for `reason`.
+fn empty_reason_run(id: &str, reason: &'static str) -> domarinn_core::result::RunResult {
+    make_run(
+        id,
+        Some("proj"),
+        Some("suite"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Fail)
+                .output(Some(""))
+                .empty_reason(reason),
+            CaseSpec::new("openai", "t2", CaseStatus::Pass),
+        ],
+    )
+}
+
+/// `(empty_reason, ...)` for a run's cases, in `idx` order.
+fn empty_reasons(conn: &Connection, run_id: &str) -> Vec<Option<String>> {
+    let mut stmt = conn
+        .prepare("SELECT empty_reason FROM cases WHERE run_id = ?1 ORDER BY idx")
+        .unwrap();
+    stmt.query_map([run_id], |r| r.get::<_, Option<String>>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn empty_count(conn: &Connection, run_id: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT empty_count FROM runs WHERE id = ?1",
+        [run_id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn migration_adds_the_empty_columns_and_index() {
+    let dir = TempDir::new().unwrap();
+    let _storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    let conn = raw(dir.path());
+
+    assert!(
+        table_columns(&conn, "cases").contains(&"empty_reason".to_string()),
+        "cases missing empty_reason"
+    );
+    assert!(
+        table_columns(&conn, "runs").contains(&"empty_count".to_string()),
+        "runs missing empty_count"
+    );
+    assert!(
+        index_names(&conn).contains(&"idx_cases_run_empty_reason".to_string()),
+        "missing index idx_cases_run_empty_reason"
+    );
+}
+
+#[tokio::test]
+async fn ingest_promotes_the_empty_reason_and_counts_it_on_the_run() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(empty_reason_run("run-empty", "refusal"), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        empty_reasons(&conn, "run-empty"),
+        vec![Some("refusal".to_string()), Some(String::new())],
+        "ingest must stamp '' for a case with no reason, never NULL: NULL is \
+         reserved for 'not yet backfilled' and would make the backfill \
+         predicate re-select fresh rows on every open"
+    );
+    assert_eq!(empty_count(&conn, "run-empty"), Some(1));
+}
+
+#[tokio::test]
+async fn backfill_populates_empty_reason_and_empty_count_from_blobs() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(empty_reason_run("run-bf-empty", "refusal"), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    // Simulate rows written before migration 15.
+    {
+        let conn = raw(dir.path());
+        conn.execute_batch(
+            "UPDATE cases SET empty_reason = NULL;
+             UPDATE runs SET empty_count = NULL;",
+        )
+        .unwrap();
+    }
+
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        empty_reasons(&conn, "run-bf-empty"),
+        vec![Some("refusal".to_string()), Some(String::new())],
+        "the reason comes back out of the case blob; a case without one is \
+         stamped '' rather than left NULL"
+    );
+    assert_eq!(empty_count(&conn, "run-bf-empty"), Some(1));
+
+    // The anti-spin property: every row is stamped, so a second open selects
+    // nothing at all.
+    let unstamped: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cases WHERE empty_reason IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unstamped, 0, "backfill must stamp every case row");
+    let unstamped_runs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE empty_count IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unstamped_runs, 0, "backfill must stamp every run row");
+}
+
+/// The blob-decoding path has to draw the "is this empty" line in the same
+/// place ingest does: a blob whose case carries a present-but-blank
+/// `empty_reason` backfills to the `''` "known: not empty" sentinel, which the
+/// detail tally and case grid both exclude — so the run count must exclude it
+/// too, or the list would claim an empty case the detail cannot show.
+#[tokio::test]
+async fn backfill_does_not_count_a_blank_reason_as_empty() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(empty_reason_run("run-bf-blank", ""), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    // Simulate rows written before migration 15, so the backfill re-derives
+    // both columns from the blob rather than reading what ingest computed.
+    {
+        let conn = raw(dir.path());
+        conn.execute_batch(
+            "UPDATE cases SET empty_reason = NULL;
+             UPDATE runs SET empty_count = NULL;",
+        )
+        .unwrap();
+    }
+
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        empty_reasons(&conn, "run-bf-blank"),
+        vec![Some(String::new()), Some(String::new())],
+        "a blank reason is indistinguishable from no reason once stored"
+    );
+    assert_eq!(
+        empty_count(&conn, "run-bf-blank"),
+        Some(0),
+        "no case is selectable as empty, so the run tally must be 0"
+    );
+}
+
+/// The migration-15 upgrade shape — a run missing *only* `empty_count` — is
+/// every run in the store on the first open after upgrading, so it must be
+/// filled by counting the (already-backfilled) case rows, not by decoding the
+/// run blob. Proven by corrupting the run blob: the blob path would stamp the
+/// `-1` sentinel, so getting the real count back means the blob was never read.
+#[tokio::test]
+async fn empty_count_backfill_counts_case_rows_instead_of_decoding_the_run_blob() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(empty_reason_run("run-bf-fast", "refusal"), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    {
+        let conn = raw(dir.path());
+        // Only the migration-15 run column is missing; the case rows are
+        // nulled too, so the count must come from what `backfill_cases` has
+        // just re-stamped, in order — not from what ingest left behind.
+        conn.execute_batch(
+            "UPDATE cases SET empty_reason = NULL;
+             UPDATE runs SET empty_count = NULL;",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE run_blobs SET body = ?1 WHERE run_id='run-bf-fast'",
+            rusqlite::params![vec![0xde_u8, 0xad, 0xbe, 0xef]],
+        )
+        .unwrap();
+    }
+
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        empty_count(&conn, "run-bf-fast"),
+        Some(1),
+        "an upgrade-shaped run must get its count from the case rows; -1 here \
+         means the blob path ran (and hit the corrupt blob) instead"
+    );
+}
+
+#[tokio::test]
+async fn backfill_stamps_empty_sentinels_for_corrupt_blobs_and_stops_rescanning() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(empty_reason_run("run-empty-corrupt", "refusal"), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    {
+        let conn = raw(dir.path());
+        conn.execute_batch(
+            "UPDATE cases SET empty_reason = NULL;
+             UPDATE runs SET empty_count = NULL;",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE cases SET detail = ?1 WHERE run_id='run-empty-corrupt' AND idx=0",
+            rusqlite::params![vec![0xde_u8, 0xad, 0xbe, 0xef]],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE run_blobs SET body = ?1 WHERE run_id='run-empty-corrupt'",
+            rusqlite::params![vec![0xde_u8, 0xad, 0xbe, 0xef]],
+        )
+        .unwrap();
+    }
+
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        empty_reasons(&conn, "run-empty-corrupt")[0],
+        Some(String::new()),
+        "an undecodable case blob gets the empty-string sentinel"
+    );
+    assert_eq!(
+        empty_count(&conn, "run-empty-corrupt"),
+        Some(-1),
+        "an undecodable run blob gets the -1 sentinel"
+    );
+
+    // Both sentinels are non-NULL, so a second open selects zero rows.
+    let unstamped: i64 = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM cases WHERE empty_reason IS NULL)
+                  + (SELECT COUNT(*) FROM runs WHERE empty_count IS NULL)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unstamped, 0, "sentinels must end the rescan");
+}
+
 #[tokio::test]
 async fn backfill_marks_corrupt_case_blob_with_sentinel_and_completes() {
     let dir = TempDir::new().unwrap();

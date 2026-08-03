@@ -12,7 +12,7 @@ use std::path::Path;
 use serde_json::Value as Json;
 
 use crate::assertion::AssertOutcome;
-use crate::asserts::{evaluate_local, is_local, EvalCtx, MetricCtx};
+use crate::asserts::{evaluate_local, is_local, negate_and_guard, EvalCtx, MetricCtx};
 use crate::cache::{CacheBackend, CacheMode, Graded};
 use crate::cache_migrate::MigrationProbe;
 use crate::config::{Assert, AssertKind};
@@ -46,6 +46,10 @@ pub(super) struct AssertCtx<'a> {
     /// handed on through [`super::GradeCtx`] to the `llm-rubric` judge and to
     /// `exec` assert children.
     pub tool_calls: &'a [crate::result::ToolCall],
+    /// Why this cell's output has nothing gradeable in it, if it does not.
+    /// Threaded so a negated assert cannot pass vacuously over an empty
+    /// response — see [`AssertOutcome::deny_vacuous_negated_pass`].
+    pub empty_reason: Option<&'a crate::empty::EmptyReason>,
     pub cache: &'a dyn CacheBackend,
     pub cache_mode: CacheMode,
     /// Whether grader caching is enabled (`cache.grader`, `--no-grader-cache`).
@@ -79,6 +83,7 @@ pub(super) async fn evaluate_asserts(
         metrics,
         schemas: ctx.schemas,
         tool_calls: ctx.tool_calls,
+        empty_reason: ctx.empty_reason,
     };
     // Slot results by original index so output order matches config order.
     let mut results: Vec<Option<AssertResult>> = vec![None; asserts.len()];
@@ -132,10 +137,13 @@ pub(super) async fn evaluate_asserts(
         match ctx.grader {
             Some(g) => match graded_verdict(g, ctx, assert, output, vars).await {
                 Ok(graded) => {
-                    let outcome = graded
-                        .verdict
-                        .to_outcome(assert_threshold(assert))
-                        .negated(assert.negate);
+                    let outcome = negate_and_guard(
+                        graded.verdict.to_outcome(assert_threshold(assert)),
+                        assert,
+                        output,
+                        ctx.tool_calls,
+                        ctx.empty_reason,
+                    );
                     scored.push(scored_of(assert, &outcome));
                     let mut result =
                         assert_result(assert, &outcome, AssertStatus::from_pass(outcome.passed));

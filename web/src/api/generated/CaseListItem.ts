@@ -39,4 +39,13 @@ error: string | null,
  * `grader_*` means the eval did not run — instead of read one at a time.
  * `None` for a case that did not error and for rows written before this.
  */
-error_class: string | null, };
+error_class: string | null, 
+/**
+ * Why this case's output had nothing gradeable in it (migration-15 `cases`
+ * column) — a refusal, tool calls only, reasoning only. A case can come
+ * back empty without erroring, so this is the only column that explains an
+ * empty `output_preview`. The reason set is open: unrecognized values are
+ * stored verbatim, so never match on a closed list. Omitted, not null,
+ * when the case was not empty and for legacy pre-backfill rows.
+ */
+empty_reason?: string, };

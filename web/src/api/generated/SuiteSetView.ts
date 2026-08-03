@@ -11,6 +11,10 @@ export type SuiteSetView = { suite: string, run_count: number,
  */
 last_run_at: number | null, pass_count: number, fail_count: number, error_count: number, case_count: number, 
 /**
+ * Empty-output cases across the set's runs — see this module's header.
+ */
+empty_count?: number, 
+/**
  * The newest run's pass rate — the last element of `sparkline`.
  */
 latest_pass_rate: number | null, 

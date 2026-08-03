@@ -91,6 +91,23 @@ export function CaseVerdictStrip({
           {detail.attempts > 1 ? (
             <Chip tone="amber">{detail.attempts} attempts</Chip>
           ) : null}
+          {/* The only field that explains a blank output. An empty answer is a
+              *successful* call — nothing errored, no assertion says why — so
+              without this chip the drawer shows an empty output panel and no
+              account of it. Amber because it is a fault to chase, not a
+              verdict; the reason set is open, so the value is shown verbatim
+              rather than mapped to a friendlier phrase this build may not
+              know. Absent means "not empty, or recorded before the field
+              existed" — never rendered as a reassuring "none". */}
+          {detail.empty_reason ? (
+            <Chip
+              tone="amber"
+              mono
+              title="Why this output had nothing gradeable in it"
+            >
+              empty: {detail.empty_reason}
+            </Chip>
+          ) : null}
           {detail.stop_reason ? (
             <StopReasonChip reason={detail.stop_reason} />
           ) : null}

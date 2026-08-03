@@ -233,9 +233,10 @@ fn investigate_case(args: &Args<'_>) -> String {
          \n\
          1. `get_case` with run_id=\"{run_id}\", case_key=\"{case_key}\". Read every assertion's \
          status, score, and reason — the reason is where the grader explains itself.\n\
-         2. Check `stop_reason` and `error_class`. A `length` stop reason next to a low score \
-         usually means the answer was truncated, not wrong; request fields:[\"request\"] to see the \
-         `max_tokens` that caused it.\n\
+         2. Check `stop_reason`, `error_class`, and `empty_reason`. A `length` stop reason next to \
+         a low score usually means the answer was truncated, not wrong; request fields:[\"request\"] \
+         to see the `max_tokens` that caused it. `empty_reason` is the only field that explains a \
+         blank output — an empty answer is a successful call, so nothing else reports it.\n\
          3. If the output looks empty or malformed, request fields:[\"raw\"] to see what the \
          provider actually returned.\n\
          4. `get_run` with run_id=\"{run_id}\" to see whether the whole run is unhealthy or just \

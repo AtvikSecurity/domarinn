@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 
+use crate::empty::EmptyReason;
 use crate::template::TemplateEngine;
 use crate::types::Output;
 
@@ -90,6 +91,36 @@ impl AssertOutcome {
             score: 1.0 - self.score,
             passed: !self.passed,
             reason: format!("negated: {}", self.reason),
+            details: self.details,
+            unevaluable: false,
+        }
+    }
+
+    /// Refuse a pass a negated assertion earned only because the output was
+    /// empty. "The forbidden content is absent" is not evidence of compliance
+    /// when nothing was produced at all — a refusal must not pass `not-*`
+    /// asserts vacuously. Fails (score 0), never errors: this is a judgement
+    /// about the output, so the case lands in Fail, not Error (contrast
+    /// [`Self::unevaluable`], which is about a broken assertion).
+    pub fn deny_vacuous_negated_pass(
+        self,
+        negate: bool,
+        empty_reason: Option<&EmptyReason>,
+    ) -> Self {
+        let Some(reason) = empty_reason else {
+            return self;
+        };
+        if !negate || !self.passed || self.unevaluable {
+            return self;
+        }
+        AssertOutcome {
+            score: 0.0,
+            passed: false,
+            reason: format!(
+                "output was empty ({}): a negated assertion cannot pass vacuously — \
+                 nothing was produced for the forbidden content to be absent from",
+                reason.as_str()
+            ),
             details: self.details,
             unevaluable: false,
         }

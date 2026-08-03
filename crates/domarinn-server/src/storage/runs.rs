@@ -1,5 +1,7 @@
 //! Run ingest (content-hash idempotency) and run list / detail / export queries.
 
+use std::collections::BTreeMap;
+
 use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
@@ -157,6 +159,11 @@ struct PreparedCase {
     assert_digest: Option<String>,
     /// Migration-10 column: the structured failure class beside the prose.
     error_class: Option<String>,
+    /// Migration-15 column: why the output was empty. `String`, not
+    /// `Option<String>`, because the column is a tri-state whose NULL is
+    /// reserved for "not yet backfilled" — ingest writes `''` for "no reason"
+    /// (see `storage::backfill`).
+    empty_reason: String,
 }
 
 struct PreparedRun {
@@ -214,6 +221,13 @@ struct PreparedRun {
     cache_write_tokens: Option<i64>,
     cache_savings_microusd: Option<i64>,
     grader_cost_microusd: Option<i64>,
+    /// Migration-15 column: how many of this run's cases came back empty.
+    /// Counted off the cases rather than read from `summary.empty_counts` so an
+    /// older client that omits the summary field still lands the right number.
+    /// A present-but-empty reason (`""`, only reachable from a hand-authored
+    /// document) does not count: it stores as the `''` "known: not empty"
+    /// sentinel, which the detail `GROUP BY` and the case grid both exclude.
+    empty_count: i64,
     tags: Vec<String>,
     blob: Vec<u8>,
     cases: Vec<PreparedCase>,
@@ -284,6 +298,11 @@ impl PreparedRun {
                 provider_digest: case.provider_digest.clone(),
                 assert_digest: case.assert_digest.clone(),
                 error_class: case.error_class.as_ref().map(|c| c.as_str().to_string()),
+                empty_reason: case
+                    .empty_reason
+                    .as_ref()
+                    .map(|r| r.as_str().to_string())
+                    .unwrap_or_default(),
             });
         }
 
@@ -336,6 +355,15 @@ impl PreparedRun {
             cache_write_tokens: Some(run.summary.cache_write_tokens as i64),
             cache_savings_microusd: to_microusd(run.summary.cache_savings_usd),
             grader_cost_microusd: to_microusd(run.summary.grader_cost_usd),
+            empty_count: run
+                .cases
+                .iter()
+                .filter(|c| {
+                    c.empty_reason
+                        .as_ref()
+                        .is_some_and(|r| !r.as_str().is_empty())
+                })
+                .count() as i64,
             tags: run.filters.tags.clone(),
             blob,
             cases,
@@ -368,7 +396,8 @@ impl PreparedRun {
                 content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
                 actor, host, domarinn_version,
                 prompts_digest, providers_digest, tests_digest, asserts_digest, grader_digest,
-                cache_read_tokens, cache_write_tokens, cache_savings_microusd, grader_cost_microusd
+                cache_read_tokens, cache_write_tokens, cache_savings_microusd, grader_cost_microusd,
+                empty_count
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
@@ -377,7 +406,8 @@ impl PreparedRun {
                 ?21, ?22, ?23, ?24, ?25,
                 ?26, ?27, ?28,
                 ?29, ?30, ?31, ?32, ?33,
-                ?34, ?35, ?36, ?37
+                ?34, ?35, ?36, ?37,
+                ?38
             )",
             params![
                 self.id,
@@ -417,6 +447,7 @@ impl PreparedRun {
                 self.cache_write_tokens,
                 self.cache_savings_microusd,
                 self.grader_cost_microusd,
+                self.empty_count,
             ],
         )?;
 
@@ -440,10 +471,11 @@ impl PreparedRun {
                     latency_ms, detail,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached,
                     error, prompt_digest, provider_digest, assert_digest, error_class,
-                    cache_key
+                    cache_key, empty_reason
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+                    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27,
+                    ?28
                 )",
                 params![
                     self.id,
@@ -479,6 +511,9 @@ impl PreparedRun {
                     case.assert_digest,
                     case.error_class,
                     case.cache_key,
+                    // Already `''` rather than NULL for "no reason", for the
+                    // same reason `error` above is (see storage::backfill).
+                    case.empty_reason,
                 ],
             )?;
             for tag in &case.tags {
@@ -580,7 +615,7 @@ impl RunListFilter {
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
                     cache_hits, cache_misses,
                     actor, host, uploaded_by, ci_provider, ci_run_url,
-                    description, domarinn_version
+                    description, domarinn_version, empty_count
              FROM runs",
         );
         let mut clauses: Vec<String> = Vec::new();
@@ -719,6 +754,7 @@ impl RunListFilter {
                 ci_run_url: row.get(21)?,
                 description: row.get(22)?,
                 domarinn_version: row.get(23)?,
+                empty_count: row.get(24)?,
             })
         })?;
         let mut collected: Vec<RunRow> = Vec::new();
@@ -775,12 +811,22 @@ struct RunRow {
     ci_run_url: Option<String>,
     description: Option<String>,
     domarinn_version: Option<String>,
+    empty_count: Option<i64>,
 }
 
 /// Map a stored cache counter to its wire value: NULL (legacy, pre-backfill)
 /// and the -1 undecodable-blob sentinel both surface as `None`.
 fn clean_cache_count(v: Option<i64>) -> Option<i64> {
     v.filter(|n| *n >= 0)
+}
+
+/// Map a stored `runs.empty_count` to its wire value: the key is present only
+/// when there is something to report. NULL (legacy, pre-backfill) and the `-1`
+/// undecodable-blob sentinel are *unknown*, and a plain `0` is "known: none" —
+/// all three surface as `None` so the wire has one meaning for absent. See
+/// [`RunListItem::empty_count`] for why a reader must not render that as `0`.
+fn reportable_empty_count(v: Option<i64>) -> Option<u64> {
+    v.filter(|n| *n > 0).map(|n| n as u64)
 }
 
 impl RunRow {
@@ -809,6 +855,7 @@ impl RunRow {
             duration_ms: self.duration_ms,
             cache_hits: clean_cache_count(self.cache_hits),
             cache_misses: clean_cache_count(self.cache_misses),
+            empty_count: reportable_empty_count(self.empty_count),
             actor: self.actor.clone(),
             host: self.host.clone(),
             uploaded_by: self.uploaded_by.clone(),
@@ -892,6 +939,7 @@ fn get_run_detail(
                 // Filled in below, after the row is loaded.
                 tags: Vec::new(),
                 assert_labels: Vec::new(),
+                empty_counts: None,
             })
         })
         // Never `.ok()`: a fault must not read as a missing run (see `sets`).
@@ -903,7 +951,43 @@ fn get_run_detail(
 
     detail.tags = load_run_tags(conn, id.as_str())?;
     detail.assert_labels = distinct_assert_labels(conn, id.as_str())?;
+    detail.empty_counts = empty_counts_by_reason(conn, id.as_str())?;
     Ok(Some(detail))
+}
+
+/// This run's empty-output cases tallied by reason, or `None` when it has none.
+///
+/// Derived from the `cases` rows, exactly like the `runs.empty_count` column
+/// the list row reads — the same source, grouped instead of counted. That is
+/// what makes the list count, this map, and the case grid agree by
+/// construction — the backfill's `-1` corrupt-blob sentinel aside — even for an
+/// externally authored document whose own `summary.empty_counts` contradicts
+/// its cases. (The document keeps its summary map untouched for export
+/// consumers; nothing here rewrites it.)
+///
+/// `empty_reason <> ''` excludes the "known: not empty" sentinel, the same
+/// guard [`super::cases::CaseListFilter`] applies to the wire filter, and NULL
+/// excludes legacy pre-backfill rows. Index-covered by migration 15's
+/// `idx_cases_run_empty_reason(run_id, empty_reason)`.
+fn empty_counts_by_reason(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<Option<BTreeMap<String, u64>>> {
+    let mut stmt = conn.prepare(
+        "SELECT empty_reason, COUNT(*) FROM cases
+          WHERE run_id = ?1 AND empty_reason IS NOT NULL AND empty_reason <> ''
+          GROUP BY empty_reason",
+    )?;
+    let rows = stmt.query_map(params![run_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let (reason, n) = row?;
+        counts.insert(reason, n.max(0) as u64);
+    }
+    // Omitted, never `{}` — see `RunDetailResponse::empty_counts`.
+    Ok((!counts.is_empty()).then_some(counts))
 }
 
 fn distinct_assert_labels(conn: &Connection, run_id: &str) -> anyhow::Result<Vec<String>> {

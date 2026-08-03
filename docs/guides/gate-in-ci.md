@@ -19,8 +19,10 @@ Every domarinn run exits with a code your CI can branch on. **`3` (infra) wins o
 |------|--------------|---------|-------------|
 | `0`  | OK           | Everything passed. | Merge. |
 | `1`  | assertion    | An assertion failed, or a run regressed vs its baseline. | Block the PR (the model got worse). |
-| `2`  | config/usage | Bad config, bad flags, or a suite that won't load. | Fix the suite/workflow. |
-| `3`  | infra        | A provider crashed, the server was unreachable, or an internal error. | Retry / page an operator — **not** the PR's fault. |
+| `2`  | config/usage | Bad config, bad flags, a suite that won't load, or a `--share` preflight refusal (the server's result-schema window excludes this CLI), raised before the run spends anything. | Fix the suite/workflow, or upgrade the side the message names. |
+| `3`  | infra        | A provider crashed, the server was unreachable, an internal error, or a `run --share` upload that failed without `--allow-share-failure`. | Retry / page an operator — **not** the PR's fault. |
+
+A run that both failed assertions and failed to upload exits `3`: the results are graded but unpublished, and `3` beating `1` is what keeps a broken harness from being blamed on the PR author.
 
 This is the same contract the CLI documents in [`cli.md`](../reference/cli.md#exit-codes).
 
@@ -60,6 +62,7 @@ jobs:
 | `version`            | `latest`            | Release tag to download the binary from (e.g. `0.1.0`), or `latest`. Used only when `binary-path` is empty. |
 | `server-url`         | `""`                | Results server base URL. When set, the run is uploaded with `--share` (exported as `DOMARINN_SERVER_URL`). |
 | `token`              | `""`                | Bearer token for the results server (exported as `DOMARINN_TOKEN`). Pass a **secret**, never a literal. |
+| `allow-share-failure` | `"false"`          | If `true`, a failed upload no longer fails the job (becomes `--allow-share-failure`). Off by default: with `server-url` set, publishing the run is the point of the step. Ignored without `server-url`. See [Uploading CI runs](#uploading-ci-runs-to-a-shared-server). |
 | `against`            | `""`                | Baseline to diff against. Use `server:baseline` in CI (the suite's pinned baseline on the server); `latest` reads the local run store, which a fresh checkout does not have. Also accepts a run id or a `result.json` path. Empty disables the diff. A regression makes the CLI exit 1; a baseline that cannot be resolved makes it exit 2. |
 | `fail-on-regression` | `"true"`            | If `true`, exit 1 (assertion/regression) fails the check. If `false`, exit 1 is a warning only. Exit 2 and 3 **always** fail. |
 | `comment`            | `"true"`            | Post/update the summary comment on the PR. |
@@ -96,11 +99,11 @@ Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command), w
 ### What it does, step by step
 
 1. **Resolve the binary.** Provided `binary-path` → download `domarinn-<target>` from the repo's GitHub Releases (`version` or `latest`, arch auto-detected) → **fallback** to building from source with `cargo` (`cargo install --path crates/domarinn-cli` if this repo is checked out, else `cargo install --git …`). The cargo fallback requires a Rust toolchain on the runner — add `dtolnay/rust-toolchain` before this action if you rely on it.
-2. **Run the suite:** `domarinn run <config> --format junit --out results.xml`, appending `--against <against>`, `--cache-dir <cache-dir>`, `--allow-empty` and `--share` when those inputs are set. It captures the exit code without aborting so the later steps still run.
+2. **Run the suite:** `domarinn run <config> --format junit --out results.xml`, appending `--against <against>`, `--cache-dir <cache-dir>`, `--allow-empty` and `--share` when those inputs are set — plus `--allow-share-failure` when that input is `true` *and* a `server-url` made it a shared run, since the CLI rejects the flag on its own. It captures the exit code without aborting so the later steps still run.
 3. **Summarize** — `domarinn ci-summary latest --out summary.md` writes the Markdown and appends the headline numbers to `$GITHUB_OUTPUT` itself. If the suite never produced a run (a config error, say), the step warns and writes a placeholder summary rather than leaving the PR comment blank.
 4. **Upload** `results.xml` + `summary.md` as an artifact (**always**, even on failure), and append the summary to the job's step summary.
 5. **Comment on the PR** — creates or updates one comment (matched by a hidden `<!-- domarinn-eval -->` marker) so repeated pushes don't spam the thread. Skipped unless `comment: true` and the event is a `pull_request`.
-6. **Gate** on the exit code: `0` passes; `1` fails **only when `fail-on-regression` is true** (otherwise a warning); `2` and `3` always fail.
+6. **Gate** on the exit code: `0` passes; `1` fails **only when `fail-on-regression` is true** (otherwise a warning); `2` and `3` always fail. A failed upload arrives here as `3`, so with `server-url` set the way to stop gating on the upload is `allow-share-failure`, not `fail-on-regression`.
 
 ### Advanced usage
 
@@ -306,6 +309,15 @@ Point CI at a shared [server](../reference/server.md) so every eval is browsable
 - **`server-url` / `DOMARINN_SERVER_URL`** — the server base URL. Setting it makes the run upload with **`--share`**.
 - **`DOMARINN_TOKEN`** (the action's `token` input) — a bearer token sent on upload. Unless the server is explicitly in `open` mode, this needs **`write`** scope (a static `write:` token or an `domarinn_` API key). Always pass it from a secret.
 - **`--share`** uploads the completed run and prints `View run: <url>`; the URL uses the server's `DOMARINN_PUBLIC_URL`.
+- **`allow-share-failure`** — the opt-out from the paragraph below. Off by default.
+
+**A failed upload fails the job.** `run --share` is fail-closed: a rejected upload, an unreachable server, or a `server-url` that is set but resolves to nothing exits **`3`**, and `3` always fails the check. Exiting `0` having stored nothing is the failure mode worth preventing — the job goes green, the PR gets its comment, and the only symptom is a results server that quietly never fills up, which nobody notices for weeks. The error names the run id, suite and case count, and the JUnit report and Markdown summary are still uploaded as the artifact: the run is graded, so the recovery is `domarinn share <run_id>` once the server is back, not a re-run that pays for every provider call again.
+
+Set `allow-share-failure: "true"` where publishing is genuinely optional — a fork's pull request that has no access to the token secret is the usual case — and an upload failure becomes a warning while the exit code goes back to reflecting the assertions alone.
+
+**Upgrading from a pre-0.8 workflow:** this is a behavior change that arrives without a workflow edit. The action's `version` input defaults to `latest`, so an existing workflow with `server-url` set picks up the fail-closed default the day 0.8 ships — a fork PR that cannot read the token secret, or a transient server outage, turns the job red where it used to print a warning and pass. That red is the feature (those runs were never being stored), but if a workflow genuinely wants best-effort uploads, add `allow-share-failure: "true"` when upgrading — or pin `version` until you have.
+
+**The schema preflight.** With `--share`, the CLI asks the server what result-schema versions it accepts (one `GET /api/v1/meta`, 5s timeout) *before* the runner starts. A confirmed mismatch exits **`2`** with a message naming which side to upgrade, so a version-skewed pair costs a round trip rather than a full suite of provider calls with nowhere to put the results. Anything less than a confirmed mismatch — unreachable, slow, `404`, unparsable, or a server that states no window — proceeds with a warning, because the upload's own response is authoritative and a preflight that inferred refusal from silence would break every run behind a proxy. A missing server URL is refused the same way (exit `2`, before the run): with no destination the upload is *certain* to fail, so running first would only spend the provider budget to prove it. The action never hits that case — it only passes `--share` when `server-url` is set. `allow-share-failure` downgrades every preflight refusal to a warning too.
 
 On GitHub Actions the CLI automatically enriches the uploaded run with git (branch, commit, dirty flag) and CI (provider + run URL) metadata, so shared runs are traceable back to the workflow.
 

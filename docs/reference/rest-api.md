@@ -20,8 +20,8 @@ Request-body size is capped at **64 MiB**; request bodies may be gzip/deflate co
   "version": "0.1.0",
   "auth_mode": "protect-writes",
   "setup_required": false,
-  "supported_schema_versions": [1, 2],
-  "result_schema_version": 2,
+  "supported_schema_versions": [2, 3],
+  "result_schema_version": 3,
   "cache": { "max_entry_bytes": 4194304, "max_bytes": 1073741824, "max_age_days": 30 }
 }
 ```
@@ -98,7 +98,9 @@ The `url` in the response is a browser link to the run. It is built from `DOMARI
 
 **List filters** (`GET /api/v1/runs`, all optional query params): `project`, `suite`, `tag`, `branch`, `status`, `since`, `until` (each epoch-ms *or* RFC3339), `limit` (default `50`, max `200`), `cursor`. The response is `{ "runs": [...], "next_cursor": "<cursor|null>" }`; pass `next_cursor` back as `cursor` to page.
 
-**Case filters** (`GET /api/v1/runs/{id}/cases`): `status`, `tag`, `q` (free-text), `provider`, `prompt`, `test`, `stop_reason` (each an exact match on the promoted cell columns), `limit`, `cursor`.
+**Case filters** (`GET /api/v1/runs/{id}/cases`): `status`, `tag`, `q` (free-text), `provider`, `prompt`, `test`, `stop_reason`, `error_class`, `empty_reason` (each an exact match on the promoted cell columns), `cached` (`true` fetches cache hits only, `false` fresh calls only), `limit`, `cursor`.
+
+<a id="empty-outputs"></a>**Empty outputs.** A case whose output had nothing gradeable in it carries `empty_reason` — `refusal`, `truncated`, `thinking_only`, `tool_use_only`, and others; the set is **open**, so match on the value you see rather than on a closed list. An empty answer is a *successful* provider call, so nothing errors and this is the only field that explains a blank `output_preview`. It aggregates upward: `GET /runs/{id}` carries `empty_counts` (reason → count, grouped from the same case rows, so the map, the list count and the case grid always agree) and each `GET /runs` row carries `empty_count`. Both are **omitted rather than `0`/`{}`** when there is nothing to report — and absence also covers a row stored before the column existed, so a reader must render it as blank, never as a `0` that claims the run had none. See [empty outputs and grading](../concepts/grading.md#empty-outputs-and-grading).
 
 **Matrix** (`GET /api/v1/runs/{id}/matrix`) returns the run's prompt × provider aggregate. `columns` is the complete set of `(provider, prompt)` pairs (first-seen order); `rows` is one per test, each with a `cells` array aligned 1:1 with `columns` — a `null` cell means that test never ran on that column. Each cell collapses that test × column's repeats into status counts, `score_mean`, `pass_fraction`, `distinct_outputs` (a flakiness signal), `latency_ms_mean`, `cost_usd`, and the cell's `case_keys`. Only `rows` paginate: `limit` (default `100`, max `500`) and `cursor`; columns are always complete.
 

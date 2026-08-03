@@ -97,10 +97,18 @@ Two things make this usable in a deploy pipeline:
 ```console
 $ DOMARINN_SMOKE_BASE_URL=https://api.internal.example/v1 \
   DOMARINN_SMOKE_MODEL=our-assistant-v3 \
-  domarinn run eval/smoke.yaml --no-cache --share
+  domarinn run eval/smoke.yaml --no-cache
 ```
 
 Exit `0` means the endpoint answered and the answers held. Exit `3` — an **error**, not a failure — means you learned nothing, which is the signal a deploy gate should roll back on. The exit-code contract is in [the CLI reference](../reference/cli.md#exit-codes).
+
+**No `--share` here, deliberately.** `run --share` is [fail-closed](../reference/cli.md#sharing-a-run): a run that cannot reach its results server exits `3` too. On a deploy gate that reads `3` as "roll back", that makes the results server a dependency of every deployment — an unreachable one rolls back a release whose endpoint was answering perfectly. Keep the gate reading the endpoint and nothing else. If you want the history too, upload it afterwards as its own step, where [`share`](../reference/cli.md#domarinn-share-run---strict) is best-effort by default and a failed upload cannot touch the deploy's verdict:
+
+```console
+$ DOMARINN_SERVER_URL=https://domarinn.example.com \
+  DOMARINN_TOKEN=<write-scoped token> \
+  domarinn share latest
+```
 
 ## See also
 

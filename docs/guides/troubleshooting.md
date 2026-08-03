@@ -16,9 +16,9 @@ Symptoms, causes, and fixes. Every entry here is something that actually caught 
 
 **Symptom.** `- type: cost, max: 0.01` passes on a run you know was expensive.
 
-**Cause.** When nothing priced the call, the assertion passes with the note *"cost not reported; budget not enforced"*. That happens when the provider reports no `usage`, or when the model is not in domarinn's rate sheet and the suite sets no `pricing:` block.
+**Cause.** When nothing priced the call, the assertion passes with the note *"cost not reported; budget not enforced"*. That happens when the provider reports no `usage`, or when the model is not in domarinn's rate sheet and the suite sets no `pricing:` block. The rate sheet covers the current Anthropic and OpenAI models, but not every id ever published: models priced differently by context length are left out on purpose rather than priced at the cheaper tier, and a model released after your domarinn version is simply not in it yet.
 
-**Fix.** Set a [`pricing:` block](../examples/models-grading-and-budgets.md#example-27--anthropic-and-what-it-costs) on the provider, or have your `exec` provider report `cost_usd` directly. `tokens:` has the same failure mode and the same fix. Check `summary.cost_usd` is non-null before believing a cost gate.
+**Fix.** The run says which id it could not price — it warns once, naming the provider and the model. Set a [`pricing:` block](../examples/models-grading-and-budgets.md#example-27--anthropic-and-what-it-costs) on that provider, or have your `exec` provider report `cost_usd` directly. `tokens:` has the same failure mode and the same fix. Check `summary.cost_usd` is non-null before believing a cost gate.
 
 ### A `similar` assertion that passes at any threshold
 
@@ -138,7 +138,7 @@ This fails asymmetrically, which is what makes it confusing: the system under te
 
 **Cause.** A blank output is a *successful* call. Nothing raises, and every assertion scores zero for a reason that has nothing to do with what you were measuring.
 
-**Fix.** Have the provider report `empty_reason` (`refusal`, `truncated`, `tool_use_only`, …), then list the ones you want excluded in `runner.skip_on_empty_reason`. Those cases become `skip` rather than `fail`. See [example 19](../examples/running-and-reporting.md#example-19--errors-and-retries).
+**Fix.** Have the provider report `empty_reason` (`refusal`, `truncated`, `tool_use_only`, …), then list the ones you want excluded in `runner.skip_on_empty_reason`. Those cases become `skip` rather than `fail`. The list is matched against the *classified* reason each case reports — the value shown in results, which domarinn fills in as `blank` when the provider named none — so list what you see there. See [example 19](../examples/running-and-reporting.md#example-19--errors-and-retries).
 
 ### The reusable Action posts a stub comment on a green run
 

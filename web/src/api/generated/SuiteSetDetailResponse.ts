@@ -10,7 +10,11 @@ export type SuiteSetDetailResponse = { project: string, suite: string, restricte
 /**
  * Epoch-ms.
  */
-last_run_at: number | null, pass_count: number, fail_count: number, error_count: number, case_count: number, latest_pass_rate: number | null, 
+last_run_at: number | null, pass_count: number, fail_count: number, error_count: number, case_count: number, 
+/**
+ * Empty-output cases across the set's runs — see this module's header.
+ */
+empty_count?: number, latest_pass_rate: number | null, 
 /**
  * The last 20 runs' pass rates, oldest first — see `SuiteSetView`.
  */

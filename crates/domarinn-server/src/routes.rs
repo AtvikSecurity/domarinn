@@ -405,7 +405,12 @@ async fn post_run(
     if schema_version < min || schema_version > current {
         return Err(ApiError::status(
             StatusCode::UNPROCESSABLE_ENTITY,
-            format!("unsupported schema_version {schema_version}; supported: {min}..={current}"),
+            format!(
+                "unsupported schema_version {schema_version}; this server accepts {min}..={current}. \
+                 Below {min}: the uploading CLI is older than this server — upgrade the CLI. \
+                 Above {current}: this server is older than the CLI — upgrade the server \
+                 (or downgrade the CLI to match)."
+            ),
         ));
     }
 
@@ -552,6 +557,8 @@ struct CaseQuery {
     stop_reason: Option<String>,
     /// Exact-match on the structured failure class.
     error_class: Option<String>,
+    /// Exact-match on why the case came back empty.
+    empty_reason: Option<String>,
     cached: Option<bool>,
     limit: Option<i64>,
     cursor: Option<String>,
@@ -582,6 +589,7 @@ async fn list_cases(
         test: q.test,
         stop_reason: q.stop_reason,
         error_class: q.error_class,
+        empty_reason: q.empty_reason,
         cached: q.cached,
         limit: clamp_limit(q.limit),
         cursor: q.cursor.as_deref().and_then(|c| c.parse::<i64>().ok()),

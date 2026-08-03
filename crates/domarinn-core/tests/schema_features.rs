@@ -111,7 +111,12 @@ fn prompt_messages_entries_advertise_the_history_marker() {
 fn result_schema_is_versioned() {
     let schema = serde_json::to_string(&domarinn_core::result_schema()).unwrap();
     assert!(schema.contains("schema_version"));
-    assert_eq!(domarinn_core::RESULT_SCHEMA_VERSION, 2);
+    // v3 is the retroactive correction for `ChatRole::Tool`, which shipped in
+    // 0.7.0 as a breaking wire change while the version stayed at 2 — so a
+    // 0.6.2 server accepted the number and then failed to deserialize the
+    // variant. Bumping here is what makes that skew a 422 with a remedy
+    // instead of a bare serde error.
+    assert_eq!(domarinn_core::RESULT_SCHEMA_VERSION, 3);
 }
 
 #[test]

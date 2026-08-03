@@ -182,10 +182,114 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
         if !c.cached && c.attempts > 1 {
             s.retried_cases += 1;
         }
+        // Keyed on the reason string, not a variant: the set is open, so an
+        // unknown vendor reason has to tally under its own name rather than
+        // collapse into a catch-all. An empty-string reason is excluded: no
+        // provider path produces one (the exec parser filters it at the seam),
+        // but a hand-authored document can carry it, and `''` is the "known:
+        // not empty" sentinel every server-side tally already excludes —
+        // counting it here would render a nameless `( × 1)` entry and make the
+        // CLI's footer disagree with the server about the same document.
+        if let Some(reason) = c.empty_reason.as_ref().filter(|r| !r.as_str().is_empty()) {
+            *s.empty_counts
+                .entry(reason.as_str().to_string())
+                .or_default() += 1;
+        }
     }
     s.cost_usd = any_cost.then(|| cost.to_usd());
     s.cache_savings_usd =
         (any_cost && saved > crate::pricing::MicroUsd::ZERO).then(|| saved.to_usd());
     s.grader_cost_usd = any_grader_cost.then(|| grader_cost.to_usd());
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::empty::EmptyReason;
+
+    fn case(test_id: &str, status: CaseStatus, empty_reason: Option<&str>) -> CaseResult {
+        CaseResult {
+            cache_key: None,
+            tool_calls: Vec::new(),
+            cell: CellKey {
+                provider_id: "p".into(),
+                prompt_id: None,
+                test_id: test_id.into(),
+                repeat: 0,
+            },
+            case_key: test_id.into(),
+            name: Some(test_id.into()),
+            tags: vec![],
+            vars: Default::default(),
+            status,
+            score: 0.0,
+            output: None,
+            prompt: None,
+            request: None,
+            stop_reason: None,
+            raw: None,
+            asserts: vec![],
+            usage: None,
+            cost_usd: None,
+            latency_ms: 0,
+            wall_ms: None,
+            reasoning: None,
+            empty_reason: empty_reason.map(EmptyReason::new),
+            cached: false,
+            attempts: 1,
+            prompt_digest: None,
+            provider_digest: None,
+            assert_digest: None,
+            error: None,
+            error_details: None,
+            model: None,
+            error_class: None,
+        }
+    }
+
+    /// The run-level answer to "how many of these refused?", which previously
+    /// existed only per case and had to be recounted by every reader.
+    ///
+    /// The statuses are load-bearing, not incidental. The tally keys on
+    /// `empty_reason` alone, across every status — narrowing it to graded cases
+    /// would drop exactly the cases the feature reports on. A `Skip` is the
+    /// clearest: `skip_on_empty_reason` skips a case *because* of its reason, so
+    /// a skipped case always carries one. An `Error` can too, since an errored
+    /// assert sets the status while the classified reason rides along
+    /// (`runner.rs`); only a provider failure (`error_case`) never has one.
+    #[test]
+    fn summarize_tallies_empty_counts_by_reason() {
+        let cases = vec![
+            case("a", CaseStatus::Fail, Some(EmptyReason::REFUSAL)),
+            case("b", CaseStatus::Skip, Some(EmptyReason::REFUSAL)),
+            case("c", CaseStatus::Error, Some(EmptyReason::TRUNCATED)),
+        ];
+
+        let summary = summarize(&cases);
+
+        assert_eq!(
+            summary.empty_counts,
+            std::collections::BTreeMap::from([
+                (EmptyReason::REFUSAL.to_string(), 2),
+                (EmptyReason::TRUNCATED.to_string(), 1),
+            ])
+        );
+    }
+
+    #[test]
+    fn summarize_leaves_empty_counts_empty_when_no_case_is_empty() {
+        let summary = summarize(&[case("a", CaseStatus::Pass, None)]);
+        assert!(summary.empty_counts.is_empty());
+    }
+
+    /// `""` is the storage layer's "known: not empty" sentinel, and the server
+    /// excludes it from every tally. A hand-authored document carrying one must
+    /// not make the CLI's footer say "1 empty" (with a nameless markdown row)
+    /// for a run the server reports as having none.
+    #[test]
+    fn summarize_does_not_tally_an_empty_string_reason() {
+        let summary = summarize(&[case("a", CaseStatus::Fail, Some(""))]);
+        assert!(summary.empty_counts.is_empty());
+    }
 }

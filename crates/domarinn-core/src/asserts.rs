@@ -44,6 +44,10 @@ pub struct EvalCtx<'a> {
     /// text, and folding calls into it would change what every existing
     /// assertion sees — and what a cache key hashes.
     pub tool_calls: &'a [crate::result::ToolCall],
+    /// Why this cell's output has nothing gradeable in it, if it does not.
+    /// Read only by the vacuous-pass guard — see
+    /// [`AssertOutcome::deny_vacuous_negated_pass`].
+    pub empty_reason: Option<&'a crate::empty::EmptyReason>,
 }
 
 // `AssertName` lives in `domarinn-types`: it is a wire value (it appears on
@@ -83,6 +87,64 @@ pub fn is_local(kind: &AssertKind) -> bool {
         kind,
         AssertKind::Exec { .. } | AssertKind::LlmRubric { .. } | AssertKind::Similar { .. }
     )
+}
+
+/// Whether the vacuous-pass guard applies to this assertion — see
+/// [`AssertOutcome::deny_vacuous_negated_pass`]. Shared by both seams (local
+/// here, graded in `runner_asserts`) so they cannot drift, and takes the
+/// evidence rather than a context type because each seam carries its own.
+///
+/// Three exemptions, all cases where the guard's premise — nothing was
+/// produced — does not actually hold:
+///
+/// - **Metric asserts** never read the output. A negated latency bound is
+///   still a true statement about latency when nothing came back.
+/// - **Any assert on a response that reported tool calls.** `tool_use_only` —
+///   the model called a tool and said nothing else — is an empty *text*
+///   output, and the model did act: `not-tool-call: delete_everything` judges
+///   the calls that *were* reported, and a rubric judging behaviour is shown
+///   them too. The hole the guard exists to close is a refusal, which reports
+///   no calls at all.
+/// - **An output that is not actually blank.** `empty_reason` is a claim, and
+///   an exec child's claim is honoured verbatim even beside real text — so the
+///   guard re-checks the output it is about to call empty. A negated assert
+///   over genuine content evaluated genuine content; failing it with "output
+///   was empty" would be both wrong and self-contradictory next to the
+///   positive asserts on the same case, which judged that text and passed.
+pub fn guard_applies(
+    kind: &AssertKind,
+    output: &Output,
+    tool_calls: &[crate::result::ToolCall],
+) -> bool {
+    tool_calls.is_empty()
+        && crate::empty::classify_blank(output).is_some()
+        && !matches!(
+            kind,
+            AssertKind::Cost { .. } | AssertKind::Latency { .. } | AssertKind::Tokens { .. }
+        )
+}
+
+/// Apply `negate`, then the vacuous-pass guard — the one composition both
+/// seams (local below, graded in `runner_asserts`) go through. The guard's
+/// *predicate* was already shared via [`guard_applies`]; sharing the
+/// composition too is what stops a future third seam calling
+/// [`AssertOutcome::negated`] without the follow-up and silently reopening the
+/// vacuous-pass hole for that path alone. Ordering matters at the graded seam:
+/// this must run before the outcome is scored, so the score a case is graded
+/// on and the result its drawer shows agree.
+pub fn negate_and_guard(
+    outcome: AssertOutcome,
+    assert: &Assert,
+    output: &Output,
+    tool_calls: &[crate::result::ToolCall],
+    empty_reason: Option<&crate::empty::EmptyReason>,
+) -> AssertOutcome {
+    let outcome = outcome.negated(assert.negate);
+    if guard_applies(&assert.kind, output, tool_calls) {
+        outcome.deny_vacuous_negated_pass(assert.negate, empty_reason)
+    } else {
+        outcome
+    }
 }
 
 /// Whether one reported call satisfies an assertion's `args`/`schema`
@@ -173,8 +235,13 @@ pub fn evaluate_local(
     if !is_local(&assert.kind) {
         return None;
     }
-    let outcome = evaluate_kind(&assert.kind, output, ctx);
-    Some(outcome.negated(assert.negate))
+    Some(negate_and_guard(
+        evaluate_kind(&assert.kind, output, ctx),
+        assert,
+        output,
+        ctx.tool_calls,
+        ctx.empty_reason,
+    ))
 }
 
 fn evaluate_kind(kind: &AssertKind, output: &Output, ctx: &EvalCtx<'_>) -> AssertOutcome {

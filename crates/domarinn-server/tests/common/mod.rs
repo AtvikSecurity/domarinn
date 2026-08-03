@@ -221,6 +221,8 @@ pub struct CaseSpec {
     pub provider_digest: Option<&'static str>,
     pub assert_digest: Option<&'static str>,
     pub error_class: Option<&'static str>,
+    /// Why the output came back with nothing gradeable in it (default: none).
+    pub empty_reason: Option<&'static str>,
 }
 
 impl CaseSpec {
@@ -243,7 +245,14 @@ impl CaseSpec {
             provider_digest: None,
             assert_digest: None,
             cached: false,
+            empty_reason: None,
         }
+    }
+
+    /// Set the case's empty reason (default: none).
+    pub fn empty_reason(mut self, reason: &'static str) -> Self {
+        self.empty_reason = Some(reason);
+        self
     }
 
     /// Set the case's rendered prompt to a text-style [`RenderedPrompt`]
@@ -385,7 +394,9 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         latency_ms: spec.latency_ms,
         wall_ms: None,
         reasoning: None,
-        empty_reason: None,
+        empty_reason: spec
+            .empty_reason
+            .map(domarinn_core::empty::EmptyReason::new),
         cached: spec.cached,
         attempts: 1,
         prompt_digest: spec.prompt_digest.map(str::to_string),
@@ -446,6 +457,12 @@ pub fn make_run(
         } else {
             summary.cache_misses += 1;
         }
+        if let Some(reason) = &c.empty_reason {
+            *summary
+                .empty_counts
+                .entry(reason.as_str().to_string())
+                .or_default() += 1;
+        }
     }
 
     RunResult {
@@ -495,6 +512,7 @@ pub fn default_case_filter(run_id: RunId) -> CaseListFilter {
         test: None,
         stop_reason: None,
         error_class: None,
+        empty_reason: None,
         cached: None,
         limit: 200,
         cursor: None,

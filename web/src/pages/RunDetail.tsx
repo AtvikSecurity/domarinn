@@ -200,6 +200,18 @@ export function RunDetail() {
     0,
     r.case_count - r.pass_count - r.fail_count - r.error_count,
   );
+  // Cases whose output had nothing gradeable in it, tallied by reason. Not a
+  // verdict bucket: an empty case still lands in pass/fail/error, so this
+  // rides on Cases rather than beside them — a run can honestly report
+  // "300 passed" and "4 empty" at once when only metric assertions applied.
+  //
+  // Omitted, never `{}` or `0`, when there is nothing to report — and absent
+  // covers both "no empty cases" and "this run predates the column", which is
+  // why zero renders as no sub-line at all instead of a reassuring "0 empty".
+  const emptyByReason = Object.entries(r.empty_counts ?? {}).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  const emptyCount = emptyByReason.reduce((sum, [, n]) => sum + n, 0);
   // The fresh/cached case filter only means something when the run actually
   // mixes both; on a fully-fresh or fully-cached run it would be a no-op chip.
   const partiallyCached = (r.cache_hits ?? 0) > 0 && (r.cache_misses ?? 0) > 0;
@@ -355,7 +367,25 @@ export function RunDetail() {
               className="text-sm"
             />
           </Stat>
-          <Stat label="Cases">{r.case_count}</Stat>
+          <Stat
+            label="Cases"
+            // The breakdown rides in a title rather than the sub-line: a run
+            // with four reasons would wrap the stat box, and the count is the
+            // part you scan for.
+            sub={
+              emptyCount > 0 ? (
+                <span
+                  title={emptyByReason
+                    .map(([reason, n]) => `${reason} × ${n}`)
+                    .join(", ")}
+                >
+                  {formatInt(emptyCount)} empty
+                </span>
+              ) : undefined
+            }
+          >
+            {r.case_count}
+          </Stat>
           <Stat
             label="Pass / Fail / Err"
             // The Skip filter chip promised a state the header never counted.

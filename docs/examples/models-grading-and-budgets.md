@@ -121,7 +121,7 @@ Three assertions answer "is this answer affordable" rather than "is it right".
 
 /// danger | Each of these can pass without enforcing anything
 
-- **`cost:`** passes when nothing priced the call — literally *"cost not reported; budget not enforced"*. That happens when the provider reports no usage, or the model is not in the rate sheet and the suite sets no `pricing:` block.
+- **`cost:`** passes when nothing priced the call — literally *"cost not reported; budget not enforced"*. That happens when the provider reports no usage, or the model is not in the rate sheet and the suite sets no `pricing:` block. The sheet knows the current Anthropic and OpenAI models, but it will not know one released after your domarinn version, and it deliberately omits models whose price varies with context length rather than bill them at the cheaper tier. The run warns once naming any id it could not price — read that warning before trusting the gate.
 - **`tokens:`** needs the provider to report `usage`.
 - **`latency:`** bypasses the cache entirely, because a replayed response has no honest latency. It measures a real call or nothing — which is why `--cache-only` refuses such a case outright instead of reaching the network.
 

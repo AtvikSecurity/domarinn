@@ -12,7 +12,13 @@ use crate::assert_name::AssertName;
 use crate::ids::{CaseKey, RunId};
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
-pub const RESULT_SCHEMA_VERSION: u32 = 2;
+/// Version of the [`RunResult`] wire document.
+///
+/// Version history:
+/// - v3: `ChatRole::Tool` (added in 0.7.0 without a bump — retroactive
+///   correction); otherwise wire-compatible with v2 — the additive
+///   `RunSummary.empty_counts` is omitted at default.
+pub const RESULT_SCHEMA_VERSION: u32 = 3;
 
 /// Identity of one cell in the provider × prompt × test × repeat matrix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -395,6 +401,22 @@ pub struct RunSummary {
     /// them would hide that rather than report it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grader_cost_usd: Option<f64>,
+    /// Cases whose output carried an `empty_reason`, tallied by reason string.
+    ///
+    /// Open-keyed because the reason set is open (see [`crate::empty`]), and a
+    /// `BTreeMap` so serialization is deterministic — the stored document is
+    /// content-hashed. Absent when empty, per the byte-stability rule above.
+    ///
+    /// The `ts` attribute makes the generated TS say `empty_counts?:` rather
+    /// than a mandatory field the JSON then omits. It has to go through `as`:
+    /// bare `#[ts(optional)]` is a compile error on a non-`Option` field
+    /// (ts-rs implements `IsOption` only for `Option<T>`), and the struct-level
+    /// `optional_fields` above marks only `Option` fields. Unlike the numeric
+    /// counters — where a consumer writing `?? 0` gets the right answer — an
+    /// undefined map reaching `Object.entries()` throws.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    #[ts(as = "Option<std::collections::BTreeMap<String, u64>>", optional)]
+    pub empty_counts: std::collections::BTreeMap<String, u64>,
 }
 
 /// `skip_serializing_if` helper for counters that must stay absent at zero.
@@ -677,6 +699,24 @@ mod tests {
         assert!(!reserialized.contains("cache_write_tokens"));
         assert!(!reserialized.contains("cache_savings_usd"));
         assert!(!reserialized.contains("grader_cost_usd"));
+    }
+
+    /// Same 409 fence, for the empty-output tally: a run where nothing came
+    /// back empty must not grow an `empty_counts: {}` key it never had.
+    #[test]
+    fn a_run_without_empty_cases_does_not_serialize_empty_counts() {
+        let summary = RunSummary {
+            total: 1,
+            passed: 1,
+            ..Default::default()
+        };
+        assert!(summary.empty_counts.is_empty());
+
+        let value = serde_json::to_value(&summary).unwrap();
+        assert!(
+            value.get("empty_counts").is_none(),
+            "empty_counts must be absent when empty: {value}"
+        );
     }
 
     #[test]

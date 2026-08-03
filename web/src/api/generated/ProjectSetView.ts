@@ -12,6 +12,10 @@ export type ProjectSetView = { project: string, suite_count: number, run_count: 
  */
 last_run_at: number | null, pass_count: number, fail_count: number, error_count: number, case_count: number, 
 /**
+ * Empty-output cases across the set's runs — see this module's header.
+ */
+empty_count?: number, 
+/**
  * One latest pass rate per suite, suites in name order, capped — enough
  * for a sparkline of the project's spread, not a time series.
  */

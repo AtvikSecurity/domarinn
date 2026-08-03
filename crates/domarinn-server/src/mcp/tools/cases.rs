@@ -37,6 +37,7 @@ pub(super) struct ListCasesArgs {
     pub test: Option<String>,
     pub stop_reason: Option<String>,
     pub error_class: Option<String>,
+    pub empty_reason: Option<String>,
     pub cached: Option<bool>,
     pub limit: Option<i64>,
     pub cursor: Option<i64>,
@@ -84,6 +85,12 @@ pub(super) fn definitions() -> Vec<Value> {
                     "test": { "type": "string", "description": "Exact test id (matrix row)." },
                     "stop_reason": { "type": "string", "description": "Exact stop reason, e.g. 'length'." },
                     "error_class": { "type": "string", "description": "Exact failure class for errored cases." },
+                    "empty_reason": {
+                        "type": "string",
+                        "description": "Exact reason the output came back empty, e.g. 'refusal' or \
+                            'tool_use_only'. The set is open — read the values off a listing rather \
+                            than guessing."
+                    },
                     "cached": { "type": "boolean", "description": "true = cache hits only, false = fresh only." },
                     "limit": {
                         "type": "integer", "minimum": 1, "maximum": CASES_MAX_LIMIT,
@@ -181,6 +188,7 @@ pub(super) async fn list_cases(state: &AppState, vis: &RunVisibility, args: Valu
         test: args.test,
         stop_reason: args.stop_reason,
         error_class: args.error_class,
+        empty_reason: args.empty_reason,
         cached: args.cached,
         limit: clamp_limit(args.limit, CASES_DEFAULT_LIMIT, CASES_MAX_LIMIT),
         cursor: args.cursor,

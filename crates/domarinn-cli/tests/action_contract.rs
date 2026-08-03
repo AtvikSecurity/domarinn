@@ -87,6 +87,7 @@ const SHELL_STEPS: &[ShellStep] = &[
             ("INPUT_CONFIG", "suite.yaml"),
             ("INPUT_AGAINST", ""),
             ("INPUT_ALLOW_EMPTY", "false"),
+            ("INPUT_ALLOW_SHARE_FAILURE", "false"),
             ("INPUT_CACHE_DIR", ""),
         ],
     },
@@ -313,6 +314,72 @@ fn the_eval_step_writes_its_outputs_for_every_exit_code() {
             ran.log
         );
     }
+}
+
+/// The upload opt-out has to reach the CLI, and only ever beside `--share`.
+///
+/// Both halves are load-bearing. Without the input a caller who set `server-url`
+/// has no way at all to keep a transient upload failure from failing the job:
+/// `run --share` fails closed with exit 3, and 3 is ungated here by design.
+/// Appending it *without* `--share` is the opposite failure — the CLI rejects
+/// the flag on its own, so an input whose whole purpose is to make the job more
+/// tolerant would fail it with a usage error instead.
+#[test]
+fn the_share_opt_out_only_travels_with_share() {
+    let invocation = |server: &str, opt_out: &str| {
+        let ws = Workspace::new();
+        let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
+        let ran = run_step(
+            "eval",
+            &[
+                ("DOMARINN_BIN", &stub),
+                ("DOMARINN_SERVER_URL", server),
+                ("INPUT_ALLOW_SHARE_FAILURE", opt_out),
+            ],
+            &ws,
+        );
+        ran.log
+            .lines()
+            .find(|line| line.starts_with("Running: domarinn "))
+            .unwrap_or_else(|| panic!("the step logs the command it ran:\n{}", ran.log))
+            .to_string()
+    };
+
+    let server = "https://evals.example";
+
+    let gated = invocation(server, "false");
+    assert!(
+        gated.contains("--share"),
+        "a server means an upload: {gated}"
+    );
+    assert!(
+        !gated.contains("--allow-share-failure"),
+        "the default must keep gating the job on the upload: {gated}"
+    );
+
+    let opted_out = invocation(server, "true");
+    assert!(
+        opted_out.contains("--share") && opted_out.contains("--allow-share-failure"),
+        "the opt-out must reach the CLI; without it exit 3 is unavoidable and \
+         ungated: {opted_out}"
+    );
+
+    let no_server = invocation("", "true");
+    assert!(
+        !no_server.contains("--share"),
+        "no server, no upload: {no_server}"
+    );
+    // Asserted separately, and not as `!contains("--share")`: `--share` is not
+    // a substring of `--allow-share-failure`, so the line above passes just as
+    // happily against a step that emitted the opt-out with nothing to qualify.
+    // That is the exact regression worth catching — clap rejects the flag on
+    // its own, so the result is exit 2 on every run, unconditionally fatal at
+    // the gate.
+    assert!(
+        !no_server.contains("--allow-share-failure"),
+        "the opt-out requires --share; alone it is a usage error the gate \
+         always fails on: {no_server}"
+    );
 }
 
 /// The contract: `1` means the model regressed and the PR is to blame, `3`

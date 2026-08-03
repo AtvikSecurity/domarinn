@@ -1,6 +1,8 @@
 //! DTOs for `GET /runs`, `GET /runs/{id}`, `POST /runs`, and the lean
 //! per-case assert record stored in the `cases.asserts` DB column.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -48,6 +50,20 @@ pub struct RunListItem {
     /// `None`. A run is "fully cached" when `cache_misses == 0 && cache_hits > 0`.
     pub cache_hits: Option<i64>,
     pub cache_misses: Option<i64>,
+    /// How many of this run's cases came back empty (migration-15
+    /// `runs.empty_count`, counted off the cases at ingest).
+    ///
+    /// Omitted rather than null or zero, the same carve-out from the
+    /// null-not-omitted convention that [`super::cases::CaseListItem::empty_reason`]
+    /// documents. Absent means "nothing to report" and covers all three ways
+    /// there is nothing: the run had no empty cases, the column was never
+    /// backfilled (NULL), or the blob would not decode (the `-1` sentinel).
+    /// A reader must not turn absence into a rendered `0` — for the last two
+    /// the true count is unknown. `RunSummary.empty_counts` is absent under
+    /// the same rule, so "absent" means one thing across both.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_count: Option<u64>,
     /// Who ran it, as recorded by the client (`RunOrigin.actor`). `None` for
     /// runs from clients that predate provenance, and for runs whose author
     /// suppressed it.
@@ -134,6 +150,20 @@ pub struct RunDetailResponse {
     pub domarinn_version: Option<String>,
     pub tags: Vec<String>,
     pub assert_labels: Vec<String>,
+    /// This run's empty-output cases tallied by reason. Counts *every* empty
+    /// output, not just refusals — `refusal` is one key among an open set.
+    ///
+    /// Grouped from the same `cases` rows [`RunListItem::empty_count`] is
+    /// counted from, so the list count, this map, and the case grid always
+    /// agree. The stored document's own `summary.empty_counts` is left to
+    /// export consumers and is deliberately not the source here.
+    ///
+    /// Omitted, never `{}`, when the run reported none, matching how
+    /// `RunSummary` itself serializes it and how [`RunListItem::empty_count`]
+    /// behaves.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_counts: Option<BTreeMap<String, u64>>,
 }
 
 /// `POST /runs` success response body (201 Created, or 200 OK when identical
@@ -190,6 +220,7 @@ mod tests {
             duration_ms: 30000,
             cache_hits: Some(1),
             cache_misses: Some(1),
+            empty_count: Some(2),
             actor: Some("alice".to_string()),
             host: Some("runner-07".to_string()),
             uploaded_by: Some("ci-token".to_string()),
@@ -220,6 +251,7 @@ mod tests {
                 "duration_ms": 30000,
                 "cache_hits": 1,
                 "cache_misses": 1,
+                "empty_count": 2,
                 "actor": "alice",
                 "host": "runner-07",
                 "uploaded_by": "ci-token",
@@ -255,6 +287,7 @@ mod tests {
             duration_ms: 0,
             cache_hits: None,
             cache_misses: None,
+            empty_count: None,
             actor: None,
             host: None,
             uploaded_by: None,
@@ -289,6 +322,13 @@ mod tests {
                 v[key]
             );
         }
+        // `empty_count` is the exception, for the same reason
+        // `CaseListItem::empty_reason` is: it is `#[ts(optional)]`, so "nothing
+        // to report" is the key being absent, never a null and never a `0`.
+        assert!(
+            v.get("empty_count").is_none(),
+            "empty_count must be omitted, not null: {v}"
+        );
     }
 
     #[test]
@@ -328,6 +368,10 @@ mod tests {
             domarinn_version: Some("0.2.0".to_string()),
             tags: vec!["nightly".to_string()],
             assert_labels: vec!["contains".to_string(), "regex".to_string()],
+            empty_counts: Some(BTreeMap::from([
+                ("refusal".to_string(), 2),
+                ("tool_use_only".to_string(), 1),
+            ])),
         };
         assert_eq!(
             serde_json::to_value(&dto).unwrap(),
@@ -366,6 +410,7 @@ mod tests {
                 "domarinn_version": "0.2.0",
                 "tags": ["nightly"],
                 "assert_labels": ["contains", "regex"],
+                "empty_counts": { "refusal": 2, "tool_use_only": 1 },
             })
         );
     }
@@ -409,12 +454,19 @@ mod tests {
             domarinn_version: None,
             tags: vec![],
             assert_labels: vec![],
+            empty_counts: None,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert!(v.get("config_digest").is_some());
         assert!(v["config_digest"].is_null());
         assert!(v["cache_hits"].is_null());
         assert!(v["cache_misses"].is_null());
+        // A run with no empty cases carries no map at all, not an empty one —
+        // matching `RunSummary`, which omits the same field.
+        assert!(
+            v.get("empty_counts").is_none(),
+            "empty_counts must be omitted when there is nothing to tally: {v}"
+        );
     }
 
     #[test]

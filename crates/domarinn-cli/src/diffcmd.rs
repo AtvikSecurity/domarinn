@@ -233,7 +233,7 @@ fn execute_view_cases(run: &RunResult, args: &ViewArgs, palette: Palette) -> u8 
 
 /// Write a markdown run summary (pass/fail counts + any baseline comparison).
 ///
-/// A thin wrapper over [`output::render_run_md`] — the reusable summary core is
+/// A thin wrapper over [`crate::outputmd::render_run_md`] — the reusable core is
 /// shared with `run --format md` / `view --format md` — plus the optional
 /// baseline comparison (base run + diff) that only the `--summary-md` path
 /// carries.

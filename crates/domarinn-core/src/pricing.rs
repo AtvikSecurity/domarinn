@@ -457,6 +457,102 @@ mod tests {
         assert!(built_in_rate("claude-haiku-4-5").is_some());
     }
 
+    /// The coverage floor. Every mechanism above is tested in isolation, and
+    /// all of them were green while the table itself was a model generation
+    /// behind — so the ids a run in 2026 actually names resolved to nothing and
+    /// every `cost:` budget quietly stopped enforcing. This is the test that
+    /// fails when the table goes stale rather than when the resolver breaks:
+    /// it names current ids, in each of the shapes a provider hands us.
+    #[test]
+    fn well_known_current_ids_resolve_to_a_built_in_rate() {
+        for id in [
+            // Anthropic, exact.
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "claude-haiku-4-5",
+            // Dated snapshot -> date-strip.
+            "claude-opus-5-20260315",
+            // Suffixed alias -> longest-prefix `families` fallback.
+            "claude-sonnet-5-latest",
+            // Bedrock decoration -> prefix normalization.
+            "us.anthropic.claude-opus-5",
+            // OpenAI, exact.
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "o3",
+            "o4-mini",
+            // OpenAI's hyphenated snapshot form -> date-strip.
+            "gpt-4o-2024-08-06",
+        ] {
+            assert!(
+                built_in_rate(id).is_some(),
+                "no built-in rate resolves for {id}"
+            );
+        }
+    }
+
+    /// The other half of the coverage floor, and the more important half.
+    ///
+    /// Some ids are absent from the table *on purpose*, and "absent" is a
+    /// claim no positive test can make. Two reasons, both of which produce a
+    /// silently-too-small invoice if they are ever undone:
+    ///
+    /// - **Context-tiered flagships.** `gpt-5.4`, `gpt-5.5` and `gpt-5.6-*`
+    ///   are published at two rates, the higher one applying past ~272K input
+    ///   tokens. A [`ModelRate`] has no context dimension, so any row for them
+    ///   would price the long-context calls — the expensive ones — at the
+    ///   short-context rate.
+    /// - **`-pro` siblings.** `gpt-5-pro` is $15/$120 against `gpt-5`'s
+    ///   $1.25/$10, and `o3-pro`/`o3-mini` likewise diverge from `o3`.
+    ///
+    /// Both stay unpriced so the run warns and `cost_usd` is absent, which is
+    /// the loud no-op this module is built around. The way that gets undone is
+    /// a well-meaning `gpt-5:` or `o3:` key added to `families:` — matching is
+    /// a bare `starts_with`, so one such key bills `gpt-5-pro` at a twelfth of
+    /// its rate and re-admits every context-tiered model at a quarter of
+    /// theirs, with nothing failing. This test is that fence: it fails on the
+    /// key, not on the invoice.
+    #[test]
+    fn deliberately_unpriced_ids_do_not_resolve() {
+        for id in [
+            // Context-tiered: a second, higher rate past ~272K input tokens.
+            "gpt-5.4",
+            "gpt-5.5",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            // `-pro` tiers, several times their base model's rate.
+            "gpt-5-pro",
+            "gpt-5.2-pro",
+            "gpt-5.4-pro",
+            "gpt-5.5-pro",
+            "o3-pro",
+            // Cheaper than its base, so a family key over-bills rather than
+            // under-bills — wrong in the other direction, still wrong.
+            "o3-mini",
+            // The `gpt-4o` audio pipeline: same stems, own price sheet. These
+            // are what a `gpt-4o`/`gpt-4o-mini` family key would silently bill
+            // at the chat rate — tts is 4x the mini input, transcribe ~8x, the
+            // retired realtime-preview pair 2-4x.
+            "gpt-4o-mini-tts",
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-realtime-preview",
+            "gpt-4o-mini-realtime-preview",
+            // Roughly double its base's rate, and no longer on the sheet page —
+            // exactly the id an `o4-mini` family key would price silently.
+            "o4-mini-deep-research",
+        ] {
+            assert!(
+                built_in_rate(id).is_none(),
+                "{id} is unpriced on purpose, but something now resolves it — \
+                 if a rate was added deliberately, delete this entry; if a \
+                 `families:` key started matching it, that key is the bug"
+            );
+        }
+    }
+
     #[test]
     fn a_dated_snapshot_falls_back_to_its_family() {
         let dated = built_in_rate("claude-haiku-4-5-20251001").expect("snapshot resolves");
@@ -515,6 +611,34 @@ mod tests {
         assert_eq!(strip_snapshot_date("gpt-4o-mini-2"), None);
         assert_eq!(strip_snapshot_date("some-model-11-20"), None);
         assert_eq!(strip_snapshot_date("some-model-24-11-20"), None);
+    }
+
+    /// Most family stems deliberately duplicate their `exact:` row: the exact
+    /// section is the one a human scans (and the one the withheld-stem
+    /// comments reference), while the family copy is what dated snapshots and
+    /// `-latest` aliases resolve through. That duplication is only safe while
+    /// the two copies agree — exact wins for the bare id, so a divergence
+    /// would go unnoticed until the first *suffixed* alias resolved through
+    /// the stale family copy at a different rate. This is the cross-check the
+    /// next price update relies on to be told it edited only one of the two.
+    #[test]
+    fn a_family_key_never_disagrees_with_its_exact_row() {
+        let mut checked = 0;
+        for (stem, family_rate) in TABLE.families.iter() {
+            if let Some(exact_rate) = TABLE.exact.get(stem) {
+                assert_eq!(
+                    exact_rate, family_rate,
+                    "{stem}: the exact and families rates have diverged — a \
+                     price update must edit both copies (or drop one)"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 0,
+            "no family stem has an exact twin any more; if that is deliberate, \
+             delete this test"
+        );
     }
 
     #[test]

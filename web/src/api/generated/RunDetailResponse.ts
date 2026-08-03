@@ -44,4 +44,18 @@ grader_cost_usd: number | null,
 /**
  * Run provenance — see the same-named fields on [`RunListItem`].
  */
-actor: string | null, host: string | null, note: string | null, domarinn_version: string | null, tags: Array<string>, assert_labels: Array<string>, };
+actor: string | null, host: string | null, note: string | null, domarinn_version: string | null, tags: Array<string>, assert_labels: Array<string>, 
+/**
+ * This run's empty-output cases tallied by reason. Counts *every* empty
+ * output, not just refusals — `refusal` is one key among an open set.
+ *
+ * Grouped from the same `cases` rows [`RunListItem::empty_count`] is
+ * counted from, so the list count, this map, and the case grid always
+ * agree. The stored document's own `summary.empty_counts` is left to
+ * export consumers and is deliberately not the source here.
+ *
+ * Omitted, never `{}`, when the run reported none, matching how
+ * `RunSummary` itself serializes it and how [`RunListItem::empty_count`]
+ * behaves.
+ */
+empty_counts?: { [key in string]: number }, };

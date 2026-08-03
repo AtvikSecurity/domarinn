@@ -18,6 +18,20 @@ created_at: string, git_branch: string | null, git_commit: string | null, git_di
  */
 cache_hits: number | null, cache_misses: number | null, 
 /**
+ * How many of this run's cases came back empty (migration-15
+ * `runs.empty_count`, counted off the cases at ingest).
+ *
+ * Omitted rather than null or zero, the same carve-out from the
+ * null-not-omitted convention that [`super::cases::CaseListItem::empty_reason`]
+ * documents. Absent means "nothing to report" and covers all three ways
+ * there is nothing: the run had no empty cases, the column was never
+ * backfilled (NULL), or the blob would not decode (the `-1` sentinel).
+ * A reader must not turn absence into a rendered `0` — for the last two
+ * the true count is unknown. `RunSummary.empty_counts` is absent under
+ * the same rule, so "absent" means one thing across both.
+ */
+empty_count?: number, 
+/**
  * Who ran it, as recorded by the client (`RunOrigin.actor`). `None` for
  * runs from clients that predate provenance, and for runs whose author
  * suppressed it.

@@ -36,6 +36,7 @@ const COLUMN_LABEL: Record<string, string> = {
   provider: "Provider",
   prompt: "Prompt",
   preview: "Preview",
+  empty_reason: "Empty reason",
   asserts: "Asserts (combined)",
   tokens: "Tokens",
   cost: "Cost",
@@ -75,6 +76,7 @@ const COLUMN_SPEC: Record<string, ColumnSpec> = {
   provider: { track: `${IDENT_W}px`, min: IDENT_W },
   prompt: { track: `${IDENT_W}px`, min: IDENT_W },
   preview: { track: `minmax(${PREVIEW_MIN}px, 1.4fr)`, min: PREVIEW_MIN },
+  empty_reason: { track: `${IDENT_W}px`, min: IDENT_W },
   asserts: { track: `${ASSERTS_W}px`, min: ASSERTS_W },
   tokens: { track: `${NUM_W}px`, min: NUM_W, numeric: true },
   cost: { track: `${NUM_W}px`, min: NUM_W, numeric: true },
@@ -254,6 +256,31 @@ export function CaseGrid({
               title={text}
             >
               {text}
+            </span>
+          );
+        },
+      }),
+      // Next to the preview it explains: an empty output is a *successful*
+      // call, so the preview cell above renders a bare dash with no error to
+      // fill it, and this is the only column that says why. Sorts on the
+      // reason string, which groups a run's refusals together.
+      col.accessor((c) => c.empty_reason ?? "", {
+        id: "empty_reason",
+        header: () => <span>Empty</span>,
+        cell: ({ row }) => {
+          const reason = row.original.empty_reason;
+          // Absence is not "the output was fine": a row written before the
+          // column existed reports nothing either way, so this renders the
+          // same em-dash every other unknown does rather than a reassuring
+          // blank. The reason set is open, so the value is shown verbatim.
+          if (!reason)
+            return <span className="text-muted/50" aria-hidden>–</span>;
+          return (
+            <span
+              className="block truncate font-mono text-[11px] text-amber"
+              title={`Output had nothing gradeable in it: ${reason}`}
+            >
+              {reason}
             </span>
           );
         },
