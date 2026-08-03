@@ -20,11 +20,27 @@ use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::{CaseResult, CaseStatus};
 use domarinn_core::types::RenderedPrompt;
 
-use super::{decompress, ms_to_rfc3339, Storage};
+use super::{cached_clause_sql, decompress, ms_to_rfc3339, Storage};
+use crate::domain::CachedFilter;
 use crate::dto::search::{
     CaseSearchHit, RunSearchHit, SearchResponse, SNIPPET_CLOSE, SNIPPET_OPEN,
 };
 use crate::runsets::{visibility_predicate, RunVisibility};
+
+/// Report a run's cache provenance without ever claiming more than we know.
+///
+/// The bare `FULLY_CACHED` predicate answers `false` for a legacy NULL row and
+/// for the `-1` undecodable-blob sentinel, which would assert those runs were
+/// freshly measured. The explicit unknown branch keeps them `NULL`.
+///
+/// This lives in the SELECT list, never the WHERE, so it cannot block the
+/// `idx_runs_cached_passing` partial index the filter relies on.
+const RUN_CACHED_CASE: &str = "CASE
+    WHEN r.cache_hits IS NULL OR r.cache_misses IS NULL
+      OR r.cache_hits < 0 OR r.cache_misses < 0 THEN NULL
+    WHEN r.cache_misses = 0 AND r.cache_hits > 0 THEN 1
+    ELSE 0
+  END";
 
 /// Snippet length passed to FTS5 `snippet()` (in tokens).
 const SNIPPET_TOKENS: i64 = 12;
@@ -37,6 +53,7 @@ impl Storage {
         query: String,
         limit: i64,
         vis: RunVisibility,
+        cached: Option<CachedFilter>,
     ) -> anyhow::Result<SearchResponse> {
         self.runs
             .read(move |conn| {
@@ -47,8 +64,8 @@ impl Storage {
                     });
                 };
                 Ok(SearchResponse {
-                    runs: run_hits(conn, &fts, limit, &vis)?,
-                    cases: case_hits(conn, &fts, limit, &vis)?,
+                    runs: run_hits(conn, &fts, limit, &vis, cached)?,
+                    cases: case_hits(conn, &fts, limit, &vis, cached)?,
                 })
             })
             .await
@@ -80,6 +97,7 @@ fn run_hits(
     fts: &str,
     limit: i64,
     vis: &RunVisibility,
+    cached: Option<CachedFilter>,
 ) -> anyhow::Result<Vec<RunSearchHit>> {
     // The FTS tables index every run; the join back to `runs` is where access
     // is decided, so a restricted run never surfaces as a hit or a snippet.
@@ -91,12 +109,16 @@ fn run_hits(
         limit.into(),
     ];
     let visible = visibility_predicate("r", vis, &mut args);
+    // Appended after the visibility predicate so it can never widen access:
+    // the cached filter narrows what an already-permitted reader sees.
+    let cached_clause = cached_clause_sql("r", cached);
     let sql = format!(
         "SELECT runs_fts.run_id, r.project, r.suite, r.created_at,
-                snippet(runs_fts, -1, ?2, ?3, '…', ?4)
+                snippet(runs_fts, -1, ?2, ?3, '…', ?4),
+                {RUN_CACHED_CASE}
          FROM runs_fts
          JOIN runs r ON r.id = runs_fts.run_id
-         WHERE runs_fts MATCH ?1 AND {visible}
+         WHERE runs_fts MATCH ?1 AND {visible}{cached_clause}
          ORDER BY rank
          LIMIT ?5"
     );
@@ -108,6 +130,9 @@ fn run_hits(
             suite: row.get(2)?,
             created_at: ms_to_rfc3339(row.get(3)?),
             snippet: row.get(4)?,
+            // The CASE already emitted NULL for anything unclassifiable, so
+            // this only has to distinguish the two real answers.
+            cached: row.get::<_, Option<i64>>(5)?.map(|v| v == 1),
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -118,6 +143,7 @@ fn case_hits(
     fts: &str,
     limit: i64,
     vis: &RunVisibility,
+    cached: Option<CachedFilter>,
 ) -> anyhow::Result<Vec<CaseSearchHit>> {
     let mut args: Vec<rusqlite::types::Value> = vec![
         fts.to_string().into(),
@@ -127,14 +153,19 @@ fn case_hits(
         limit.into(),
     ];
     let visible = visibility_predicate("r", vis, &mut args);
+    // The filter is about the owning RUN (was this whole execution a replay?),
+    // so it reads `r`, while the per-hit `cached` flag below reports the case's
+    // own provenance from `c`. Two different questions about the same row.
+    let cached_clause = cached_clause_sql("r", cached);
     let sql = format!(
         "SELECT cases_fts.run_id, cases_fts.case_key, c.name, c.status,
                 r.project, r.suite,
-                snippet(cases_fts, -1, ?2, ?3, '…', ?4)
+                snippet(cases_fts, -1, ?2, ?3, '…', ?4),
+                c.cached
          FROM cases_fts
          JOIN cases c ON c.run_id = cases_fts.run_id AND c.case_key = cases_fts.case_key
          JOIN runs r ON r.id = cases_fts.run_id
-         WHERE cases_fts MATCH ?1 AND {visible}
+         WHERE cases_fts MATCH ?1 AND {visible}{cached_clause}
          ORDER BY rank
          LIMIT ?5"
     );
@@ -153,6 +184,13 @@ fn case_hits(
             project: row.get(4)?,
             suite: row.get(5)?,
             snippet: row.get(6)?,
+            // Only 1 and 0 are claims; NULL and the -1 sentinel are both
+            // "cannot tell" and must not flatten into `false`.
+            cached: match row.get::<_, Option<i64>>(7)? {
+                Some(1) => Some(true),
+                Some(0) => Some(false),
+                _ => None,
+            },
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)

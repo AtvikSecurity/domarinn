@@ -26,22 +26,37 @@ export function CachedRunsToggle({
   /** The filter actually in force here, URL and preference already resolved. */
   resolved: CachedFilter;
   /**
-   * How many runs the hidden view is suppressing. Undefined where a surface
-   * cannot know (a cursor-paginated list only learns it from the first page).
+   * How many runs the hidden view is suppressing.
+   *
+   * `"unknown"` is for surfaces that genuinely cannot count — search ranks by
+   * bm25 behind a LIMIT, so "suppressed overall" is not "suppressed from this
+   * page", and no honest number exists. Those still announce the suppression,
+   * just without inventing a figure. Undefined means "nothing to report".
    */
-  hiddenCount?: number;
+  hiddenCount?: number | "unknown";
   onChange: (next: CachedFilter) => void;
 }) {
   if (resolved === "exclude") {
-    const n = hiddenCount ?? 0;
     // Nothing suppressed, nothing to say. A "0 hidden" line reads as a bug.
-    if (n <= 0) return null;
+    if (hiddenCount === undefined || hiddenCount === 0) return null;
+    const reveal = (
+      <button type="button" className={linkCls} onClick={() => onChange("all")}>
+        Show
+      </button>
+    );
+    if (hiddenCount === "unknown") {
+      return (
+        <p className="text-xs text-muted">
+          Hits from fully cached runs are hidden{" · "}
+          {reveal}
+        </p>
+      );
+    }
     return (
       <p className="text-xs text-muted">
-        {n} fully cached run{n === 1 ? "" : "s"} hidden{" · "}
-        <button type="button" className={linkCls} onClick={() => onChange("all")}>
-          Show
-        </button>
+        {hiddenCount} fully cached run{hiddenCount === 1 ? "" : "s"} hidden
+        {" · "}
+        {reveal}
       </p>
     );
   }

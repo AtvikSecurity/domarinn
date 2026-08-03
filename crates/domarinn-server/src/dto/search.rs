@@ -25,6 +25,14 @@ pub struct RunSearchHit {
     /// Matched-field excerpt with [`SNIPPET_OPEN`]/[`SNIPPET_CLOSE`] around
     /// each matched token.
     pub snippet: String,
+    /// Whether every provider call in the run was served from cache.
+    ///
+    /// `None` is "cannot tell", not "fresh": legacy pre-backfill rows carry
+    /// NULL counters and failed-backfill rows carry the `-1` sentinel. The
+    /// query computes this with an explicit unknown branch rather than letting
+    /// the bare predicate answer, which would report `false` — a claim — for
+    /// rows nobody ever classified.
+    pub cached: Option<bool>,
 }
 
 /// One case whose text (name, prompt, output, error, tags) matched the query.
@@ -40,6 +48,10 @@ pub struct CaseSearchHit {
     /// Matched-field excerpt with [`SNIPPET_OPEN`]/[`SNIPPET_CLOSE`] around
     /// each matched token.
     pub snippet: String,
+    /// Whether *this case's* response came from cache — the per-case
+    /// `cases.cached` column, a different question from the run-level flag on
+    /// [`RunSearchHit`]. `None` means unknown, on the same terms.
+    pub cached: Option<bool>,
 }
 
 /// `GET /search` response: matches grouped by kind, each ranked by bm25.
@@ -63,6 +75,7 @@ mod tests {
                 suite: None,
                 created_at: "2026-01-01T00:00:30Z".to_string(),
                 snippet: format!("branch {SNIPPET_OPEN}main{SNIPPET_CLOSE}"),
+                cached: Some(true),
             }],
             cases: vec![CaseSearchHit {
                 run_id: RunId::from("01AAA"),
@@ -72,6 +85,7 @@ mod tests {
                 project: Some("checkout".to_string()),
                 suite: Some("regression".to_string()),
                 snippet: format!("hello {SNIPPET_OPEN}world{SNIPPET_CLOSE}"),
+                cached: None,
             }],
         };
         assert_eq!(
@@ -83,6 +97,7 @@ mod tests {
                     "suite": null,
                     "created_at": "2026-01-01T00:00:30Z",
                     "snippet": "branch \u{e000}main\u{e001}",
+                    "cached": true,
                 }],
                 "cases": [{
                     "run_id": "01AAA",
@@ -92,6 +107,7 @@ mod tests {
                     "project": "checkout",
                     "suite": "regression",
                     "snippet": "hello \u{e000}world\u{e001}",
+                    "cached": null,
                 }],
             })
         );

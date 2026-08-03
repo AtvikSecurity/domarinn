@@ -132,6 +132,27 @@ test.describe("Cached-runs filter", () => {
     ).toBeVisible();
   });
 
+  test("search suppresses replayed-run hits and says so without a number", async ({
+    page,
+  }) => {
+    await page.goto("/search?q=canary");
+
+    // bm25 behind a LIMIT means no honest count exists here, but a short list
+    // of hits must not read as "nothing matched".
+    await expect(
+      page.getByText(/Hits from fully cached runs are hidden/),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: new RegExp(CANARY_CACHED) }),
+    ).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Show", exact: true }).click();
+    await expect(page).toHaveURL(/cached=all/);
+    await expect(
+      page.getByText(/Hits from fully cached runs are hidden/),
+    ).toBeHidden();
+  });
+
   // Two surfaces deliberately never hide cached runs, because hiding would
   // cost them information rather than noise. Both are easy to "fix" into a
   // regression by someone making the app consistent, so both are pinned.

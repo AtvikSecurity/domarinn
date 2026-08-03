@@ -15,4 +15,10 @@ project: string | null, suite: string | null,
  * Matched-field excerpt with [`SNIPPET_OPEN`]/[`SNIPPET_CLOSE`] around
  * each matched token.
  */
-snippet: string, };
+snippet: string, 
+/**
+ * Whether *this case's* response came from cache — the per-case
+ * `cases.cached` column, a different question from the run-level flag on
+ * [`RunSearchHit`]. `None` means unknown, on the same terms.
+ */
+cached: boolean | null, };

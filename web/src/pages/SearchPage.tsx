@@ -14,15 +14,21 @@ import {
   shortRunId,
 } from "@/lib/format";
 import { runPath, setsPath } from "@/lib/routes";
+import { resolveCached } from "@/lib/cached";
+import { useCachedPref } from "@/lib/cachedPref";
+import { mergeParams } from "@/lib/filters";
+import { CachedRunsToggle } from "@/components/CachedRunsToggle";
 
 /** Higher than the dropdown's — there is room here — but still bounded. */
 const SETS_LIMIT = 25;
 
 /** Full results for the header search bar's query (`/search?q=…`). */
 export function SearchPage() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const q = params.get("q") ?? "";
-  const search = useSearch(q, { limit: 50 });
+  const cachedPref = useCachedPref();
+  const resolvedCached = resolveCached(params.get("cached"), cachedPref);
+  const search = useSearch(q, { limit: 50, cached: params.get("cached") });
   // The dropdown offers a Sets group, so this page has to as well: promising a
   // group and then omitting it on "See all results" is worse than not having
   // it at all.
@@ -42,6 +48,21 @@ export function SearchPage() {
             : "Type in the search bar above to search prompts, outputs, errors, branches, tags, projects, and suites."}
         </p>
       </div>
+
+      {/* No count here, unlike the runs list. With bm25 ranking and a LIMIT,
+          "suppressed overall" is not "suppressed from this page", and the
+          COUNT(*) that would answer it cannot use the partial index because
+          the row set comes from an FTS match rather than a scan of runs. A
+          number we cannot compute honestly is worse than none. */}
+      {q ? (
+        <CachedRunsToggle
+          resolved={resolvedCached}
+          hiddenCount="unknown"
+          onChange={(next) =>
+            setParams(mergeParams(params, { cached: next }), { replace: true })
+          }
+        />
+      ) : null}
 
       {!q ? null : search.isPending ? (
         <CenteredSpinner label="Searching…" />

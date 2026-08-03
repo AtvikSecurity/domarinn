@@ -1,5 +1,6 @@
-import type { CaseSearchHit, RunSearchHit, SearchResponse } from "@/api";
+import type { CachedFilter, CaseSearchHit, RunSearchHit, SearchResponse } from "@/api";
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "@/api/snippet";
+import { hiddenByCachedExclude, isFullyCached } from "@/lib/cached";
 import { allRunSummaries } from "./runStats";
 import { RUN_META_BY_ID } from "./runMeta";
 import { fullOutput, generateCases } from "./cases";
@@ -11,16 +12,32 @@ import { fullOutput, generateCases } from "./cases";
  * shape and the snippet marker contract are the real ones, which is what the
  * UI and its tests exercise.
  */
-export function searchFixtures(q: string, limit: number): SearchResponse {
+export function searchFixtures(
+  q: string,
+  limit: number,
+  cached?: CachedFilter,
+): SearchResponse {
   const tokens = q
     .toLowerCase()
     .split(/\s+/)
     .filter((t) => t.length > 0);
   if (tokens.length === 0) return { runs: [], cases: [] };
 
+  // Mirrors the server: the filter asks about the owning RUN, and applies to
+  // both groups independently.
+  const summaries = new Map(allRunSummaries().map((r) => [r.id, r]));
+  const passesCachedFilter = (runId: string): boolean => {
+    const run = summaries.get(runId);
+    if (!run) return true;
+    if (cached === "exclude") return !hiddenByCachedExclude(run);
+    if (cached === "only") return isFullyCached(run);
+    return true;
+  };
+
   const runs: RunSearchHit[] = [];
   for (const run of allRunSummaries()) {
     if (runs.length >= limit) break;
+    if (!passesCachedFilter(run.id)) continue;
     const haystack = [
       run.project ?? "",
       run.suite ?? "",
@@ -35,6 +52,7 @@ export function searchFixtures(q: string, limit: number): SearchResponse {
         suite: run.suite,
         created_at: run.created_at,
         snippet: snippetFor(haystack, tokens),
+        cached: isFullyCached(run),
       });
     }
   }
@@ -42,6 +60,7 @@ export function searchFixtures(q: string, limit: number): SearchResponse {
   const cases: CaseSearchHit[] = [];
   for (const meta of RUN_META_BY_ID.values()) {
     if (cases.length >= limit) break;
+    if (!passesCachedFilter(meta.id)) continue;
     for (const row of generateCases(meta.id)) {
       if (cases.length >= limit) break;
       const output = fullOutput(meta, row.seed, row.status);
@@ -55,6 +74,9 @@ export function searchFixtures(q: string, limit: number): SearchResponse {
           project: meta.suiteDef.project,
           suite: meta.suiteDef.suite,
           snippet: snippetFor(haystack, tokens),
+          // The case's own provenance, not the run's — a different column
+          // answering a different question.
+          cached: row.cached,
         });
       }
     }

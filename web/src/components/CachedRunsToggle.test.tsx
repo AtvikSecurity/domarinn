@@ -30,11 +30,34 @@ describe("CachedRunsToggle", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("renders nothing when the count is unknown", () => {
+  it("renders nothing when there is nothing to report", () => {
     const { container } = render(
       <CachedRunsToggle resolved="exclude" onChange={vi.fn()} />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+
+  // Search ranks by bm25 behind a LIMIT, so no honest count exists — but the
+  // suppression still has to be visible, or a short result list reads as "we
+  // found nothing" rather than "we hid some".
+  it("announces suppression without a number when it cannot count", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <CachedRunsToggle
+        resolved="exclude"
+        hiddenCount="unknown"
+        onChange={onChange}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Hits from fully cached runs are hidden/),
+    ).toBeInTheDocument();
+    // No invented figure anywhere in the line.
+    expect(screen.queryByText(/\d/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Show" }));
+    expect(onChange).toHaveBeenCalledWith("all");
   });
 
   // The revealed state must stay visible and reversible: a user who clicked
