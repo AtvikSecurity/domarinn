@@ -39,6 +39,14 @@ export interface SuiteDef {
    *  the first is fully cached — the "cached noise" the runs list hides by
    *  default, kept deterministic here for the cached-filter UI and e2e. */
   stable?: boolean;
+  /** Like `stable`, but with a **stable failing subset**: the same cases fail
+   *  identically on every replay.
+   *
+   *  This is the shape that broke the first version of the cached filter. The
+   *  rule then was "hide fully cached *and passing*", so a suite like this
+   *  tripped the exception on every single run and the filter suppressed
+   *  nothing at all — which is why the rule no longer looks at the verdict. */
+  replayedFailing?: boolean;
 }
 
 export const SUITE_DEFS: SuiteDef[] = [
@@ -92,6 +100,20 @@ export const SUITE_DEFS: SuiteDef[] = [
     labels: ["contains", "latency"],
     runs: 7,
     stable: true,
+  },
+  {
+    // The replayed-failing suite (see `SuiteDef.replayedFailing`): run 01 is
+    // fresh, runs 02-05 are fully cached and every one of them reports the
+    // same pass rate, because the same cases fail every time.
+    //
+    // It exists to pin the rule that a verdict does not rescue a replay. Under
+    // the original "hide fully cached AND passing" rule every run here stayed
+    // visible, so a team whose suite looked like this got no filtering at all.
+    project: "support-bot",
+    suite: "known-gaps",
+    labels: ["contains", "llm-rubric"],
+    runs: 5,
+    replayedFailing: true,
   },
 ];
 

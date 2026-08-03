@@ -147,7 +147,7 @@ async fn a_run_predating_the_columns_reports_them_as_null_not_zero() {
 }
 
 #[tokio::test]
-async fn cached_exclude_hides_only_fully_cached_passing_runs() {
+async fn cached_exclude_hides_every_fully_cached_run_whatever_its_verdict() {
     let (app, _dir) = test_app(Settings::default()).await;
     seed_cache_mix(&app).await;
 
@@ -157,18 +157,23 @@ async fn cached_exclude_hides_only_fully_cached_passing_runs() {
     assert_eq!(run_ids(&all_body).len(), 4);
     assert!(all_body["cached_hidden"].is_null());
 
-    // exclude drops ONLY the fully-cached passing run. The fully-cached
-    // FAILING run stays: grader verdicts are never cached, so a cached run
-    // can still surface a fresh regression.
+    // Both fully-cached runs go, the failing one included. The rule used to
+    // spare it, reasoning that grader verdicts are not cached so a replay could
+    // carry a fresh regression — which holds only where failures are rare. A
+    // suite with a stable failing subset trips that guard on every run and the
+    // filter then hides nothing at all, which is the bug this pins.
+    //
+    // `r-partial` is the boundary that still matters: one cached call and one
+    // live one is not a replay, and it stays.
     let filtered = get(&app, "/api/v1/runs?cached=exclude").await;
     assert_eq!(filtered.status, StatusCode::OK);
     let body = filtered.json();
     assert_eq!(
         run_ids(&body),
-        vec!["r-partial", "r-cached-fail", "r-fresh"],
-        "fully-cached passing run must be hidden, everything else visible"
+        vec!["r-partial", "r-fresh"],
+        "every fully-cached run must be hidden; partially-cached and fresh stay"
     );
-    assert_eq!(body["cached_hidden"].as_i64(), Some(1));
+    assert_eq!(body["cached_hidden"].as_i64(), Some(2));
 }
 
 #[tokio::test]
@@ -261,7 +266,10 @@ async fn legacy_null_cache_columns_are_never_hidden() {
         run_ids(&body).contains(&"r-cached-pass".to_string()),
         "legacy (NULL) run must stay visible under cached=exclude"
     );
-    assert_eq!(body["cached_hidden"].as_i64(), Some(0));
+    // One, not zero: `r-cached-pass` is the row that was NULLed and is
+    // therefore unclassifiable, but `r-cached-fail` is still a replay and is
+    // now hidden on that alone. The point of this test is the row above.
+    assert_eq!(body["cached_hidden"].as_i64(), Some(1));
 
     // Legacy cases count as fresh (never hide what we can't classify) and
     // expose `cached: null` on the wire.
@@ -306,10 +314,10 @@ async fn backfill_populates_cache_columns_from_blobs() {
     let body = filtered.json();
     assert_eq!(
         run_ids(&body),
-        vec!["r-partial", "r-cached-fail", "r-fresh"],
-        "backfilled fully-cached passing run must be hidden again"
+        vec!["r-partial", "r-fresh"],
+        "backfilled fully-cached runs must be hidden again"
     );
-    assert_eq!(body["cached_hidden"].as_i64(), Some(1));
+    assert_eq!(body["cached_hidden"].as_i64(), Some(2));
 
     let cached = get(&app, "/api/v1/runs/r-partial/cases?cached=true").await;
     assert_eq!(cached.json()["cases"].as_array().unwrap().len(), 1);

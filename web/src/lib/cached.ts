@@ -49,15 +49,23 @@ export function isFullyCached(r: CacheCounters): boolean {
 }
 
 /**
- * What `cached=exclude` suppresses: a fully cached run that also passed.
+ * What `cached=exclude` suppresses: every fully cached run, whatever its
+ * verdict.
  *
- * The `&& passing` half is load-bearing rather than incidental. Grader
- * verdicts are not cached — only provider responses are — so re-running an
- * unchanged config can still surface a new failure. Hiding a fully-cached
- * *failing* run would hide exactly the regression the re-run was for.
+ * This used to also require the run to have passed, reasoning that grader
+ * verdicts are not cached — only provider responses are — so a replay could
+ * still surface a new failure. That holds only where failures are rare. A
+ * suite with a stable failing subset, the same known-failing cases failing
+ * identically on every replay, trips the guard on every single run: the filter
+ * then suppresses nothing and the feature does not work at all. A replay that
+ * regresses is still counted by the run-set headers and the overview cards,
+ * neither of which ever hides anything, and is one click away behind `Show`.
+ *
+ * Mirrors `cached_hidden_sql` in the server's `storage/mod.rs`; the two must
+ * agree, or the client dims a different set of rows than the server withholds.
  */
 export function hiddenByCachedExclude(r: CachedRunVerdict): boolean {
-  return isFullyCached(r) && r.fail_count === 0 && r.error_count === 0;
+  return isFullyCached(r);
 }
 
 /** The three tokens `GET /runs?cached=` accepts. */

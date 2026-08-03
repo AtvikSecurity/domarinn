@@ -518,6 +518,28 @@ fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE runs ADD COLUMN empty_count INTEGER;
         "#,
         ),
+        // Migration 16: hiding a replay no longer depends on its verdict, so
+        // the index that served the old predicate is replaced by one matching
+        // the new one.
+        //
+        // Migration 11's index carried `AND fail_count = 0 AND error_count = 0`
+        // because "hidden" then meant fully cached *and* passing. That rule
+        // assumed a failure in a replay is rare and therefore interesting. In a
+        // suite with a stable failing subset — a known-failing set of cases that
+        // fails identically on every replay — it fires on every run instead, so
+        // the filter suppresses nothing and the feature does not work at all.
+        //
+        // SQLite only uses a partial index when the query's WHERE provably
+        // implies the index's, and `cache_misses = 0 AND cache_hits > 0` does
+        // not imply the verdict terms. The old index would therefore go unused
+        // while still costing a write on every insert, so it goes.
+        M::up(
+            r#"
+        DROP INDEX IF EXISTS idx_runs_cached_passing;
+        CREATE INDEX idx_runs_fully_cached ON runs(created_at DESC)
+        WHERE cache_misses = 0 AND cache_hits > 0;
+        "#,
+        ),
     ])
 }
 

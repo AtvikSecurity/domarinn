@@ -358,7 +358,7 @@ fn all_hit_run_ids(body: &serde_json::Value) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn search_cached_exclude_drops_hits_from_replayed_passing_runs() {
+async fn search_cached_exclude_drops_hits_from_replayed_runs() {
     let (app, _dir) = test_app(Settings::default()).await;
     seed_cache_mix(&app).await;
 
@@ -370,7 +370,7 @@ async fn search_cached_exclude_drops_hits_from_replayed_passing_runs() {
     assert!(ids.contains(&"s-fresh".to_string()), "got {ids:?}");
     assert!(
         !ids.contains(&"s-replayed".to_string()),
-        "a fully cached passing run's hits must be suppressed, got {ids:?}"
+        "a fully cached run's hits must be suppressed, got {ids:?}"
     );
     // Both groups had something to suppress, so both were exercised.
     assert!(!run_hit_ids(&body).is_empty());
@@ -378,7 +378,7 @@ async fn search_cached_exclude_drops_hits_from_replayed_passing_runs() {
 }
 
 #[tokio::test]
-async fn search_cached_exclude_keeps_a_replayed_run_that_failed() {
+async fn search_cached_exclude_drops_a_replayed_run_that_failed_too() {
     let (app, _dir) = test_app(Settings::default()).await;
     seed_cache_mix(&app).await;
 
@@ -387,11 +387,12 @@ async fn search_cached_exclude_keeps_a_replayed_run_that_failed() {
         .json();
     let ids = all_hit_run_ids(&body);
 
-    // Verdicts are not cached: a replayed run can still surface a regression,
-    // and hiding it would hide exactly what the re-run was for.
+    // A verdict does not save a replay. Sparing failing ones assumed failures
+    // are rare; a suite with a stable failing subset trips that on every run,
+    // and the filter then suppresses nothing at all.
     assert!(
-        ids.contains(&"s-replayed-fail".to_string()),
-        "a fully cached FAILING run must stay visible, got {ids:?}"
+        !ids.contains(&"s-replayed-fail".to_string()),
+        "a fully cached failing run must be suppressed too, got {ids:?}"
     );
 }
 

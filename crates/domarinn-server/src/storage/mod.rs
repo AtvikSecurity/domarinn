@@ -276,7 +276,7 @@ pub(super) fn empty_to_none(value: Option<String>) -> Option<String> {
 ///
 /// Deliberately bare — no `COALESCE`, no function call of any kind around the
 /// columns. Wrapping them is semantically identical and stops SQLite matching
-/// the `idx_runs_cached_passing` partial index (migration 11), which turns the
+/// the `idx_runs_fully_cached` partial index (migration 16), which turns the
 /// hottest read in the product back into an unbounded scan. The unaliased twin
 /// of this string lives in `runs.rs` as `FULLY_CACHED`; the two must agree, and
 /// `tests/cached_filter.rs` pins the behaviour of both.
@@ -284,15 +284,23 @@ pub(super) fn fully_cached_sql(alias: &str) -> String {
     format!("{alias}.cache_misses = 0 AND {alias}.cache_hits > 0")
 }
 
-/// What `cached=exclude` suppresses: fully cached **and** passing. A cached run
-/// that failed stays visible, because grader verdicts are not cached — only
-/// provider responses are — so re-running an unchanged config can still surface
-/// a regression.
+/// What `cached=exclude` suppresses: every fully cached run, whatever its
+/// verdict.
+///
+/// This used to also require the run to have passed, on the reasoning that
+/// grader verdicts are not cached, so a replay could still surface a fresh
+/// regression. That reasoning holds only where failures are rare. A suite with
+/// a stable failing subset — the same known-failing cases failing identically
+/// on every replay — trips the guard on every single run, so the filter
+/// suppresses nothing and the feature does not work at all. A replay that
+/// regresses is still counted by the run-set headers and the overview cards,
+/// which never hide anything, and is one click away behind `Show`.
+///
+/// Identical to `fully_cached_sql` today, and kept as its own name because the
+/// call sites are asking a different question — one is "is this run a replay",
+/// the other is "would `exclude` hide it". They are free to diverge again.
 pub(super) fn cached_hidden_sql(alias: &str) -> String {
-    format!(
-        "({} AND {alias}.fail_count = 0 AND {alias}.error_count = 0)",
-        fully_cached_sql(alias)
-    )
+    format!("({})", fully_cached_sql(alias))
 }
 
 /// A trailing ` AND ...` fragment applying a cached filter, or empty for the

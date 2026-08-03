@@ -5,22 +5,25 @@ const cachedFacet = (page: Page) =>
   page.getByRole("radiogroup", { name: "Cached runs" });
 
 // The stable suite (SuiteDef.stable in src/mocks/fixtures/suites.ts): run 01
-// is fresh, runs 02-07 are fully cached and all-pass — the six runs the
-// default `cached=exclude` view hides.
+// is fresh, runs 02-07 are fully cached and all-pass.
 const CANARY_FRESH = "checkout-agent-canary-01";
 const CANARY_CACHED = "checkout-agent-canary-07";
-// A partially cached run (22 hits / 18 misses per the deterministic fixtures):
-// the run-detail Fresh-only chip only renders for mixed runs like this one.
-const PARTIAL_RUN = "support-bot-tone-and-safety-09";
+// The replayed-failing suite (SuiteDef.replayedFailing): run 01 fresh, runs
+// 02-05 fully cached with the SAME cases failing every time. Ten runs are
+// hidden by default in total — six canary plus these four.
+const GAPS_CACHED_FAILING = "support-bot-known-gaps-05";
+// A partially cached run: the run-detail Fresh-only chip only renders for
+// mixed runs like this one.
+const PARTIAL_RUN = "checkout-agent-regression-03";
 
 test.describe("Cached-runs filter", () => {
-  test("hides fully cached passing runs by default, with a reveal affordance", async ({
+  test("hides fully cached runs by default, with a reveal affordance", async ({
     page,
   }) => {
     await page.goto("/runs");
 
     // The suppression is announced, never silent.
-    await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
+    await expect(page.getByText(/10 fully cached runs hidden/)).toBeVisible();
 
     // Cached canary re-runs are hidden; the fresh first run stays.
     await expect(
@@ -39,6 +42,26 @@ test.describe("Cached-runs filter", () => {
     await expect(cachedRow).toBeVisible();
     // Revealed cached rows are visibly labeled.
     await expect(cachedRow.getByText("cached", { exact: true })).toBeVisible();
+  });
+
+  // The rule this feature originally shipped with — hide fully cached *and
+  // passing* — left a suite like this one entirely unfiltered, because its
+  // known-failing cases fail on every replay. That is the bug; this is its pin.
+  test("hides a replayed run even though it failed", async ({ page }) => {
+    await page.goto("/runs");
+
+    await expect(
+      page.getByRole("link", { name: GAPS_CACHED_FAILING, exact: true }),
+    ).toBeHidden();
+
+    // It is a replay that failed, not a replay that passed: revealing it shows
+    // both the `cached` label and a pass rate short of 100%.
+    await page.goto("/runs?cached=all");
+    const row = page.getByRole("row").filter({
+      has: page.getByRole("link", { name: GAPS_CACHED_FAILING, exact: true }),
+    });
+    await expect(row.getByText("cached", { exact: true })).toBeVisible();
+    await expect(row.getByText("100.0%")).toHaveCount(0);
   });
 
   test("the filter bar narrows to only cached runs", async ({ page }) => {
@@ -63,7 +86,7 @@ test.describe("Cached-runs filter", () => {
     // An explicit token rather than a bare URL: the view has to survive being
     // shared with someone whose own preference is to show them.
     await expect(page).toHaveURL(/cached=exclude/);
-    await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
+    await expect(page.getByText(/10 fully cached runs hidden/)).toBeVisible();
   });
 
   test("the filter bar sets a preference that outlives the URL", async ({
@@ -90,7 +113,7 @@ test.describe("Cached-runs filter", () => {
     // A shared link has to mean the same thing to whoever opens it, whatever
     // they normally prefer.
     await page.goto("/runs?cached=exclude");
-    await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
+    await expect(page.getByText(/10 fully cached runs hidden/)).toBeVisible();
     await expect(
       page.getByRole("link", { name: CANARY_CACHED, exact: true }),
     ).toBeHidden();
@@ -110,7 +133,7 @@ test.describe("Cached-runs filter", () => {
 
     // ...so the next visit without a param hides them again.
     await page.goto("/runs");
-    await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
+    await expect(page.getByText(/10 fully cached runs hidden/)).toBeVisible();
   });
 
   test("a suite page hides cached runs too, and reconciles its own count", async ({
@@ -120,6 +143,7 @@ test.describe("Cached-runs filter", () => {
 
     // The header's run count is a server aggregate over every run, so a table
     // that hides some has to say how many, or the two numbers simply disagree.
+    // Six, not the ten on `/runs`: this count is scoped to the suite.
     await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
     await expect(
       page.getByRole("link", { name: CANARY_CACHED, exact: true }),

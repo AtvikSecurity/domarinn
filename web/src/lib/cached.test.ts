@@ -52,18 +52,21 @@ describe("hiddenByCachedExclude", () => {
     expect(hiddenByCachedExclude(cachedPassing())).toBe(true);
   });
 
-  // The rule the whole feature rests on: grader verdicts are not cached, so a
-  // fully-cached run can still surface a new regression. Never hide it.
-  it("keeps a fully cached run that failed", () => {
+  // A verdict does not save a replay from being hidden. The rule used to spare
+  // failing ones, on the reasoning that grader verdicts are not cached so a
+  // replay could carry a fresh regression — true only where failures are rare.
+  // A suite with a stable failing subset trips that guard on every run, and the
+  // filter then hides nothing at all.
+  it("hides a fully cached run that failed", () => {
     expect(
       hiddenByCachedExclude({ ...cachedPassing(), fail_count: 1 }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it("keeps a fully cached run that errored", () => {
+  it("hides a fully cached run that errored", () => {
     expect(
       hiddenByCachedExclude({ ...cachedPassing(), error_count: 1 }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("keeps a run that hit the provider even when it passed", () => {

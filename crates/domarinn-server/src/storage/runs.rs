@@ -674,9 +674,13 @@ impl RunListFilter {
         // does — a count that included invisible runs would be a disclosure.
         clauses.push(visibility_predicate("runs", &self.visibility, &mut args));
 
-        // Only ever hide fully-cached runs that also PASSED: verdicts are not
-        // cached, so a fully-cached run can still carry a fresh regression.
-        let hidden_predicate = format!("({FULLY_CACHED} AND fail_count = 0 AND error_count = 0)");
+        // Every fully-cached run, whatever its verdict. This used to spare the
+        // ones that failed, on the reasoning that verdicts are not cached so a
+        // replay could carry a fresh regression — true only where failures are
+        // rare. A suite with a stable failing subset trips that guard on every
+        // run, and the filter then hides nothing at all. See
+        // `cached_hidden_sql` for the full account.
+        let hidden_predicate = format!("({FULLY_CACHED})");
         // Count what `exclude` suppresses BEFORE the cached/cursor clauses land
         // (first page only — the count spans the whole filtered set anyway).
         let cached_hidden = if self.cached == Some(CachedFilter::Exclude) && self.cursor.is_none() {

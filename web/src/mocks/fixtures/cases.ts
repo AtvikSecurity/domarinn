@@ -76,6 +76,12 @@ export function outputRevision(suiteKey: string, seed: string | number, runIndex
 function statusFor(meta: RunMeta, seed: string | number): CaseStatus {
   // A stable suite never fails (see `SuiteDef.stable`).
   if (meta.suiteDef.stable) return "pass";
+  // A replayed-failing suite fails the SAME cases every run: the verdict is a
+  // property of the case, never of the run index, so every replay reports an
+  // identical pass rate (see `SuiteDef.replayedFailing`).
+  if (meta.suiteDef.replayedFailing) {
+    return rand(meta.suiteKey, "stablefail", seed) > 0.8 ? "fail" : "pass";
+  }
   // Per-case intrinsic difficulty; harder cases fail more often.
   const difficulty = rand(meta.suiteKey, "diff", seed);
   // Slow quality improvement across the run series.
@@ -126,15 +132,20 @@ interface CacheRegime {
 
 function cacheRegime(meta: RunMeta): CacheRegime {
   // A stable suite pays for its first run, then every re-run hits the cache.
-  if (meta.suiteDef.stable) {
+  // Same for a replayed-failing one — the point of that suite is that its
+  // replays are indistinguishable from each other, verdict included.
+  if (meta.suiteDef.stable || meta.suiteDef.replayedFailing) {
     return meta.runIndex === 0 ? { full: false, hitRate: 0 } : { full: true, hitRate: 1 };
   }
+  // Every other suite is fresh or partially cached, never fully.
+  //
+  // Being fully cached is what makes a run disappear from the default view, so
+  // leaving it to a hash meant the anchor runs the e2e suite navigates by could
+  // vanish on a fixture reseed. Which suites are replays is now a property of
+  // the suite, declared above, rather than an accident.
   const r = rand(meta.suiteKey, meta.runIndex, "cachereg");
-  if (r < 0.3) return { full: false, hitRate: 0 };
-  if (r < 0.7) {
-    return { full: false, hitRate: 0.4 + rand(meta.suiteKey, meta.runIndex, "hr") * 0.5 };
-  }
-  return { full: true, hitRate: 1 };
+  if (r < 0.45) return { full: false, hitRate: 0 };
+  return { full: false, hitRate: 0.4 + rand(meta.suiteKey, meta.runIndex, "hr") * 0.5 };
 }
 
 function caseCached(regime: CacheRegime, meta: RunMeta, seed: string | number): boolean {

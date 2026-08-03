@@ -74,7 +74,9 @@ Each row carries the run ULID (with a copy button), when it ran, who ran it (`lo
 
 /// note | Why this shot has a filter set
 
-By default the list **hides fully-cached passing runs** and says so in one line: `N fully cached runs hidden · Show`. Verdicts are never cached, so a fully-cached run that *failed* stays visible — only the ones that replayed and passed are folded away. This capture is taken at `/runs?cached=all` so you can see the whole seeded stream at once; on a real server the default keeps re-runs out of your way.
+By default the list **hides fully-cached runs** — every provider call served from cache, nothing paid for — and says so in one line: `N fully cached runs hidden · Show`. A run that hit the provider even once is not a replay and stays. This capture is taken at `/runs?cached=all` so you can see the whole seeded stream at once; on a real server the default keeps re-runs out of your way.
+
+The verdict does not enter into it. An earlier rule spared replays that had failed, on the grounds that grader verdicts are not cached so a re-run could still surface a regression. That only holds where failures are rare: a suite with a stable failing subset — the same known-failing cases failing identically every time — trips the exception on every run, and the filter then hides nothing at all. A regression in a replay is still counted by the overview cards and the run-set headers, neither of which ever hides anything, and is one click away behind `Show`.
 
 The `Cached runs` control in the filter bar is the only one that is more than a filter: it also **stores the choice**, and every other surface that lists runs adopts it — the suite pages, search, and the header search box. The one-line `Show` / `Hide` affordance above a list is a *per-view* override: it changes what you are looking at now, writes that into the URL so the view stays shareable, and deliberately does not retrain the default.
 
@@ -154,7 +156,7 @@ Note what the two red rows do *not* do: `failing-gate` at 33.3% and `errors-and-
 
 A suite's whole record on one page: how many runs, the newest run's pass rate, the case total with the share that passed across all of them, when it last ran, and a pass-rate trend as soon as there are two runs to draw a line between.
 
-Below that, every run of the suite — **including the fully-cached passing ones the [runs list](#runs-list) folds away by default**. Both runs here carry a `cached` badge and would be hidden there; hiding them on this page would make the rows silently disagree with the `RUNS 2` above them. Tick two and `Compare 2 runs` opens them in [Compare](#compare--mcnemar), older as base; the per-row `Compare` link takes a run against the one before it, which is why the oldest row has a `—` instead. `View in Runs →` hands the same project and suite to the runs list when you want its filters and grouping.
+Below that, the suite's runs, under the same cached default as everywhere else — this shot is taken at `?cached=all`, which is why both replays are listed and both carry a `cached` badge. Whenever the page is hiding some, it says so on the line above the table rather than letting the rows silently disagree with the `RUNS 2` beside them. Tick two and `Compare 2 runs` opens them in [Compare](#compare--mcnemar), older as base; the per-row `Compare` link takes a run against the one before it, which is why the oldest row has a `—` instead. `View in Runs →` hands the same project and suite to the runs list, carrying this page's own cached view through so the stream opens showing what the table did.
 
 The `restricted` chip beside the heading, and the `Access` button opposite it, are the other half of this page.
 
