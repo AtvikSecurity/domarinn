@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { useSetProject } from "@/api/queries";
 import { ApiError } from "@/api/client";
@@ -13,6 +13,12 @@ import { NotFound } from "@/components/NotFound";
 import { ErrorState } from "@/components/States";
 import { RateBadge } from "@/components/PassRateBadge";
 import { Sparkline } from "@/components/Sparkline";
+import { ColumnGroup } from "@/components/ui/ColumnGroup";
+import { ColumnPicker } from "@/components/ui/ColumnPicker";
+import { ResizableTh } from "@/components/ui/ResizableTh";
+import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
+import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
+import { cn } from "@/lib/cn";
 import {
   formatDateAbsolute,
   formatInt,
@@ -22,6 +28,22 @@ import {
 import { suitePath } from "@/lib/routes";
 import { useRowNav } from "@/lib/useRowNav";
 import { AccessPanel } from "./AccessPanel";
+
+const SUITES_TABLE_ID = "setProjectSuites";
+
+/**
+ * `flags` carries an `sr-only` header, so it has no content to be sized from
+ * and must state a width — once a `<colgroup>` exists, a column with none
+ * collapses to zero and its chips wrap into an unreadable stack.
+ */
+const SUITE_COLUMNS: ColumnDef[] = [
+  { id: "suite", label: "Suite", track: "auto", min: 200, alwaysVisible: true },
+  { id: "runs", label: "Runs", track: "90px", min: 70, numeric: true },
+  { id: "last_activity", label: "Last activity", track: "150px", min: 110 },
+  { id: "pass_rate", label: "Latest pass rate", track: "150px", min: 120 },
+  { id: "trend", label: "Trend", track: "140px", min: 110 },
+  { id: "flags", label: "Flags", track: "150px", min: 120, numeric: true },
+];
 
 /**
  * One project's suites.
@@ -36,6 +58,12 @@ export function SetProjectPage() {
   const q = useSetProject(project);
   const [accessOpen, setAccessOpen] = useState(false);
   const rowNav = useRowNav();
+  const colPrefs = useColumnPrefs(SUITES_TABLE_ID);
+  const shownCols = useMemo(
+    () => visibleColumns(SUITE_COLUMNS, colPrefs),
+    [colPrefs],
+  );
+  const shownIds = useMemo(() => new Set(shownCols.map((c) => c.id)), [shownCols]);
 
   if (q.isPending) return <CenteredSpinner label="Loading project…" />;
   if (q.isError) {
@@ -87,22 +115,43 @@ export function SetProjectPage() {
         </p>
       </div>
 
+      <div className="flex justify-end">
+        <ColumnPicker
+          columns={SUITE_COLUMNS}
+          prefs={colPrefs}
+          onChange={(id, visible) => setColumnVisible(SUITES_TABLE_ID, id, visible)}
+          onReset={() => resetColumns(SUITES_TABLE_ID)}
+        />
+      </div>
+
       <Card padding="flush">
         {/* `relative`: contains the trailing Flags column's `sr-only` header,
             which is `position: absolute` and would otherwise widen the page
             instead of this scroller. See SetsPage for the full account. */}
         <div className="relative overflow-x-auto scroll-hint">
-          <table className="w-full min-w-[820px] text-sm">
+          <table className="w-full min-w-[820px] table-fixed text-sm">
+            <ColumnGroup columns={SUITE_COLUMNS} prefs={colPrefs} />
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                <th className="px-4 py-2 font-medium">Suite</th>
-                <th className="px-3 py-2 text-right font-medium">Runs</th>
-                <th className="px-3 py-2 font-medium">Last activity</th>
-                <th className="px-3 py-2 font-medium">Latest pass rate</th>
-                <th className="px-3 py-2 font-medium">Trend</th>
-                <th className="px-3 py-2 text-right font-medium">
-                  <span className="sr-only">Flags</span>
-                </th>
+                {shownCols.map((c) => (
+                  <ResizableTh
+                    key={c.id}
+                    def={c}
+                    tableId={SUITES_TABLE_ID}
+                    prefs={colPrefs}
+                    className={cn(
+                      "py-2 font-medium",
+                      c.id === "suite" ? "px-4" : "px-3",
+                      c.numeric && "text-right",
+                    )}
+                  >
+                    {c.id === "flags" ? (
+                      <span className="sr-only">Flags</span>
+                    ) : (
+                      c.label
+                    )}
+                  </ResizableTh>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -115,40 +164,54 @@ export function SetProjectPage() {
                     {...rowNav(suitePath(project, s.suite))}
                     className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2/60"
                   >
-                    <td className="px-4 py-2">
-                      <Link
-                        to={suitePath(project, s.suite)}
-                        className="rounded-sm font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        {s.suite}
-                      </Link>
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatInt(s.run_count)}
-                    </td>
-                    <td className="px-3 py-2 text-muted">
-                      {last ? (
-                        <Tooltip content={formatDateAbsolute(last)}>
-                          <time dateTime={last}>{formatRelative(last)}</time>
-                        </Tooltip>
-                      ) : (
-                        "-"
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      <RateBadge
-                        rate={s.latest_pass_rate}
-                        title={`Newest run of ${s.suite}`}
-                      />
-                    </td>
-                    <td className="px-3 py-2">
-                      <Sparkline
-                        values={s.sparkline}
-                        min={0}
-                        max={1}
-                        title={`Pass rate trend for ${s.suite}`}
-                      />
-                    </td>
+                    {shownIds.has("suite") && (
+                      // `truncate`: this is the column that takes the leftover
+                      // width, so under `table-layout: fixed` a long suite name
+                      // is what would spill into its neighbour.
+                      <td className="truncate px-4 py-2">
+                        <Link
+                          to={suitePath(project, s.suite)}
+                          className="rounded-sm font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {s.suite}
+                        </Link>
+                      </td>
+                    )}
+                    {shownIds.has("runs") && (
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatInt(s.run_count)}
+                      </td>
+                    )}
+                    {shownIds.has("last_activity") && (
+                      <td className="px-3 py-2 text-muted">
+                        {last ? (
+                          <Tooltip content={formatDateAbsolute(last)}>
+                            <time dateTime={last}>{formatRelative(last)}</time>
+                          </Tooltip>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                    )}
+                    {shownIds.has("pass_rate") && (
+                      <td className="px-3 py-2">
+                        <RateBadge
+                          rate={s.latest_pass_rate}
+                          title={`Newest run of ${s.suite}`}
+                        />
+                      </td>
+                    )}
+                    {shownIds.has("trend") && (
+                      <td className="px-3 py-2">
+                        <Sparkline
+                          values={s.sparkline}
+                          min={0}
+                          max={1}
+                          title={`Pass rate trend for ${s.suite}`}
+                        />
+                      </td>
+                    )}
+                    {shownIds.has("flags") && (
                     <td className="px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
                         {s.baseline_run_id ? (
@@ -174,6 +237,7 @@ export function SetProjectPage() {
                         ) : null}
                       </span>
                     </td>
+                    )}
                   </tr>
                 );
               })}
