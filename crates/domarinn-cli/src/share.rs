@@ -87,17 +87,27 @@ pub fn upload_run(result: &RunResult, server_url: Option<&str>) -> Result<String
 /// half of the same guarantee: one GET, before the runner starts, so a version
 /// skew costs nothing but the round trip.
 ///
-/// Deliberately lenient — only a server that answered, parsed, and named a
-/// window this CLI is outside of earns a refusal. Unreachable, slow, 404 and
-/// unparsable all proceed with a warning, because the POST is the authoritative
-/// answer and a preflight that inferred a refusal from silence would turn every
-/// network blip, proxy and older server into a run that never happened. An
-/// absent or empty window is the same case: it states nothing to be outside of.
+/// Deliberately lenient about *servers* — only one that answered, parsed, and
+/// named a window this CLI is outside of earns a refusal. Unreachable, slow,
+/// 404 and unparsable all proceed with a warning, because the POST is the
+/// authoritative answer and a preflight that inferred a refusal from silence
+/// would turn every network blip, proxy and older server into a run that never
+/// happened. An absent or empty window is the same case: it states nothing to
+/// be outside of.
+///
+/// No server URL at all is the one refusal that needs no server: it is not a
+/// question of what the server might accept but a local certainty that the
+/// upload cannot happen, so in strict mode the run is guaranteed to end in
+/// exit 3 — the only open question being how much provider budget it burns
+/// first. That is exactly the class of loss this preflight exists to prevent.
 pub fn preflight_schema(server_url: Option<&str>) -> Result<(), String> {
-    // No server is the share step's error to report later, with its own remedy;
-    // refusing here would only print the same misconfiguration twice.
     let Some(server) = resolve_server(server_url) else {
-        return Ok(());
+        return Err(
+            "no server URL is configured (set --server-url or DOMARINN_SERVER_URL), so the \
+             upload at the end of this run cannot happen — refusing before any provider call \
+             is spent. Configure a server, or pass --allow-share-failure to run anyway."
+                .to_string(),
+        );
     };
 
     let meta = match tokio::runtime::Runtime::new().map_err(|e| e.to_string()) {

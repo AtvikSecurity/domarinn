@@ -237,8 +237,14 @@ fn run_share_with_unreachable_server_exits_infra() {
 /// quietest hole of the three: the missing-URL error never reached the network,
 /// so a workflow that forgot `DOMARINN_SERVER_URL` passed its gate, uploaded
 /// nothing, and printed one warning nobody reads.
+///
+/// It refuses at the *preflight* (exit 2, before the runner), not at the upload
+/// (exit 3, after): unlike an unreachable server — where the POST might still
+/// succeed and only the POST can say — a missing URL makes the strict-mode
+/// failure locally certain, so running the suite first would burn the whole
+/// provider budget to discover a misconfiguration that was knowable for free.
 #[test]
-fn run_share_without_a_server_url_exits_infra() {
+fn run_share_without_a_server_url_is_refused_before_running() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
 
@@ -247,8 +253,25 @@ fn run_share_without_a_server_url_exits_infra() {
         .env_remove("DOMARINN_SERVER_URL")
         .current_dir(dir.path())
         .assert()
-        .code(3)
+        .code(2)
+        .stderr(predicate::str::contains("--share preflight"))
         .stderr(predicate::str::contains("no server URL"));
+
+    assert!(
+        !dir.path().join(".domarinn/runs").exists(),
+        "a run directory exists, so the suite executed before the refusal — \
+         the provider calls were paid for and then thrown away"
+    );
+
+    // The degrade path: the flag says publishing is optional here, so the run
+    // proceeds, the upload's own missing-URL warning fires later, and the exit
+    // code reflects the assertions alone.
+    bin()
+        .args(["run", "--share", "--allow-share-failure"])
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .success();
 }
 
 /// A server that cannot accept what this CLI writes must be caught *before* the

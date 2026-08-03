@@ -104,10 +104,11 @@ pub struct RunArgs {
 
     /// Upload the run to the server after it completes.
     ///
-    /// Fail-closed: a rejected, unreachable or unconfigured upload exits 3.
-    /// A server that says up front it cannot accept this CLI's result schema
-    /// exits 2 *before* the run executes, so the skew costs no provider calls.
-    /// Pass `--allow-share-failure` to tolerate either.
+    /// Fail-closed: a rejected or unreachable upload exits 3. A server that
+    /// says up front it cannot accept this CLI's result schema — or no server
+    /// URL configured at all — exits 2 *before* the run executes, so the
+    /// misconfiguration costs no provider calls.
+    /// Pass `--allow-share-failure` to tolerate any of these.
     #[arg(long)]
     pub share: bool,
 
@@ -362,9 +363,9 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
     // An upload that did not happen is tracked rather than returned, on the same
     // reasoning as `baseline_unresolved`: the results are real, so the run still
     // writes its summary — only the exit code below refuses to call the job
-    // green. Note this is a behaviour change: `--share` with no server URL at
-    // all used to be swallowed as a warning and exit 0, which is precisely the
-    // misconfiguration most likely to reach CI unnoticed.
+    // green. The no-server-URL arm of `upload_run` is reachable here only under
+    // `--allow-share-failure`: in strict mode the preflight above already
+    // refused that certain failure before the run spent anything.
     let mut share_failed = false;
     if args.share {
         match crate::share::upload_run(&result, server_url.as_deref()) {
