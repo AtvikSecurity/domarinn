@@ -22,9 +22,11 @@ import { SuiteHealthCard } from "./overview/SuiteHealthCard";
  * of truth.
  */
 export function OverviewPage() {
-  // `cached=all` deliberately: the runs list hides fully-cached passing runs as
-  // stream noise, but a suite whose latest CI run was fully cached still has a
-  // status, and hiding it here would make the suite look stale.
+  // `cached: "all"` deliberately, and deliberately not the user's stored
+  // preference: a suite whose latest CI run was fully cached still has a real
+  // status, and dropping it would promote an older run to "latest" — this page
+  // would report a stale number as current, which is worse than the noise the
+  // preference exists to remove. The cards mark such a run instead.
   const runs = useRuns({ cached: "all" });
 
   // Auto-page. A single 50-run page describes only the busiest suites: with

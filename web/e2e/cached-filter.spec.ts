@@ -113,6 +113,34 @@ test.describe("Cached-runs filter", () => {
     await expect(page.getByText(/6 fully cached runs hidden/)).toBeVisible();
   });
 
+  // Two surfaces deliberately never hide cached runs, because hiding would
+  // cost them information rather than noise. Both are easy to "fix" into a
+  // regression by someone making the app consistent, so both are pinned.
+  test("the overview marks a fully cached headline instead of hiding it", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    // A suite whose newest CI run was fully cached still has a real status.
+    // Were it hidden, an older run would be promoted to "latest" and the card
+    // would state a stale number as current — so the chip's presence is the
+    // proof the run survived.
+    await expect(page.getByText("cached", { exact: true }).first()).toBeVisible();
+  });
+
+  test("the compare pickers offer fully cached runs, labelled", async ({
+    page,
+  }) => {
+    await page.goto(`/runs/${CANARY_FRESH}/compare/${CANARY_CACHED}`);
+
+    // A run missing from a picker is indistinguishable from one that never
+    // happened, and comparing against a fully-cached baseline is exactly how
+    // you check a config change against known-identical inputs.
+    const base = page.getByRole("combobox", { name: "Base run" });
+    await expect(
+      base.locator("option", { hasText: "· cached" }).first(),
+    ).toBeAttached();
+  });
+
   test("a fully cached run's detail page shows the cache tile and per-case pills", async ({
     page,
   }) => {

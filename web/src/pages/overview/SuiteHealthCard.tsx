@@ -9,6 +9,7 @@ import {
   type Severity,
 } from "@/lib/signals";
 import { formatRelative, shortRunId } from "@/lib/format";
+import { isFullyCached } from "@/lib/cached";
 import { runPath, runsFilterHref } from "@/lib/routes";
 import { Sparkline } from "@/components/Sparkline";
 import { PassRateBadge } from "@/components/PassRateBadge";
@@ -183,6 +184,16 @@ export function SuiteHealthCard({
         {canonical && canonical.error_count > 0 ? (
           <Chip tone="error" size="xs">
             {canonical.error_count} errored
+          </Chip>
+        ) : null}
+        {/* This card keeps showing a fully-cached headline run rather than
+            falling back to an older fresh one — a cached run still has a real
+            verdict, and skipping it would report a stale number as current.
+            But "these results were replayed, not re-measured" changes how much
+            the number is worth, so it is said rather than left to infer. */}
+        {canonical && isFullyCached(canonical) ? (
+          <Chip tone="neutral" size="xs">
+            cached
           </Chip>
         ) : null}
       </div>

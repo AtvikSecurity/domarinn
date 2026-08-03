@@ -107,9 +107,17 @@ export function RunDetail() {
   // Sibling runs in the same project/suite, used only to resolve a default
   // compare target (the immediately older run) for the header's Compare
   // button — see `previousRun`.
+  //
+  // `cached: "all"` explicitly, and deliberately not the user's preference:
+  // this is a navigation-target resolver, not a list. Hiding cached runs here
+  // would not remove noise from anything a reader can see — it would make
+  // "Compare with previous" land on a run that is not the previous one, which
+  // is a wrong answer rather than a quieter one. This used to inherit the
+  // hidden default by passing no `cached` at all.
   const suiteRuns = useRuns({
     project: run.data?.project ?? undefined,
     suite: run.data?.suite ?? undefined,
+    cached: "all",
   });
 
   const cases = useMemo(
