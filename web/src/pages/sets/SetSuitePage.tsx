@@ -68,7 +68,9 @@ const SUITE_RUNS_TABLE_ID = "setSuiteRuns";
 
 const SUITE_RUN_COLUMNS: ColumnDef[] = [
   { id: "select", label: "Select", track: "40px", min: 40, alwaysVisible: true },
-  { id: "run", label: "Run", track: "auto", min: 240, alwaysVisible: true },
+  // Stated, not `auto` — see RunsList: a ULID plus a copy button plus chips
+  // does not fit in whatever the declared columns happen to leave over.
+  { id: "run", label: "Run", track: "340px", min: 240, alwaysVisible: true },
   { id: "when", label: "When", track: "130px", min: 110 },
   { id: "who", label: "Who", track: "150px", min: 110 },
   { id: "pass_rate", label: "Pass rate", track: "130px", min: 110 },
@@ -298,12 +300,13 @@ export function SetSuitePage() {
                   `position: absolute` and escape a scroller that is not a
                   containing block. See SetsPage for the full account. */}
               <div className="relative overflow-x-auto scroll-hint">
-                <table className="w-full min-w-[900px] table-fixed text-sm">
+                <table className="w-full min-w-[1090px] table-fixed text-sm">
                   <ColumnGroup columns={SUITE_RUN_COLUMNS} prefs={colPrefs} />
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                      {shownCols.map((c) => (
+                      {shownCols.map((c, i, arr) => (
                         <ResizableTh
+                          isLast={i === arr.length - 1}
                           key={c.id}
                           def={c}
                           tableId={SUITE_RUNS_TABLE_ID}
@@ -357,11 +360,13 @@ export function SetSuitePage() {
                             </td>
                           )}
                           {shownColIds.has("run") && (
-                            <td className="px-4 py-2">
-                              <span className="flex items-center gap-1">
+                            // Clips rather than overlapping the next column —
+                            // see RunsList for the full account.
+                            <td className="overflow-hidden px-4 py-2">
+                              <span className="flex min-w-0 items-center gap-1">
                                 <Link
                                   to={runPath(r.id)}
-                                  className="font-medium text-accent hover:underline"
+                                  className="truncate font-medium text-accent hover:underline"
                                 >
                                   {r.id}
                                 </Link>

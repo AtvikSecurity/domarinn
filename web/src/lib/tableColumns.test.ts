@@ -4,6 +4,7 @@ import {
   type ColumnDef,
   COLUMNS_KEY,
   cssVarsFor,
+  effectiveWidth,
   gridTemplateFor,
   hiddenCount,
   isVisible,
@@ -117,6 +118,37 @@ describe("trackFor", () => {
 
   it("clamps a stored width that is out of range", () => {
     expect(trackFor(COLS[3]!, prefs({ width: { tokens: 5 } }))).toBe("76px");
+  });
+});
+
+describe("effectiveWidth", () => {
+  const col = (track: string, min = 90): ColumnDef => ({
+    id: "c",
+    label: "C",
+    track,
+    min,
+  });
+
+  it("prefers a stored width, clamped", () => {
+    expect(effectiveWidth(col("150px"), prefs({ width: { c: 220 } }))).toBe(220);
+    expect(effectiveWidth(col("150px"), prefs({ width: { c: 10 } }))).toBe(90);
+  });
+
+  // Falling back to `min` is what makes the first drag of an untouched column
+  // jump: the handle starts from the floor rather than from where the column
+  // actually is.
+  it("falls back to a bare pixel track, not the floor", () => {
+    expect(effectiveWidth(col("150px"), prefs())).toBe(150);
+  });
+
+  it("falls back to a minmax track's pixel floor", () => {
+    expect(effectiveWidth(col("minmax(240px, 1.2fr)", 200), prefs())).toBe(240);
+  });
+
+  it("falls back to the column's own floor when the track has no pixels", () => {
+    expect(effectiveWidth(col("auto"), prefs())).toBe(90);
+    expect(effectiveWidth(col("16%"), prefs())).toBe(90);
+    expect(effectiveWidth(col("1.5fr"), prefs())).toBe(90);
   });
 });
 

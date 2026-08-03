@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from "@/api/queries";
 import type { ApiKeyCreatedResponse, ApiKeyView, AuthScope } from "@/api";
@@ -11,7 +11,29 @@ import { Modal, ModalActions } from "@/components/ui/Modal";
 import { TextField } from "@/components/ui/TextField";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { EmptyState, ErrorState } from "@/components/States";
+import { ColumnGroup } from "@/components/ui/ColumnGroup";
+import { ColumnPicker } from "@/components/ui/ColumnPicker";
+import { ResizableTh } from "@/components/ui/ResizableTh";
+import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
+import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
 import { cn } from "@/lib/cn";
+
+const KEYS_TABLE_ID = "keys";
+
+/**
+ * `status` is structural alongside the name and the revoke button: it is the
+ * only thing that distinguishes a live key from a dead one, and a key list
+ * that cannot say which is which is worse than no list.
+ */
+const KEY_COLUMNS: ColumnDef[] = [
+  { id: "name", label: "Name", track: "auto", min: 120, alwaysVisible: true },
+  { id: "prefix", label: "Prefix", track: "95px", min: 80 },
+  { id: "scope", label: "Scope", track: "90px", min: 80 },
+  { id: "created", label: "Created", track: "125px", min: 100 },
+  { id: "last_used", label: "Last used", track: "105px", min: 90 },
+  { id: "status", label: "Status", track: "100px", min: 85, alwaysVisible: true },
+  { id: "actions", label: "Actions", track: "110px", min: 100, numeric: true, alwaysVisible: true },
+];
 
 export function KeysPage() {
   const { view, isLoading } = useAuth();
@@ -26,6 +48,13 @@ export function KeysPage() {
   const [scope, setScope] = useState<AuthScope>("read");
   const [secret, setSecret] = useState<ApiKeyCreatedResponse | null>(null);
   const [revoking, setRevoking] = useState<ApiKeyView | null>(null);
+  // Above the early returns below: hook order cannot depend on auth state.
+  const colPrefs = useColumnPrefs(KEYS_TABLE_ID);
+  const shownCols = useMemo(
+    () => visibleColumns(KEY_COLUMNS, colPrefs),
+    [colPrefs],
+  );
+  const shownIds = useMemo(() => new Set(shownCols.map((c) => c.id)), [shownCols]);
 
   if (isLoading) {
     return (
@@ -135,64 +164,102 @@ export function KeysPage() {
             </EmptyState>
           </div>
         ) : (
-          <div className="overflow-x-auto scroll-hint">
-            <table className="w-full min-w-[720px] text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                  <th className="px-4 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 font-medium">Prefix</th>
-                  <th className="px-3 py-2 font-medium">Scope</th>
-                  <th className="px-3 py-2 font-medium">Created</th>
-                  <th className="px-3 py-2 font-medium">Last used</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {keysQuery.data.map((k) => (
-                  <tr
-                    key={k.id}
-                    className="border-b border-border/60 last:border-0"
-                  >
-                    <td className="px-4 py-2 font-medium">{k.name}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-muted">
-                      {k.prefix}…
-                    </td>
-                    <td className="px-3 py-2">
-                      <ScopeChip scope={k.scope} />
-                    </td>
-                    <td className="px-3 py-2 text-muted">
-                      {formatDate(k.created_at)}
-                    </td>
-                    <td className="px-3 py-2 text-muted">
-                      {k.last_used_at ? formatRelative(k.last_used_at) : "never"}
-                    </td>
-                    <td className="px-3 py-2">
-                      {k.revoked ? (
-                        <span className="rounded-full bg-fail/12 px-2 py-0.5 text-[11px] font-medium text-fail ring-1 ring-inset ring-fail/25">
-                          revoked
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-pass/12 px-2 py-0.5 text-[11px] font-medium text-pass ring-1 ring-inset ring-pass/25">
-                          active
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        disabled={k.revoked}
-                        onClick={() => setRevoking(k)}
+          <>
+            <div className="flex justify-end px-4 pt-3">
+              <ColumnPicker
+                columns={KEY_COLUMNS}
+                prefs={colPrefs}
+                onChange={(id, visible) =>
+                  setColumnVisible(KEYS_TABLE_ID, id, visible)
+                }
+                onReset={() => resetColumns(KEYS_TABLE_ID)}
+              />
+            </div>
+            <div className="overflow-x-auto scroll-hint">
+              {/* 745px is the declared tracks' sum, kept under the page's own
+                  `max-w-3xl` (768px) so the table scrolls rather than clips. */}
+              <table className="w-full min-w-[745px] table-fixed text-sm">
+                <ColumnGroup columns={KEY_COLUMNS} prefs={colPrefs} />
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
+                    {shownCols.map((c, i, arr) => (
+                      <ResizableTh
+                        isLast={i === arr.length - 1}
+                        key={c.id}
+                        def={c}
+                        tableId={KEYS_TABLE_ID}
+                        prefs={colPrefs}
+                        className={cn(
+                          "py-2 font-medium",
+                          c.id === "name" ? "px-4" : "px-3",
+                          c.numeric && "text-right",
+                        )}
                       >
-                        Revoke
-                      </Button>
-                    </td>
+                        {c.label}
+                      </ResizableTh>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {keysQuery.data.map((k) => (
+                    <tr
+                      key={k.id}
+                      className="border-b border-border/60 last:border-0"
+                    >
+                      {shownIds.has("name") && (
+                        <td className="truncate px-4 py-2 font-medium">{k.name}</td>
+                      )}
+                      {shownIds.has("prefix") && (
+                        <td className="truncate px-3 py-2 font-mono text-xs text-muted">
+                          {k.prefix}…
+                        </td>
+                      )}
+                      {shownIds.has("scope") && (
+                        <td className="px-3 py-2">
+                          <ScopeChip scope={k.scope} />
+                        </td>
+                      )}
+                      {shownIds.has("created") && (
+                        <td className="truncate px-3 py-2 text-muted">
+                          {formatDate(k.created_at)}
+                        </td>
+                      )}
+                      {shownIds.has("last_used") && (
+                        <td className="truncate px-3 py-2 text-muted">
+                          {k.last_used_at ? formatRelative(k.last_used_at) : "never"}
+                        </td>
+                      )}
+                      {shownIds.has("status") && (
+                        <td className="px-3 py-2">
+                          {k.revoked ? (
+                            <span className="rounded-full bg-fail/12 px-2 py-0.5 text-[11px] font-medium text-fail ring-1 ring-inset ring-fail/25">
+                              revoked
+                            </span>
+                          ) : (
+                            <span className="rounded-full bg-pass/12 px-2 py-0.5 text-[11px] font-medium text-pass ring-1 ring-inset ring-pass/25">
+                              active
+                            </span>
+                          )}
+                        </td>
+                      )}
+                      {shownIds.has("actions") && (
+                        <td className="px-3 py-2 text-right">
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            disabled={k.revoked}
+                            onClick={() => setRevoking(k)}
+                          >
+                            Revoke
+                          </Button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </section>
 

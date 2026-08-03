@@ -109,6 +109,25 @@ function flexShare(track: string): string | null {
 }
 
 /**
+ * How wide a column currently is, in pixels.
+ *
+ * This is what a resize handle starts its drag from and what a screen reader
+ * announces, so it has to be where the column actually *is* — falling back to
+ * `min` would make the first drag of an untouched column snap to the floor
+ * before it moved. A track states the answer whenever it is expressed in
+ * pixels, including the floor of a `minmax(...)`; `auto`, `fr` and percentage
+ * tracks resolve only against a real layout, and there `min` is the honest
+ * approximation.
+ */
+export function effectiveWidth(def: ColumnDef, prefs: TablePrefs): number {
+  const stored = prefs.width[def.id];
+  if (stored !== undefined) return clampWidth(def, stored);
+  const px = /^\s*(\d*\.?\d+)px\s*$/.exec(def.track)?.[1]
+    ?? /minmax\(\s*(\d*\.?\d+)px/.exec(def.track)?.[1];
+  return px === undefined ? def.min : clampWidth(def, Number(px));
+}
+
+/**
  * The CSS track for one column, honouring a stored width.
  *
  * A resized flexible column keeps its `fr` share rather than becoming a bare

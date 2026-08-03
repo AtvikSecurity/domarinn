@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { MONEY_RUN } from "./helpers";
+import { MATRIX_RUN, MONEY_RUN, MONEY_RUN_BASELINE } from "./helpers";
 
 /**
  * The runs list renders one table per suite group, all sharing a single
@@ -147,6 +147,81 @@ test.describe("Columns on a real <table>", () => {
     const widened = await headerWidth(page, "when");
     await page.reload();
     await expect.poll(() => headerWidth(page, "when")).toBeCloseTo(widened, 0);
+  });
+});
+
+test.describe("The handle does not widen the table", () => {
+  // The handle straddles its column's right edge, so on the LAST column half
+  // of it hangs past the table and its scroller reports content wider than
+  // itself — a scrollbar under every converted table, promising columns that
+  // are not there.
+  // The admin table, because its declared tracks genuinely fit its page — the
+  // runs list wants more width than the viewport has and scrolls for real.
+  test("a table that fits its container does not scroll sideways", async ({
+    page,
+  }) => {
+    await page.goto("/admin");
+    await expect(
+      page.getByRole("columnheader", { name: "Username" }).first(),
+    ).toBeVisible();
+
+    const overflow = await page.evaluate(() => {
+      const el = document.querySelector(".scroll-hint");
+      if (!el) throw new Error("no scroller");
+      return el.scrollWidth - el.clientWidth;
+    });
+    expect(overflow).toBe(0);
+  });
+});
+
+test.describe("Columns on the two remaining substrates", () => {
+  // The delta table's header and body are separate elements — the body owns
+  // the vertical scroll the virtualizer measures — so this is the one place a
+  // resize could visibly desync the labels from the values they name.
+  test("the compare delta table resizes header and rows together", async ({
+    page,
+  }) => {
+    await page.goto(`/runs/${MONEY_RUN_BASELINE}/compare/${MONEY_RUN}`);
+    await expect(page.getByTestId("delta-table")).toBeVisible();
+
+    const headerCell = resizeHandle(page, "delta").locator("xpath=..");
+    const before = (await headerCell.boundingBox())?.width ?? 0;
+    await dragHandle(page, "delta", 90);
+    await expect
+      .poll(async () => (await headerCell.boundingBox())?.width)
+      .toBeGreaterThan(before + 40);
+
+    // The first row's Delta cell is the 4th of the six; it has to have moved
+    // by the same amount, which is only true if both read one template.
+    const rowCellX = async () => {
+      const row = page.locator("[data-delta-row]").first();
+      return (await row.locator("> *").nth(3).boundingBox())?.x;
+    };
+    const headerX = async () => (await headerCell.boundingBox())?.x;
+    expect(await rowCellX()).toBeCloseTo((await headerX()) ?? 0, 0);
+  });
+
+  // The matrix has no picker by design: its provider columns come from the
+  // run's own data. The sticky Test column is the one that is always there.
+  test("the matrix resizes its Test column and nothing else", async ({ page }) => {
+    await page.goto(`/runs/${MATRIX_RUN}?view=matrix`);
+    await expect(
+      page.getByRole("table", { name: "Prompt by provider matrix" }),
+    ).toBeVisible();
+
+    // One handle on the page — the provider columns deliberately have none.
+    await expect(page.locator("[data-column-resizer]")).toHaveCount(1);
+
+    const before = await headerWidth(page, "test");
+    await dragHandle(page, "test", 100);
+    await expect.poll(() => headerWidth(page, "test")).toBeGreaterThan(before + 40);
+
+    const widened = await headerWidth(page, "test");
+    await page.reload();
+    await expect(
+      page.getByRole("table", { name: "Prompt by provider matrix" }),
+    ).toBeVisible();
+    await expect.poll(() => headerWidth(page, "test")).toBeCloseTo(widened, 0);
   });
 });
 

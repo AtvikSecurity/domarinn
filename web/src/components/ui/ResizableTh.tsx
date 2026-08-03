@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { ColumnResizer } from "@/components/ui/ColumnResizer";
-import { clampWidth, type ColumnDef, type TablePrefs } from "@/lib/tableColumns";
+import { type ColumnDef, effectiveWidth, type TablePrefs } from "@/lib/tableColumns";
 import {
   resetColumnWidth,
   setColumnWidth,
@@ -20,6 +20,7 @@ export function ResizableTh({
   prefs,
   className,
   scope = "col",
+  isLast = false,
   children,
   ...rest
 }: {
@@ -28,6 +29,8 @@ export function ResizableTh({
   prefs: TablePrefs;
   className?: string;
   scope?: "col" | "colgroup";
+  /** Keeps the trailing handle inside the table — see `ColumnResizer`'s `edge`. */
+  isLast?: boolean;
   children: ReactNode;
 } & Omit<React.ThHTMLAttributes<HTMLTableCellElement>, "scope" | "className">) {
   const labelId = `${tableId}-h-${def.id}`;
@@ -41,8 +44,9 @@ export function ResizableTh({
       <span id={labelId}>{children}</span>
       <ColumnResizer
         def={def}
-        width={clampWidth(def, prefs.width[def.id] ?? def.min)}
+        width={effectiveWidth(def, prefs)}
         headerId={labelId}
+        edge={isLast}
         onResize={(px) => setColumnWidth(tableId, def.id, px)}
         onReset={() => resetColumnWidth(tableId, def.id)}
       />

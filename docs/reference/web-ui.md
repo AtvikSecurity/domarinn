@@ -93,7 +93,7 @@ A single run, with its identity on top: the ULID as the heading, then the line t
 
 The card strip is the run's whole story in seven numbers: pass rate, case count, the `pass / fail / err` split kept as three separate figures (a `fail` and an `error` mean different things and gate differently), tokens in and out, cost, wall-clock duration, and how much of it came from the cache. `COST` reads `–` here rather than `$0.00`, which is the honest answer for a run whose model has no rate: [cost not reported is not the same as cost zero](providers.md#pricing).
 
-Below it, one row per case: status, the case id and its stable case key, a preview of the output, a strip of assertion squares, and the per-case tokens, cost, latency and score. The `All / Pass / Fail / Error / Skip` tabs and the search box narrow the list, and `Columns` lets you bring back the fields hidden to fit your screen. The actions at top right are the ones that change state: delete the run, pin it as this suite's baseline, or open it against another run in [Compare](#compare--mcnemar).
+Below it, one row per case: status, the case id and its stable case key, a preview of the output, a strip of assertion squares, and the per-case tokens, cost, latency and score. The `All / Pass / Fail / Error / Skip` tabs and the search box narrow the list, and `Columns` lets you bring back the fields hidden to fit your screen — see [Columns](#columns), which applies to every table in the app. The actions at top right are the ones that change state: delete the run, pin it as this suite's baseline, or open it against another run in [Compare](#compare--mcnemar).
 
 ---
 
@@ -265,6 +265,21 @@ The scope selector is capped at your own: a `member` cannot mint an `admin` key,
 Account management, admin-only, and short by design: create a user with a role, or change a role, disable an account, reset a password, delete. Three roles exist — `viewer`, `member` and `admin` — and each maps to a scope ceiling rather than to a list of permissions: `viewer → read`, `member → write`, `admin → admin`. A `viewer` browses, mints read-only API keys of its own, and cannot upload a run or change policy; give one a [run-set grant](#who-may-reach-a-set) and it can reach a restricted set, still read-only. The three accounts under `admin` in this shot are the seed's, one per grant level on the [access list](#who-may-reach-a-set) above — which is why one of them is a `viewer`.
 
 Static bearer tokens never appear here. They are configured in the environment and are not tied to a user, which is exactly why they cannot mint API keys or be revoked from a web page — pull them from the environment and restart. Accounts provisioned by SSO do appear, with their role re-synced from the identity provider on every login — which means a role you set here does not stick for them, and that `DOMARINN_SSO_DEFAULT_ROLE` re-applies to accounts provisioned long ago (see [Server](server.md#global-sso-settings)). The one thing that sync will not do is auto-demote your last enabled admin.
+
+---
+
+## Columns
+
+Every table on every page above can be resized and, with two exceptions, narrowed to the columns you care about. Both settings are per-browser, and neither is in the URL: they are a viewing habit, not part of what a shared link means, so sending someone a filtered runs list does not also impose your column layout on them.
+
+Drag the seam on the right of any column header to resize it. The seam is also a real control — tab to it and the arrow keys move it, <kbd>Home</kbd> puts it back, and a screen reader announces which column it belongs to and how wide it is in pixels. Double-clicking it resets that one column. `Columns` above the table hides and shows fields, with `Reset` returning everything to the layout's own defaults.
+
+Some columns cannot be hidden, and the picker shows why by not offering them. They are the ones a row would be meaningless without: which run or case it is, whether an account is disabled, the buttons that act on it. The last visible column cannot be unchecked either — a table with no columns has no picker to bring them back.
+
+The two exceptions:
+
+- The **access list** on a run set has three columns, all of them structural, so it resizes but has no picker to open.
+- The **matrix** has one column per provider, derived from the run being viewed. A remembered preference there would key on names the next run may not have, and `?provider=` and `?prompt=` already do that job — so only the sticky `Test` column resizes.
 
 ---
 

@@ -49,14 +49,19 @@ DIST_INDEX="$REPO_ROOT/web/dist/index.html"
 # file is exactly what crates/domarinn-server/build.rs embeds, and it writes
 # the placeholder there itself whenever a `cargo build` runs without the real
 # UI present (see build.rs's PLACEHOLDER constant and its "web UI was not
-# built into this binary" text). This can't detect a binary that was built
-# from a NEWER dist/index.html than the one now on disk, but `mise run build`
-# always builds web then cargo together, so that staleness does not happen in
-# normal use.
+# built into this binary" text).
+#
+# The mtime comparison is the one that matters in practice. Editing the UI and
+# running `mise run web-build` leaves a binary that still embeds the PREVIOUS
+# dist, and every check above passes — so the shots come out of the old build
+# and look, convincingly, like the change did nothing.
 needs_build=0
 if [ ! -x "$BIN" ]; then
   needs_build=1
 elif [ ! -f "$DIST_INDEX" ] || grep -q "was not built into this binary" "$DIST_INDEX"; then
+  needs_build=1
+elif [ "$DIST_INDEX" -nt "$BIN" ]; then
+  echo "==> web/dist is newer than $BIN; the binary embeds a stale UI"
   needs_build=1
 fi
 if [ "$needs_build" -eq 1 ]; then

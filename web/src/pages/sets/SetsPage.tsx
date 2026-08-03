@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Link } from "react-router";
 import { useSets } from "@/api/queries";
 import { Card } from "@/components/ui/Card";
@@ -6,6 +7,12 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { EmptyState, ErrorState } from "@/components/States";
+import { ColumnGroup } from "@/components/ui/ColumnGroup";
+import { ColumnPicker } from "@/components/ui/ColumnPicker";
+import { ResizableTh } from "@/components/ui/ResizableTh";
+import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
+import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
+import { cn } from "@/lib/cn";
 import { setsPath } from "@/lib/routes";
 import { useRowNav } from "@/lib/useRowNav";
 import { Sparkline } from "@/components/Sparkline";
@@ -19,6 +26,18 @@ import {
 /** What a suite has to declare before its runs form a set. */
 const PROJECT_SNIPPET = `project: checkout-agent\nsuite: regression`;
 
+const SETS_TABLE_ID = "sets";
+
+const SET_COLUMNS: ColumnDef[] = [
+  { id: "project", label: "Project", track: "auto", min: 180, alwaysVisible: true },
+  { id: "suites", label: "Suites", track: "90px", min: 70, numeric: true },
+  { id: "runs", label: "Runs", track: "90px", min: 70, numeric: true },
+  { id: "last_activity", label: "Last activity", track: "150px", min: 110 },
+  { id: "pass_rates", label: "Suite pass rates", track: "170px", min: 130 },
+  // `sr-only` header: no content to be sized from, so it must state a track.
+  { id: "access", label: "Access", track: "160px", min: 130, numeric: true },
+];
+
 /**
  * The run-set browser's root: every project this caller may see.
  *
@@ -31,6 +50,12 @@ export function SetsPage() {
   const q = useSets();
   const projects = q.data?.projects ?? [];
   const rowNav = useRowNav();
+  const colPrefs = useColumnPrefs(SETS_TABLE_ID);
+  const shownCols = useMemo(
+    () => visibleColumns(SET_COLUMNS, colPrefs),
+    [colPrefs],
+  );
+  const shownIds = useMemo(() => new Set(shownCols.map((c) => c.id)), [shownCols]);
 
   return (
     <div className="space-y-5">
@@ -50,6 +75,15 @@ export function SetsPage() {
       ) : projects.length === 0 ? (
         <NoSets />
       ) : (
+        <>
+        <div className="flex justify-end">
+          <ColumnPicker
+            columns={SET_COLUMNS}
+            prefs={colPrefs}
+            onChange={(id, visible) => setColumnVisible(SETS_TABLE_ID, id, visible)}
+            onReset={() => resetColumns(SETS_TABLE_ID)}
+          />
+        </div>
         <Card padding="flush">
           {/* `relative` is load-bearing, not decoration. `sr-only` is
               `position: absolute`, and without a positioned ancestor its
@@ -59,19 +93,32 @@ export function SetsPage() {
               /sets a sideways scrollbar at phone widths. Making the scroll
               container the containing block keeps that overflow in here. */}
           <div className="relative overflow-x-auto scroll-hint">
-            <table className="w-full min-w-[760px] text-sm">
+            <table className="w-full min-w-[840px] table-fixed text-sm">
+              <ColumnGroup columns={SET_COLUMNS} prefs={colPrefs} />
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                  <th className="px-4 py-2 font-medium">Project</th>
-                  <th className="px-3 py-2 text-right font-medium">Suites</th>
-                  <th className="px-3 py-2 text-right font-medium">Runs</th>
-                  <th className="px-3 py-2 font-medium">Last activity</th>
-                  {/* Not "pass rate": this is one latest rate per suite, a
-                      spread across the project rather than a trend. */}
-                  <th className="px-3 py-2 font-medium">Suite pass rates</th>
-                  <th className="px-3 py-2 text-right font-medium">
-                    <span className="sr-only">Access</span>
-                  </th>
+                  {/* "Suite pass rates", not "pass rate": one latest rate per
+                      suite, a spread across the project rather than a trend. */}
+                  {shownCols.map((c, i, arr) => (
+                    <ResizableTh
+                      isLast={i === arr.length - 1}
+                      key={c.id}
+                      def={c}
+                      tableId={SETS_TABLE_ID}
+                      prefs={colPrefs}
+                      className={cn(
+                        "py-2 font-medium",
+                        c.id === "project" ? "px-4" : "px-3",
+                        c.numeric && "text-right",
+                      )}
+                    >
+                      {c.id === "access" ? (
+                        <span className="sr-only">Access</span>
+                      ) : (
+                        c.label
+                      )}
+                    </ResizableTh>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -89,40 +136,56 @@ export function SetsPage() {
                       {...rowNav(setsPath(p.project))}
                       className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2/60"
                     >
-                      <td className="px-4 py-2">
-                        {/* Project names are words, not ids — no font-mono. */}
-                        <Link
-                          to={setsPath(p.project)}
-                          className="rounded-sm font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          {p.project}
-                        </Link>
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {formatInt(p.suite_count)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {formatInt(p.run_count)}
-                      </td>
-                      <td className="px-3 py-2 text-muted">
-                        {last ? (
-                          <Tooltip content={formatDateAbsolute(last)}>
-                            <time dateTime={last}>{formatRelative(last)}</time>
-                          </Tooltip>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {/* Per-suite latest rates, not a time series: the
-                            spread across the project's suites at a glance. */}
-                        <Sparkline
-                          values={p.recent_pass_rates}
-                          min={0}
-                          max={1}
-                          title={`Latest pass rate per suite in ${p.project}`}
-                        />
-                      </td>
+                      {shownIds.has("project") && (
+                        // `truncate`: the column that takes the leftover width
+                        // is the one a long name spills out of under
+                        // `table-layout: fixed`.
+                        <td className="truncate px-4 py-2">
+                          {/* Project names are words, not ids — no font-mono. */}
+                          <Link
+                            to={setsPath(p.project)}
+                            className="rounded-sm font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            {p.project}
+                          </Link>
+                        </td>
+                      )}
+                      {shownIds.has("suites") && (
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {formatInt(p.suite_count)}
+                        </td>
+                      )}
+                      {shownIds.has("runs") && (
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {formatInt(p.run_count)}
+                        </td>
+                      )}
+                      {shownIds.has("last_activity") && (
+                        <td className="px-3 py-2 text-muted">
+                          {last ? (
+                            <Tooltip content={formatDateAbsolute(last)}>
+                              <time dateTime={last}>{formatRelative(last)}</time>
+                            </Tooltip>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                      )}
+                      {shownIds.has("pass_rates") && (
+                        // `overflow-hidden`: the sparkline is a fixed-width SVG
+                        // and this column can now be dragged narrower than it.
+                        <td className="overflow-hidden px-3 py-2">
+                          {/* Per-suite latest rates, not a time series: the
+                              spread across the project's suites at a glance. */}
+                          <Sparkline
+                            values={p.recent_pass_rates}
+                            min={0}
+                            max={1}
+                            title={`Latest pass rate per suite in ${p.project}`}
+                          />
+                        </td>
+                      )}
+                      {shownIds.has("access") && (
                       <td className="px-3 py-2 text-right">
                         {p.restricted ? (
                           <Chip
@@ -143,6 +206,7 @@ export function SetsPage() {
                           </Chip>
                         ) : null}
                       </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -150,6 +214,7 @@ export function SetsPage() {
             </table>
           </div>
         </Card>
+        </>
       )}
     </div>
   );

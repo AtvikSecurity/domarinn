@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   useCreateUser,
   useDeleteUser,
@@ -16,7 +16,35 @@ import { TextField } from "@/components/ui/TextField";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { EmptyState, ErrorState } from "@/components/States";
 import { ProviderBadge } from "@/components/ProviderBadge";
+import { ColumnGroup } from "@/components/ui/ColumnGroup";
+import { ColumnPicker } from "@/components/ui/ColumnPicker";
+import { ResizableTh } from "@/components/ui/ResizableTh";
+import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
+import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
 import { cn } from "@/lib/cn";
+
+const USERS_TABLE_ID = "admin";
+
+/**
+ * Three of the five are structural. `status` is what says an account is
+ * disabled — the single most consequential fact on the row — and `actions` is
+ * the only way to act on it; hiding either turns this from an administration
+ * surface into a list.
+ */
+const USER_COLUMNS: ColumnDef[] = [
+  { id: "username", label: "Username", track: "auto", min: 160, alwaysVisible: true },
+  { id: "role", label: "Role", track: "140px", min: 120 },
+  { id: "status", label: "Status", track: "100px", min: 90, alwaysVisible: true },
+  { id: "created", label: "Created", track: "140px", min: 110 },
+  {
+    id: "actions",
+    label: "Actions",
+    track: "300px",
+    min: 280,
+    numeric: true,
+    alwaysVisible: true,
+  },
+];
 
 function errorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
@@ -44,6 +72,12 @@ export function AdminPage() {
   const [banner, setBanner] = useState<string | null>(null);
   const [resetting, setResetting] = useState<UserView | null>(null);
   const [deleting, setDeleting] = useState<UserView | null>(null);
+  const colPrefs = useColumnPrefs(USERS_TABLE_ID);
+  const shownCols = useMemo(
+    () => visibleColumns(USER_COLUMNS, colPrefs),
+    [colPrefs],
+  );
+  const shownIds = useMemo(() => new Set(shownCols.map((c) => c.id)), [shownCols]);
 
   async function changeRole(user: UserView, role: Role) {
     setBanner(null);
@@ -105,15 +139,41 @@ export function AdminPage() {
             <EmptyState title="No users" />
           </div>
         ) : (
+          <>
+          <div className="flex justify-end px-4 pt-3">
+            <ColumnPicker
+              columns={USER_COLUMNS}
+              prefs={colPrefs}
+              onChange={(id, visible) =>
+                setColumnVisible(USERS_TABLE_ID, id, visible)
+              }
+              onReset={() => resetColumns(USERS_TABLE_ID)}
+            />
+          </div>
           <div className="overflow-x-auto scroll-hint">
-            <table className="w-full min-w-[760px] text-sm">
+            {/* 840px is the declared tracks' sum, and has to stay under the
+                page's own `max-w-4xl` (896px) — a floor above it would clip
+                the row actions against the card rather than scroll to them. */}
+            <table className="w-full min-w-[840px] table-fixed text-sm">
+              <ColumnGroup columns={USER_COLUMNS} prefs={colPrefs} />
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                  <th className="px-4 py-2 font-medium">Username</th>
-                  <th className="px-3 py-2 font-medium">Role</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Created</th>
-                  <th className="px-3 py-2 text-right font-medium">Actions</th>
+                  {shownCols.map((c, i, arr) => (
+                    <ResizableTh
+                      isLast={i === arr.length - 1}
+                      key={c.id}
+                      def={c}
+                      tableId={USERS_TABLE_ID}
+                      prefs={colPrefs}
+                      className={cn(
+                        "py-2 font-medium",
+                        c.id === "username" ? "px-4" : "px-3",
+                        c.numeric && "text-right",
+                      )}
+                    >
+                      {c.label}
+                    </ResizableTh>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -123,6 +183,7 @@ export function AdminPage() {
                     data-testid={`user-row-${u.username}`}
                     className="border-b border-border/60 last:border-0"
                   >
+                    {shownIds.has("username") && (
                     <td className="px-4 py-2 font-medium">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span>{u.username}</span>
@@ -134,6 +195,8 @@ export function AdminPage() {
                         ))}
                       </div>
                     </td>
+                    )}
+                    {shownIds.has("role") && (
                     <td className="px-3 py-2">
                       <select
                         aria-label={`Role for ${u.username}`}
@@ -158,6 +221,8 @@ export function AdminPage() {
                         ))}
                       </select>
                     </td>
+                    )}
+                    {shownIds.has("status") && (
                     <td className="px-3 py-2">
                       <span
                         className={cn(
@@ -170,9 +235,13 @@ export function AdminPage() {
                         {u.disabled ? "disabled" : "active"}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-muted">
+                    )}
+                    {shownIds.has("created") && (
+                    <td className="truncate px-3 py-2 text-muted">
                       {formatDate(u.created_at)}
                     </td>
+                    )}
+                    {shownIds.has("actions") && (
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-2">
                         <Button
@@ -205,11 +274,13 @@ export function AdminPage() {
                         </Button>
                       </div>
                     </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          </>
         )}
       </section>
 
