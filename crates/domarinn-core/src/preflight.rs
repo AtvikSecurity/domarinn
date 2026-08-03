@@ -57,6 +57,10 @@ struct BadShape {
     /// The `ProviderKind` tag this applies to.
     provider_type: &'static str,
     prefix: &'static str,
+    /// The auth mode this shape is wrong *for*. Presenting the same credential
+    /// another way is exactly the supported fix, so a provider that already does
+    /// is not complained about.
+    only_when_auth_is: crate::config::AuthMode,
     /// Only a hard failure when the request goes to this host. Elsewhere it is
     /// a warning: an internal gateway may legitimately accept the token, and
     /// domarinn cannot know.
@@ -68,9 +72,11 @@ const KNOWN_BAD: &[BadShape] = &[BadShape {
     provider_type: "anthropic",
     prefix: "sk-ant-oat",
     only_when_host_is: "api.anthropic.com",
+    only_when_auth_is: crate::config::AuthMode::ApiKey,
     explanation: "an Anthropic OAuth access token, which the Messages API rejects \
-                  as `x-api-key`. Use an API key from the Anthropic Console, or \
-                  point `base_url` at a gateway that accepts OAuth tokens",
+                  as `x-api-key`. Set `request: {auth: bearer}` to present it as a \
+                  bearer token, use an API key from the Anthropic Console, or point \
+                  `base_url` at a gateway that accepts OAuth tokens",
 }];
 
 /// Everything the run will actually read a credential for.
@@ -81,6 +87,8 @@ struct Credential<'a> {
     env_names: Vec<String>,
     provider_type: &'static str,
     base_url: Option<&'a str>,
+    /// How this provider will present the credential, `request.auth` applied.
+    auth: crate::config::AuthMode,
 }
 
 impl Credential<'_> {
@@ -107,55 +115,90 @@ impl Credential<'_> {
     }
 }
 
-fn default_env_for(kind: &ProviderKind) -> Option<(&'static str, Vec<String>, Option<&str>)> {
+/// What a provider will read, where it will send it, and how it will present it.
+///
+/// `None` when the provider reads no credential at all — an `exec` child owns its
+/// own, an `http` provider templates its headers, and `request: {auth: none}`
+/// says outright that the credential rides in a header this check cannot see.
+/// Checking a variable a run will never read is the annoyance this whole module
+/// is written to avoid.
+type CredentialShape<'a> = (
+    &'static str,
+    Vec<String>,
+    Option<&'a str>,
+    crate::config::AuthMode,
+);
+
+fn default_env_for(kind: &ProviderKind) -> Option<CredentialShape<'_>> {
     fn names(configured: &Option<crate::config::EnvNames>, fallback: &str) -> Vec<String> {
         match configured {
             Some(n) => n.iter().map(str::to_string).collect(),
             None => vec![fallback.to_string()],
         }
     }
-    match kind {
+    /// The auth mode this provider will actually use: its `request.auth` when
+    /// set, else the vendor's own.
+    fn auth(
+        request: &Option<Box<crate::config::RequestCfg>>,
+        default: crate::config::AuthMode,
+    ) -> crate::config::AuthMode {
+        request.as_ref().and_then(|r| r.auth).unwrap_or(default)
+    }
+    use crate::config::AuthMode;
+    let shape = match kind {
         ProviderKind::Anthropic {
             api_key_env,
             base_url,
+            request,
             ..
         } => Some((
             "anthropic",
             names(api_key_env, "ANTHROPIC_API_KEY"),
             base_url.as_deref(),
+            auth(request, AuthMode::ApiKey),
         )),
         ProviderKind::Openai {
             api_key_env,
             base_url,
+            request,
             ..
         } => Some((
             "openai",
             names(api_key_env, "OPENAI_API_KEY"),
             base_url.as_deref(),
+            auth(request, AuthMode::Bearer),
         )),
         ProviderKind::Embeddings {
             api_key_env,
             base_url,
+            request,
             ..
         } => Some((
             "embeddings",
             names(api_key_env, "OPENAI_API_KEY"),
             base_url.as_deref(),
+            auth(request, AuthMode::Bearer),
         )),
         // `exec` runs a child that owns its own credentials, and `http` templates
         // headers through `${env:...}` which the loader already resolves.
         ProviderKind::Exec { .. } | ProviderKind::Http { .. } => None,
-    }
+    };
+    // `auth: none` says the credential rides in a declared header this check
+    // cannot see. Demanding `api_key_env` anyway would fail a correct config,
+    // which is exactly the annoyance the "only what the run will actually use"
+    // rule exists to prevent.
+    shape.filter(|(_, _, _, auth)| auth.needs_credential())
 }
 
 fn grader_credential<'a>(grader: &'a Grader, path: &str) -> Option<Credential<'a>> {
-    let (provider_type, env_names, base_url) = default_env_for(&grader.provider)?;
+    let (provider_type, env_names, base_url, auth) = default_env_for(&grader.provider)?;
     Some(Credential {
         path: path.to_string(),
         provider_id: None,
         env_names,
         provider_type,
         base_url,
+        auth,
     })
 }
 
@@ -190,13 +233,14 @@ pub fn check(
         {
             continue;
         }
-        if let Some((provider_type, env_names, base_url)) = default_env_for(&provider.kind) {
+        if let Some((provider_type, env_names, base_url, auth)) = default_env_for(&provider.kind) {
             credentials.push(Credential {
                 path: format!("providers[{i}]"),
                 provider_id: Some(provider.id.clone()),
                 env_names,
                 provider_type,
                 base_url,
+                auth,
             });
         }
     }
@@ -265,9 +309,14 @@ fn any_assert(tests: &[&TestCase], pred: impl Fn(&crate::config::AssertKind) -> 
 
 /// A known-wrong credential shape for this endpoint, if any.
 fn check_shape(cred: &Credential<'_>, value: &str) -> Option<CredentialIssue> {
-    let bad = KNOWN_BAD
-        .iter()
-        .find(|b| b.provider_type == cred.provider_type && value.starts_with(b.prefix))?;
+    let bad = KNOWN_BAD.iter().find(|b| {
+        b.provider_type == cred.provider_type
+            && value.starts_with(b.prefix)
+            // The complaint is about how the credential is *presented*, not about
+            // the credential. Presenting it the other way is the fix, so a
+            // provider that already does has nothing wrong with it.
+            && b.only_when_auth_is == cred.auth
+    })?;
 
     // Only a hard failure against the endpoint whose contract domarinn knows.
     let host = cred
@@ -423,6 +472,85 @@ grader:
         );
         assert_eq!(issues.len(), 1);
         assert!(issues[0].message.contains("OAuth"));
+    }
+
+    /// The supported fix, and the reason the deny-list is conditioned on the auth
+    /// mode: the token is not wrong, presenting it as `x-api-key` was. A provider
+    /// that says `auth: bearer` is doing the right thing and must not be stopped
+    /// at the door for it.
+    #[test]
+    fn an_oauth_token_presented_as_a_bearer_token_is_accepted() {
+        let suite = suite_yaml(
+            r#"
+version: 1
+providers:
+  - id: claude
+    type: anthropic
+    model: m
+    request:
+      auth: bearer
+"#,
+        );
+        let issues = check(
+            &suite,
+            &["claude".into()],
+            &[],
+            &env(&[("ANTHROPIC_API_KEY", "sk-ant-oat01-NOT-REAL")]),
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// `auth: none` says the credential is supplied by a declared header, which
+    /// this check cannot see. Demanding `api_key_env` anyway would fail a config
+    /// that is correct — the "only what the run will actually use" rule.
+    #[test]
+    fn auth_none_reads_no_credential_so_a_missing_variable_is_not_an_issue() {
+        let suite = suite_yaml(
+            r#"
+version: 1
+providers:
+  - id: claude
+    type: anthropic
+    model: m
+    request:
+      auth: none
+      headers:
+        x-gateway-token: "static-not-a-secret"
+"#,
+        );
+        let issues = check(&suite, &["claude".into()], &[], &env(&[]));
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// …and the complaint still fires for a provider that did not opt out, so the
+    /// auth-mode condition narrowed the deny-list rather than disabling it.
+    #[test]
+    fn an_oauth_token_is_still_rejected_when_auth_is_left_at_the_default() {
+        let suite = suite_yaml(
+            r#"
+version: 1
+providers:
+  - id: claude
+    type: anthropic
+    model: m
+    request:
+      headers:
+        x-unrelated: "1"
+"#,
+        );
+        let issues = check(
+            &suite,
+            &["claude".into()],
+            &[],
+            &env(&[("ANTHROPIC_API_KEY", "sk-ant-oat01-NOT-REAL")]),
+        );
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].message.contains("OAuth"));
+        assert!(
+            issues[0].message.contains("auth: bearer"),
+            "the message must name the fix: {}",
+            issues[0].message
+        );
     }
 
     /// A gateway may legitimately accept the token, and domarinn does not know

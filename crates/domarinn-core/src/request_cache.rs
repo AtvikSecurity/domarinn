@@ -42,8 +42,9 @@ use std::future::Future;
 use serde_json::Value as Json;
 
 use crate::cache::{CacheBackend, CacheEntry, CacheKey, CacheMode, EntryKind, Graded};
+use crate::cache_adopt::MigrationProbe;
 use crate::cache_key::request_cache_key;
-use crate::cache_migrate::{legacy_grader_verdict_key, MigrationProbe};
+use crate::cache_migrate::legacy_grader_verdict_key;
 use crate::errors::GraderError;
 use crate::runner::runner_cache::request_to_persist;
 use crate::types::{Output, TokenUsage};
@@ -97,8 +98,20 @@ pub(crate) struct Exchange<'a> {
     pub kind: EntryKind,
     /// The assert's own `cache_salt`, when it has one.
     pub case_salt: Option<&'a str>,
+    /// The `cache_salt` of the `providers:` entry behind this call, when there
+    /// is one. An embeddings provider and a judge are both declared entries, so
+    /// both can carry a version pin the same way a provider call does.
+    pub provider_salt: Option<&'a str>,
     /// What to probe on a miss, for a call type with a ≤0.4.x key space.
     pub legacy: Option<LegacyVerdict>,
+    /// Canonical requests this call published in earlier versions, newest first.
+    ///
+    /// The same key function over an older document — unlike [`Self::legacy`],
+    /// which reconstructs a different key function entirely. 0.8.0 populates it
+    /// for the vendor-backed calls, whose canonical request used to carry a full
+    /// `base_url` in a `url` member and now carries only the `path`. See
+    /// [`crate::cache_adopt`].
+    pub legacy_canonical: Vec<Json>,
 }
 
 /// What a fresh payload is recorded as, beyond the payload itself.
@@ -202,11 +215,11 @@ where
     let key = request_cache_key(
         &exchange.canonical,
         cache.repeat,
-        // Grader calls carry no provider-level salt: the thing that answers is
-        // named by the request itself (the judge's url and body, the child's
-        // command), and there is no `providers:` entry behind it to hang a
-        // version pin on. A per-assert `cache_salt` rides as the case salt.
-        None,
+        // `None` for an `exec` assert's grading, whose child is named by the
+        // request itself with no `providers:` entry behind it to pin. An
+        // embeddings call and a judge do have one, and pass its salt. Inserted
+        // only when set, so a call that has none keys exactly as before.
+        exchange.provider_salt,
         exchange.case_salt,
     );
 
@@ -221,6 +234,25 @@ where
         // through to the live call, exactly as the pre-0.5.0 grader path did.
         // `--cache-only` still fails, below, because it has no live call.
         Err(e) => tracing::warn!(error = %e, "grader cache read failed; grading live"),
+    }
+
+    // An entry written under an earlier *canonical request* — same key function,
+    // older document. Tried first because it is the cheaper and more likely of
+    // the two: it adopts a whole payload rather than a bare verdict, and any
+    // store written by 0.5.0 through 0.7.x has these.
+    if let Some(entry) = adopt_legacy_canonical(cache, &exchange).await {
+        if let Some(served) = serve(&key, entry.clone(), &parse) {
+            if cache.mode == CacheMode::ReadWrite {
+                let mut refiled = entry;
+                // Re-filed under today's key with today's request, so the next
+                // run hits directly and the probe budget is not spent again.
+                refiled.request = Some(request_to_persist(&exchange.canonical));
+                if let Err(e) = cache.backend.put(&key, &refiled).await {
+                    tracing::warn!(error = %e, "adopting an earlier canonical request: write failed");
+                }
+            }
+            return Ok(served);
+        }
     }
 
     // Before paying for this, check whether an older domarinn already answered
@@ -342,6 +374,41 @@ fn serve<T>(
 /// optimisation into an outage. Runs in `--cache-only` too, where it earns the
 /// most: a run with no live call to fall back on would otherwise report a miss
 /// over an answer the store already holds.
+/// Look for this call's entry under a canonical request an earlier version
+/// published.
+///
+/// The same key function as the live path, over an older document — so unlike
+/// [`adopt_legacy`] there is nothing frozen to reconstruct, and what comes back
+/// is a whole entry rather than a bare verdict. Spends the shared
+/// [`crate::cache_adopt::MigrationProbe`] budget, so a store with nothing to
+/// migrate pays a handful of lookups once and then stops.
+async fn adopt_legacy_canonical(
+    cache: &RequestCache<'_>,
+    exchange: &Exchange<'_>,
+) -> Option<CacheEntry> {
+    if exchange.legacy_canonical.is_empty() || !cache.migration.should_probe() {
+        return None;
+    }
+    for canonical in &exchange.legacy_canonical {
+        let key = request_cache_key(
+            canonical,
+            cache.repeat,
+            exchange.provider_salt,
+            exchange.case_salt,
+        );
+        match cache.backend.get(&key).await {
+            Ok(Some(entry)) => {
+                tracing::debug!(%key, "adopted an entry under an earlier canonical request");
+                cache.migration.record_adoption();
+                return Some(entry);
+            }
+            Ok(None) => {}
+            Err(e) => tracing::debug!(error = %e, %key, "legacy canonical probe failed; ignoring"),
+        }
+    }
+    None
+}
+
 async fn adopt_legacy(cache: &RequestCache<'_>, exchange: &Exchange<'_>) -> Option<CacheEntry> {
     let legacy = exchange.legacy.as_ref()?;
     if !cache.migration.should_probe() {
@@ -400,6 +467,7 @@ fn fresh_entry(canonical: &Json, kind: EntryKind, payload: Json, meta: EntryMeta
         // No single program to digest: a judge is answered over the network, and
         // an `exec` assert's child is named by `command` in the request itself.
         program_digest: None,
+        address: None,
         // A verdict entry is what a ≤0.4.x store held; entries written from here
         // carry the payload the verdict is re-derived from instead.
         verdict: None,

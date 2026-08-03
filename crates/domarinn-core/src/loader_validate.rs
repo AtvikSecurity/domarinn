@@ -174,6 +174,7 @@ pub fn validate(suite: &Suite, raw: &Yaml) -> Validation {
                 format!("duplicate provider id '{}'", provider.id),
             ));
         }
+        check_request_path(&provider.kind, &format!("providers[{i}]"), &mut issues);
     }
 
     let mut seen_prompt_ids = std::collections::HashSet::new();
@@ -328,6 +329,36 @@ fn check_verdict_mode(suite: &Suite, issues: &mut Vec<Issue>) {
                 check(g, &format!("tests[{t}].assert[{a}].grader"));
             }
         }
+    }
+}
+
+/// A `request.path` must be absolute.
+///
+/// It is joined onto `base_url` with no separator, so `chat/completions` against
+/// `https://api.openai.com/v1` silently produces `.../v1chat/completions` — a
+/// 404 that reads as a broken gateway rather than as the typo it is. Caught here
+/// because the loader can name the provider; the join itself has no idea which
+/// suite line it came from.
+fn check_request_path(kind: &crate::config::ProviderKind, path: &str, issues: &mut Vec<Issue>) {
+    let request = match kind {
+        crate::config::ProviderKind::Anthropic { request, .. }
+        | crate::config::ProviderKind::Openai { request, .. }
+        | crate::config::ProviderKind::Embeddings { request, .. } => request,
+        crate::config::ProviderKind::Exec { .. } | crate::config::ProviderKind::Http { .. } => {
+            return
+        }
+    };
+    let Some(declared) = request.as_ref().and_then(|r| r.path.as_deref()) else {
+        return;
+    };
+    if !declared.starts_with('/') {
+        issues.push(Issue::new(
+            format!("{path}.request.path"),
+            format!(
+                "`{declared}` must start with `/` — it is appended to `base_url` \
+                 verbatim, so a relative path would run the two together"
+            ),
+        ));
     }
 }
 

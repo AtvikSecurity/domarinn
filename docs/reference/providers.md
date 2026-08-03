@@ -80,6 +80,8 @@ A native client for the Anthropic **Messages API**.
 | `base_url`    | string    | `https://api.anthropic.com` | API base. |
 | `api_key_env` | string    | `ANTHROPIC_API_KEY`         | Env var holding the API key (sent as `x-api-key`). |
 | `params`      | object    | `{}`                        | Extra request-body params, passed through verbatim. |
+| `request`     | object    | –                           | Transport overrides — auth scheme, headers, path, query, body overlay. See [Customizing the request](#customizing-the-request). |
+| `cache_salt`  | string    | –                           | Cache pin. Change it to throw away every answer this provider has cached. |
 
 Behavior:
 
@@ -176,7 +178,53 @@ Before the first call, domarinn checks that every credential the run will actual
 
 It also rejects one known-wrong credential *shape* — an Anthropic OAuth access token (`sk-ant-oat…`), which the Messages API rejects as `x-api-key`. That is a hard failure only against `api.anthropic.com`; against any other `base_url` it is a warning, because a gateway may legitimately accept it.
 
+The complaint is about how the credential is **presented**, not about the credential, so it does not fire for a provider that sets [`request: {auth: bearer}`](#customizing-the-request) — that is the supported fix, not a workaround. A provider with `auth: none` reads no credential at all, so nothing is checked for it.
+
 Without this, a wrong **grader** key errors every case in the suite and exits 3, which reads as an infrastructure fault after burning the run's entire provider spend.
+
+## Customizing the request
+
+`anthropic`, `openai`, and `embeddings` know how to *shape* a request for their vendor. `request:` controls the *envelope* that carries it — everything about who you say you are, where you send it, and what rides alongside the body.
+
+| Field     | Type                | Meaning |
+|-----------|---------------------|---------|
+| `auth`    | `api_key` \| `bearer` \| `none` | How the credential from `api_key_env` is presented. Defaults to the vendor's own scheme. `none` sends nothing and requires no credential. |
+| `path`    | string              | Replaces the endpoint path appended to `base_url` (`/v1/messages`, `/chat/completions`, `/embeddings`). Must start with `/`. |
+| `query`   | object              | Query parameters. Sorted by name before sending. |
+| `headers` | object              | Headers added to the request, overriding the vendor's own by name (case-insensitively). |
+| `body`    | object              | Fields merged into the body **last**, after the provider built it. |
+
+Every value is a minijinja template rendered against `env`. They are rendered **once**, when the provider is built — not per case. A header that must vary per case is what [`type: http`](#http) is for.
+
+### Presenting an OAuth token
+
+The motivating case. An Anthropic OAuth access token is rejected as `x-api-key` and accepted as a bearer token:
+
+```yaml
+--8<-- "examples/43-custom-request/domarinn.yaml:provider"
+```
+
+domarinn performs no OAuth flow of its own: it does not fetch, refresh, or cache a token. Keeping one valid is the caller's job — a wrapper script, a CI step, whatever already mints it. `auth: bearer` only decides how the token you supply is presented.
+
+### `body:` reaches what `params:` cannot
+
+`params:` merges **first**, and `model`, `messages`, and `system` are then written over it. Those three are exactly the fields a gateway most often needs changed — a routed model name, an injected system prompt — so `params:` structurally cannot reach them. `request.body` merges **last**, and can.
+
+It is a deep merge: an object value merges key by key, anything else replaces. Overwriting `messages` is possible and is almost always a mistake.
+
+### `DOMARINN_PROVIDER_HEADERS`
+
+Headers merged into every HTTP-speaking provider, as a JSON object, without editing a suite:
+
+```sh
+export DOMARINN_PROVIDER_HEADERS='{"x-corp-egress":"prod-gw-7","x-cost-center":"eng-platform"}'
+```
+
+For an environment that must add a header to traffic it does not own the suites for. A suite's own `request.headers` wins by name — the variable supplies a default, and a suite that named the header meant it. Values are templates, rendered exactly like a suite's, so a credential written `{{ env.X }}` is redacted from the cache the same way.
+
+Malformed JSON, or an object whose values are not strings, is a hard error rather than a silent skip: it was exported because a gateway requires it, and a dropped egress header fails at the far end with no local evidence.
+
+These headers **are** part of the cache key. Exporting the variable in CI and not locally therefore splits the cache in two, which is the cost of treating them as request content rather than as transport.
 
 ## `http`
 

@@ -158,10 +158,21 @@ tests:
 
     let entry = cache.map.lock().unwrap().values().next().unwrap().clone();
     let request = entry.request.expect("a warm entry records its request");
+    // The keyed request carries the path alone — `base_url` is not part of what
+    // makes two calls interchangeable, so a gateway and a direct connection
+    // share entries.
     assert_eq!(
-        request["url"],
-        json!(format!("{}/v1/messages", server.uri())),
-        "the resolved endpoint, not the configured base_url: {request}"
+        request["path"],
+        json!("/v1/messages"),
+        "the keyed request is unaddressed: {request}"
+    );
+    assert!(request.get("url").is_none(), "…deliberately: {request}");
+    // The address is still recorded, just as evidence rather than identity, so
+    // a hit from a different endpoint can be reported.
+    assert_eq!(
+        entry.address.as_deref(),
+        Some(format!("{}/v1/messages", server.uri()).as_str()),
+        "a warm entry records where the answer came from"
     );
     assert_eq!(request["method"], json!("POST"));
     assert_eq!(request["body"]["model"], json!("model-a"));
@@ -217,17 +228,18 @@ tests:
         server.uri()
     );
 
-    // What a cold case looks for, and what it writes. A network provider has
-    // exactly one historical shape, so the probe list is [live, ≤0.4.x].
+    // What a cold case looks for, and what it writes. A vendor provider has two
+    // historical shapes, probed newest-first: [live, pre-0.8 canonical, ≤0.4.x
+    // fingerprint].
     let discovery = SpyCache::default();
     run_default(&yaml, &discovery).await;
     let probed = discovery.asked();
     assert_eq!(
         probed.len(),
-        2,
-        "a network provider probes its own key and one historical shape"
+        3,
+        "a vendor provider probes its own key and two historical shapes"
     );
-    let (live_key, legacy_key) = (probed[0].clone(), probed[1].clone());
+    let (live_key, legacy_key) = (probed[0].clone(), probed[2].clone());
 
     // Roll that entry back to the shape 0.4 wrote: keyed the old way, carrying a
     // fingerprint instead of a request. The output is distinct so a hit can be
@@ -286,8 +298,8 @@ tests:
         .entry_at(&live_key)
         .expect("an adopted entry is re-filed under the live key");
     assert_eq!(
-        re_filed.request.expect("re-filed with its request")["url"],
-        json!(format!("{}/v1/messages", server.uri())),
+        re_filed.request.expect("re-filed with its request")["path"],
+        json!("/v1/messages"),
         "an entry that crosses into the new era must carry what its key is derived from"
     );
 

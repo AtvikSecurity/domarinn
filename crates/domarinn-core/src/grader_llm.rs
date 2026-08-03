@@ -49,7 +49,8 @@ impl Judge {
         base_url: Option<&str>,
         params: Option<&crate::config::ParamMap>,
         user: &str,
-    ) -> (String, Json) {
+        request: &crate::request_cfg::ResolvedRequest,
+    ) -> crate::provider::VendorCall {
         let mut body = serde_json::Map::new();
         if let Some(p) = params {
             for (k, v) in p {
@@ -74,7 +75,7 @@ impl Judge {
                     "tool_choice".into(),
                     json!({"type": "tool", "name": "submit_verdict"}),
                 );
-                (format!("{base}/v1/messages"), Json::Object(body))
+                vendor_call(base, request, Json::Object(body))
             }
             Judge::Openai => {
                 let base = base_url
@@ -94,8 +95,29 @@ impl Judge {
                         "json_schema": {"name": "verdict", "strict": true, "schema": verdict_schema()}
                     }),
                 );
-                (format!("{base}/chat/completions"), Json::Object(body))
+                vendor_call(base, request, Json::Object(body))
             }
+        }
+    }
+
+    /// This judge's default endpoint path and auth scheme, for
+    /// [`crate::request_cfg::resolve`].
+    pub(super) fn defaults(&self) -> (&'static str, crate::config::AuthMode) {
+        match self {
+            Judge::Anthropic => ("/v1/messages", crate::config::AuthMode::ApiKey),
+            Judge::Openai => ("/chat/completions", crate::config::AuthMode::Bearer),
+        }
+    }
+
+    /// The vendor headers this judge sends regardless of configuration.
+    fn vendor_headers(&self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            // The same constant the provider sends, not a second copy of the
+            // literal: a judge that pinned a different API version than the
+            // provider it grades would be answering a differently-shaped
+            // question without saying so.
+            Judge::Anthropic => &[("anthropic-version", crate::anthropic::ANTHROPIC_VERSION)],
+            Judge::Openai => &[],
         }
     }
 
@@ -168,6 +190,20 @@ impl Judge {
     }
 }
 
+/// Assemble a judge's [`crate::provider::VendorCall`] from its base and the
+/// resolved `request:` block, so both arms address and key the same way.
+fn vendor_call(
+    base: &str,
+    request: &crate::request_cfg::ResolvedRequest,
+    body: Json,
+) -> crate::provider::VendorCall {
+    crate::provider::VendorCall {
+        url: format!("{base}{}", request.path()),
+        path: request.keyed_path().to_string(),
+        body,
+    }
+}
+
 impl DefaultGrader {
     /// Post a built judge request and return the raw payload.
     ///
@@ -180,17 +216,20 @@ impl DefaultGrader {
         url: &str,
         body: &Json,
         api_key_env: Option<&crate::config::EnvNames>,
+        resolved: &crate::request_cfg::ResolvedRequest,
     ) -> Result<Json, GraderError> {
         let default_env = judge.default_key_env();
-        let key = api_key(api_key_env.unwrap_or(&default_env))
-            .map_err(|e| GraderError::Transport(e.to_string()))?;
-        let request = self.client.post(url).json(body);
-        let request = match judge {
-            Judge::Anthropic => request
-                .header("x-api-key", key)
-                .header("anthropic-version", "2023-06-01"),
-            Judge::Openai => request.bearer_auth(key),
+        let key = match resolved.auth().needs_credential() {
+            true => Some(
+                api_key(api_key_env.unwrap_or(&default_env))
+                    .map_err(|e| GraderError::Transport(e.to_string()))?,
+            ),
+            false => None,
         };
+        let mut request = self.client.post(url).json(body);
+        for (name, value) in resolved.call_headers(judge.vendor_headers(), key.as_deref()) {
+            request = request.header(name, value);
+        }
         let resp = request
             .send()
             .await

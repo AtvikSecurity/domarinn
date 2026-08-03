@@ -77,6 +77,7 @@ mod tests {
             attempts: None,
             provider_latency_ms: None,
             program_digest: None,
+            address: None,
             domarinn_version: "test".into(),
         }
     }

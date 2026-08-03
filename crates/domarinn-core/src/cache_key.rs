@@ -174,8 +174,17 @@ mod tests {
     /// The key each provider kind produces for one fixed call.
     ///
     /// If one of these moves, every entry that provider kind ever wrote under
-    /// 0.5.x is unreachable. That is a migration to plan — a new legacy shape in
-    /// `cache_migrate.rs` — not a constant to update.
+    /// the previous shape is unreachable. That is a migration to plan — a
+    /// [`crate::provider::Provider::legacy_canonical_requests`] implementation
+    /// probed out of the [`crate::cache_adopt`] budget — not a constant to
+    /// update.
+    ///
+    /// The `openai` and `anthropic` constants moved once, in 0.8.0, when
+    /// `base_url` left the canonical request so that a gateway and a direct
+    /// connection would stop paying for the same answers twice. That move ships
+    /// with its adoption path. `http` and `exec` did **not** move, and the fact
+    /// that they did not is half the evidence the change was scoped correctly:
+    /// neither has a `base_url`, so neither had anything to lose.
     #[test]
     fn golden_live_key_per_provider_kind() {
         let (openai, anthropic, http, exec) = (openai(), anthropic(), http(), exec(None));
@@ -184,12 +193,12 @@ mod tests {
             (
                 "openai",
                 &openai as &dyn Provider,
-                "sha256:15324316a2b3aa5a9f959a829d60b964eccfc26d5a14ce599d80e31007047b66",
+                "sha256:9f11ac114975985095ab5502e758ffc8f6a47fa8987cc0be70f7355a600d351b",
             ),
             (
                 "anthropic",
                 &anthropic,
-                "sha256:966226683d9a9c8564d025eae2f6e3ee9b1b20192ddd849eed436d1051178e39",
+                "sha256:e77aba83ae7a1df6c35089969c6ea9c2f41141b90e1157e8f4c76f15595eb341",
             ),
             (
                 "http",

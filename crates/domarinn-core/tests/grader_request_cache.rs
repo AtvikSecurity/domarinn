@@ -93,9 +93,12 @@ async fn a_judge_entry_stores_the_request_and_a_warm_hit_re_parses_it() {
     let request = judge_entry.request.expect("the entry records its request");
     assert_eq!(request["transport"], json!("http"));
     assert_eq!(request["method"], json!("POST"));
-    assert_eq!(
-        request["url"],
-        json!(format!("{}/v1/messages", server.uri()))
+    // The path, not the full url: a judge behind a gateway and one going direct
+    // are asking the same question, so `base_url` is not part of the key.
+    assert_eq!(request["path"], json!("/v1/messages"));
+    assert!(
+        request.get("url").is_none(),
+        "the keyed request is unaddressed: {request}"
     );
     assert_eq!(request["body"]["model"], json!("claude-x"));
     assert_eq!(request["body"]["system"], json!(SYSTEM_PROMPT));
@@ -531,7 +534,7 @@ tests:
         .into_iter()
         .find(|e| {
             e.request.as_ref().is_some_and(|r| {
-                r["url"]
+                r["path"]
                     .as_str()
                     .is_some_and(|u| u.ends_with("/embeddings"))
             })

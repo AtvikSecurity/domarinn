@@ -331,9 +331,9 @@ pub async fn run_with_progress(
     // One per run: the legacy-key probe spends a shared budget, and the
     // rebuilt-program warning fires once per provider rather than once per cell.
     let cache_state = &runner_cache::CacheRunState::new(if opts.cache_migration {
-        crate::cache_migrate::MigrationProbe::new()
+        crate::cache_adopt::MigrationProbe::new()
     } else {
-        crate::cache_migrate::MigrationProbe::disabled()
+        crate::cache_adopt::MigrationProbe::disabled()
     });
     let aborted = &AbortFlag::default();
     let skip_on_empty_reason: &[String] = suite

@@ -424,6 +424,11 @@ impl DefaultGrader {
                 canonical: exec_assert_canonical(command, &request),
                 kind: EntryKind::new(EntryKind::EXEC_ASSERT),
                 case_salt: cache_salt.as_deref(),
+                // An `exec` assert names its child in the request itself; there
+                // is no `providers:` entry behind it to pin, and its canonical
+                // shape has not changed.
+                provider_salt: None,
+                legacy_canonical: Vec::new(),
                 // Nothing to adopt once there are calls to send: a ≤0.4.x child
                 // was handed a request without them and judged whatever it
                 // could see, so its verdict does not answer this question.
@@ -565,14 +570,20 @@ impl DefaultGrader {
         text: &str,
         ctx: &GradeCtx<'_>,
     ) -> Result<crate::request_cache::Parsed<crate::embeddings::Embedded>, GraderError> {
-        let (url, body) = embeddings.request(text);
+        let call = embeddings.request(text);
         cached_exchange(
             ctx.cache.as_ref(),
             Exchange {
-                canonical: crate::provider::http_request_preview("POST", &url, body.clone()),
+                canonical: crate::provider::http_canonical_request(
+                    "POST",
+                    &call.path,
+                    call.body.clone(),
+                ),
                 kind: EntryKind::new(EntryKind::EMBEDDING),
                 case_salt: None,
+                provider_salt: embeddings.cache_salt(),
                 legacy: None,
+                legacy_canonical: embeddings.legacy_canonical(&call),
             },
             |payload| {
                 embeddings
@@ -588,7 +599,7 @@ impl DefaultGrader {
             |key| GraderError::Transport(format!("cache-only: miss for an embedding ({key})")),
             async {
                 embeddings
-                    .post(&url, &body)
+                    .post(&call.url, &call.body)
                     .await
                     .map_err(GraderError::Transport)
             },
@@ -635,35 +646,63 @@ impl DefaultGrader {
             ctx.tool_calls,
         )?;
 
-        let (judge, model, base_url, api_key_env, params, pricing) = match &grader.provider {
-            ProviderKind::Anthropic {
-                model,
-                base_url,
-                api_key_env,
-                params,
-                pricing,
-            } => (
-                Judge::Anthropic,
-                model,
-                base_url,
-                api_key_env,
-                params,
-                pricing,
-            ),
-            ProviderKind::Openai {
-                model,
-                base_url,
-                api_key_env,
-                params,
-                pricing,
-            } => (Judge::Openai, model, base_url, api_key_env, params, pricing),
-            other => {
-                return Err(GraderError::Unsupported {
-                    provider: format!("{other:?}"),
-                    kind: "llm-rubric",
-                })
-            }
-        };
+        let (judge, model, base_url, api_key_env, params, pricing, req_cfg, judge_salt) =
+            match &grader.provider {
+                ProviderKind::Anthropic {
+                    model,
+                    base_url,
+                    api_key_env,
+                    params,
+                    pricing,
+                    request,
+                    cache_salt,
+                } => (
+                    Judge::Anthropic,
+                    model,
+                    base_url,
+                    api_key_env,
+                    params,
+                    pricing,
+                    request,
+                    cache_salt,
+                ),
+                ProviderKind::Openai {
+                    model,
+                    base_url,
+                    api_key_env,
+                    params,
+                    pricing,
+                    request,
+                    cache_salt,
+                } => (
+                    Judge::Openai,
+                    model,
+                    base_url,
+                    api_key_env,
+                    params,
+                    pricing,
+                    request,
+                    cache_salt,
+                ),
+                other => {
+                    return Err(GraderError::Unsupported {
+                        provider: format!("{other:?}"),
+                        kind: "llm-rubric",
+                    })
+                }
+            };
+        // Resolved here rather than once per run because a grader can be
+        // declared per-assert, so there is no single judge config to resolve
+        // ahead of time. Free for the common case: `resolve` returns the vendor
+        // default without building a template engine when nothing is customized.
+        let (default_path, default_auth) = judge.defaults();
+        let resolved = crate::request_cfg::resolve(
+            "grader.provider",
+            req_cfg.as_deref(),
+            default_path,
+            default_auth,
+        )
+        .map_err(|e| GraderError::Transport(e.to_string()))?;
         let params = merge_params(params.as_ref(), assert_params.as_ref());
         // Before the cache, not inside the live branch: a suite that asks for
         // extended thinking is misconfigured whether or not a verdict happens to
@@ -676,7 +715,13 @@ impl DefaultGrader {
         // model you picked to score with. It is still real money, so it is
         // priced here and reported separately.
         let rate = self.judge_rate(model, pricing.as_deref());
-        let (url, body) = judge.request(model, base_url.as_deref(), params.as_ref(), &user);
+        let call = judge.request(
+            model,
+            base_url.as_deref(),
+            params.as_ref(),
+            &user,
+            &resolved,
+        );
 
         let served = cached_exchange(
             ctx.cache.as_ref(),
@@ -686,9 +731,22 @@ impl DefaultGrader {
                 // the rendered rubric, the graded output, and the template's
                 // bytes. Credentials are headers, so the envelope excludes them
                 // structurally.
-                canonical: crate::provider::http_request_preview("POST", &url, body.clone()),
+                canonical: crate::provider::http_canonical_request(
+                    "POST",
+                    &call.path,
+                    call.body.clone(),
+                ),
                 kind: EntryKind::new(EntryKind::JUDGE),
                 case_salt: None,
+                provider_salt: judge_salt.as_deref(),
+                legacy_canonical: crate::anthropic::legacy_url_shape(
+                    Some(crate::provider::http_canonical_request(
+                        "POST",
+                        &call.path,
+                        call.body.clone(),
+                    )),
+                    &call.url,
+                ),
                 // No adoption when the judge is being shown tool calls: a
                 // ≤0.4.x verdict was reached without them, so replaying it here
                 // would answer a question the old judge was never asked. The
@@ -729,8 +787,14 @@ impl DefaultGrader {
                 ))
             },
             async {
-                self.post_judge(judge, &url, &body, api_key_env.as_ref())
-                    .await
+                self.post_judge(
+                    judge,
+                    &call.url,
+                    &call.body,
+                    api_key_env.as_ref(),
+                    &resolved,
+                )
+                .await
             },
         )
         .await?;

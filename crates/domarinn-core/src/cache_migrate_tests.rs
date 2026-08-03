@@ -9,6 +9,7 @@
 //! a cache, and it is silent.
 
 use super::*;
+use crate::cache_adopt::{MigrationProbe, PROBE_BUDGET};
 use crate::provider::{Provider, TestMeta};
 use std::collections::BTreeMap;
 
@@ -411,6 +412,8 @@ fn judge() -> Grader {
             api_key_env: None,
             params: None,
             pricing: None,
+            request: None,
+            cache_salt: None,
         },
         template: None,
         verdict_mode: None,

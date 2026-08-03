@@ -223,6 +223,24 @@
                 }
               ]
             },
+            "request": {
+              "description": "Transport-level overrides for the request this provider sends:\nheaders, how the credential is presented, the path, query parameters,\nand fields merged into the body last. See [`RequestCfg`].\n\nBoxed for the same reason `pricing` is.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequestCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cache_salt": {
+              "description": "Cache pin for this provider — change it to throw away every answer it\nhas cached.\n\nA plain string, unlike the `exec` field of the same name: there is no\nlocal program here to take a `$digest:` of, only a vendor's endpoint.\n\nThe reason to set one is that `base_url` is deliberately **not** part\nof the cache key. It is recorded on each entry and reported when it\nchanges — the way `exec` treats a rebuilt program — so that a gateway\nand a direct connection to the same API share a cache instead of\npaying for the same answers twice. When two `base_url`s answer\n*differently*, though — a local stub standing in for a vendor, two\ngateways routing one model name to different weights — a report after\nthe fact is not enough. Give them different salts and they stop\nsharing entirely.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "anthropic"
@@ -272,6 +290,24 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "request": {
+              "description": "Transport-level overrides for the request this provider sends:\nheaders, how the credential is presented, the path, query parameters,\nand fields merged into the body last. See [`RequestCfg`].\n\nBoxed for the same reason `pricing` is.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequestCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cache_salt": {
+              "description": "Cache pin for this provider — change it to throw away every answer it\nhas cached.\n\nA plain string, unlike the `exec` field of the same name: there is no\nlocal program here to take a `$digest:` of, only a vendor's endpoint.\n\nThe reason to set one is that `base_url` is deliberately **not** part\nof the cache key. It is recorded on each entry and reported when it\nchanges — the way `exec` treats a rebuilt program — so that a gateway\nand a direct connection to the same API share a cache instead of\npaying for the same answers twice. When two `base_url`s answer\n*differently*, though — a local stub standing in for a vendor, two\ngateways routing one model name to different weights — a report after\nthe fact is not enough. Give them different salts and they stop\nsharing entirely.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "type": {
@@ -366,6 +402,24 @@
                 }
               ]
             },
+            "request": {
+              "description": "Transport-level overrides for the request this provider sends:\nheaders, how the credential is presented, the path, query parameters,\nand fields merged into the body last. See [`RequestCfg`].\n\nBoxed for the same reason `pricing` is.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequestCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cache_salt": {
+              "description": "Cache pin for this provider — change it to throw away every answer it\nhas cached.\n\nA plain string, unlike the `exec` field of the same name: there is no\nlocal program here to take a `$digest:` of, only a vendor's endpoint.\n\nThe reason to set one is that `base_url` is deliberately **not** part\nof the cache key. It is recorded on each entry and reported when it\nchanges — the way `exec` treats a rebuilt program — so that a gateway\nand a direct connection to the same API share a cache instead of\npaying for the same answers twice. When two `base_url`s answer\n*differently*, though — a local stub standing in for a vendor, two\ngateways routing one model name to different weights — a report after\nthe fact is not enough. Give them different salts and they stop\nsharing entirely.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "embeddings"
@@ -433,6 +487,68 @@
         }
       },
       "additionalProperties": false
+    },
+    "RequestCfg": {
+      "description": "Overrides applied to the request a vendor provider would otherwise send.\n\nEvery string field is a minijinja template rendered against `env` (see the\nmodule docs). Omitting the whole block leaves a provider byte-identical to\nwhat it sent before this type existed — and, just as importantly, leaves its\ncache entries keyed exactly as they were.",
+      "type": "object",
+      "properties": {
+        "auth": {
+          "description": "How to present the credential. Defaults to the vendor's own scheme.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AuthMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "description": "Replace the endpoint path this provider appends to `base_url`.\n\n`base_url` only ever controlled the prefix, so an endpoint that does not\nend in `/v1/messages`, `/chat/completions`, or `/embeddings` could not be\nreached at all. Must begin with `/`; the loader rejects one that does not,\nbecause a relative path would join `base_url` in a way that reads as a\ntypo rather than an intent.\n\n**Keyed.** A different endpoint is a different question.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "Query parameters appended to the URL.\n\nSorted by name on the wire, so two suites writing the same pairs in a\ndifferent order produce one cache entry rather than two.\n\n**Keyed**, for the same reason as `path`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "headers": {
+          "description": "Headers added to the request, overriding the vendor's own by name.\n\nMatching is case-insensitive, as HTTP requires: `Authorization` here\nreplaces a vendor `authorization`, and the spelling written here is what\ngoes on the wire.\n\n**Keyed only as a digest.** A header is where a literal credential sits,\nand both the cache key and the stored entry would publish it. See\n[`crate::request_cfg::headers_digest`].",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "body": {
+          "description": "Fields merged into the request body **last**, after the provider has\nbuilt it.\n\nThis is the difference between it and `params`, which merges *first* and\nis then overwritten by `model`, `messages`, and `system`. Those three are\nexactly the fields a gateway sometimes needs changed — a routed model\nname, an injected system prompt — and `params` structurally cannot reach\nthem.\n\nA deep merge: an object value merges key-by-key, anything else replaces.\nOverwriting `messages` is possible and is almost always a mistake; the\nprovider built them from your prompt for a reason.\n\n**Keyed**, verbatim, because it is part of the body already keyed."
+        }
+      },
+      "additionalProperties": false
+    },
+    "AuthMode": {
+      "description": "How a provider presents the credential named by its `api_key_env`.\n\nEach vendor has a default and most suites never name this. It exists for the\nendpoints that accept the same credential a different way — most immediately,\nan Anthropic OAuth access token, which `api.anthropic.com` rejects as\n`x-api-key` and accepts as a bearer token.\n\nDeliberately **not** part of the cache key. It is the same reasoning that\nkeeps `api_key_env` out of [`crate::provider::Provider::fingerprint`]: how\nyou present a credential does not change what the model answers, and keying\nit would partition a shared cache by how each teammate authenticates.",
+      "oneOf": [
+        {
+          "description": "`x-api-key: <credential>`. The `anthropic` default.",
+          "type": "string",
+          "const": "api_key"
+        },
+        {
+          "description": "`Authorization: Bearer <credential>`. The `openai` and `embeddings`\ndefault, and what an OAuth access token needs everywhere.",
+          "type": "string",
+          "const": "bearer"
+        },
+        {
+          "description": "Send no credential header at all, and do not require `api_key_env` to\nresolve. For endpoints whose scheme is none of the above — supply it\nyourself through [`RequestCfg::headers`].",
+          "type": "string",
+          "const": "none"
+        }
+      ]
     },
     "HttpMethod": {
       "description": "The HTTP method for a `type: http` provider. Authors may write either case\n(`get` or `GET`) in YAML; the wire method (and the request/cache\nfingerprint) is always the uppercase form.",
@@ -1324,6 +1440,24 @@
                 }
               ]
             },
+            "request": {
+              "description": "Transport-level overrides for the request this provider sends:\nheaders, how the credential is presented, the path, query parameters,\nand fields merged into the body last. See [`RequestCfg`].\n\nBoxed for the same reason `pricing` is.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequestCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cache_salt": {
+              "description": "Cache pin for this provider — change it to throw away every answer it\nhas cached.\n\nA plain string, unlike the `exec` field of the same name: there is no\nlocal program here to take a `$digest:` of, only a vendor's endpoint.\n\nThe reason to set one is that `base_url` is deliberately **not** part\nof the cache key. It is recorded on each entry and reported when it\nchanges — the way `exec` treats a rebuilt program — so that a gateway\nand a direct connection to the same API share a cache instead of\npaying for the same answers twice. When two `base_url`s answer\n*differently*, though — a local stub standing in for a vendor, two\ngateways routing one model name to different weights — a report after\nthe fact is not enough. Give them different salts and they stop\nsharing entirely.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "anthropic"
@@ -1373,6 +1507,24 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "request": {
+              "description": "Transport-level overrides for the request this provider sends:\nheaders, how the credential is presented, the path, query parameters,\nand fields merged into the body last. See [`RequestCfg`].\n\nBoxed for the same reason `pricing` is.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequestCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cache_salt": {
+              "description": "Cache pin for this provider — change it to throw away every answer it\nhas cached.\n\nA plain string, unlike the `exec` field of the same name: there is no\nlocal program here to take a `$digest:` of, only a vendor's endpoint.\n\nThe reason to set one is that `base_url` is deliberately **not** part\nof the cache key. It is recorded on each entry and reported when it\nchanges — the way `exec` treats a rebuilt program — so that a gateway\nand a direct connection to the same API share a cache instead of\npaying for the same answers twice. When two `base_url`s answer\n*differently*, though — a local stub standing in for a vendor, two\ngateways routing one model name to different weights — a report after\nthe fact is not enough. Give them different salts and they stop\nsharing entirely.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "type": {
@@ -1465,6 +1617,24 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "request": {
+              "description": "Transport-level overrides for the request this provider sends:\nheaders, how the credential is presented, the path, query parameters,\nand fields merged into the body last. See [`RequestCfg`].\n\nBoxed for the same reason `pricing` is.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequestCfg"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cache_salt": {
+              "description": "Cache pin for this provider — change it to throw away every answer it\nhas cached.\n\nA plain string, unlike the `exec` field of the same name: there is no\nlocal program here to take a `$digest:` of, only a vendor's endpoint.\n\nThe reason to set one is that `base_url` is deliberately **not** part\nof the cache key. It is recorded on each entry and reported when it\nchanges — the way `exec` treats a rebuilt program — so that a gateway\nand a direct connection to the same API share a cache instead of\npaying for the same answers twice. When two `base_url`s answer\n*differently*, though — a local stub standing in for a vendor, two\ngateways routing one model name to different weights — a report after\nthe fact is not enough. Give them different salts and they stop\nsharing entirely.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "type": {

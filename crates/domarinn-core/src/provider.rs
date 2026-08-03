@@ -186,6 +186,52 @@ pub fn http_request_preview(method: &str, url: &str, body: Json) -> Json {
     })
 }
 
+/// Build the [`Provider::canonical_request`] envelope for a provider that
+/// appends a known path to a configurable `base_url`.
+///
+/// `path` rather than the full `url` the preview shows, because `base_url` is
+/// **not** part of what makes two calls interchangeable. A gateway and a direct
+/// connection to the same API answer the same question, and keying the host
+/// would make them pay for the same answers twice — for the same reason
+/// [`crate::cache_key`] refuses to key the model a provider *reports*, where a
+/// vendor rolling a snapshot must not discard every entry at once.
+///
+/// The trade that buys is the same one [`Provider::program_digest`] makes: the
+/// `base_url` is recorded on the cache entry and *reported* when a hit came from
+/// a different one, so a local stub standing in for a vendor is visible rather
+/// than silently replayed. A suite that needs them separated outright sets a
+/// `cache_salt`.
+///
+/// Headers are absent for the same reason they are absent from the preview: they
+/// carry the credential. A provider with headers worth keying publishes a digest
+/// of them instead.
+/// One vendor call's address, in both the form it is sent and the form it is
+/// keyed.
+///
+/// Returned by the two request builders that do not go through the [`Provider`]
+/// trait — the embeddings client and the `llm-rubric` judge — because they need
+/// to hand their caller both: the full `url` to post to, and the `path` alone to
+/// key on. Keeping them in one value is what stops a caller posting to one
+/// address and keying another.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VendorCall {
+    /// The full URL, `base_url` included. What goes on the wire.
+    pub url: String,
+    /// The path and query alone. What the cache keys — see
+    /// [`http_canonical_request`].
+    pub path: String,
+    pub body: Json,
+}
+
+pub fn http_canonical_request(method: &str, path: &str, body: Json) -> Json {
+    serde_json::json!({
+        "transport": "http",
+        "method": method,
+        "path": path,
+        "body": body,
+    })
+}
+
 /// Build the [`Provider::request_preview`] envelope for a subprocess provider.
 ///
 /// `stdin` is the provider-protocol document written to the child's stdin.
@@ -344,6 +390,42 @@ pub trait Provider: Send + Sync {
     /// `None` = this call is uncacheable.
     fn canonical_request(&self, _req: &ProviderRequest) -> Option<Json> {
         None
+    }
+
+    /// Where this provider's requests are addressed, when that is a fixed URL.
+    ///
+    /// Recorded on every cache entry and compared on a hit, so answers replayed
+    /// from a different endpoint are *reported* rather than silently served.
+    /// This is the whole compensation for keeping `base_url` out of the cache
+    /// key — see [`http_canonical_request`] — and it is the same trade
+    /// [`Provider::program_digest`] makes for an `exec` provider's bytes: the key
+    /// stays portable, the change stays visible.
+    ///
+    /// `None` for a provider whose address is not fixed across a run (`http`
+    /// templates its url per case, and it is in the canonical request anyway) or
+    /// is not a URL at all (`exec`).
+    fn address(&self) -> Option<String> {
+        None
+    }
+
+    /// Canonical requests this provider published in earlier versions, newest
+    /// first.
+    ///
+    /// The counterpart to [`Provider::legacy_fingerprints`] for the key space
+    /// that replaced it. Consulted only on a miss, so entries written before a
+    /// change to [`Provider::canonical_request`] can be adopted instead of
+    /// re-paid for; the probe budget in [`crate::cache_adopt`] bounds what that
+    /// costs a store with nothing to migrate.
+    ///
+    /// Empty by default, which is the honest answer for a provider whose
+    /// canonical request has never changed. The three vendor providers override
+    /// it because 0.8.0 took `base_url` out of theirs.
+    ///
+    /// Takes `req` because a canonical request is per-call, not per-provider —
+    /// the reason this cannot be a stored `Vec<Json>` the way
+    /// [`Provider::legacy_fingerprints`] nearly is.
+    fn legacy_canonical_requests(&self, _req: &ProviderRequest) -> Vec<Json> {
+        Vec::new()
     }
 
     /// The provider-level cache salt, when configured. Joins the cache key as

@@ -1,0 +1,79 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Reaching a model through something that is not the vendor's front door.
+#
+# The `anthropic` and `openai` providers know how to SHAPE a request — fold a
+# prompt into that vendor's message list, read usage and tool calls back out,
+# price the result. Until `request:` existed they also hardcoded the ENVELOPE
+# that carries it: two headers for Anthropic, one for OpenAI, and a fixed path.
+# A gateway wanting a different credential scheme or an extra header meant
+# abandoning the vendor provider for `type: http` — and giving up all the
+# shaping too.
+#
+# `request:` is the escape hatch that does not cost that. Everything in it is
+# transport: who you say you are, where you send it, what rides alongside.
+#
+# The case this exists for: an Anthropic OAuth access token (`sk-ant-oat…`).
+# The Messages API rejects it as `x-api-key` and accepts it as a bearer token,
+# so before this there was no way to use one at all — `domarinn validate` said
+# so, and refused the run.
+#
+# Run:  domarinn run examples/43-custom-request
+version: 1
+project: examples
+suite: custom-request
+
+providers:
+  # --8<-- [start:provider]
+  - id: claude-via-oauth
+    type: anthropic
+    model: "claude-sonnet-4-20250514"
+    base_url: "${env:CLAUDE_GATEWAY_URL:-https://api.anthropic.com}"
+    # An OAuth access token rather than a Console API key. It is read at call
+    # time from the environment, exactly like any other credential — never
+    # written into a suite.
+    api_key_env: CLAUDE_OAUTH_TOKEN
+    request:
+      # `x-api-key` (the Anthropic default) would be rejected. Present the same
+      # credential as `Authorization: Bearer <token>` instead.
+      auth: bearer
+      headers:
+        # What the OAuth surface expects alongside the token.
+        anthropic-beta: "oauth-2025-04-20"
+        # TWO ENV SYNTAXES, AND THE CHOICE MATTERS.
+        #
+        #   ${env:VAR}      resolved at load time, IS in the cache key
+        #   {{ env.VAR }}   resolved at call time, is NOT in the cache key
+        #
+        # A selector belongs in the first: two tiers must not share one cache
+        # entry, or the second silently replays the first's answers. A
+        # credential belongs in the second: two teammates holding different
+        # tokens are asking the same question, and keying it would hand them
+        # private halves of a shared cache.
+        x-tier: "${env:MODEL_TIER:-standard}"
+        x-tenant: "{{ env.TENANT_TOKEN | default('anonymous') }}"
+      # Query parameters, for a gateway that routes on one. Sorted by name
+      # before they are sent, so two suites writing the same pairs in a
+      # different order still share a cache entry.
+      query:
+        api-version: "2024-10-01"
+      # Merged into the body LAST — after the provider has built it. That is the
+      # difference from `params:`, which merges FIRST and is then overwritten by
+      # `model`, `messages`, and `system`. Those three are exactly the fields a
+      # gateway sometimes needs changed, and `params:` cannot reach them.
+      body:
+        metadata:
+          user_id: "eval-harness"
+  # --8<-- [end:provider]
+
+prompts:
+  - id: only
+    template: "Answer in one short sentence: {{ question }}"
+
+tests:
+  - id: policy/return-window
+    vars:
+      question: "How long do I have to return something?"
+    assert:
+      - type: contains
+        value: "30 days"

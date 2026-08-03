@@ -17,6 +17,7 @@ use crate::net::{http_client, parse_retry_after, status_error, transport_error};
 use crate::provider::{
     http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
 };
+use crate::request_cfg::{headers_digest, warn_on_runtime_env};
 use crate::template::TemplateEngine;
 use crate::types::{Output, RenderedPrompt};
 use crate::val::Val;
@@ -47,7 +48,10 @@ impl HttpProvider {
     ) -> Self {
         let id = id.into();
         let url = url.into();
-        warn_on_runtime_env(&id, &url, &headers, body.as_ref());
+        let mut sources = vec![url.clone()];
+        sources.extend(headers.values().cloned());
+        sources.extend(body.iter().map(|b| b.to_string()));
+        warn_on_runtime_env(&id, sources);
         HttpProvider {
             headers_digest: headers_digest(&headers),
             id,
@@ -58,6 +62,30 @@ impl HttpProvider {
             output_expr,
             client: http_client(DEFAULT_TIMEOUT),
         }
+    }
+
+    /// Merge the [`crate::request_cfg::GLOBAL_HEADERS_ENV`] injection into this
+    /// provider's declared headers.
+    ///
+    /// Applies here as well as to the vendor providers because an egress proxy
+    /// does not care which provider type the traffic came from. The suite's own
+    /// headers win by name — the environment supplies a default, and a suite that
+    /// named the header meant it.
+    ///
+    /// A builder rather than part of [`Self::new`] so a provider constructed
+    /// directly stays free of ambient environment, and so the one fallible step
+    /// (the variable is malformed JSON) does not put a `Result` on every call
+    /// site that never sets it.
+    pub fn with_global_headers(mut self) -> Result<Self, crate::request_cfg::RequestError> {
+        let global = crate::request_cfg::global_headers()?;
+        if global.is_empty() {
+            return Ok(self);
+        }
+        let mut headers = global;
+        headers.extend(self.headers.clone());
+        self.headers_digest = headers_digest(&headers);
+        self.headers = headers;
+        Ok(self)
     }
 
     /// Render this provider's templates against `req` and `env` into the request
@@ -140,122 +168,6 @@ struct BuiltHttpRequest {
     body: Option<Json>,
 }
 
-/// A digest of the provider's declared headers, or `None` when it sets none.
-///
-/// `None` rather than the digest of an empty map so a provider that declares no
-/// header keeps the fingerprint — and therefore every cache entry — it had
-/// before this member existed.
-///
-/// What is hashed depends on which map the caller passes, and both callers get
-/// the same property by a different route. [`Provider::fingerprint`] passes the
-/// *unrendered* templates; [`Provider::canonical_request`] passes the map
-/// rendered against placeholder `env`. Either way `X-Model: gpt-5` and
-/// `X-Model: claude-opus-5` separate, because the values differ, while
-/// `Authorization: Bearer {{ env.TOKEN }}` does not — the template is literally
-/// the same in the fingerprint, and renders to the same `${env:TOKEN}` in the
-/// canonical request, for two teammates holding different tokens. Keying a
-/// credential would partition a shared cache by who ran it. The rendered map
-/// separates strictly more: a header reading a case var distinguishes two cases
-/// the unrendered template cannot tell apart.
-///
-/// A digest rather than the values themselves because both callers persist their
-/// output into every cache entry, and a header is where a literal secret sits.
-fn headers_digest(headers: &BTreeMap<String, String>) -> Option<String> {
-    if headers.is_empty() {
-        return None;
-    }
-    let canonical = crate::cache::canonical_json(&serde_json::json!(headers));
-    Some(format!(
-        "blake3:{}",
-        blake3::hash(canonical.as_bytes()).to_hex()
-    ))
-}
-
-/// Warn when this provider's templates read the environment at call time.
-///
-/// `{{ env.VAR }}` is rendered per request, so its *value* never reaches the
-/// fingerprint — only the template text does. That is correct for a credential
-/// and wrong for anything else: `url: ".../{{ env.MODEL }}"` gives two models
-/// one cache key, and the second silently replays the first's answers.
-///
-/// domarinn cannot tell which is which. A credential must not separate two
-/// teammates' entries; a model selector must separate them. So it says what it
-/// sees and names the alternative: `${env:VAR}` is resolved at load time, before
-/// the provider is built, so the substituted value is in the fingerprint.
-///
-/// Fired once at construction rather than per call, and only for statically
-/// visible accesses — a dynamic `env[key]` lookup warns without naming a
-/// variable, which is still the useful half of the message.
-fn warn_on_runtime_env(
-    id: &str,
-    url: &str,
-    headers: &BTreeMap<String, String>,
-    body: Option<&Json>,
-) {
-    let mut sources = vec![url.to_string()];
-    sources.extend(headers.values().cloned());
-    if let Some(body) = body {
-        sources.push(body.to_string());
-    }
-    let mut names: Vec<String> = sources
-        .iter()
-        .flat_map(|s| runtime_env_refs(s))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    if names.is_empty() {
-        return;
-    }
-    names.sort();
-    tracing::warn!(
-        provider = %id,
-        vars = ?names,
-        "this provider's url/headers/body read the environment at call time via \
-         `{{{{ env.X }}}}`, which is rendered per request and so is NOT part of the \
-         cache key. That is right for a credential and wrong for anything that \
-         changes the answer: two values would share one cache entry, and the second \
-         would replay the first's responses. Use `${{env:X}}` instead for those — it \
-         resolves at load time and is keyed."
-    );
-}
-
-/// Variable names reached through `env.` in a minijinja template.
-///
-/// Recognises `env.NAME` and `env['NAME']` / `env["NAME"]`, the two spellings
-/// the docs use. Anything else that touches `env` — a computed lookup — yields
-/// the placeholder `*`, so the warning still fires without inventing a name.
-fn runtime_env_refs(template: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for (idx, _) in template.match_indices("env") {
-        // Reject `SOME_env` / `envelope`: this must be the whole identifier.
-        let before = template[..idx].chars().next_back();
-        if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
-            continue;
-        }
-        let rest = &template[idx + 3..];
-        let name: String = match rest.chars().next() {
-            Some('.') => rest[1..]
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect(),
-            Some('[') => rest[1..]
-                .trim_start()
-                .trim_start_matches(['\'', '"'])
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect(),
-            // A bare `env` handed to a filter or iterated over.
-            _ => continue,
-        };
-        out.push(if name.is_empty() {
-            "*".to_string()
-        } else {
-            name
-        });
-    }
-    out
-}
-
 #[async_trait]
 impl Provider for HttpProvider {
     fn id(&self) -> &str {
@@ -278,7 +190,8 @@ impl Provider for HttpProvider {
     /// is the same collision `env` closes for `exec` providers. The canonical
     /// request closes it the same way, with a digest of the *rendered* headers.
     ///
-    /// The templates are hashed unrendered, deliberately: see [`headers_digest`]
+    /// The templates are hashed unrendered, deliberately: see
+    /// [`crate::request_cfg::headers_digest`]
     /// for why that separates a model selector without partitioning a shared
     /// cache by whose credential was used. The same reasoning is why `url` and
     /// `body` are published unrendered.
@@ -417,7 +330,7 @@ impl Provider for HttpProvider {
     ///   entries travel to shared stores, and a header is exactly where a
     ///   pasted-literal secret would sit. It digests the *rendered* headers, so
     ///   a header reading a case var separates two cases while one reading
-    ///   `{{ env.TOKEN }}` does not — see [`headers_digest`] for the same
+    ///   `{{ env.TOKEN }}` does not — see [`crate::request_cfg::headers_digest`] for the same
     ///   argument applied to the unrendered templates in the fingerprint.
     /// - `output_expr`, when one is declared.
     ///

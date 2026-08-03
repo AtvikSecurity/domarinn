@@ -32,6 +32,7 @@ fn entry() -> CacheEntry {
         provider_latency_ms: None,
         model: Some("claude-opus-5".into()),
         program_digest: None,
+        address: None,
         verdict: None,
         reasoning: None,
         empty_reason: None,

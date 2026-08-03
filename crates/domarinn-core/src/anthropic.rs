@@ -9,17 +9,24 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
-use crate::config::ParamMap;
+use crate::config::{AuthMode, ParamMap, RequestCfg};
 use crate::empty::EmptyReason;
 use crate::error_class::ErrorClass;
 use crate::net::{api_key, http_client, parse_retry_after, status_error, transport_error};
 use crate::provider::{
-    http_request_preview, CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse,
+    http_canonical_request, http_request_preview, CallCtx, Provider, ProviderError,
+    ProviderRequest, ProviderResponse,
 };
+use crate::request_cfg::{RequestError, ResolvedRequest};
 use crate::types::{Output, RenderedPrompt, TokenUsage};
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// The Messages endpoint, appended to `base_url` unless `request.path` says
+/// otherwise.
+const DEFAULT_PATH: &str = "/v1/messages";
+/// Shared with [`crate::grader_llm`], which speaks to the same API and must not
+/// drift to a different version than the provider it grades.
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u64 = 4096;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -33,6 +40,10 @@ pub struct AnthropicProvider {
     /// The effective rate for `model`, resolved once at construction. `None`
     /// means this provider's calls cannot be priced, so `cost_usd` stays absent.
     rate: Option<crate::pricing::ModelRate>,
+    /// The suite's `request:` block, rendered for both the wire and the cache.
+    /// [`ResolvedRequest::vendor_default`] until [`Self::with_request`] runs.
+    request: ResolvedRequest,
+    cache_salt: Option<String>,
 }
 
 impl AnthropicProvider {
@@ -59,7 +70,29 @@ impl AnthropicProvider {
             params: params.unwrap_or_default(),
             client: http_client(DEFAULT_TIMEOUT),
             rate,
+            request: ResolvedRequest::vendor_default(DEFAULT_PATH, AuthMode::ApiKey),
+            cache_salt: None,
         }
+    }
+
+    /// Apply the suite's `request:` block and `cache_salt`.
+    ///
+    /// A builder rather than two more parameters on [`Self::new`] because it is
+    /// the only fallible part of construction — a template can fail to render —
+    /// and threading a `Result` through the infallible constructor would put a
+    /// `?` on fifty call sites that never customize anything.
+    ///
+    /// Also where the [`crate::request_cfg::GLOBAL_HEADERS_ENV`] injection is
+    /// picked up, so a provider built directly (in a test, or by an embedder)
+    /// stays free of ambient environment until it asks for it.
+    pub fn with_request(
+        mut self,
+        cfg: Option<&RequestCfg>,
+        cache_salt: Option<String>,
+    ) -> Result<Self, RequestError> {
+        self.request = crate::request_cfg::resolve(&self.id, cfg, DEFAULT_PATH, AuthMode::ApiKey)?;
+        self.cache_salt = cache_salt;
+        Ok(self)
     }
 
     fn build_body(&self, prompt: &RenderedPrompt, tools: &[crate::config::ToolDef]) -> Json {
@@ -103,9 +136,23 @@ impl AnthropicProvider {
         Json::Object(body)
     }
 
-    /// The Messages endpoint, trimmed the same way `call` trims it.
+    /// The Messages endpoint, as sent.
     fn endpoint(&self) -> String {
-        format!("{}/v1/messages", self.base_url.trim_end_matches('/'))
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            self.request.path()
+        )
+    }
+
+    /// The endpoint with call-time `env` values replaced by their placeholders,
+    /// for the two documents that get persisted.
+    fn redacted_endpoint(&self) -> String {
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            self.request.keyed_path()
+        )
     }
 }
 
@@ -139,19 +186,24 @@ impl Provider for AnthropicProvider {
                 anyhow::anyhow!("anthropic provider requires a prompt"),
             )
         })?;
-        let key = api_key(&self.api_key_env)?;
-        let body = self.build_body(prompt, &req.tools);
+        let key = match self.request.auth().needs_credential() {
+            true => Some(api_key(&self.api_key_env)?),
+            // `auth: none` means the credential rides in a declared header, so
+            // requiring `api_key_env` to resolve would fail a correct config.
+            false => None,
+        };
+        let mut body = self.build_body(prompt, &req.tools);
+        self.request.apply_body(&mut body);
         let url = self.endpoint();
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-api-key", key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await
-            .map_err(transport_error)?;
+        let mut request = self.client.post(&url).json(&body);
+        for (name, value) in self
+            .request
+            .call_headers(&[("anthropic-version", ANTHROPIC_VERSION)], key.as_deref())
+        {
+            request = request.header(name, value);
+        }
+        let response = request.send().await.map_err(transport_error)?;
 
         let status = response.status();
         if !status.is_success() {
@@ -166,10 +218,15 @@ impl Provider for AnthropicProvider {
 
     fn request_preview(&self, req: &ProviderRequest) -> Option<Json> {
         let prompt = req.prompt.as_ref()?;
+        let mut body = self.build_body(prompt, &req.tools);
+        // The *keyed* overlay, not the wire one: this document is persisted into
+        // a `--share`d run, so a `request.body` field reading `{{ env.X }}` must
+        // land here as its placeholder.
+        self.request.apply_keyed_body(&mut body);
         Some(http_request_preview(
             "POST",
-            &self.endpoint(),
-            self.build_body(prompt, &req.tools),
+            &self.redacted_endpoint(),
+            body,
         ))
     }
 
@@ -191,20 +248,65 @@ impl Provider for AnthropicProvider {
     /// fails instead of every cache entry silently re-keying.
     fn canonical_request(&self, req: &ProviderRequest) -> Option<Json> {
         let prompt = req.prompt.as_ref()?;
-        let mut canonical = http_request_preview(
-            "POST",
-            &self.endpoint(),
-            self.build_body(prompt, &req.tools),
+        let mut body = self.build_body(prompt, &req.tools);
+        self.request.apply_keyed_body(&mut body);
+        let mut canonical = http_canonical_request("POST", self.request.keyed_path(), body);
+        let members = canonical.as_object_mut().expect("json! object literal");
+        members.insert(
+            "headers".to_string(),
+            json!({"anthropic-version": ANTHROPIC_VERSION}),
         );
-        canonical
-            .as_object_mut()
-            .expect("json! object literal")
-            .insert(
-                "headers".to_string(),
-                json!({"anthropic-version": ANTHROPIC_VERSION}),
+        // Only when the suite declared one, under the discipline
+        // `cache_key`'s module docs spell out: canonical JSON emits every member
+        // that is present, so adding this unconditionally would re-key every
+        // provider that customizes nothing — which is most of them.
+        if let Some(digest) = self.request.headers_digest() {
+            members.insert(
+                "headers_digest".to_string(),
+                Json::String(digest.to_string()),
             );
+        }
         Some(canonical)
     }
+
+    fn cache_salt(&self) -> Option<&str> {
+        self.cache_salt.as_deref()
+    }
+
+    /// The redacted endpoint, not the sent one: this is persisted into every
+    /// cache entry, so a `request.path` reading `{{ env.X }}` must land here as
+    /// its placeholder.
+    fn address(&self) -> Option<String> {
+        Some(self.redacted_endpoint())
+    }
+
+    /// The document this provider published before `base_url` left the key.
+    ///
+    /// Reconstructed rather than stored: it is exactly [`Self::canonical_request`]
+    /// with the `path` member swapped back for the full `url`. Probed on a miss
+    /// so an upgrade adopts a warm cache instead of stranding it. See
+    /// [`crate::cache_adopt`].
+    fn legacy_canonical_requests(&self, req: &ProviderRequest) -> Vec<Json> {
+        legacy_url_shape(self.canonical_request(req), &self.redacted_endpoint())
+    }
+}
+
+/// Rewrite a canonical request's `path` member back into the `url` member it
+/// carried before 0.8.0.
+///
+/// Shared by the three vendor providers, which all made the same move. Returns
+/// empty when there is no canonical request to rewrite — an uncacheable call has
+/// nothing to adopt.
+pub(crate) fn legacy_url_shape(canonical: Option<Json>, full_url: &str) -> Vec<Json> {
+    let Some(mut canonical) = canonical else {
+        return Vec::new();
+    };
+    let Some(members) = canonical.as_object_mut() else {
+        return Vec::new();
+    };
+    members.shift_remove("path");
+    members.insert("url".to_string(), Json::String(full_url.to_string()));
+    vec![canonical]
 }
 
 /// Convert a rendered prompt into (system, messages) for the Messages API.
@@ -565,8 +667,15 @@ mod tests {
         let preview = p.request_preview(&req).unwrap();
 
         assert_eq!(canonical["body"], preview["body"]);
-        assert_eq!(canonical["url"], preview["url"]);
         assert_eq!(canonical["method"], preview["method"]);
+        // The preview is addressed; the keyed request is not. See
+        // `http_canonical_request`.
+        assert_eq!(canonical["path"], json!(DEFAULT_PATH));
+        assert_eq!(
+            preview["url"],
+            json!("https://api.anthropic.com/v1/messages")
+        );
+        assert!(canonical.get("url").is_none());
         assert_eq!(
             canonical["headers"],
             json!({"anthropic-version": ANTHROPIC_VERSION})
@@ -575,21 +684,40 @@ mod tests {
         assert!(p.canonical_request(&ProviderRequest::default()).is_none());
     }
 
-    /// A cache split that used to be real: `base_url: https://gw` and
-    /// `https://gw/` name one endpoint, and `endpoint()` already trims — so the
-    /// keyed request must too, or two spellings of one gateway pay twice.
+    /// `base_url` is not in the keyed request at all, so a gateway, a trailing
+    /// slash, and the vendor's own host all key identically — the whole point of
+    /// taking it out. What still separates two providers is what they *ask*.
+    ///
+    /// The endpoint is still trimmed for the *wire*, which is what
+    /// `the_endpoint_is_trimmed_once` covers.
     #[test]
-    fn a_trailing_slash_on_base_url_does_not_change_the_canonical_request() {
-        let of = |base: &str| {
-            AnthropicProvider::new("c", "claude-x", Some(base.into()), None, None, None)
+    fn base_url_does_not_reach_the_canonical_request() {
+        let of = |base: Option<&str>| {
+            AnthropicProvider::new("c", "claude-x", base.map(Into::into), None, None, None)
                 .canonical_request(&text_request())
                 .unwrap()
         };
-        assert_eq!(of("https://gw.example"), of("https://gw.example/"));
-        assert_eq!(
-            of("https://gw.example")["url"],
-            json!("https://gw.example/v1/messages")
-        );
+        let direct = of(None);
+        assert_eq!(direct, of(Some("https://gw.example")));
+        assert_eq!(direct, of(Some("https://gw.example/")));
+        assert_eq!(direct, of(Some("https://llm-gw.corp.internal/anthropic")));
+        assert_eq!(direct["path"], json!(DEFAULT_PATH));
+
+        // …but a different question still separates.
+        let other = AnthropicProvider::new("c", "claude-y", None, None, None, None)
+            .canonical_request(&text_request())
+            .unwrap();
+        assert_ne!(direct, other);
+    }
+
+    /// The wire address still joins cleanly whichever way `base_url` is spelled.
+    #[test]
+    fn the_endpoint_is_trimmed_once() {
+        let of = |base: &str| {
+            AnthropicProvider::new("c", "claude-x", Some(base.into()), None, None, None).endpoint()
+        };
+        assert_eq!(of("https://gw.example"), "https://gw.example/v1/messages");
+        assert_eq!(of("https://gw.example/"), "https://gw.example/v1/messages");
     }
 
     #[tokio::test]

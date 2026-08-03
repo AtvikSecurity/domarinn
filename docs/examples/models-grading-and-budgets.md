@@ -252,3 +252,27 @@ Name the section, the tool, and the argument, exactly as the rubric here does. T
 It is opt-in because it costs prompt tokens on every graded cell, and most rubrics have no use for the calls.
 
 **Prefer [`tool-call`](your-own-system.md#example-15--tool-call-assertions) when you can name the call.** It is deterministic, free, and short-circuits before the grader ever runs. A rubric earns its cost only when the question is whether the decision was *right* — which tool, which argument, and whether answering directly would have done just as well.
+
+## Example 43 — Reaching a model through a gateway
+
+The `anthropic` and `openai` providers know how to *shape* a request — fold a prompt into that vendor's message list, read usage and tool calls back out, price the result. They also used to hardcode the *envelope* that carries it: two headers for Anthropic, one for OpenAI, and a fixed path. A gateway that wanted a different credential scheme or an extra header meant abandoning the vendor provider for [`type: http`](#example-28--a-service-you-already-run) — and giving up all the shaping too.
+
+`request:` is the escape hatch that does not cost that.
+
+```yaml
+--8<-- "examples/43-custom-request/domarinn.yaml"
+```
+
+The case it exists for is an Anthropic OAuth access token (`sk-ant-oat…`). The Messages API rejects one as `x-api-key` and accepts it as a bearer token, so before `request:` there was no way to use one at all — [credential preflight](../reference/providers.md#credential-preflight) said so and refused the run. `auth: bearer` is the whole fix.
+
+/// warning | Which env syntax you use decides whether it is cached
+
+`${env:VAR}` resolves at load time and **is** part of the cache key. `{{ env.VAR }}` resolves at call time and **is not**.
+
+That is not a style choice. A header that *selects* something — a tier, a region, a model — must separate two cache entries, or the second value silently replays the first's answers. A header that carries a *credential* must not, or two teammates holding different tokens get private halves of a shared cache.
+
+domarinn cannot tell which is which, so it warns when it sees `{{ env.X }}` and names the alternative. See [caching](../concepts/caching.md#which-env-syntax).
+
+///
+
+`body:` merges **last**, after the provider has built the body. That is the difference from `params:`, which merges *first* and is then overwritten by `model`, `messages`, and `system` — the three fields a gateway most often needs changed, and the three `params:` structurally cannot reach.
