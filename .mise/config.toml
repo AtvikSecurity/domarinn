@@ -47,7 +47,7 @@ lefthook = "2.1.10"
 oxfmt = "0.61.0"
 # The shared pre-commit hooks run zizmor on staged workflow files and
 # shellcheck on staged *.sh files; pin both so the hooks resolve binaries.
-zizmor = "1.28.0"
+zizmor = "1.29.0"
 shellcheck = "0.11.0"
 # The docs site (MkDocs + Material + pymdown-extensions) is pinned in
 # pyproject.toml / uv.lock and run via uv, so the only mise-managed tool here is
