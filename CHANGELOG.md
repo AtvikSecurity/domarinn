@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.0](https://github.com/AtvikSecurity/domarinn/compare/0.8.0...0.9.0) (2026-08-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core:** `VendorCall` gains a `keyed_body` field. Every in-tree constructor is updated; an out-of-tree one must supply it. Cache keys are unchanged for any provider that declares no `request.body` — the overlay is absent, so both bodies are the document that was keyed before.
+
+### Bug Fixes
+
+* **core:** apply the `request.body` overlay on the judge and embeddings paths ([#78](https://github.com/AtvikSecurity/domarinn/issues/78)) ([ba479d6](https://github.com/AtvikSecurity/domarinn/commit/ba479d61a199cf21841c0cc6257efa152056797f))
+* **runs:** hide every fully cached run, whatever its verdict ([f684322](https://github.com/AtvikSecurity/domarinn/commit/f684322331363084032adabe72286686ef543e2b))
+
+
+### Documentation
+
+* **cache:** correct why a replay's verdict does not save it ([77e9662](https://github.com/AtvikSecurity/domarinn/commit/77e966249dd8f211b1e86c45c5f3a49fee345f60))
+
 ## [0.8.0](https://github.com/AtvikSecurity/domarinn/compare/0.7.1...0.8.0) (2026-08-03)
 
 
