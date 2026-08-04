@@ -159,9 +159,10 @@ async fn cached_exclude_hides_every_fully_cached_run_whatever_its_verdict() {
 
     // Both fully-cached runs go, the failing one included. The rule used to
     // spare it, reasoning that grader verdicts are not cached so a replay could
-    // carry a fresh regression — which holds only where failures are rare. A
-    // suite with a stable failing subset trips that guard on every run and the
-    // filter then hides nothing at all, which is the bug this pins.
+    // carry a fresh regression — a claim 0.5.0 had already retired by moving
+    // graders into the same cache and key space as provider calls. What the
+    // guard did do was fire on every run of any suite whose failures are not
+    // rare, so the filter hid nothing at all. That is the bug this pins.
     //
     // `r-partial` is the boundary that still matters: one cached call and one
     // live one is not a replay, and it stays.

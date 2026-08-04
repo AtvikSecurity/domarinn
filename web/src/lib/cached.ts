@@ -54,12 +54,15 @@ export function isFullyCached(r: CacheCounters): boolean {
  *
  * This used to also require the run to have passed, reasoning that grader
  * verdicts are not cached — only provider responses are — so a replay could
- * still surface a new failure. That holds only where failures are rare. A
- * suite with a stable failing subset, the same known-failing cases failing
- * identically on every replay, trips the guard on every single run: the filter
- * then suppresses nothing and the feature does not work at all. A replay that
- * regresses is still counted by the run-set headers and the overview cards,
- * neither of which ever hides anything, and is one click away behind `Show`.
+ * still surface a new failure. That reasoning was already false: since 0.5.0
+ * graders, embeddings and `exec` assertions share one cache and one key space
+ * with provider calls, so a fully cached run replayed its grading too and its
+ * verdict carried nothing new. Meanwhile any suite whose failures are not rare
+ * tripped the guard on every run, and the filter suppressed nothing at all.
+ *
+ * The server's `cached_hidden_sql` carries the full account, including the two
+ * narrow paths that really can move a verdict inside a fully cached run —
+ * neither of which is "the run failed".
  *
  * Mirrors `cached_hidden_sql` in the server's `storage/mod.rs`; the two must
  * agree, or the client dims a different set of rows than the server withholds.

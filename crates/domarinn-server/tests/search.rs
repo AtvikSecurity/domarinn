@@ -329,8 +329,9 @@ async fn seed_cache_mix(app: &axum::Router) {
                 .cached(true),
         ],
     );
-    // A replay that FAILED. Grader verdicts are not cached, so this one is
-    // real signal and must survive `exclude`.
+    // A replay that FAILED, which `exclude` suppresses like any other. Its
+    // grading replayed too — graders have shared the cache and key space with
+    // provider calls since 0.5.0 — so the verdict is not fresh signal.
     let replayed_failing = make_run(
         "s-replayed-fail",
         Some("checkout"),

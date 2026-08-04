@@ -288,13 +288,31 @@ pub(super) fn fully_cached_sql(alias: &str) -> String {
 /// verdict.
 ///
 /// This used to also require the run to have passed, on the reasoning that
-/// grader verdicts are not cached, so a replay could still surface a fresh
-/// regression. That reasoning holds only where failures are rare. A suite with
-/// a stable failing subset — the same known-failing cases failing identically
-/// on every replay — trips the guard on every single run, so the filter
-/// suppresses nothing and the feature does not work at all. A replay that
-/// regresses is still counted by the run-set headers and the overview cards,
-/// which never hide anything, and is one click away behind `Show`.
+/// grader verdicts are not cached — so a replay could still surface a fresh
+/// regression. **That reasoning was already false when it was written.** Since
+/// 0.5.0 there is one cache and one key space: the LLM grader, embeddings and
+/// `exec` graders all go through the same key function as a provider call
+/// (`docs/concepts/caching.md`). In a default run a fully-cached run replayed
+/// its grading too, so its verdict carried no new information and the guard
+/// protected against nothing — while costing the whole feature on any suite
+/// whose failures are not rare.
+///
+/// Two narrow paths *can* move a verdict inside a run these counters call
+/// fully cached, and the guard could see neither of them:
+///
+/// * `--no-grader-cache` re-asks the grader while the provider response beside
+///   it still replays, so `cache_misses` stays 0 (these counters tally the
+///   per-case *provider* call — `CallOutcome.cached`; a grader's own hit or
+///   miss is reported separately on each assertion). Pinned by
+///   `no_grader_cache_bypasses_warm_judge_entries_but_not_provider_ones`.
+/// * A `threshold:` is deliberately not a key ingredient and is applied on
+///   read, so editing one re-scores every case off entirely cached data.
+///
+/// Neither is "the run failed", which is all the old guard tested. What would
+/// actually separate an interesting replay is "its verdict moved since the run
+/// before it" — a window function over the suite, giving up this index, for a
+/// case both of the above already surface in the overview cards and the
+/// run-set headers, neither of which ever hides anything.
 ///
 /// Identical to `fully_cached_sql` today, and kept as its own name because the
 /// call sites are asking a different question — one is "is this run a replay",
