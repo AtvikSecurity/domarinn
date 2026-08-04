@@ -577,7 +577,7 @@ impl DefaultGrader {
                 canonical: crate::provider::http_canonical_request(
                     "POST",
                     &call.path,
-                    call.body.clone(),
+                    call.keyed_body.clone(),
                 ),
                 kind: EntryKind::new(EntryKind::EMBEDDING),
                 case_salt: None,
@@ -734,7 +734,7 @@ impl DefaultGrader {
                 canonical: crate::provider::http_canonical_request(
                     "POST",
                     &call.path,
-                    call.body.clone(),
+                    call.keyed_body.clone(),
                 ),
                 kind: EntryKind::new(EntryKind::JUDGE),
                 case_salt: None,
@@ -743,7 +743,7 @@ impl DefaultGrader {
                     Some(crate::provider::http_canonical_request(
                         "POST",
                         &call.path,
-                        call.body.clone(),
+                        call.keyed_body.clone(),
                     )),
                     &call.url,
                 ),

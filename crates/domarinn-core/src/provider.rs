@@ -220,7 +220,17 @@ pub struct VendorCall {
     /// The path and query alone. What the cache keys — see
     /// [`http_canonical_request`].
     pub path: String,
+    /// What goes on the wire: the `request.body` overlay merged with the values
+    /// that reach the endpoint, credentials included.
     pub body: Json,
+    /// What the cache keys: the same body with the overlay's KEYED values, so a
+    /// `{{ env.X }}` credential lands as its placeholder instead of in the key
+    /// and in every shared entry.
+    ///
+    /// Split for the same reason `url` and `path` are, and the two must move
+    /// together: a caller that keys `body` publishes the credential, and one
+    /// that posts `keyed_body` sends the literal `${env:NAME}` to the endpoint.
+    pub keyed_body: Json,
 }
 
 pub fn http_canonical_request(method: &str, path: &str, body: Json) -> Json {

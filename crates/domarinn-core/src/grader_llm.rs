@@ -197,10 +197,21 @@ fn vendor_call(
     request: &crate::request_cfg::ResolvedRequest,
     body: Json,
 ) -> crate::provider::VendorCall {
+    // Both overlays, from one body. The judge used to apply NEITHER, so a
+    // `request.body` on a grader was accepted by the loader, keyed into nothing
+    // and dropped before the wire — which is exactly the injected-system-prompt
+    // case `RequestCfg::body` documents itself for. A gateway that requires a
+    // fixed leading system block could therefore be given the headers that claim
+    // it and never the body that backs it.
+    let mut wire = body.clone();
+    request.apply_body(&mut wire);
+    let mut keyed = body;
+    request.apply_keyed_body(&mut keyed);
     crate::provider::VendorCall {
         url: format!("{base}{}", request.path()),
         path: request.keyed_path().to_string(),
-        body,
+        body: wire,
+        keyed_body: keyed,
     }
 }
 
