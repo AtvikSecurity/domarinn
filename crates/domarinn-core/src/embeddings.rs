@@ -90,7 +90,7 @@ impl EmbeddingsProvider {
             Some(crate::provider::http_canonical_request(
                 "POST",
                 &call.path,
-                call.body.clone(),
+                call.keyed_body.clone(),
             )),
             &call.url,
         )
@@ -112,8 +112,14 @@ impl EmbeddingsProvider {
         }
         body.insert("model".into(), json!(self.model));
         body.insert("input".into(), json!(text));
-        let mut body = Json::Object(body);
-        self.request.apply_keyed_body(&mut body);
+        let body = Json::Object(body);
+        // Was: the KEYED overlay only, and that one body then went on the wire —
+        // so a `{{ env.X }}` in `request.body` was POSTed as the literal
+        // placeholder. Wire and key are built separately now, as everywhere else.
+        let mut wire = body.clone();
+        self.request.apply_body(&mut wire);
+        let mut keyed = body;
+        self.request.apply_keyed_body(&mut keyed);
         VendorCall {
             url: format!(
                 "{}{}",
@@ -121,7 +127,8 @@ impl EmbeddingsProvider {
                 self.request.path()
             ),
             path: self.request.keyed_path().to_string(),
-            body,
+            body: wire,
+            keyed_body: keyed,
         }
     }
 

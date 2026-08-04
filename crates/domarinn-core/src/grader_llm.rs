@@ -197,10 +197,21 @@ fn vendor_call(
     request: &crate::request_cfg::ResolvedRequest,
     body: Json,
 ) -> crate::provider::VendorCall {
+    // Both overlays, from one body. The judge used to apply NEITHER, so a
+    // `request.body` on a grader was accepted by the loader, keyed into nothing
+    // and dropped before the wire — which is exactly the injected-system-prompt
+    // case `RequestCfg::body` documents itself for. A gateway that requires a
+    // fixed leading system block could therefore be given the headers that claim
+    // it and never the body that backs it.
+    let mut wire = body.clone();
+    request.apply_body(&mut wire);
+    let mut keyed = body;
+    request.apply_keyed_body(&mut keyed);
     crate::provider::VendorCall {
         url: format!("{base}{}", request.path()),
         path: request.keyed_path().to_string(),
-        body,
+        body: wire,
+        keyed_body: keyed,
     }
 }
 
@@ -346,5 +357,68 @@ impl Verdict {
             cost_usd: None,
             model: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod request_overlay_tests {
+    use super::*;
+    use crate::config::AuthMode;
+
+    fn resolved(yaml: &str) -> crate::request_cfg::ResolvedRequest {
+        let cfg: crate::config::RequestCfg =
+            serde_yaml_ng::from_str(yaml).expect("test fixture parses");
+        crate::request_cfg::resolve(
+            "grader.provider",
+            Some(&cfg),
+            "/v1/messages",
+            AuthMode::ApiKey,
+        )
+        .expect("test fixture resolves")
+    }
+
+    /// The judge dropped `request.body` entirely: `apply_body` was called by the
+    /// two vendor providers and by nothing on this path, so a grader overlay
+    /// parsed, keyed into nothing, and never reached the wire.
+    ///
+    /// It matters most for the case `RequestCfg::body` documents itself for — an
+    /// injected system prompt. A gateway that requires a fixed leading system
+    /// block could be handed the `headers` that claim the identity (those DID
+    /// apply) and never the body that backs it, which the endpoint rejects.
+    #[test]
+    fn the_judge_applies_the_request_body_overlay() {
+        let call = Judge::Anthropic.request(
+            "m",
+            None,
+            None,
+            "rubric",
+            &resolved("body:\n  system:\n    - {type: text, text: injected}\n"),
+        );
+        assert_eq!(
+            call.body["system"],
+            json!([{"type": "text", "text": "injected"}]),
+            "the overlay must reach `system` — the field `params` structurally cannot"
+        );
+        assert_eq!(
+            call.body["model"],
+            json!("m"),
+            "keys the overlay does not name survive"
+        );
+    }
+
+    /// Declaring nothing must leave the judge byte-identical, or every verdict
+    /// entry written before the overlay existed re-keys.
+    #[test]
+    fn an_empty_overlay_leaves_the_judge_body_untouched() {
+        let bare = Judge::Anthropic.request("m", None, None, "rubric", &resolved("{}"));
+        assert_eq!(
+            bare.body["system"],
+            json!(crate::grader::SYSTEM_PROMPT),
+            "the built-in judge prompt survives when nothing overrides it"
+        );
+        assert_eq!(
+            bare.body, bare.keyed_body,
+            "with no overlay the wire body and the keyed body are the same document"
+        );
     }
 }
