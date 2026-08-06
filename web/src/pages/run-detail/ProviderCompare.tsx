@@ -52,7 +52,14 @@ export function ProviderCompare({
   // Providers are stable for the run's lifetime, so this list — and therefore the
   // number of child panels (and their hooks) — never changes between renders.
   const providers = useMemo(
-    () => distinctProviders({ run_id: runId, columns, rows: [], next_cursor: null }),
+    () =>
+      distinctProviders({
+        run_id: runId,
+        columns,
+        rows: [],
+        provider_costs: [],
+        next_cursor: null,
+      }),
     [runId, columns],
   );
 

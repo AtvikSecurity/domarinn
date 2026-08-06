@@ -48,6 +48,9 @@ export type { CaseResult } from "./generated/CaseResult";
 export type { CaseStatus } from "./generated/CaseStatus";
 // What kind of failure a case hit — see the Rust `error_class` module.
 export type { ErrorClass } from "./generated/ErrorClass";
+// One `fallback:` link tried and passed over before the one that answered.
+// Exactly one of `empty_reason` / `error_class` is set per link.
+export type { FallbackAttempt } from "./generated/FallbackAttempt";
 export type { CellKey } from "./generated/CellKey";
 export type { Output } from "./generated/Output";
 export type { TokenUsage } from "./generated/TokenUsage";
@@ -79,6 +82,9 @@ export type { MatrixResponse } from "./generated/MatrixResponse";
 export type { MatrixColumn } from "./generated/MatrixColumn";
 export type { MatrixRow } from "./generated/MatrixRow";
 export type { MatrixCell } from "./generated/MatrixCell";
+// Run-level cost keyed by the provider that ANSWERED, not the one configured —
+// so an entry can name a `fallback_only` provider that forms no column at all.
+export type { ProviderCost } from "./generated/ProviderCost";
 
 export type { CompareCaseRow } from "./generated/CompareCaseRow";
 export type { CompareDelta } from "./generated/CompareDelta";
