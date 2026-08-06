@@ -545,6 +545,10 @@ fn ci_summary_writes_github_output_pairs() {
     assert_eq!(pairs.get("total"), Some(&"1"));
     assert_eq!(pairs.get("pass-rate"), Some(&"0.0"));
     assert_eq!(pairs.get("regressed"), Some(&"0"));
+    // Emitted at zero like the other counters: a workflow reading this to judge
+    // whether the run measured the system under test needs `0` to mean "nothing
+    // fell back" rather than "the key was never written".
+    assert_eq!(pairs.get("fallback-cases"), Some(&"0"));
     // Never shared, so the URL keys are present but empty rather than missing —
     // a workflow referencing a nonexistent output would otherwise get "".
     assert_eq!(pairs.get("run-url"), Some(&""));

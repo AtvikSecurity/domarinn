@@ -114,6 +114,16 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
     if s.retried_cases > 0 {
         out.push_str(&format!("| Retries | {} cases |\n", s.retried_cases));
     }
+    // Denominated in *graded* cases, matching what the counter counts: a skipped
+    // case graded nothing, so including it would shrink the fraction and read as
+    // "the fallback mattered less than it did".
+    if s.fallback_cases > 0 {
+        out.push_str(&format!(
+            "| Answered by fallback | {} of {} cases |\n",
+            s.fallback_cases,
+            s.total.saturating_sub(s.skipped),
+        ));
+    }
     out.push_str(&format!(
         "| Duration | {} |\n",
         humanize_duration(duration_secs(run))
@@ -138,7 +148,15 @@ fn result_line(s: &RunSummary) -> String {
     } else {
         "✅"
     };
-    format!("{glyph} {}", parts.join(", "))
+    let mut line = format!("{glyph} {}", parts.join(", "));
+    // Qualifies the verdict rather than joining the bucket list: these cases are
+    // already counted as passed/failed above, and a green result somebody else's
+    // model produced is a different claim from a green result the configured one
+    // produced.
+    if s.fallback_cases > 0 {
+        line.push_str(&format!(" · {} via fallback", s.fallback_cases));
+    }
+    line
 }
 
 /// The failing/errored cases as a table, capped at [`MD_FAILURE_ROWS`]. Empty
@@ -334,6 +352,46 @@ mod tests {
             ..Default::default()
         };
         assert!(!render_run_md(&run).contains("| Cache |"));
+    }
+
+    /// A run some other provider answered for says so in both places a reader
+    /// looks: the verdict line and its own metrics row. The denominator is the
+    /// *graded* count, not `total` — a skipped case graded nothing.
+    #[test]
+    fn render_run_md_reports_cases_answered_by_a_fallback() {
+        let mut run = sample_run();
+        run.summary = RunSummary {
+            total: 6,
+            passed: 5,
+            skipped: 1,
+            fallback_cases: 2,
+            ..Default::default()
+        };
+        let md = render_run_md(&run);
+        assert!(
+            md.contains("| Result | ✅ 5 passed, 1 skipped · 2 via fallback |"),
+            "got:\n{md}"
+        );
+        assert!(
+            md.contains("| Answered by fallback | 2 of 5 cases |"),
+            "got:\n{md}"
+        );
+    }
+
+    /// A run where nothing fell back emits neither the row nor the segment, so
+    /// every summary written before the feature existed renders byte-identically.
+    #[test]
+    fn render_run_md_omits_the_fallback_row_when_nothing_fell_back() {
+        let mut run = sample_run();
+        run.summary = RunSummary {
+            total: 2,
+            passed: 1,
+            failed: 1,
+            ..Default::default()
+        };
+        let md = render_run_md(&run);
+        assert!(!md.contains("Answered by fallback"), "got:\n{md}");
+        assert!(!md.contains("via fallback"), "got:\n{md}");
     }
 
     #[test]

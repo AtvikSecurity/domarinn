@@ -221,7 +221,36 @@ fn diff_header(base: &RunResult, head: &RunResult, palette: &Palette) -> String 
         hr.lower * 100.0,
         hr.upper * 100.0,
     );
-    format!("{}\n{line2}\n", palette.header(&line1))
+    let mut out = format!("{}\n{line2}\n", palette.header(&line1));
+    // Stated whenever *either* side fell back, so the line that matters most —
+    // a baseline whose cases the configured provider answered against a head
+    // whose cases it did not — is never the silent one.
+    if base.summary.fallback_cases > 0 || head.summary.fallback_cases > 0 {
+        out.push_str(&format!(
+            "fallback cases: {} → {}\n",
+            base.summary.fallback_cases, head.summary.fallback_cases
+        ));
+    }
+    out
+}
+
+/// Who answered a case: the `fallback:` link that stepped in, or the configured
+/// provider when the chain was never walked. `cell.provider_id` is always the
+/// configured one, which is exactly what "no fallback" means here.
+fn answered_by(case: &CaseResult) -> &str {
+    case.answered_by_provider_id
+        .as_deref()
+        .unwrap_or(case.cell.provider_id.as_str())
+}
+
+/// `answered by: <base> → <head>` when the two sides of a joined case were
+/// answered by different providers, else `None`.
+///
+/// This is a comparison a score delta cannot express: two runs of the same cell
+/// can agree on every number while one of them measured a different model.
+fn answered_by_note(base: &CaseResult, head: &CaseResult) -> Option<String> {
+    let (b, h) = (answered_by(base), answered_by(head));
+    (b != h).then(|| format!("answered by: {b} → {h}"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -267,10 +296,19 @@ pub(crate) fn render_table(
             Vec::new()
         };
 
+        let answered_note = match (base_c, head_c) {
+            (Some(b), Some(h)) => answered_by_note(b, h),
+            _ => None,
+        };
+
         let label = match transition {
             Some(m) => m,
             None => {
-                if diff_lines.is_empty() {
+                // A provider swap surfaces an otherwise-quiet row for the same
+                // reason a diff hunk does: the row is the only place the note
+                // can be read, and a case whose answer came from somewhere else
+                // is not "unchanged" in any sense the reader cares about.
+                if diff_lines.is_empty() && answered_note.is_none() {
                     continue;
                 }
                 match case.delta {
@@ -288,6 +326,9 @@ pub(crate) fn render_table(
         // Score delta only when both sides exist (skips NEW / REMOVED).
         if let (Some(b), Some(h)) = (base_c, head_c) {
             line.push_str(&format!("  score {:.2} → {:.2}", b.score, h.score));
+        }
+        if let Some(note) = &answered_note {
+            line.push_str(&format!("  {note}"));
         }
         out.push_str(&line);
         out.push('\n');
@@ -814,6 +855,65 @@ mod diff_tests {
             &Palette::disabled(),
         );
         assert!(text.contains("(not significant at 95%)"), "got:\n{text}");
+    }
+
+    // --- Fallback visibility -------------------------------------------------
+
+    /// `render_table` over a freshly-diffed pair, with the flags these tests do
+    /// not vary.
+    fn table(base: &RunResult, head: &RunResult, scope: DiffScope) -> String {
+        let diff = diff_runs(base, head);
+        render_table(base, head, &diff, scope, false, false, &Palette::disabled())
+    }
+
+    /// A single passing case, for the pairs below that differ only in who
+    /// answered them.
+    fn answered_run(by: Option<&str>) -> RunResult {
+        let mut c = case("t1", CaseStatus::Pass, 1.0, Some("hello"));
+        c.answered_by_provider_id = by.map(String::from);
+        run_with(vec![c], "d1", serde_json::Value::Null)
+    }
+
+    /// The headline states both sides' counts whenever either is nonzero — a
+    /// baseline the configured provider answered against a head it did not is
+    /// the comparison this exists to make legible.
+    #[test]
+    fn table_headline_states_fallback_counts_when_either_side_fell_back() {
+        let (base, mut head) = regression_pair();
+        head.summary.fallback_cases = 1;
+        let text = table(&base, &head, DiffScope::Regressions);
+        assert!(text.contains("fallback cases: 0 → 1"), "got:\n{text}");
+
+        // Neither side fell back → the line is absent entirely.
+        head.summary.fallback_cases = 0;
+        let quiet = table(&base, &head, DiffScope::Regressions);
+        assert!(!quiet.contains("fallback cases:"), "got:\n{quiet}");
+    }
+
+    /// A case whose answer moved from the configured provider to a fallback is
+    /// annotated on its own row, and the row surfaces even though nothing else
+    /// about the case changed — otherwise the note has nowhere to be read.
+    ///
+    /// `None` scope proves the row is surfaced by the provider change rather
+    /// than by an output diff that happens to accompany it; `p` is the fixture's
+    /// configured id, which is what a side that never fell back renders as.
+    #[test]
+    fn table_annotates_a_case_whose_answering_provider_changed() {
+        let text = table(
+            &answered_run(None),
+            &answered_run(Some("backup")),
+            DiffScope::None,
+        );
+        assert!(text.contains("answered by: p → backup"), "got:\n{text}");
+    }
+
+    /// Two sides answered by the same provider carry no note, and an unchanged
+    /// case stays hidden — the pre-existing quiet behaviour.
+    #[test]
+    fn table_omits_the_answered_by_note_when_both_sides_agree() {
+        let text = table(&answered_run(None), &answered_run(None), DiffScope::None);
+        assert!(!text.contains("answered by:"), "got:\n{text}");
+        assert!(!text.contains("SAME"), "unchanged case stays hidden");
     }
 
     // --- Markdown -----------------------------------------------------------

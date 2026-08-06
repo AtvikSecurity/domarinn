@@ -193,6 +193,10 @@ fn write_github_output(
         ("cache-hit-rate", pct(s.cache_hits, cache_total)),
         ("cache-read-tokens", s.cache_read_tokens.to_string()),
         ("cache-write-tokens", s.cache_write_tokens.to_string()),
+        // Always written, like every counter above: a workflow that reads this
+        // to decide whether the run is worth trusting needs `0` to mean "nothing
+        // fell back", not "this CLI is too old to say".
+        ("fallback-cases", s.fallback_cases.to_string()),
         // Same "emit even when unknown" rule as `run-url` below: a referenced
         // output that no step wrote is an empty string either way, so writing
         // the key makes the contract visible.

@@ -90,6 +90,7 @@ Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command), w
 | `cache-read-tokens` | Input tokens served from a provider-side prompt cache. |
 | `cache-write-tokens` | Input tokens written into that cache. |
 | `cache-hit-rate` | Percentage of cases served from the cache, one decimal. |
+| `fallback-cases` | Number of graded cases answered by a `fallback:` provider rather than the one the cell names (`0` when nothing fell back). |
 | `regressed`      | Number of tests newly regressed vs the baseline (`0` without `against`). |
 | `run-url`        | URL of the uploaded run on the results server (empty without `server-url`). |
 | `summary-path`   | Path to the Markdown summary (`summary.md`). |

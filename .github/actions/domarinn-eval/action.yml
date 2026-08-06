@@ -186,6 +186,9 @@ outputs:
   cache-write-tokens:
     description: Input tokens written into a provider-side prompt cache.
     value: ${{ steps.summary.outputs.cache-write-tokens }}
+  fallback-cases:
+    description: Number of graded cases answered by a `fallback:` provider rather than the one the cell names.
+    value: ${{ steps.summary.outputs.fallback-cases }}
   run-url:
     description: URL of the uploaded run on the results server (empty without `server-url`).
     value: ${{ steps.summary.outputs.run-url }}
