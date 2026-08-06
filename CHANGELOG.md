@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.10.0](https://github.com/AtvikSecurity/domarinn/compare/0.9.0...0.10.0) (2026-08-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cache:** do not store empty provider outputs unless they are reproducible ([#79](https://github.com/AtvikSecurity/domarinn/issues/79))
+
+### Features
+
+* **cache:** targeted eviction by empty reason, age window, model and kind ([#80](https://github.com/AtvikSecurity/domarinn/issues/80)) ([35bbeed](https://github.com/AtvikSecurity/domarinn/commit/35bbeeda6fbb44d4750212b14c3caba03c127f5a))
+* **providers:** fall back to another provider on a refusal or a call failure ([35bbeed](https://github.com/AtvikSecurity/domarinn/commit/35bbeeda6fbb44d4750212b14c3caba03c127f5a))
+
+
+### Bug Fixes
+
+* **cache:** do not store empty provider outputs unless they are reproducible ([#79](https://github.com/AtvikSecurity/domarinn/issues/79)) ([35bbeed](https://github.com/AtvikSecurity/domarinn/commit/35bbeeda6fbb44d4750212b14c3caba03c127f5a))
+
 ## [0.9.0](https://github.com/AtvikSecurity/domarinn/compare/0.8.0...0.9.0) (2026-08-04)
 
 
