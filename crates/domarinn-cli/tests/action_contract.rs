@@ -85,6 +85,7 @@ const SHELL_STEPS: &[ShellStep] = &[
             ("DOMARINN_TOKEN", ""),
             ("DOMARINN_BRANCH", ""),
             ("INPUT_CONFIG", "suite.yaml"),
+            ("INPUT_PROVIDER", ""),
             ("INPUT_AGAINST", ""),
             ("INPUT_ALLOW_EMPTY", "false"),
             ("INPUT_ALLOW_SHARE_FAILURE", "false"),
@@ -379,6 +380,43 @@ fn the_share_opt_out_only_travels_with_share() {
         !no_server.contains("--allow-share-failure"),
         "the opt-out requires --share; alone it is a usage error the gate \
          always fails on: {no_server}"
+    );
+}
+
+/// The `provider:` input expands to repeated `--provider` flags — the only
+/// path from the composite action to the CLI's cell selection. Comma and space
+/// separators both work, and an empty input appends nothing, so the default
+/// still runs the whole matrix.
+#[test]
+fn the_provider_input_expands_to_repeated_flags() {
+    let running = |provider: &str| {
+        let ws = Workspace::new();
+        let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
+        let ran = run_step(
+            "eval",
+            &[("DOMARINN_BIN", &stub), ("INPUT_PROVIDER", provider)],
+            &ws,
+        );
+        ran.log
+            .lines()
+            .find(|line| line.starts_with("Running: domarinn "))
+            .unwrap_or_else(|| panic!("the step logs the command it ran:\n{}", ran.log))
+            .to_string()
+    };
+
+    assert!(
+        !running("").contains("--provider"),
+        "an empty input must not shrink the matrix"
+    );
+    let comma = running("primary,canary");
+    assert!(
+        comma.contains("--provider primary") && comma.contains("--provider canary"),
+        "comma-separated ids become repeated flags: {comma}"
+    );
+    let spaced = running("primary canary");
+    assert!(
+        spaced.contains("--provider primary") && spaced.contains("--provider canary"),
+        "space-separated ids become repeated flags: {spaced}"
     );
 }
 
