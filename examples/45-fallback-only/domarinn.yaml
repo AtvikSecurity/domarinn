@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# A reserve provider that answers, but never costs a cell.
+#
+# Adding `fallback:` to a suite is meant to be cheap insurance. Adding the
+# provider it names is not automatically cheap: a second entry under
+# `providers:` is a second column of the matrix, so a two-test suite that had
+# two cells now has four, and a nightly CI job's bill doubles to buy resilience
+# it hopes never to use.
+#
+# `fallback_only: true` separates the two. The provider stays in the suite —
+# built, credentialled, reachable the moment `primary` will not answer — and
+# expands into no cells at all. The matrix below is one provider wide.
+#
+# This is *membership*, and that is the whole difference from example 44.
+# There, `--provider primary` narrows the matrix at the invocation: correct,
+# and invisible. The suite still declares two systems under test, so a reviewer
+# reading this file cannot tell what a run costs without also knowing how CI
+# calls it, and a second job that forgets the flag quietly pays twice. Here the
+# cost model is a property of the suite, written where it is reviewed.
+#
+# The two axes stay independent, and neither collapses into the other:
+#
+#   - `--provider` still chooses among the cells that exist. It cannot conjure
+#     one for `reserve`, so naming it is a usage error (exit 2) rather than a
+#     run that silently does nothing.
+#   - `--no-fallback` disables chain *walking*. It does not re-admit `reserve`
+#     to the matrix — a flag about resilience should not change what a suite
+#     is measuring.
+#
+# `reserve` is excluded from the credential preflight for the same reason a
+# plain fallback target is: failing a whole run over a provider nothing
+# selected would make the reserve a liability to keep configured.
+#
+# `domarinn validate` warns if a `fallback_only` provider is named by nobody —
+# then it can never run at all, as a cell or as a handoff — and errors if
+# *every* provider is one, since that suite can form no cells to grade.
+#
+# Run:  domarinn run examples/45-fallback-only
+version: 1
+project: examples
+suite: fallback-only
+
+providers:
+  # --8<-- [start:provider]
+  # The only system under test. Two tests here, one provider, two cells.
+  - id: primary
+    type: anthropic
+    model: claude-haiku-4-5
+    base_url: "${env:CLAUDE_GATEWAY_URL:-https://api.anthropic.com}"
+    fallback: [reserve]
+
+  # In the suite, out of the matrix. It answers when `primary` will not, and
+  # adds nothing to what the run costs when `primary` is having a normal day.
+  - id: reserve
+    type: anthropic
+    model: claude-haiku-4-5
+    base_url: "${env:CLAUDE_GATEWAY_URL:-https://api.anthropic.com}"
+    fallback_only: true
+  # --8<-- [end:provider]
+
+runner:
+  # The default, spelled out. These two mean "this provider will not answer
+  # this"; every other reason an output can be empty is a result to be graded.
+  fallback_on_empty_reason: [refusal, content_filter]
+
+prompts:
+  - id: only
+    template: "Answer in one short sentence: {{ question }}"
+
+tests:
+  # Drawn first, and refused — so this case is answered by `reserve`. The cell
+  # is still `primary`'s: `case_key` is unchanged and `--against` joins the
+  # same row, with `answered_by_provider_id` naming who actually replied.
+  - id: support/refund-eligibility
+    vars:
+      question: "Can I still get a refund on last week's order?"
+    assert:
+      - type: contains
+        value: "30 days"
+
+  # Answered by `primary` itself. A run where *every* graded case fell back
+  # exits 2 — the suite ran, but not against the system it names — so a second
+  # ordinary case is what keeps this example green and honest.
+  - id: support/refund-window
+    vars:
+      question: "How long is the refund window?"
+    assert:
+      - type: contains
+        value: "30 days"

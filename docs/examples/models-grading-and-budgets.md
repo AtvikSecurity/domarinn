@@ -288,3 +288,19 @@ A refusal, or a gateway that is simply down, is not a verdict about the prompt. 
 ```
 
 The guarantees worth knowing are the negative ones: it never fires under `--cache-only`, never on a cell carrying a `latency` assert, and never leaves a case worse than it would have been with no fallback configured. See [falling back to another provider](../reference/providers.md#falling-back-to-another-provider) for the full rules, and pass `--no-fallback` in a gate that would rather learn its primary is broken.
+
+`--provider primary` in that suite is doing real work — it keeps `backup` out of the matrix while leaving it reachable — but it does so at the invocation. The next example moves that decision into the suite.
+
+## Example 45 — A reserve provider that never forms a cell
+
+A second entry under `providers:` is a second column of the matrix. So the obvious way to adopt `fallback:` — name a backup, add it to the suite — doubles what a nightly job costs to buy resilience it hopes never to use.
+
+`fallback_only: true` is the other half of the feature. The provider stays in the suite, built and reachable the moment the primary will not answer, and expands into no cells at all.
+
+```yaml
+--8<-- "examples/45-fallback-only/domarinn.yaml"
+```
+
+The difference from example 44 is *where the decision lives*. `--provider primary` narrows the matrix correctly and invisibly: the file still declares two systems under test, so a reviewer cannot price a run without also knowing how CI invokes it, and a second job that forgets the flag pays twice. `fallback_only:` is membership rather than selection — the cost model is written where it is reviewed.
+
+The two axes stay independent. `--provider` chooses among the cells that exist and cannot conjure one, so naming a `fallback_only` id is a usage error (exit `2`) rather than a run that silently does nothing; `--no-fallback` disables chain *walking* and does not re-admit the reserve, because a flag about resilience should not change what a suite measures. `domarinn validate` warns when nothing names a `fallback_only` provider — it can then never run at all — and errors when *every* provider is one.
