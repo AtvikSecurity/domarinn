@@ -30,6 +30,13 @@ pub struct RunArgs {
     pub filters: Vec<String>,
 
     /// Only run this provider (repeatable).
+    ///
+    /// `DOMARINN_PROVIDER` (comma-separated) is the environment equivalent,
+    /// consulted only when the flag is absent — the flag wins outright, no
+    /// merging, because this is per-run *selection*, and `--provider x` must
+    /// mean the same thing in every shell. Read manually rather than through
+    /// clap's `env =`, which would need a `value_delimiter` that changes the
+    /// flag's own semantics.
     #[arg(long = "provider")]
     pub providers: Vec<String>,
 
@@ -299,7 +306,11 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         filter: FilterOpts {
             tags: args.tags.clone(),
             filters: args.filters.clone(),
-            providers: args.providers.clone(),
+            providers: if args.providers.is_empty() {
+                providers_from_env()
+            } else {
+                args.providers.clone()
+            },
             prompts: args.prompts.clone(),
         },
         repeat: args.repeat.max(1),
@@ -515,7 +526,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
              configured provider answered nothing — a green gate here would mean the suite ran, \
              not that the system under test passed. Check why the primary provider is refusing \
              or unreachable, or pass --no-fallback to fail on it directly.",
-            result.summary.total
+            result.summary.total - result.summary.skipped
         );
         exit::USAGE
     } else if result.summary.failed > 0 || regressed {
@@ -547,8 +558,41 @@ fn graded_nothing(summary: &domarinn_core::result::RunSummary) -> bool {
 /// but not against the system it names. A *partial* fallback stays green on
 /// purpose — that is the feature working, and failing on it would make
 /// `fallback:` a liability rather than resilience.
+///
+/// Measured against the *graded* count, not `total`: `fallback_cases` excludes
+/// skipped cases, so comparing it to a total that includes them would let a run
+/// whose every graded case fell back slip through whenever anything skipped.
 fn answered_entirely_by_fallbacks(summary: &domarinn_core::result::RunSummary) -> bool {
-    summary.total > 0 && summary.fallback_cases == summary.total
+    let graded = summary.total.saturating_sub(summary.skipped);
+    graded > 0 && summary.fallback_cases == graded
+}
+
+/// `DOMARINN_PROVIDER`: the environment's `--provider`, comma-separated.
+///
+/// Consulted only when the flag is absent (the flag wins outright — see the
+/// arg's doc). No strict parse is needed the way `DOMARINN_NO_FALLBACK` needs
+/// one: any non-empty token is a candidate id, and an unknown one already
+/// fails loudly as `NoProvidersSelected` rather than shrinking the run. An id
+/// containing a comma is unaddressable through this variable; the flag still
+/// takes it verbatim.
+///
+/// Empty tokens are dropped, so `""` and `"a,,b"` behave as unset and `[a, b]`
+/// — the `DOMARINN_CACHE_DIR` "empty is unset" convention, which is also what
+/// lets CI wrappers pass a variable through unconditionally.
+fn providers_from_env() -> Vec<String> {
+    std::env::var("DOMARINN_PROVIDER")
+        .map(|raw| split_provider_list(&raw))
+        .unwrap_or_default()
+}
+
+/// The comma-splitting itself, separated from the env read so it can be tested
+/// without mutating process-global state.
+fn split_provider_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// `DOMARINN_NO_FALLBACK`, parsed strictly.
@@ -571,5 +615,41 @@ fn no_fallback_from_env() -> Result<bool, String> {
         other => Err(format!(
             "DOMARINN_NO_FALLBACK={other:?} is not a boolean. Use true or false."
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domarinn_core::result::RunSummary;
+
+    fn summary(total: u64, skipped: u64, fallback_cases: u64) -> RunSummary {
+        RunSummary {
+            total,
+            skipped,
+            fallback_cases,
+            ..Default::default()
+        }
+    }
+
+    /// The graded count is the denominator, not `total`: a skipped case graded
+    /// nothing, so it must neither trip the gate nor shield it.
+    #[test]
+    fn the_all_fallback_gate_measures_graded_cases() {
+        // Every graded case fell back; the skips must not hide that.
+        assert!(answered_entirely_by_fallbacks(&summary(10, 3, 7)));
+        // A partial fallback stays green — the feature working.
+        assert!(!answered_entirely_by_fallbacks(&summary(10, 3, 6)));
+        // All skipped: `graded_nothing`'s territory, not this gate's.
+        assert!(!answered_entirely_by_fallbacks(&summary(5, 5, 0)));
+        assert!(!answered_entirely_by_fallbacks(&summary(0, 0, 0)));
+    }
+
+    #[test]
+    fn provider_list_splitting_drops_empty_tokens() {
+        assert_eq!(split_provider_list("a, b"), vec!["a", "b"]);
+        assert_eq!(split_provider_list("a,,b,"), vec!["a", "b"]);
+        assert!(split_provider_list("").is_empty());
+        assert!(split_provider_list(" , ").is_empty());
     }
 }

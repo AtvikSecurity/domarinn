@@ -242,12 +242,25 @@ pub(super) async fn call_chain<'a>(
             outcome,
         };
 
-        if i < last {
-            if let Some(record) =
+        // Evaluated once per link, whichever branch reads it: `hand_off` runs
+        // the `runner.refusal_patterns` regexes against the output, and
+        // evaluating it a second time in `never_improved` below doubled that
+        // work for every middle-settling link. Skipped entirely for a
+        // single-link chain (`walk == false`, or no fallbacks), where neither
+        // branch needs it — that is every ordinary cell.
+        let handoff = (links.len() > 1)
+            .then(|| {
                 chain
                     .fallback
                     .hand_off(provider, &attempt.outcome, chain.empty_policy)
-            {
+            })
+            .flatten();
+        // Captured before the `if let` below moves `handoff`: a settling link
+        // "re-triggered" exactly when this evaluation returned `Some`.
+        let triggered = handoff.is_some();
+
+        if i < last {
+            if let Some(record) = handoff {
                 tracing::warn!(
                     from = %provider.id(),
                     to = %links[i + 1].id(),
@@ -287,12 +300,7 @@ pub(super) async fn call_chain<'a>(
         // past the primary — `i > 0` — because at a middle link `hand_off`
         // returning `Some` is what `continue`d, so reaching here means it did
         // not.
-        let never_improved = i > 0
-            && (attempt.outcome.is_err()
-                || chain
-                    .fallback
-                    .hand_off(provider, &attempt.outcome, chain.empty_policy)
-                    .is_some());
+        let never_improved = i > 0 && (attempt.outcome.is_err() || triggered);
         if never_improved {
             if let Some(p) = primary_attempt {
                 tracing::warn!(
@@ -348,8 +356,16 @@ pub(super) async fn call_chain<'a>(
 /// skips `slow-model` must not reach it through another provider's back door.
 ///
 /// A repeated id is dropped rather than rejected: trying the same provider twice
-/// in a row is a no-op, and `validate` already warns about it.
+/// in a row is a no-op, and `validate` already warns about it. So is the
+/// primary's own id — `validate` errors on `fallback: [self]`, but that runs
+/// only on the CLI path, and a chain built through the library must not hand a
+/// provider to itself.
+///
+/// Every drop is logged at `debug`: the build-failure `warn` at startup names a
+/// provider that *may* be skipped, and this is the only record of the cell
+/// where it actually was.
 pub(super) fn resolve_chain<'a>(
+    primary_id: &str,
     ids: &[String],
     by_id: &std::collections::HashMap<&str, &'a dyn Provider>,
     filter: &crate::filter::Filter,
@@ -358,7 +374,20 @@ pub(super) fn resolve_chain<'a>(
     let mut seen = std::collections::HashSet::new();
     ids.iter()
         .filter(|id| seen.insert(id.as_str()))
-        .filter(|id| filter.test_allows_provider(id, test))
-        .filter_map(|id| by_id.get(id.as_str()).copied())
+        .filter_map(|id| {
+            let kept = id.as_str() != primary_id
+                && filter.test_allows_provider(id, test)
+                && by_id.contains_key(id.as_str());
+            if !kept {
+                tracing::debug!(
+                    provider = %primary_id,
+                    test = ?test.id,
+                    link = %id,
+                    "fallback link dropped (self, excluded by the test, or never built)"
+                );
+                return None;
+            }
+            by_id.get(id.as_str()).copied()
+        })
         .collect()
 }

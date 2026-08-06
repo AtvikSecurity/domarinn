@@ -449,13 +449,14 @@ pub struct RunSummary {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[ts(as = "Option<std::collections::BTreeMap<String, u64>>", optional)]
     pub empty_counts: std::collections::BTreeMap<String, u64>,
-    /// Cases answered by a provider's `fallback:` chain rather than by the
-    /// provider the cell names.
+    /// *Graded* cases answered by a provider's `fallback:` chain rather than by
+    /// the provider the cell names. A skipped case does not count, whoever
+    /// answered it: it graded nothing.
     ///
-    /// A run where this equals `total` is refused by the CLI: every graded case
-    /// came from somewhere other than the system under test, so a green gate
-    /// would mean the suite ran, not that it passed. A partial fallback is
-    /// still green — that is the feature working.
+    /// A run where this equals the graded count (`total - skipped`) is refused
+    /// by the CLI: every graded case came from somewhere other than the system
+    /// under test, so a green gate would mean the suite ran, not that it
+    /// passed. A partial fallback is still green — that is the feature working.
     ///
     /// Absent at zero, for the byte-stability reason documented on
     /// `cache_read_tokens` above.

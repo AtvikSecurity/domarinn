@@ -583,3 +583,190 @@ async fn a_middle_link_erroring_untriggered_never_makes_the_case_worse() {
         "and the reported diagnosis is the primary's own"
     );
 }
+
+// ── `fallback_only:` — a provider that exists only to be handed to ──────────
+
+/// Like `run_suite`, but for the paths where the run itself must refuse.
+async fn try_run_suite(
+    yaml: &str,
+    opts: RunOptions,
+) -> Result<RunResult, domarinn_core::runner::RunError> {
+    let suite = domarinn_core::load_str(yaml).unwrap();
+    let cache = MemCache::default();
+    run(&suite, Path::new("."), &cache, None, &opts).await
+}
+
+const FALLBACK_ONLY: &str = "    fallback_only: true\n";
+
+/// The issue this flag exists for: a provider configured purely as somewhere to
+/// go on a refusal must not double the matrix.
+#[tokio::test]
+async fn a_fallback_only_provider_forms_no_cells_but_still_answers() {
+    let yaml = suite(
+        &format!(
+            "{}{}",
+            emitting("primary", REFUSES, &chain("reserve")),
+            emitting("reserve", ANSWERS, FALLBACK_ONLY)
+        ),
+        WANTS_GOOD,
+    );
+    let r = run_suite(&yaml, RunOptions::default()).await;
+    assert_eq!(r.cases.len(), 1, "the reserve must not expand into cells");
+    assert_eq!(r.cases[0].cell.provider_id, "primary");
+    assert_eq!(r.cases[0].status, CaseStatus::Pass);
+    assert_eq!(
+        r.cases[0].answered_by_provider_id.as_deref(),
+        Some("reserve"),
+        "excluded from the matrix, still reachable through the chain"
+    );
+}
+
+/// `--no-fallback` disables chain *walking*; matrix membership is static suite
+/// configuration. Combining them must not resurrect the reserve's cells.
+#[tokio::test]
+async fn no_fallback_keeps_a_fallback_only_provider_out_of_the_matrix() {
+    let yaml = suite(
+        &format!(
+            "{}{}",
+            emitting("primary", REFUSES, &chain("reserve")),
+            emitting("reserve", ANSWERS, FALLBACK_ONLY)
+        ),
+        WANTS_GOOD,
+    );
+    let r = run_suite(
+        &yaml,
+        RunOptions {
+            fallback: false,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(r.cases.len(), 1);
+    assert!(r.cases[0].answered_by_provider_id.is_none());
+}
+
+/// Every provider `fallback_only` is a suite that can never grade anything;
+/// exiting green on it would be the `graded_nothing` hole all over again.
+#[tokio::test]
+async fn a_suite_of_only_fallback_only_providers_is_nothing_to_run() {
+    let yaml = suite(&emitting("reserve", ANSWERS, FALLBACK_ONLY), WANTS_GOOD);
+    let err = try_run_suite(&yaml, RunOptions::default())
+        .await
+        .expect_err("an empty matrix must refuse, not exit green");
+    match err {
+        domarinn_core::runner::RunError::NothingToRun(
+            domarinn_core::empty_run::EmptyRun::FallbackOnlyExcluded { requested, .. },
+        ) => assert!(requested.is_empty(), "no --provider was involved"),
+        other => panic!("expected FallbackOnlyExcluded, got: {other}"),
+    }
+}
+
+/// A `--provider` naming a `fallback_only` provider is a contradiction — the
+/// flag chooses among cells and this provider has none — and the diagnosis must
+/// say that rather than the misleading "matches none of the suite's providers".
+#[tokio::test]
+async fn a_provider_filter_naming_a_fallback_only_provider_gets_the_specific_diagnosis() {
+    let yaml = suite(
+        &format!(
+            "{}{}",
+            emitting("primary", REFUSES, &chain("reserve")),
+            emitting("reserve", ANSWERS, FALLBACK_ONLY)
+        ),
+        WANTS_GOOD,
+    );
+    let mut opts = RunOptions::default();
+    opts.filter.providers = vec!["reserve".to_string()];
+    let err = try_run_suite(&yaml, opts).await.expect_err("no cells");
+    match err {
+        domarinn_core::runner::RunError::NothingToRun(
+            domarinn_core::empty_run::EmptyRun::FallbackOnlyExcluded {
+                requested,
+                fallback_only,
+                available,
+            },
+        ) => {
+            assert_eq!(requested, vec!["reserve".to_string()]);
+            assert_eq!(fallback_only, vec!["reserve".to_string()]);
+            assert_eq!(available, vec!["primary".to_string()]);
+        }
+        other => panic!("expected FallbackOnlyExcluded, got: {other}"),
+    }
+}
+
+// ── run-time guards for what `validate` catches only on the CLI path ────────
+
+/// `domarinn validate` refuses duplicate ids, but `validate()` is a CLI
+/// affordance — through the library API the id-keyed maps the runner builds
+/// would silently let the *last* duplicate win, handing cells the wrong chain.
+#[tokio::test]
+async fn duplicate_provider_ids_are_refused_at_run_time() {
+    let yaml = suite(
+        &format!("{}{}", emitting("p", ANSWERS, ""), emitting("p", OTHER, "")),
+        WANTS_GOOD,
+    );
+    let err = try_run_suite(&yaml, RunOptions::default())
+        .await
+        .expect_err("duplicate ids must not silently collapse");
+    assert!(
+        err.to_string().contains("duplicate provider id"),
+        "got: {err}"
+    );
+}
+
+/// Same argument, other direction: `validate` errors on `fallback: [self]`,
+/// but a chain built through the library must drop the self-link rather than
+/// hand a provider to itself.
+#[tokio::test]
+async fn a_self_referencing_chain_link_is_dropped_at_run_time() {
+    let yaml = suite(
+        &format!(
+            "{}{}",
+            emitting("primary", REFUSES, &chain("primary, backup")),
+            emitting("backup", ANSWERS, "")
+        ),
+        WANTS_GOOD,
+    );
+    let r = run_suite(&yaml, RunOptions::default()).await;
+    let case = r
+        .cases
+        .iter()
+        .find(|c| c.cell.provider_id == "primary")
+        .unwrap();
+    assert_eq!(
+        case.answered_by_provider_id.as_deref(),
+        Some("backup"),
+        "the self-link is dropped; the real fallback still answers"
+    );
+    assert_eq!(case.fallback_attempts.len(), 1, "primary was tried once");
+}
+
+/// `fallback_cases` feeds the CLI's "all graded cases were answered by a
+/// fallback" gate, so it must count graded cases: a skipped case formed no
+/// opinion, whoever answered it.
+#[tokio::test]
+async fn fallback_cases_excludes_skipped_cases() {
+    // The primary refuses (a trigger); the reserve answers with an empty output
+    // whose reason the suite then *skips*. The case both fell back and skipped.
+    let providers = format!(
+        "{}{}",
+        emitting("primary", REFUSES, &chain("reserve")),
+        emitting(
+            "reserve",
+            r#"{\"output\":\"\",\"empty_reason\":\"truncated\"}"#,
+            FALLBACK_ONLY
+        )
+    );
+    let yaml = format!(
+        "version: 1\nproject: test\nsuite: fallback\nrunner:\n  skip_on_empty_reason: [truncated]\nproviders:\n{providers}tests:\n{WANTS_GOOD}"
+    );
+    let r = run_suite(&yaml, RunOptions::default()).await;
+    assert_eq!(r.summary.total, 1);
+    assert_eq!(r.summary.skipped, 1);
+    let case = &r.cases[0];
+    assert_eq!(case.status, CaseStatus::Skip);
+    assert_eq!(case.answered_by_provider_id.as_deref(), Some("reserve"));
+    assert_eq!(
+        r.summary.fallback_cases, 0,
+        "a skipped case graded nothing, so it must not count as fallback-answered"
+    );
+}

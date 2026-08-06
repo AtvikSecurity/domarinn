@@ -142,6 +142,10 @@
           "items": {
             "type": "string"
           }
+        },
+        "fallback_only": {
+          "description": "Exclude this provider from the run matrix. It expands into no cells and\nnever faces the credential preflight; it exists only to be reached as\nanother provider's `fallback:` target.\n\nThis is the third selection axis, independent of the other two: a test's\n`only_providers` / `skip_providers` still governs whether a chain may\nreach it, and `--provider` cannot name it (that is a usage error — the\nflag chooses among cells, and a `fallback_only` provider has none).\n`--no-fallback` does not readmit it either: that flag disables chain\n*walking*, while matrix membership is static suite configuration.",
+          "type": "boolean"
         }
       },
       "required": [

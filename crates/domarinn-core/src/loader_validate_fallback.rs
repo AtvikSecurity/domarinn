@@ -31,6 +31,40 @@ pub(crate) fn check(suite: &Suite, issues: &mut Vec<Issue>) {
             });
         }
 
+        if provider.fallback_only && is_embeddings {
+            issues.push(Issue {
+                path: path.clone(),
+                message: format!(
+                    "provider '{}' is an embeddings provider, which never forms matrix cells \
+                     anyway; `fallback_only:` is for systems under test",
+                    provider.id
+                ),
+                severity: Severity::Error,
+            });
+        }
+
+        // A `fallback_only` provider nothing points at can never run at all —
+        // not as a cell (the flag), not through a chain (nothing names it).
+        // A warning rather than an error: the suite still runs, the same way a
+        // provider excluded by every test does.
+        if provider.fallback_only
+            && !is_embeddings
+            && !suite
+                .providers
+                .iter()
+                .any(|p| p.fallback.iter().any(|t| t == &provider.id))
+        {
+            issues.push(Issue {
+                path: path.clone(),
+                message: format!(
+                    "provider '{}' is `fallback_only`, but no other provider's `fallback:` names \
+                     it, so it can never run",
+                    provider.id
+                ),
+                severity: Severity::Warning,
+            });
+        }
+
         let mut seen: Vec<&str> = Vec::new();
         for (j, target) in provider.fallback.iter().enumerate() {
             let at = format!("{path}.fallback[{j}]");
@@ -95,6 +129,24 @@ pub(crate) fn check(suite: &Suite, issues: &mut Vec<Issue>) {
                 });
             }
         }
+    }
+
+    // Every system under test `fallback_only` is a matrix that is provably
+    // empty before a single test is read — the run-time refusal exists too
+    // (for library callers), but this is the mistake `validate` is for.
+    let under_test: Vec<&crate::config::Provider> = suite
+        .providers
+        .iter()
+        .filter(|p| !matches!(p.kind, ProviderKind::Embeddings { .. }))
+        .collect();
+    if !under_test.is_empty() && under_test.iter().all(|p| p.fallback_only) {
+        issues.push(Issue {
+            path: "providers".into(),
+            message: "every provider is `fallback_only`, so no cells can ever form; at least \
+                      one provider must be able to run its own cells"
+                .into(),
+            severity: Severity::Error,
+        });
     }
 
     if let Some(runner) = suite.runner.as_ref() {
@@ -215,5 +267,57 @@ tests:
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].severity, Severity::Error);
         assert_eq!(issues[0].path, "runner.refusal_patterns[0]");
+    }
+
+    #[test]
+    fn a_referenced_fallback_only_provider_is_clean() {
+        let yaml = TWO.replace(
+            "  - id: backup",
+            "    fallback: [backup]\n  - id: backup\n    fallback_only: true",
+        );
+        assert!(check_yaml(&yaml).is_empty(), "{:?}", check_yaml(&yaml));
+    }
+
+    #[test]
+    fn an_unreferenced_fallback_only_provider_warns_it_can_never_run() {
+        let yaml = TWO.replace("  - id: backup", "  - id: backup\n    fallback_only: true");
+        let issues = check_yaml(&yaml);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].severity, Severity::Warning);
+        assert!(issues[0].message.contains("can never run"));
+    }
+
+    #[test]
+    fn an_all_fallback_only_suite_is_an_error() {
+        let yaml = TWO
+            .replace(
+                "  - id: primary",
+                "  - id: primary\n    fallback_only: true",
+            )
+            .replace("  - id: backup", "  - id: backup\n    fallback_only: true");
+        let issues = check_yaml(&yaml);
+        // Two "never runs" warnings plus the structural error; the error is
+        // what `validate`'s exit code keys on.
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.severity == Severity::Error && i.message.contains("no cells")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn a_fallback_only_embeddings_provider_is_an_error() {
+        let yaml = TWO.replace(
+            "  - id: backup\n    type: exec\n    command: [\"true\"]",
+            "  - id: backup\n    type: embeddings\n    model: m\n    fallback_only: true",
+        );
+        let issues = check_yaml(&yaml);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.severity == Severity::Error && i.message.contains("fallback_only")),
+            "{issues:?}"
+        );
     }
 }
