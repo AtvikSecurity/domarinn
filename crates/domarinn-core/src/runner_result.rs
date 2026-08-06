@@ -191,8 +191,11 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
         }
         // Keyed on the field being present, which is set only when the answering
         // provider differed from the configured one — so a chain that was
-        // configured and never needed does not count.
-        if c.answered_by_provider_id.is_some() {
+        // configured and never needed does not count. Skipped cases do not
+        // count either, whoever answered them: this tally feeds the CLI's "all
+        // graded cases were answered by a fallback" gate, and a skipped case
+        // graded nothing.
+        if c.status != CaseStatus::Skip && c.answered_by_provider_id.is_some() {
             s.fallback_cases += 1;
         }
         // Keyed on the reason string, not a variant: the set is open, so an

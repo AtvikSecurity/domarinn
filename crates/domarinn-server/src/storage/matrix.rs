@@ -8,7 +8,9 @@
 //!
 //! Columns are always the complete set for the run (they are small); only the
 //! test rows paginate, over their first-seen `idx` boundary — the same
-//! opaque-cursor style the case-list endpoint uses.
+//! opaque-cursor style the case-list endpoint uses. The per-provider cost
+//! rollup is accumulated in that same complete scan, so it describes the run
+//! rather than the page.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -19,7 +21,7 @@ use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 
 use super::{empty_to_none, from_microusd, Storage};
-use crate::dto::matrix::{MatrixCell, MatrixColumn, MatrixResponse, MatrixRow};
+use crate::dto::matrix::{MatrixCell, MatrixColumn, MatrixResponse, MatrixRow, ProviderCost};
 use crate::runsets::{visible_run_predicate, RunVisibility};
 
 impl Storage {
@@ -60,6 +62,10 @@ struct RawCase {
     case_key: String,
     repeat_idx: i64,
     idx: i64,
+    /// The provider that answered when it was not `provider_id` (a fallback
+    /// stood in). `None` covers both "the configured provider answered" (`''`)
+    /// and "stored before this was recorded" (NULL) — see migration 17.
+    answered_by: Option<String>,
 }
 
 /// Accumulator for one test × column cell before it is finalized.
@@ -77,8 +83,36 @@ struct CellAcc {
     latency_count: i64,
     cost_micro_sum: i64,
     cost_any: bool,
+    /// **Graded** repeats answered by someone other than the column's
+    /// configured provider. A skipped repeat is excluded even when a fallback
+    /// answered it — see [`ProviderCostAcc`] for the two halves of the split.
+    fallback_answered: i64,
     /// `(repeat_idx, idx, case_key)` — sorted at finalize time.
     case_keys: Vec<(i64, i64, String)>,
+}
+
+/// Run-level cost accumulator for one *answering* provider.
+///
+/// # Two counts of "a fallback answered", deliberately
+///
+/// This is a **spend** view and [`CellAcc::fallback_answered`] is a **grading**
+/// view, and they disagree by design on one row shape: a case that was skipped
+/// *and* answered by a fallback (the answerer's output matched the suite's
+/// `skip_on_empty_reason`, so nothing was graded).
+///
+/// * Spend counts it. The call was made and the tokens were paid for, so
+///   dropping it would under-report a real bill — and `cases` here counts
+///   every row this provider was billed for, skipped ones included.
+/// * Grading does not. `fallback_answered` is the number the popover renders
+///   as "N answered by a fallback" beside the cell's graded verdicts, and it
+///   has to equal the CLI's `RunSummary.fallback_cases`, which counts only
+///   non-`Skip` cases. Counting the skip here is how web and CLI came to
+///   disagree.
+struct ProviderCostAcc {
+    provider_id: String,
+    cases: i64,
+    cost_micro_sum: i64,
+    cost_any: bool,
 }
 
 /// Accumulator for one test row: its cells keyed by column index.
@@ -99,7 +133,8 @@ impl MatrixFilter {
         let visible = visible_run_predicate(1, &self.visibility, &mut args);
         let sql = format!(
             "SELECT test_id, provider_id, prompt_id, name, status, score,
-                    output_hash, latency_ms, cost_microusd, case_key, repeat_idx, idx
+                    output_hash, latency_ms, cost_microusd, case_key, repeat_idx, idx,
+                    answered_by_provider_id
              FROM cases
              WHERE run_id = ?1 AND provider_id IS NOT NULL AND provider_id != ''
                AND {visible}
@@ -127,6 +162,10 @@ impl MatrixFilter {
                 case_key: row.get::<_, String>(9)?,
                 repeat_idx: row.get::<_, Option<i64>>(10)?.unwrap_or(0),
                 idx: row.get::<_, i64>(11)?,
+                // `''` (the configured provider answered) and NULL (a legacy
+                // row, never backfilled) both read as `None`, so both attribute
+                // to the configured provider below.
+                answered_by: empty_to_none(row.get::<_, Option<String>>(12)?),
             })
         })?;
 
@@ -136,12 +175,48 @@ impl MatrixFilter {
         // First-seen ordered rows: `test_id` -> index into `row_accs`.
         let mut row_index: HashMap<String, usize> = HashMap::new();
         let mut row_accs: Vec<RowAcc> = Vec::new();
+        // First-seen ordered run-level cost, keyed by the ANSWERING provider.
+        // Accumulated inside this scan, which covers the whole run — the
+        // pagination below only slices `row_accs`, so the rollup is the same on
+        // every page rather than a total of whatever happens to be on this one.
+        let mut cost_index: HashMap<String, usize> = HashMap::new();
+        let mut cost_accs: Vec<ProviderCostAcc> = Vec::new();
 
         for raw in rows {
             let raw = raw?;
             // A provider-bearing row with no test identity can't be placed.
             if raw.test_id.is_empty() {
                 continue;
+            }
+
+            // Bill the provider that actually made the call. A fallback that
+            // never formed a column of its own still gets an entry here; a
+            // legacy row (no answerer recorded) falls back to the configured
+            // provider, which is the only attribution its data supports.
+            //
+            // Every row is attributed, `Skip` included: a skipped case still
+            // made the provider call that produced the output the skip rule
+            // matched on, so the tokens were spent. The cell's
+            // `fallback_answered` draws the line in the other place — see
+            // `ProviderCostAcc`.
+            let answerer = raw
+                .answered_by
+                .clone()
+                .unwrap_or_else(|| raw.provider_id.clone());
+            let cost_pos = *cost_index.entry(answerer.clone()).or_insert_with(|| {
+                cost_accs.push(ProviderCostAcc {
+                    provider_id: answerer,
+                    cases: 0,
+                    cost_micro_sum: 0,
+                    cost_any: false,
+                });
+                cost_accs.len() - 1
+            });
+            let cost_acc = &mut cost_accs[cost_pos];
+            cost_acc.cases += 1;
+            if let Some(cost) = raw.cost_microusd {
+                cost_acc.cost_micro_sum += cost;
+                cost_acc.cost_any = true;
             }
 
             let col_key = (raw.provider_id.clone(), raw.prompt_id.clone());
@@ -193,6 +268,14 @@ impl MatrixFilter {
                 cell.cost_micro_sum += cost;
                 cell.cost_any = true;
             }
+            // Graded repeats only. A `Skip` can carry an answerer — the
+            // fallback replied, and the suite's `skip_on_empty_reason` matched
+            // what came back — but the CLI's `fallback_cases` excludes it, and
+            // a cell that claims a handoff the CLI never counted is the
+            // disagreement this exclusion exists to close.
+            if raw.answered_by.is_some() && raw.status != CaseStatus::Skip {
+                cell.fallback_answered += 1;
+            }
             cell.case_keys.push((raw.repeat_idx, raw.idx, raw.case_key));
         }
 
@@ -226,10 +309,24 @@ impl MatrixFilter {
             .map(|row| finalize_row(row, total_columns))
             .collect();
 
+        let provider_costs: Vec<ProviderCost> = cost_accs
+            .into_iter()
+            .map(|acc| ProviderCost {
+                provider_id: acc.provider_id,
+                cases: acc.cases,
+                cost_usd: if acc.cost_any {
+                    from_microusd(Some(acc.cost_micro_sum))
+                } else {
+                    None
+                },
+            })
+            .collect();
+
         Ok(MatrixResponse {
             run_id: self.run_id,
             columns,
             rows,
+            provider_costs,
             next_cursor,
         })
     }
@@ -287,6 +384,7 @@ fn finalize_cell(acc: CellAcc) -> MatrixCell {
         distinct_outputs: acc.output_hashes.len() as i64,
         latency_ms_mean,
         cost_usd,
+        fallback_answered: acc.fallback_answered,
         case_keys,
     }
 }

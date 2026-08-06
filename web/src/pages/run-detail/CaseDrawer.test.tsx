@@ -286,6 +286,12 @@ function v2Detail(fields: {
   status?: string;
   error?: string;
   error_details?: unknown;
+  answered_by_provider_id?: string;
+  fallback_attempts?: {
+    provider_id: string;
+    empty_reason?: string;
+    error_class?: string;
+  }[];
 }): CaseDetail {
   return {
     isPending: false,
@@ -582,6 +588,68 @@ describe("CaseDrawer schema-v2 sections", () => {
     // One priced row, and exactly one — a `contains` assertion calls no model,
     // so a cost there would be a claim that local evaluation is billable.
     expect(screen.getAllByText(/\$0\.0042/)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fallback attribution. `cell.provider_id` stays the CONFIGURED provider so
+// `case_key` is stable and an `--against` baseline still joins the same row —
+// which means the drawer would otherwise attribute this output, its cost and
+// its verdict to a provider that never ran.
+// ---------------------------------------------------------------------------
+
+describe("CaseDrawer fallback attribution", () => {
+  beforeEach(() => {
+    mockUseCaseDetail.mockReset();
+    mockUseSuites.mockReset();
+    mockUseCaseHistory.mockReset();
+    mockUseCaseHistory.mockReturnValue(idleHistory());
+    setSuites(null);
+  });
+
+  it("names the answerer and the provider it stood in for, and the links tried", () => {
+    mockUseCaseDetail.mockReturnValue(
+      v2Detail({
+        answered_by_provider_id: "reserve-mini",
+        fallback_attempts: [
+          { provider_id: "openai", empty_reason: "refusal" },
+          { provider_id: "backup-a", error_class: "provider_rate_limit" },
+        ],
+      }),
+    );
+    renderDrawer();
+
+    // `openai` is the configured provider on the case's own cell.
+    expect(
+      screen.getByText("Answered by reserve-mini — fallback for openai"),
+    ).toBeInTheDocument();
+    // Each passed-over link with the cause that moved the chain along; exactly
+    // one of empty_reason / error_class is set per link.
+    expect(screen.getByText("openai: refusal")).toBeInTheDocument();
+    expect(screen.getByText("backup-a: provider_rate_limit")).toBeInTheDocument();
+  });
+
+  it("renders the notice without an attempts list when the chain recorded none", () => {
+    // `fallback_attempts` is absent — not empty — on a blob written before the
+    // field existed, so its own presence is the render condition.
+    mockUseCaseDetail.mockReturnValue(
+      v2Detail({ answered_by_provider_id: "reserve-mini" }),
+    );
+    renderDrawer();
+
+    expect(
+      screen.getByText("Answered by reserve-mini — fallback for openai"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
+  });
+
+  it("renders neither the notice nor any attempts for a normal case", () => {
+    mockUseCaseDetail.mockReturnValue(v2Detail({}));
+    renderDrawer();
+
+    expect(screen.queryByText(/Answered by/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fallback for/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
   });
 });
 

@@ -9,7 +9,9 @@
 
 use std::collections::HashSet;
 
-use domarinn_core::result::{AssertResult, AssertStatus, CaseResult, CaseStatus, RunResult};
+use domarinn_core::result::{
+    AssertResult, AssertStatus, CaseResult, CaseStatus, FallbackAttempt, RunResult,
+};
 use domarinn_core::types::{Output, RenderedPrompt};
 
 use crate::output::{colored_glyph, display_name, status_glyph};
@@ -187,6 +189,13 @@ pub fn render_case_detail(case: &CaseResult, palette: &Palette, show_raw: bool) 
     if case.cached {
         ident.push_str(" · cached");
     }
+    // Who actually answered, when that was not the provider the cell names. The
+    // cell keeps the *configured* id so the case key stays joinable across runs,
+    // which makes this the only place the reader can see that a different model
+    // produced the output they are about to grade.
+    if let Some(answered_by) = &case.answered_by_provider_id {
+        ident.push_str(&format!(" · answered by {answered_by} (fallback)"));
+    }
     out.push_str(&format!("  {ident}\n"));
 
     // Metrics line: score, latency, and the optional token/cost/stop segments.
@@ -207,6 +216,18 @@ pub fn render_case_detail(case: &CaseResult, palette: &Palette, show_raw: bool) 
 
     if !case.tags.is_empty() {
         out.push_str(&format!("  tags: {}\n", case.tags.join(", ")));
+    }
+
+    // The links walked past before one answered, in configured order. Printed
+    // even when the chain eventually succeeded: a case that quietly cost three
+    // provider calls looks identical to a first-try answer without it.
+    if !case.fallback_attempts.is_empty() {
+        let tried: Vec<String> = case
+            .fallback_attempts
+            .iter()
+            .map(|a| format!("{} ({})", a.provider_id, attempt_reason(a)))
+            .collect();
+        out.push_str(&format!("  fallback: tried {}\n", tried.join(", ")));
     }
 
     if let Some(prompt) = &case.prompt {
@@ -250,6 +271,22 @@ pub fn render_case_detail(case: &CaseResult, palette: &Palette, show_raw: bool) 
     }
 
     out
+}
+
+/// Why one chain link was passed over: the empty reason it answered with, or
+/// the class of error that stopped it answering at all.
+///
+/// Exactly one of the two is set by construction, so the `unknown` arm is
+/// unreachable today — it exists because both are open string newtypes read
+/// back from a stored run, and a document written by a build this one has never
+/// met is a decoding problem, not a reason to panic.
+fn attempt_reason(attempt: &FallbackAttempt) -> &str {
+    attempt
+        .empty_reason
+        .as_ref()
+        .map(|r| r.as_str())
+        .or_else(|| attempt.error_class.as_ref().map(|c| c.as_str()))
+        .unwrap_or("unknown")
 }
 
 /// The prompt section body: text prompts print verbatim (indented); message
@@ -399,6 +436,8 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use domarinn_core::asserts::AssertName;
+    use domarinn_core::empty::EmptyReason;
+    use domarinn_core::error_class::ErrorClass;
     use domarinn_core::ids::RunId;
     use domarinn_core::result::{CellKey, RunSummary, RESULT_SCHEMA_VERSION};
     use domarinn_core::types::{ChatMessage, ChatRole, TokenUsage};
@@ -733,6 +772,67 @@ mod tests {
         c.raw = Some(serde_json::json!({"k": "v"}));
         let text = render_case_detail(&c, &Palette::disabled(), false);
         assert!(!text.contains("raw"), "raw omitted without --raw");
+    }
+
+    /// A case a `fallback:` chain answered says so twice: on the identity line
+    /// (who produced the output being graded) and in the body (what was tried
+    /// first, and why it was passed over). Neither is recoverable from the cell,
+    /// which keeps the *configured* provider so the case key stays joinable.
+    #[test]
+    fn detail_reports_the_fallback_that_answered_and_what_was_tried() {
+        let mut c = case(cell("primary", "greet", 0), CaseStatus::Pass);
+        c.answered_by_provider_id = Some("backup".into());
+        c.fallback_attempts = vec![FallbackAttempt {
+            provider_id: "primary".into(),
+            empty_reason: Some(EmptyReason::new(EmptyReason::REFUSAL)),
+            error_class: None,
+        }];
+
+        let text = render_case_detail(&c, &Palette::disabled(), false);
+        assert!(
+            text.contains("provider primary · test greet · repeat 0 · 1 attempt · answered by backup (fallback)"),
+            "got:\n{text}"
+        );
+        assert!(
+            text.contains("fallback: tried primary (refusal)"),
+            "got:\n{text}"
+        );
+    }
+
+    /// Several passed-over links comma-join in configured order, and a link that
+    /// failed outright is named by its error class rather than an empty reason.
+    #[test]
+    fn detail_joins_multiple_fallback_attempts_with_either_cause() {
+        let mut c = case(cell("primary", "greet", 0), CaseStatus::Pass);
+        c.answered_by_provider_id = Some("third".into());
+        c.fallback_attempts = vec![
+            FallbackAttempt {
+                provider_id: "primary".into(),
+                empty_reason: Some(EmptyReason::new(EmptyReason::REFUSAL)),
+                error_class: None,
+            },
+            FallbackAttempt {
+                provider_id: "second".into(),
+                empty_reason: None,
+                error_class: Some(ErrorClass::new("timeout")),
+            },
+        ];
+
+        let text = render_case_detail(&c, &Palette::disabled(), false);
+        assert!(
+            text.contains("fallback: tried primary (refusal), second (timeout)"),
+            "got:\n{text}"
+        );
+    }
+
+    /// The overwhelming majority of cases never fall back, and must print
+    /// exactly as they did before the fields existed.
+    #[test]
+    fn detail_omits_fallback_lines_when_nothing_fell_back() {
+        let c = case(cell("p", "t", 0), CaseStatus::Pass);
+        let text = render_case_detail(&c, &Palette::disabled(), false);
+        assert!(!text.contains("answered by"), "got:\n{text}");
+        assert!(!text.contains("fallback"), "got:\n{text}");
     }
 
     #[test]

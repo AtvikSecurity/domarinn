@@ -1,4 +1,4 @@
-import type { CaseResult, RenderedPrompt } from "@/api";
+import type { CaseResult, FallbackAttempt, RenderedPrompt } from "@/api";
 import { hash, pick, rand, round2 } from "./rng";
 import { NOUNS, VERBS } from "./suites";
 import { RUN_META_BY_ID, type RunMeta } from "./runMeta";
@@ -99,6 +99,26 @@ function v2Fields(
   return { prompt, stop_reason, raw, vars, request };
 }
 
+/**
+ * The links walked past before one answered, in configured order.
+ *
+ * The first entry is the *configured* provider itself: the chain starts at the
+ * primary, and it is only in this list because it declined to answer. Exactly
+ * one of `empty_reason` / `error_class` is set per link — a link either replied
+ * with nothing gradeable, or failed to reply at all — so the drawer can print
+ * either without a "unknown" branch.
+ *
+ * Returned only for a case that actually fell back; every other case omits the
+ * key entirely, matching `skip_serializing_if` on the wire.
+ */
+function fallbackAttempts(row: MockCaseRow): FallbackAttempt[] {
+  return [
+    rand("fbcause", row.seed) < 0.5
+      ? { provider_id: row.provider_id, empty_reason: "refusal" }
+      : { provider_id: row.provider_id, error_class: "provider_rate_limit" },
+  ];
+}
+
 export function caseDetail(runId: string, caseKey: string): CaseResult | undefined {
   const meta = RUN_META_BY_ID.get(runId);
   if (!meta) return undefined;
@@ -133,6 +153,14 @@ export function caseDetail(runId: string, caseKey: string): CaseResult | undefin
     // beside the verdict is the only account of it.
     output: row.empty_reason != null ? "" : fullOutput(meta, row.seed, row.status),
     ...(row.empty_reason != null ? { empty_reason: row.empty_reason } : {}),
+    // `cell.provider_id` above stays the CONFIGURED provider, so these two keys
+    // are the only record that someone else did the work.
+    ...(row.answered_by_provider_id != null
+      ? {
+          answered_by_provider_id: row.answered_by_provider_id,
+          fallback_attempts: fallbackAttempts(row),
+        }
+      : {}),
     ...v2Fields(meta, row),
     asserts,
     usage: { input_tokens: row.prompt_tokens, output_tokens: row.completion_tokens },

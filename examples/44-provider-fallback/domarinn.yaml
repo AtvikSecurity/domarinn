@@ -37,6 +37,10 @@
 # deliberately does NOT strip the chain — a run that silently lost the
 # resilience you configured would look exactly like fallback not working.
 #
+# That is selection, made at the invocation. When the backup should never form
+# cells at all — no flag to remember, and the suite itself states what a run
+# costs — mark it `fallback_only: true` instead; example 45.
+#
 # Run:  domarinn run examples/44-provider-fallback --provider primary
 version: 1
 project: examples

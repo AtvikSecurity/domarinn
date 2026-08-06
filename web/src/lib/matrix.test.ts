@@ -11,7 +11,7 @@ import {
 import type { MatrixCell, MatrixResponse } from "@/api";
 
 function matrix(columns: MatrixResponse["columns"]): MatrixResponse {
-  return { run_id: "r", columns, rows: [], next_cursor: null };
+  return { run_id: "r", columns, rows: [], provider_costs: [], next_cursor: null };
 }
 
 /** A cell carrying only the fields a given assertion needs. */
@@ -27,6 +27,7 @@ function cell(partial: Partial<MatrixCell>): MatrixCell {
     distinct_outputs: 1,
     latency_ms_mean: null,
     cost_usd: null,
+    fallback_answered: 0,
     case_keys: [],
     ...partial,
   };

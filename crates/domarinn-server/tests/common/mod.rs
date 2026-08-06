@@ -223,6 +223,9 @@ pub struct CaseSpec {
     pub error_class: Option<&'static str>,
     /// Why the output came back with nothing gradeable in it (default: none).
     pub empty_reason: Option<&'static str>,
+    /// The provider that answered when it was not `provider` — i.e. a fallback
+    /// stood in for the configured one (default: none).
+    pub answered_by: Option<&'static str>,
 }
 
 impl CaseSpec {
@@ -246,7 +249,15 @@ impl CaseSpec {
             assert_digest: None,
             cached: false,
             empty_reason: None,
+            answered_by: None,
         }
+    }
+
+    /// Record that a fallback provider answered this case in place of the
+    /// configured one (default: none — the configured provider answered).
+    pub fn answered_by(mut self, provider: &'static str) -> Self {
+        self.answered_by = Some(provider);
+        self
     }
 
     /// Set the case's empty reason (default: none).
@@ -365,10 +376,11 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
     CaseResult {
         cache_key: None,
         tool_calls: Vec::new(),
-        // No fixture falls back: the server stores and re-serializes whatever
-        // it is handed, and leaving these at their defaults is what keeps the
+        // Unset by default: the server stores and re-serializes whatever it is
+        // handed, and leaving these at their defaults is what keeps most
         // fixtures byte-identical to a run written before the fields existed.
-        answered_by_provider_id: None,
+        // `.answered_by()` opts one case into the fallback shape.
+        answered_by_provider_id: spec.answered_by.map(str::to_string),
         fallback_attempts: Vec::new(),
         cell,
         case_key,

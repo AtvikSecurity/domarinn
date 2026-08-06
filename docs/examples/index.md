@@ -73,6 +73,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 42  | [Replaying a tool-using transcript](templates-and-test-data.md#example-42--replaying-a-tool-using-transcript) | A turn that IS a tool call, the result that came back, and the reasoning behind it. |
 | 43  | [Reaching a model through a gateway](models-grading-and-budgets.md#example-43--reaching-a-model-through-a-gateway) | `request:` — the auth scheme, headers, query and body overlay a gateway needs. |
 | 44  | [A second provider answers when the first refuses](models-grading-and-budgets.md#example-44--a-second-provider-answers-when-the-first-refuses) | `fallback:` — resilience without changing which provider the case belongs to. |
+| 45  | [A reserve provider that never forms a cell](models-grading-and-budgets.md#example-45--a-reserve-provider-that-never-forms-a-cell) | `fallback_only:` — reachable as a handoff, absent from the matrix, so adopting a backup does not double the bill. |
 
 ## See also
 

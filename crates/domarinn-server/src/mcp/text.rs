@@ -189,11 +189,54 @@ pub fn run_summary(structured: &Value) -> String {
     json_block(structured)
 }
 
+/// The key `cases_table` renders the effective answerer under. Derived, so it
+/// cannot collide with a real field of the case DTO.
+const EFFECTIVE_ANSWERER: &str = "__answered_by_effective";
+
+/// Project each case row's **effective** answerer into [`EFFECTIVE_ANSWERER`]:
+/// `answered_by_provider_id` when it names a provider, else the row's own
+/// `provider_id`.
+///
+/// The collapse rule itself is defined once, on
+/// `domarinn_types::CaseResult::answering_provider_id()` (`answered_by ??
+/// configured`); this is its column-space mirror, for the list path, which
+/// works from promoted DB columns and never builds a `CaseResult`. Same rule as
+/// `storage::matrix`'s COALESCE and the CLI diff's substitution, so all three
+/// surfaces name the same provider.
+///
+/// Note the DTO omits `answered_by_provider_id` entirely when the configured
+/// provider answered *and* for legacy pre-backfill rows, so "absent" is the
+/// overwhelmingly common case and the one that must substitute — rendering `-`
+/// there is what forked this surface from the others. A row with no
+/// `provider_id` either (a failed-backfill sentinel) has nothing to substitute
+/// and still renders `-`.
+fn with_effective_answerer(cases: &Value) -> Value {
+    let Some(rows) = cases.as_array() else {
+        return cases.clone();
+    };
+    Value::Array(
+        rows.iter()
+            .map(|row| {
+                let effective = match &row["answered_by_provider_id"] {
+                    Value::String(s) if !s.is_empty() => Value::String(s.clone()),
+                    _ => row["provider_id"].clone(),
+                };
+                let mut row = row.clone();
+                if let Some(map) = row.as_object_mut() {
+                    map.insert(EFFECTIVE_ANSWERER.to_string(), effective);
+                }
+                row
+            })
+            .collect(),
+    )
+}
+
 /// Case lists carry `output_preview`, which is model-generated and therefore
 /// untrusted — so the whole table is fenced and warned about.
 pub fn cases_table(cases: &Value, run_id: &str) -> String {
+    let cases = with_effective_answerer(cases);
     let body = table(
-        cases,
+        &cases,
         &[
             Column {
                 header: "case_key",
@@ -228,6 +271,13 @@ pub fn cases_table(cases: &Value, run_id: &str) -> String {
             Column {
                 header: "empty",
                 key: "empty_reason",
+            },
+            // Who actually answered: the fallback when one stood in, else the
+            // configured provider — never `-` on a row that has a provider at
+            // all. See `with_effective_answerer`.
+            Column {
+                header: "answered_by",
+                key: EFFECTIVE_ANSWERER,
             },
             Column {
                 header: "preview",
@@ -377,6 +427,42 @@ mod tests {
             }],
         );
         assert!(out.contains('-'));
+    }
+
+    /// The list path works from DB columns, not a `CaseResult`, so the
+    /// `answered_by ?? configured` collapse has to be mirrored here. Rendering
+    /// `-` for the (overwhelmingly common) absent answerer is what made this
+    /// table disagree with the matrix and the CLI diff.
+    #[test]
+    fn answered_by_renders_the_effective_answerer() {
+        let out = cases_table(
+            &json!([
+                { "case_key": "c1", "provider_id": "primary" },
+                { "case_key": "c2", "provider_id": "primary",
+                  "answered_by_provider_id": "reserve" },
+                { "case_key": "c3" },
+            ]),
+            "r1",
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        let row = |key: &str| -> &str {
+            lines
+                .iter()
+                .find(|l| l.starts_with(key))
+                .unwrap_or_else(|| panic!("no row for {key}"))
+        };
+        // No handoff: the configured provider is substituted, not `-`.
+        assert!(
+            row("c1").contains("primary"),
+            "expected the configured provider: {}",
+            row("c1")
+        );
+        // A handoff names the fallback, and the configured provider stays in
+        // its own column.
+        assert!(row("c2").contains("reserve"), "{}", row("c2"));
+        assert!(row("c2").contains("primary"), "{}", row("c2"));
+        // Nothing to substitute (a failed-backfill row): still `-`.
+        assert!(row("c3").contains('-'), "{}", row("c3"));
     }
 
     #[test]

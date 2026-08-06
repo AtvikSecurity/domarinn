@@ -317,6 +317,36 @@ describe("matrix-shaped fixture suite", () => {
     expect(providerCaseCount).toBe(48); // 2 prompts × 12 tests × 2 repeats
   });
 
+  // A fallback that is not one of the suite's configured providers is the shape
+  // the whole feature exists for: it answers for someone else, forms no column,
+  // and spends its own tokens. A fixture without one leaves every fallback
+  // surface in the UI unreachable.
+  it("attributes run cost to the provider that ANSWERED, not the configured one", () => {
+    const m = buildMatrix(MATRIX_RUN)!;
+    const items = runCases(MATRIX_RUN).map(toCaseListItem);
+    const fellBack = items.filter((c) => c.answered_by_provider_id != null);
+    expect(fellBack.length).toBeGreaterThan(0);
+    for (const c of fellBack) {
+      // The configured provider is untouched — the matrix column and every
+      // `case_key` join depend on it.
+      expect(c.answered_by_provider_id).toBe("reserve-mini");
+      expect(c.provider_id).not.toBe("reserve-mini");
+    }
+
+    // `cases` across every entry covers the whole run, on every page.
+    expect(m.provider_costs.reduce((s, p) => s + p.cases, 0)).toBe(items.length);
+    // The answerer bills itself, and forms no column of its own.
+    const reserve = m.provider_costs.find((p) => p.provider_id === "reserve-mini");
+    expect(reserve?.cases).toBe(fellBack.length);
+    expect(m.columns.some((c) => c.provider_id === "reserve-mini")).toBe(false);
+
+    // Cell-level: the fallback repeats are counted where they were configured.
+    const cellFallbacks = m.rows
+      .flatMap((r) => r.cells)
+      .reduce((sum, cell) => sum + (cell?.fallback_answered ?? 0), 0);
+    expect(cellFallbacks).toBe(fellBack.length);
+  });
+
   it("buildMatrix collapses a flat run to a single column and 404s an unknown run", () => {
     const m = buildMatrix(MONEY_RUN, { limit: 5 })!;
     expect(m.columns).toEqual([{ provider_id: "openai", prompt_id: null }]);

@@ -481,7 +481,9 @@ pub const ROWS: &[Example] = &[
         // One route, answering a *sequence*: the primary draws the refusal, the
         // fallback draws the answer. `--provider primary` keeps `backup` out of
         // the matrix while leaving it reachable as a fallback, which is the
-        // filter behaviour this example also documents.
+        // filter behaviour this example also documents. It is selection at the
+        // invocation; example 45 does the same exclusion from inside the suite
+        // with `fallback_only:`.
         stub: &[Route {
             fragment: "/v1/messages",
             bodies: &[stubs::ANTHROPIC_EMPTY_REFUSAL, stubs::ANTHROPIC_TEXT],
@@ -507,6 +509,39 @@ pub const ROWS: &[Example] = &[
             exit: 0,
             cells: Cells::pass(2),
             case_ids: &["policy/return-window", "policy/return-window-again"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
+    Example {
+        dir: "45-fallback-only",
+        shows: "`fallback_only:` — a reserve provider that is reachable but forms no cells",
+        env: &[
+            ("CLAUDE_GATEWAY_URL", Env::StubBase),
+            ("ANTHROPIC_API_KEY", Env::Literal("sk-ant-stub-not-real")),
+        ],
+        // The same sequence example 44 draws, for a run invoked with no
+        // `--provider` at all. That is the whole claim: `reserve` is in the
+        // suite and is *not* in the matrix, because the suite says so.
+        stub: &[Route {
+            fragment: "/v1/messages",
+            bodies: &[stubs::ANTHROPIC_EMPTY_REFUSAL, stubs::ANTHROPIC_TEXT],
+        }],
+        // Three calls, and the arithmetic is the evidence. Two tests over a
+        // one-provider matrix is two cells: the first draws the refusal and
+        // hands off to `reserve`, which answers (2 calls), and the second is
+        // answered by `primary` itself (1). Were `fallback_only` ignored,
+        // `reserve` would form two cells of its own and this would be 4 cells
+        // and 4 calls — so `Cells::pass(2)` and `stub_calls: 3` together fail
+        // if membership ever stops being enforced. The route repeats its last
+        // body, so only the first draw is the refusal.
+        stub_calls: 3,
+        steps: &[Step {
+            argv: RUN,
+            exit: 0,
+            cells: Cells::pass(2),
+            case_ids: &["support/refund-eligibility", "support/refund-window"],
             priced: false,
             writes: &[],
             cache_hits: 0,

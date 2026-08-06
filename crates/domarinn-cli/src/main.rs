@@ -316,8 +316,23 @@ fn cmd_list(what: ListKind, path: &Path, json: bool, generators: bool) -> u8 {
     };
     match what {
         ListKind::Providers => {
-            let ids: Vec<&str> = suite.providers.iter().map(|p| p.id.as_str()).collect();
-            print_list(&ids, json);
+            if json {
+                // The JSON shape stays a plain id array — it predates the
+                // fallback fields and scripts index it positionally.
+                let ids: Vec<&str> = suite.providers.iter().map(|p| p.id.as_str()).collect();
+                print_list(&ids, json);
+            } else {
+                for p in &suite.providers {
+                    let mut line = p.id.clone();
+                    if p.fallback_only {
+                        line.push_str(" (fallback_only)");
+                    }
+                    if !p.fallback.is_empty() {
+                        line.push_str(&format!(" -> fallback: [{}]", p.fallback.join(", ")));
+                    }
+                    println!("{line}");
+                }
+            }
         }
         ListKind::Prompts => {
             let ids: Vec<&str> = suite.prompts.iter().map(|p| p.id.as_str()).collect();

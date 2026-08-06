@@ -85,6 +85,7 @@ const SHELL_STEPS: &[ShellStep] = &[
             ("DOMARINN_TOKEN", ""),
             ("DOMARINN_BRANCH", ""),
             ("INPUT_CONFIG", "suite.yaml"),
+            ("INPUT_PROVIDER", ""),
             ("INPUT_AGAINST", ""),
             ("INPUT_ALLOW_EMPTY", "false"),
             ("INPUT_ALLOW_SHARE_FAILURE", "false"),
@@ -382,6 +383,68 @@ fn the_share_opt_out_only_travels_with_share() {
     );
 }
 
+/// The `provider:` input expands to repeated `--provider` flags — the only
+/// path from the composite action to the CLI's cell selection. Comma and space
+/// separators both work, and an empty input appends nothing, so the default
+/// still runs the whole matrix.
+#[test]
+fn the_provider_input_expands_to_repeated_flags() {
+    let running = |provider: &str| {
+        let ws = Workspace::new();
+        let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
+        let ran = run_step(
+            "eval",
+            &[("DOMARINN_BIN", &stub), ("INPUT_PROVIDER", provider)],
+            &ws,
+        );
+        ran.log
+            .lines()
+            .find(|line| line.starts_with("Running: domarinn "))
+            .unwrap_or_else(|| panic!("the step logs the command it ran:\n{}", ran.log))
+            .to_string()
+    };
+
+    assert!(
+        !running("").contains("--provider"),
+        "an empty input must not shrink the matrix"
+    );
+    let comma = running("primary,canary");
+    assert!(
+        comma.contains("--provider primary") && comma.contains("--provider canary"),
+        "comma-separated ids become repeated flags: {comma}"
+    );
+    let spaced = running("primary canary");
+    assert!(
+        spaced.contains("--provider primary") && spaced.contains("--provider canary"),
+        "space-separated ids become repeated flags: {spaced}"
+    );
+}
+
+/// Splitting must not also glob. An unquoted `$var` in a bash for-loop expands
+/// patterns against the working directory, so an id like `model-[a]` beside a
+/// checkout containing a file `model-a` would silently select a *different*
+/// provider than the one the workflow named.
+#[test]
+fn the_provider_input_never_globs_against_the_workspace() {
+    let ws = Workspace::new();
+    std::fs::write(ws.path().join("model-a"), "").expect("a decoy file the glob would match");
+    let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
+    let ran = run_step(
+        "eval",
+        &[("DOMARINN_BIN", &stub), ("INPUT_PROVIDER", "model-[a]")],
+        &ws,
+    );
+    let line = ran
+        .log
+        .lines()
+        .find(|line| line.starts_with("Running: domarinn "))
+        .unwrap_or_else(|| panic!("the step logs the command it ran:\n{}", ran.log));
+    assert!(
+        line.contains("--provider model-[a]") && !line.contains("--provider model-a "),
+        "the id must reach the CLI verbatim, not glob-matched: {line}"
+    );
+}
+
 /// The contract: `1` means the model regressed and the PR is to blame, `3`
 /// means the harness broke and it is not. A CI consumer sees that distinction
 /// only here, so the two must not render the same.
@@ -618,6 +681,195 @@ fn the_shape_this_test_assumes_still_holds() {
             declared, covered,
             "{name}: an input the step reads but this test never sets is an \
              input whose effect on the exit-code contract is untested"
+        );
+    }
+}
+
+// ── Parity ratchet: the action's surface vs the CLI's `run` surface ─────────
+//
+// Issue #83's root shape: `--provider` existed for a year of releases while the
+// composite action had no way to say it, so the CLI's answer to a real problem
+// was unreachable from CI. The ratchet below makes that drift a test failure.
+// Adding a `domarinn run` flag now forces a decision — wire an input, or list
+// the flag here with the reason it stays CLI-only. (Environment variables need
+// no mapping: a composite action inherits the caller's `env:`, so every
+// `DOMARINN_*` variable already reaches the CLI without an input.)
+
+/// Inputs that reach `domarinn run`, and the argv text the eval script must
+/// therefore contain. `config` is the positional; the rest are flags.
+const INPUT_TO_RUN_ARGV: &[(&str, &str)] = &[
+    ("config", r#"args=(run "${INPUT_CONFIG}""#),
+    ("provider", "--provider"),
+    ("against", "--against"),
+    ("cache-dir", "--cache-dir"),
+    ("allow-empty", "--allow-empty"),
+    ("allow-share-failure", "--allow-share-failure"),
+    // `server-url` is an env export, but it is also the switch for `--share`.
+    ("server-url", "--share"),
+];
+
+/// Inputs that become environment exports the CLI reads.
+const INPUT_TO_ENV_EXPORT: &[(&str, &str)] = &[
+    ("server-url", "DOMARINN_SERVER_URL"),
+    ("token", "DOMARINN_TOKEN"),
+    ("branch", "DOMARINN_BRANCH"),
+];
+
+/// Inputs that configure the action itself and never reach the CLI.
+const ACTION_LEVEL_INPUTS: &[&str] = &[
+    "binary-path",
+    "version",
+    "fail-on-regression",
+    "comment",
+    "artifact-name",
+];
+
+/// `domarinn run` flags deliberately not exposed as inputs, with the reason.
+/// An entry here is a decision, not a default — a new flag lands in this list
+/// only by someone writing down why CI callers do not need it.
+const RUN_FLAGS_WITHOUT_AN_INPUT: &[(&str, &str)] = &[
+    ("--tag", "test selection belongs in the suite a reviewer reads, not the workflow"),
+    ("--filter", "same as --tag"),
+    ("--prompt", "same as --tag"),
+    ("--no-cache", "CI wants the cache; a job that must not read it can unset cache-dir and use a throwaway path"),
+    ("--cache-only", "an offline replay is a different workflow than a gate"),
+    ("--no-cache-migration", "an optimization toggle with no per-job story"),
+    ("--store-empty-outputs", "standing policy; DOMARINN_CACHE_STORE_EMPTY_OUTPUTS reaches the step as env"),
+    ("--repeat", "variance studies are interactive work, not a PR gate"),
+    ("--concurrency", "suite-level runner.concurrency is where throughput policy lives"),
+    ("--retries", "suite-level runner.retries is where retry policy lives"),
+    ("--no-retries", "same as --retries"),
+    ("--format", "the action's contract is junit + markdown; changing that changes its later steps too"),
+    ("--out", "owned by the action; the artifact upload depends on it"),
+    ("--summary-md", "the summary step produces the markdown; a second writer would race it"),
+    ("--no-raw", "result-size tuning with no per-job story"),
+    ("--no-progress", "no TTY in CI; the CLI already suppresses the bar"),
+    ("--no-grader-cache", "judge-variance measurement is interactive work"),
+    ("--fallback-on-empty-reason", "standing policy; DOMARINN_FALLBACK_ON_EMPTY_REASON reaches the step as env"),
+    ("--no-fallback", "standing policy; DOMARINN_NO_FALLBACK reaches the step as env"),
+    ("--color", "output styling; the runner's log renders ANSI on its own terms"),
+    ("--log-format", "diagnostics plumbing, not eval configuration"),
+    ("--verbose", "same as --log-format"),
+    ("--no-provenance", "identity policy is environment-driven (DOMARINN_PROVENANCE), and env reaches the step"),
+    ("--note", "a free-text annotation is interactive work; CI provenance is recorded automatically"),
+    ("--server-url", "the server-url input reaches the CLI as the DOMARINN_SERVER_URL export"),
+];
+
+/// The flags `domarinn run -h` actually offers, parsed from option lines.
+fn run_flags() -> BTreeSet<String> {
+    let out = assert_cmd::Command::cargo_bin("domarinn")
+        .expect("the domarinn binary builds")
+        .args(["run", "-h"])
+        .output()
+        .expect("domarinn run -h executes");
+    let help = String::from_utf8_lossy(&out.stdout).to_string();
+    help.lines()
+        .filter_map(|line| {
+            // Option lines are `  --flag …` or `  -j, --flag …`; taking only
+            // the first token of lines that start with a dash keeps flags
+            // merely *mentioned* in a description from registering.
+            let t = line.trim_start();
+            let rest = if let Some(rest) = t.strip_prefix("--") {
+                rest
+            } else if t.starts_with('-') {
+                t.split_once("--")?.1
+            } else {
+                return None;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            (!name.is_empty()).then(|| format!("--{name}"))
+        })
+        .filter(|f| f != "--help")
+        .collect()
+}
+
+#[test]
+fn every_run_flag_is_an_input_or_a_written_down_exception() {
+    let flags = run_flags();
+    assert!(
+        flags.contains("--provider"),
+        "parsing `run -h` found no --provider; the parser is broken: {flags:?}"
+    );
+
+    let script = script_of("id", "eval");
+    let mut covered = BTreeSet::new();
+    for (input, argv_text) in INPUT_TO_RUN_ARGV {
+        assert!(
+            script.contains(argv_text),
+            "input `{input}` claims to reach the CLI as `{argv_text}`, but the \
+             eval script never says it — the mapping is aspirational"
+        );
+        if let Some(flag) = argv_text.strip_prefix("--") {
+            covered.insert(format!("--{flag}"));
+        }
+    }
+
+    let excepted: BTreeSet<String> = RUN_FLAGS_WITHOUT_AN_INPUT
+        .iter()
+        .map(|(f, _)| f.to_string())
+        .collect();
+
+    if let Some(flag) = covered.intersection(&excepted).next() {
+        panic!("{flag} is both wired to an input and excepted; pick one");
+    }
+    for flag in &flags {
+        assert!(
+            covered.contains(flag) || excepted.contains(flag),
+            "`domarinn run {flag}` is reachable from a shell but not from the \
+             action. Either add an input that forwards it, or add it to \
+             RUN_FLAGS_WITHOUT_AN_INPUT with the reason it stays CLI-only."
+        );
+    }
+    for flag in &excepted {
+        assert!(
+            flags.contains(flag),
+            "{flag} is excepted here but `domarinn run -h` no longer offers \
+             it; remove the stale entry"
+        );
+    }
+}
+
+#[test]
+fn every_declared_input_is_classified_and_consumed() {
+    let inputs: BTreeSet<String> = action()["inputs"]
+        .as_mapping()
+        .expect("the action declares inputs")
+        .keys()
+        .filter_map(|k| k.as_str().map(String::from))
+        .collect();
+
+    let classified: BTreeSet<String> = INPUT_TO_RUN_ARGV
+        .iter()
+        .map(|(i, _)| i.to_string())
+        .chain(INPUT_TO_ENV_EXPORT.iter().map(|(i, _)| i.to_string()))
+        .chain(ACTION_LEVEL_INPUTS.iter().map(|i| i.to_string()))
+        .collect();
+
+    for input in &inputs {
+        assert!(
+            classified.contains(input),
+            "input `{input}` is declared but unclassified here; say whether it \
+             reaches the CLI (INPUT_TO_RUN_ARGV / INPUT_TO_ENV_EXPORT) or \
+             stays action-level (ACTION_LEVEL_INPUTS)"
+        );
+    }
+    for input in &classified {
+        assert!(
+            inputs.contains(input),
+            "`{input}` is classified here but action.yml no longer declares it"
+        );
+    }
+
+    // A declared input nothing interpolates is dead weight a caller will still
+    // try to use.
+    let raw = std::fs::read_to_string(repo_root().join(ACTION)).expect("action.yml reads");
+    for input in &inputs {
+        assert!(
+            raw.contains(&format!("inputs.{input}")),
+            "input `{input}` is declared but never interpolated anywhere"
         );
     }
 }

@@ -11,7 +11,8 @@
 use domarinn_core::result::{AssertStatus, CaseResult, CaseStatus, RunResult, RunSummary};
 
 use crate::output::{
-    display_name, duration_secs, empty_total, humanize_count, humanize_duration, truncate,
+    display_name, duration_secs, empty_total, graded_fallback_cases, humanize_count,
+    humanize_duration, truncate,
 };
 
 /// Failure rows the markdown summary will print before collapsing the rest into
@@ -40,13 +41,17 @@ pub fn render_run_md(run: &RunResult) -> String {
 /// most of the same rows twice.
 pub fn render_run_md_headline(run: &RunResult) -> String {
     let s = &run.summary;
+    // Re-derived from the cases rather than read off `s.fallback_cases`, which
+    // documents written before 0.10.1 filled in skip-inclusively. See
+    // [`graded_fallback_cases`].
+    let fallback = graded_fallback_cases(&run.cases);
     let mut out = match run.suite.as_deref() {
         Some(suite) => format!("### domarinn run — {}\n\n", md_cell(suite)),
         None => "### domarinn run\n\n".to_string(),
     };
 
     out.push_str("| metric | value |\n|---|---|\n");
-    out.push_str(&format!("| Result | {} |\n", result_line(s)));
+    out.push_str(&format!("| Result | {} |\n", result_line(s, fallback)));
 
     let rate = domarinn_core::stats::wilson(s.passed, s.total, domarinn_core::stats::Z_95);
     out.push_str(&format!(
@@ -114,6 +119,18 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
     if s.retried_cases > 0 {
         out.push_str(&format!("| Retries | {} cases |\n", s.retried_cases));
     }
+    // Denominated in *graded* cases, matching what the numerator counts: a
+    // skipped case graded nothing, so including it would shrink the fraction and
+    // read as "the fallback mattered less than it did". Both sides of the
+    // fraction are therefore skip-exclusive — which is exactly why the numerator
+    // cannot come from `s.fallback_cases` on an old document.
+    if fallback > 0 {
+        out.push_str(&format!(
+            "| Answered by fallback | {} of {} cases |\n",
+            fallback,
+            s.total.saturating_sub(s.skipped),
+        ));
+    }
     out.push_str(&format!(
         "| Duration | {} |\n",
         humanize_duration(duration_secs(run))
@@ -122,7 +139,12 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
 }
 
 /// `✅ 12 passed`, or `❌` plus every nonzero failure bucket.
-fn result_line(s: &RunSummary) -> String {
+///
+/// `fallback` is the *graded* fallback count from
+/// [`crate::output::graded_fallback_cases`] — passed in rather than read off
+/// `s` so this line and the metrics row can never disagree, and so neither
+/// repeats the pre-0.10.1 skip-inclusive number.
+fn result_line(s: &RunSummary, fallback: u64) -> String {
     let mut parts = vec![format!("{} passed", s.passed)];
     if s.failed > 0 {
         parts.push(format!("{} failed", s.failed));
@@ -138,7 +160,15 @@ fn result_line(s: &RunSummary) -> String {
     } else {
         "✅"
     };
-    format!("{glyph} {}", parts.join(", "))
+    let mut line = format!("{glyph} {}", parts.join(", "));
+    // Qualifies the verdict rather than joining the bucket list: these cases are
+    // already counted as passed/failed above, and a green result somebody else's
+    // model produced is a different claim from a green result the configured one
+    // produced.
+    if fallback > 0 {
+        line.push_str(&format!(" · {fallback} via fallback"));
+    }
+    line
 }
 
 /// The failing/errored cases as a table, capped at [`MD_FAILURE_ROWS`]. Empty
@@ -206,7 +236,7 @@ fn md_cell(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::sample_run;
+    use crate::output::{old_skip_inclusive_run, sample_run};
 
     /// The ci-summary body is [`render_run_md_headline`] plus links, so the row
     /// added there is what a PR comment shows — asserted through `cisummary`
@@ -334,6 +364,67 @@ mod tests {
             ..Default::default()
         };
         assert!(!render_run_md(&run).contains("| Cache |"));
+    }
+
+    /// A run some other provider answered for says so in both places a reader
+    /// looks: the verdict line and its own metrics row. The denominator is the
+    /// *graded* count, not `total` — a skipped case graded nothing.
+    #[test]
+    fn render_run_md_reports_cases_answered_by_a_fallback() {
+        let mut run = sample_run();
+        // The count comes from the cases, not the summary field.
+        for case in &mut run.cases {
+            case.answered_by_provider_id = Some("backup".into());
+        }
+        run.summary = RunSummary {
+            total: 6,
+            passed: 5,
+            skipped: 1,
+            fallback_cases: 2,
+            ..Default::default()
+        };
+        let md = render_run_md(&run);
+        assert!(
+            md.contains("| Result | ✅ 5 passed, 1 skipped · 2 via fallback |"),
+            "got:\n{md}"
+        );
+        assert!(
+            md.contains("| Answered by fallback | 2 of 5 cases |"),
+            "got:\n{md}"
+        );
+    }
+
+    /// A run where nothing fell back emits neither the row nor the segment, so
+    /// every summary written before the feature existed renders byte-identically.
+    #[test]
+    fn render_run_md_omits_the_fallback_row_when_nothing_fell_back() {
+        let mut run = sample_run();
+        run.summary = RunSummary {
+            total: 2,
+            passed: 1,
+            failed: 1,
+            ..Default::default()
+        };
+        let md = render_run_md(&run);
+        assert!(!md.contains("Answered by fallback"), "got:\n{md}");
+        assert!(!md.contains("via fallback"), "got:\n{md}");
+    }
+
+    /// A run document stored by CLI ≤ 0.10.0, where `fallback_cases` counted
+    /// skipped cases too. Summaries are read back as stored, so pairing that
+    /// numerator with the skip-exclusive denominator this renderer uses printed
+    /// "2 of 0 cases". Re-deriving from the cases reports the truth — nothing
+    /// was graded, so nothing fell back — and the row and segment both vanish.
+    #[test]
+    fn render_run_md_ignores_a_pre_0_10_1_skip_inclusive_fallback_count() {
+        let run = old_skip_inclusive_run();
+        let md = render_run_md(&run);
+        assert!(!md.contains("Answered by fallback"), "got:\n{md}");
+        assert!(!md.contains("via fallback"), "got:\n{md}");
+        assert!(
+            md.contains("| Result | ✅ 0 passed, 2 skipped |"),
+            "got:\n{md}"
+        );
     }
 
     #[test]

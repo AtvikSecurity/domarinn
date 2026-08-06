@@ -74,6 +74,18 @@ inputs:
       only meaningful alongside `--share`.
     required: false
     default: "false"
+  provider:
+    description: >-
+      Provider id(s) to run, comma- or space-separated; each becomes a repeated
+      `--provider`. Selection only: a selected cell keeps its whole `fallback:`
+      chain, exactly as on the command line. Empty (the default) runs the full
+      matrix. An id containing a comma or space is unaddressable through this
+      input — none of the shipped examples use one. Prefer `fallback_only: true`
+      in the suite where the intent is "this provider is only a fallback
+      target": that keeps the cost model reviewable in the file rather than in
+      the invocation.
+    required: false
+    default: ""
   against:
     description: >-
       Baseline to diff this run against. Use "server:baseline" in CI: it
@@ -174,6 +186,9 @@ outputs:
   cache-write-tokens:
     description: Input tokens written into a provider-side prompt cache.
     value: ${{ steps.summary.outputs.cache-write-tokens }}
+  fallback-cases:
+    description: Number of graded cases answered by a `fallback:` provider rather than the one the cell names.
+    value: ${{ steps.summary.outputs.fallback-cases }}
   run-url:
     description: URL of the uploaded run on the results server (empty without `server-url`).
     value: ${{ steps.summary.outputs.run-url }}
@@ -278,6 +293,7 @@ runs:
         # empty value and falls through to the runner's own GITHUB_* refs.
         DOMARINN_BRANCH: ${{ inputs.branch }}
         INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_AGAINST: ${{ inputs.against }}
         INPUT_ALLOW_EMPTY: ${{ inputs.allow-empty }}
         INPUT_ALLOW_SHARE_FAILURE: ${{ inputs.allow-share-failure }}
@@ -292,6 +308,18 @@ runs:
         results="results.xml"
 
         args=(run "${INPUT_CONFIG}" --format junit --out "${results}")
+        # Split on commas and spaces with `read`, not unquoted expansion —
+        # unquoted `$var` in a for-loop also GLOBS, so an id like `model-[a]`
+        # (or a careless `*`) would be matched against workspace files and a
+        # different id passed to the CLI, silently. `read` splits and nothing
+        # else. Ids containing spaces or commas are unaddressable here by
+        # design.
+        if [ -n "${INPUT_PROVIDER}" ]; then
+          IFS=', ' read -r -a providers <<< "${INPUT_PROVIDER}"
+          for p in "${providers[@]}"; do
+            [ -n "$p" ] && args+=(--provider "$p")
+          done
+        fi
         [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
         [ -n "${INPUT_CACHE_DIR}" ] && args+=(--cache-dir "${INPUT_CACHE_DIR}")
         [ "${INPUT_ALLOW_EMPTY}" = "true" ] && args+=(--allow-empty)

@@ -193,6 +193,18 @@ fn write_github_output(
         ("cache-hit-rate", pct(s.cache_hits, cache_total)),
         ("cache-read-tokens", s.cache_read_tokens.to_string()),
         ("cache-write-tokens", s.cache_write_tokens.to_string()),
+        // Always written, like every counter above: a workflow that reads this
+        // to decide whether the run is worth trusting needs `0` to mean "nothing
+        // fell back", not "this CLI is too old to say".
+        //
+        // Re-derived from the cases (`ci-summary` always loads the whole run
+        // document) rather than read off `s.fallback_cases`, which was written
+        // skip-inclusively before 0.10.1 — summarizing an old document must not
+        // report skipped cases as fallback-answered.
+        (
+            "fallback-cases",
+            crate::output::graded_fallback_cases(&run.cases).to_string(),
+        ),
         // Same "emit even when unknown" rule as `run-url` below: a referenced
         // output that no step wrote is an empty string either way, so writing
         // the key makes the contract visible.
@@ -235,4 +247,36 @@ fn write_github_output(
         .append(true)
         .open(path)?;
     file.write_all(body.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run document stored by CLI ≤ 0.10.0 counted skipped cases in
+    /// `summary.fallback_cases`. The step output a workflow reads must be the
+    /// graded count derived from the cases — 0 here, because every case was
+    /// skipped — not the stored 2.
+    #[test]
+    fn github_output_reports_the_graded_fallback_count_for_an_old_document() {
+        let run = crate::output::old_skip_inclusive_run();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gh.txt");
+        write_github_output(&path, &run, None).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("fallback-cases=0\n"), "got:\n{out}");
+    }
+
+    /// The new semantics still round-trip: a graded case a fallback answered is
+    /// counted, so the re-derivation did not simply zero the output.
+    #[test]
+    fn github_output_counts_a_graded_fallback_answered_case() {
+        let mut run = crate::output::old_skip_inclusive_run();
+        run.cases[0].status = domarinn_core::result::CaseStatus::Pass;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gh.txt");
+        write_github_output(&path, &run, None).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("fallback-cases=1\n"), "got:\n{out}");
+    }
 }

@@ -60,6 +60,16 @@ export function MatrixCellPopover({
             {cell.distinct_outputs} distinct outputs across repeats
           </div>
         ) : null}
+        {/* The column is keyed on the CONFIGURED provider, so a cell can be
+            filled entirely by someone else's answers and still read as this
+            provider's score. `0` covers both "nobody fell back" and a run
+            stored before the attribution existed — honestly, since fallback did
+            not exist then either. */}
+        {cell.fallback_answered > 0 ? (
+          <div className="mt-1 text-[11px] text-amber">
+            {cell.fallback_answered} of {cell.total} answered by a fallback
+          </div>
+        ) : null}
       </div>
 
       <div className="max-h-64 overflow-y-auto p-1">
@@ -122,6 +132,18 @@ function RepeatRow({
         ) : detail.data ? (
           <>
             <StatusBadge status={detail.data.status} size="xs" />
+            {/* Which repeats the cell's fallback count refers to. Without it a
+                cell reading "1 of 2 answered by a fallback" names no repeat,
+                and the two rows below it are indistinguishable. */}
+            {detail.data.answered_by_provider_id ? (
+              <span
+                className="min-w-0 truncate font-mono text-[10px] text-amber"
+                title="Answered by a fallback provider"
+              >
+                <span className="sr-only">answered by </span>
+                {detail.data.answered_by_provider_id}
+              </span>
+            ) : null}
             <span className="ml-auto shrink-0 tabular-nums text-[11px] text-muted">
               {detail.data.score.toFixed(2)} · {formatLatency(detail.data.latency_ms)}
             </span>
