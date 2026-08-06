@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-cache"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-logging"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-protocol"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-server"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-testkit"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "domarinn-core",
@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "domarinn-types"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "schemars 1.2.2",
