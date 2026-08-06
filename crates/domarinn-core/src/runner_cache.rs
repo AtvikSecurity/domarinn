@@ -39,6 +39,7 @@ pub(super) struct CacheRunState {
     /// its entries were written.
     drift_warned: Mutex<HashSet<String>>,
     address_warned: Mutex<HashSet<String>>,
+    no_store_warned: Mutex<HashSet<String>>,
 }
 
 impl CacheRunState {
@@ -47,6 +48,7 @@ impl CacheRunState {
             migration,
             drift_warned: Mutex::new(HashSet::new()),
             address_warned: Mutex::new(HashSet::new()),
+            no_store_warned: Mutex::new(HashSet::new()),
         }
     }
 
@@ -68,6 +70,18 @@ impl CacheRunState {
     /// rebuilt program and a moved endpoint, and the two say different things.
     fn claim_address_warning(&self, provider_id: &str) -> bool {
         self.address_warned
+            .lock()
+            .map(|mut seen| seen.insert(provider_id.to_string()))
+            .unwrap_or(false)
+    }
+
+    /// The same, for replaying an entry this suite would no longer write.
+    ///
+    /// Its own set for the same reason the other two are separate: a provider
+    /// can be rebuilt, moved, *and* serving a stale refusal, and collapsing them
+    /// would mean the first warning silenced the other two.
+    fn claim_no_store_warning(&self, provider_id: &str) -> bool {
+        self.no_store_warned
             .lock()
             .map(|mut seen| seen.insert(provider_id.to_string()))
             .unwrap_or(false)
@@ -139,15 +153,32 @@ impl CallFailure {
 
 /// Everything the cache side of one provider call needs.
 ///
-/// Grouped rather than passed loose because the four travel together and mean
-/// nothing apart: which store, how to use it, which trial, and the run-scoped
-/// state that makes probing and warning happen once instead of per case.
+/// Grouped rather than passed loose because they travel together and mean
+/// nothing apart: which store, how to use it, which trial, the run-scoped state
+/// that makes probing and warning happen once instead of per case, and what
+/// this run considers worth storing.
 #[derive(Clone, Copy)]
 pub(super) struct CacheCall<'a> {
     pub backend: &'a dyn CacheBackend,
     pub mode: CacheMode,
     pub repeat: u32,
     pub state: &'a CacheRunState,
+    /// Read on three paths: the write gate below, the two legacy re-files, and
+    /// the replay warning in [`hit`]. A reference rather than a value so
+    /// `CacheCall` stays `Copy` — it is passed by value to every cell.
+    pub policy: &'a crate::empty_policy::EmptyPolicy,
+    /// Whether this call may spend the run's legacy-adoption probe budget.
+    ///
+    /// `false` for every non-primary link of a `fallback:` chain. The budget is
+    /// run-global (see [`crate::cache_adopt`]), so a walked chain would spend
+    /// two or three probes per case instead of one — draining it in a handful
+    /// of cells and silently stranding every legacy entry a store still holds.
+    ///
+    /// A flag rather than a probe-disabled `CacheRunState`: the state also owns
+    /// the once-per-provider warning sets, and a second one would turn "warn
+    /// once per run" into "warn once per cell" for exactly the fallback links
+    /// most likely to be replaying something worth one line.
+    pub probe_legacy: bool,
 }
 
 /// Call a provider, consulting the cache per `mode` and retrying retriable
@@ -165,6 +196,8 @@ pub(super) async fn call_with_cache(
         mode,
         repeat,
         state,
+        policy,
+        probe_legacy,
     } = cache;
     // Two gates compose into one: a provider may decline caching outright
     // (`cacheable`), and a *call* may have no stable identity to key on — an
@@ -187,7 +220,7 @@ pub(super) async fn call_with_cache(
         match cache.get(key).await {
             Ok(Some(entry)) => {
                 tracing::debug!(%key, "cache hit");
-                return Ok(hit(provider, entry, state, key));
+                return Ok(hit(provider, entry, state, key, policy));
             }
             Ok(None) => {
                 tracing::debug!(%key, "cache miss");
@@ -196,9 +229,15 @@ pub(super) async fn call_with_cache(
                 // between 0.5.0 and 0.7.x has these, where only a ≤0.4.x store
                 // has the fingerprint-keyed kind below.
                 if let Some((_, mut entry)) =
-                    adopt_legacy_canonical(provider, req, repeat, cache, state).await
+                    adopt_legacy_canonical(provider, req, repeat, cache, state, probe_legacy).await
                 {
-                    if mode == CacheMode::ReadWrite {
+                    // A re-file is a brand-new entry under today's key, so it
+                    // answers to the same policy a fresh write does. Without
+                    // this, an adopted refusal is re-filed into the current key
+                    // space and replays forever — the exact thing the write gate
+                    // prevents, arriving through a side door. The entry is still
+                    // *served*; only the re-file is skipped.
+                    if mode == CacheMode::ReadWrite && !policy.stored_entry_is_declined(&entry) {
                         // Re-filed under today's key with today's request, so the
                         // next run hits directly and the probe budget is not
                         // spent again.
@@ -210,15 +249,19 @@ pub(super) async fn call_with_cache(
                             );
                         }
                     }
-                    return Ok(hit(provider, entry, state, key));
+                    return Ok(hit(provider, entry, state, key, policy));
                 }
                 // Before paying for this, check whether an older domarinn already
                 // answered it under the key shape that has since changed.
-                if let Some(mut entry) = adopt_legacy(provider, req, repeat, cache, state).await {
+                if let Some(mut entry) =
+                    adopt_legacy(provider, req, repeat, cache, state, probe_legacy).await
+                {
                     // Re-file it under the current key so the next run finds it
                     // directly and the probe budget is not spent again. A write
                     // failure is not fatal: the entry was still served.
-                    if mode == CacheMode::ReadWrite {
+                    // Same policy gate as the canonical-adopt path above, for
+                    // the same reason: re-filing mints a new immutable entry.
+                    if mode == CacheMode::ReadWrite && !policy.stored_entry_is_declined(&entry) {
                         // An adopted entry predates the request being recorded,
                         // so give it one: under the new key the request is what
                         // the entry is *about*, and re-filing without it would
@@ -235,7 +278,7 @@ pub(super) async fn call_with_cache(
                             tracing::warn!(error = %e, "adopting a legacy cache entry: write failed");
                         }
                     }
-                    return Ok(hit(provider, entry, state, key));
+                    return Ok(hit(provider, entry, state, key, policy));
                 }
                 if mode == CacheMode::ReadOnlyStrict {
                     return Err(CallFailure::before_any_attempt_for(
@@ -260,10 +303,37 @@ pub(super) async fn call_with_cache(
         Ok(response) => {
             if let (Some(key), Some(canonical)) = (&key, &canonical) {
                 if mode == CacheMode::ReadWrite {
-                    let entry = response_to_entry(provider, &response, stats, canonical);
-                    // A cache write failure must not fail the run.
-                    if let Err(e) = cache.put(key, &entry).await {
-                        tracing::warn!(error = %e, "cache write failed");
+                    // An empty output is a *successful* call, so it arrives here
+                    // in the `Ok` arm — which is why the "errors are never
+                    // cached" guard, which is structural rather than a
+                    // condition, never covered it. Against an immutable store
+                    // one transient empty reply from a flaky gateway is then
+                    // replayed forever, for everyone sharing the cache.
+                    //
+                    // Classified here as well as in `runner_cell` deliberately:
+                    // both go through the same `EmptyPolicy`, which is a pure
+                    // function of the same response, so the two answers cannot
+                    // disagree. Threading a classification out through
+                    // `CallOutcome` for one caller would be the version that can.
+                    //
+                    // Grader and embedding writes (`request_cache`) are *not*
+                    // gated: a grader response is parsed for a verdict, never
+                    // classified for emptiness, and one that no longer parses is
+                    // already treated as a miss — so it self-heals.
+                    let reason = policy.effective_reason(provider, &response);
+                    if policy.should_store(reason.as_ref()) {
+                        let entry = response_to_entry(provider, &response, stats, canonical);
+                        // A cache write failure must not fail the run.
+                        if let Err(e) = cache.put(key, &entry).await {
+                            tracing::warn!(error = %e, "cache write failed");
+                        }
+                    } else {
+                        tracing::debug!(
+                            %key,
+                            reason = %clamp_for_log(reason.as_ref().map(|r| r.as_str()).unwrap_or("")),
+                            "not storing: no gradeable output, and `cache.store_empty_outputs` \
+                             does not keep this reason"
+                        );
                     }
                 }
             }
@@ -309,9 +379,11 @@ fn hit(
     entry: CacheEntry,
     state: &CacheRunState,
     key: &CacheKey,
+    policy: &crate::empty_policy::EmptyPolicy,
 ) -> CallOutcome {
     warn_on_program_drift(provider, &entry, state);
     warn_on_address_drift(provider, &entry, state);
+    warn_on_declined_replay(provider, &entry, state, key, policy);
     let attempts = entry.attempts;
     let provider_latency_ms = entry.provider_latency_ms;
     CallOutcome {
@@ -321,6 +393,56 @@ fn hit(
         provider_latency_ms,
         cache_key: Some(key.clone()),
     }
+}
+
+/// Say so, once per provider, when a replayed entry is one this suite would no
+/// longer write.
+///
+/// The write gate stops *new* empties being stored; it cannot touch what is
+/// already there, because entries are immutable. So a cache poisoned before the
+/// upgrade — or before `cache.store_empty_outputs` was tightened — keeps
+/// serving the same empty answer, and nothing in a green-looking run says why.
+/// This is the only place that says it, and it names the cure.
+fn warn_on_declined_replay(
+    provider: &dyn Provider,
+    entry: &CacheEntry,
+    state: &CacheRunState,
+    key: &CacheKey,
+    policy: &crate::empty_policy::EmptyPolicy,
+) {
+    if !policy.stored_entry_is_declined(entry) {
+        return;
+    }
+    let Some(reason) = entry.empty_reason.as_ref() else {
+        return;
+    };
+    if !state.claim_no_store_warning(provider.id()) {
+        return;
+    }
+    // Clamped before it reaches a log line: `EmptyReason` is an open string an
+    // `exec` child writes verbatim, so an unclamped one is a newline away from
+    // forging log records.
+    let reason = clamp_for_log(reason.as_str());
+    tracing::warn!(
+        provider = %provider.id(),
+        %reason,
+        %key,
+        "replaying a cached empty answer that this suite would no longer store. \
+         `cache.store_empty_outputs` only gates new writes, and entries are \
+         immutable — so this one replays until it is removed: \
+         `domarinn cache gc --empty-reason <reason> --older-than 0s` for a local \
+         cache, or `DELETE /api/v1/cache/entries/<key>` on a server."
+    );
+}
+
+/// Cap a callee-controlled string and strip anything that could forge a log
+/// line. Applied to every `empty_reason` that reaches a diagnostic.
+fn clamp_for_log(s: &str) -> String {
+    const MAX: usize = 64;
+    s.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX)
+        .collect::<String>()
 }
 
 /// Say so, once per provider, when these answers came from a different endpoint
@@ -410,9 +532,10 @@ async fn adopt_legacy_canonical(
     repeat: u32,
     cache: &dyn CacheBackend,
     state: &CacheRunState,
+    probe_legacy: bool,
 ) -> Option<(CacheKey, CacheEntry)> {
     let shapes = provider.legacy_canonical_requests(req);
-    if shapes.is_empty() || !state.migration.should_probe() {
+    if shapes.is_empty() || !probe_legacy || !state.migration.should_probe() {
         return None;
     }
     for canonical in shapes {
@@ -444,9 +567,10 @@ async fn adopt_legacy(
     repeat: u32,
     cache: &dyn CacheBackend,
     state: &CacheRunState,
+    probe_legacy: bool,
 ) -> Option<CacheEntry> {
     let legacy = provider.legacy_fingerprints();
-    if legacy.is_empty() || !state.migration.should_probe() {
+    if legacy.is_empty() || !probe_legacy || !state.migration.should_probe() {
         return None;
     }
     for fingerprint in legacy {
@@ -582,7 +706,21 @@ pub(super) fn response_to_entry(
         attempts: Some(stats.attempts),
         provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
         reasoning: response.reasoning.clone(),
-        empty_reason: response.empty_reason.clone(),
+        // The *classified* reason, not the raw one the provider happened to
+        // set. `classify_empty` folds in the `classify_blank` fallback, which is
+        // where a blank answer from an `http` provider (which never sets
+        // `empty_reason`) or an `exec` child with no `stop_reason` gets its
+        // diagnosis. Storing the raw field left those entries with a NULL
+        // reason, so `cache gc --empty-reason blank` could not find them, the
+        // server's column and facet never saw them, and the once-per-provider
+        // replay warning returned early — the operator got neither the
+        // diagnostic nor the cure this change exists to provide.
+        //
+        // Deliberately *not* `EmptyPolicy::effective_reason`: that additionally
+        // consults `runner.refusal_patterns`, which is suite configuration.
+        // Freezing a config decision into an immutable entry would mean editing
+        // a pattern no longer reclassifies what is already stored.
+        empty_reason: provider.classify_empty(response),
         model: response.model.clone(),
         tool_calls: response.tool_calls.clone(),
         // Provider responses never carry a verdict; its absence is what marks

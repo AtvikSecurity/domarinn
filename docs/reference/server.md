@@ -245,6 +245,7 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 | `DOMARINN_CACHE_MAX_ENTRY_BYTES` | `4194304` (4 MiB)   | Max size of a single cache entry; a larger `PUT` gets a `413`. Since 0.5.0 an entry carries the request it answers and, for a grading, the grading model's whole response, so entries are bigger than they were — an oversized one is logged by the client and re-paid on every run rather than failing it. Raise this before lowering what a suite sends. |
 | `DOMARINN_CACHE_MAX_BYTES`    | `1073741824` (1 GiB) | Total cache size target for retention. |
 | `DOMARINN_CACHE_MAX_AGE_DAYS` | `30`           | Cache entry max age for retention. |
+| `DOMARINN_CACHE_SWEEP_EMPTY_REASON` | *(unset)* | Comma-separated [empty reasons](../concepts/caching.md#empty-answers) the hourly retention task also sweeps, **regardless of age** — e.g. `refusal,content_filter`. Issued as a *second*, separate prune, not AND-ed into the age/LRU one: AND-ing would mean "only *old* refusals", where the point is "old entries, **and** refusals of any age". A reason this build does not recognize is kept and swept anyway (the vocabulary is open by design), but it is **warned** about at startup — because the failure this knob invites is the plural typo `refusals`, which matches nothing and would otherwise be a destructive setting that quietly does nothing forever. Unset, or a value that is only commas, issues no sweep at all — never a sweep of everything. |
 | `DOMARINN_LOCAL_CACHE_DIR` | _(unset)_ | A local disk cache directory to expose as a second, **read-only** browsable tier (`?tier=local` in the [cache browser](web-ui.md#cache-entries)). Point it at a suite's `.domarinn/cache`. Unset mounts nothing. A path that cannot be resolved is logged and skipped — it costs the tier, never the process. |
 | `DOMARINN_LOCAL_CACHE_MAX_SCAN` | `20000` | Files the local tier stats before reporting truncation. The walk sorts by modification time first, so what gets dropped is the oldest. |
 | `DOMARINN_RUN_MAX_AGE_DAYS`   | *(unset)*      | Delete runs older than this many days. **Unset means never delete** — eval history is expensive to produce and impossible to recreate, so retention is opt-in. Two runs are exempt at any age: a pinned baseline (deleting it breaks `--against server:baseline`) and the newest run of each `(project, suite, branch)` (a suite that has not run in a while must go stale, not vanish). Swept hourly, alongside cache retention. |
@@ -301,6 +302,18 @@ State lives in the data directory as **two SQLite files** (WAL mode):
 | `cache.db`      | The content-addressed request cache. Regenerable. | No — disposable. |
 
 SQLite is a **single writer**: run exactly one instance against a given data directory. This is what makes backups a file copy and self-hosting a one-liner — and why the deployment guidance is single-replica. Migrations run automatically at startup. See [Self-hosting](../guides/self-host.md) for backup and Kubernetes details.
+
+### Promoting `empty_reason` on upgrade
+
+The 0.10 upgrade adds an `empty_reason` column to `cache.db` so a poisoned entry can be *found* — and, for the first time, re-derives a promoted column for rows that were already indexed. The entries that most need it are exactly the ones an older build already stamped "looked at", so a one-pass backfill would never revisit them.
+
+What that means operationally:
+
+- **Startup is unaffected.** The migration only appends two nullable columns and two partial indexes, which SQLite does in constant time. It deliberately does *not* re-set the existing progress marker: migrations run before the port binds, and a full-table update rewriting pages that hold multi-megabyte response bodies is how a restart becomes an outage.
+- **The re-index runs after the port is bound**, in batches of 200 with a pause between them, on a pooled read connection for the parsing and the single writer only for the SQL. Normal traffic is served throughout. Expect roughly 20–45 minutes per million entries; a cache of the usual size finishes in seconds.
+- **`GET /cache/stats`'s `unindexed` stays at `0`.** It counts the *first* pass, and this is a second, independent one over rows that pass already stamped. There is no API field for the re-index backlog; the server logs `cache index backfill draining` with both counts at `info` — the default level — roughly every two minutes, which is how you tell a draining backfill from a wedged one.
+- **Until a row is re-indexed, its `empty_reason` reads as absent** — so an `?empty_reason=` filter, the facet counts, and `POST /cache/prune?empty_reason=…` all under-report while the pass is in flight. Wait for it to drain before concluding a shared cache is clean.
+- **Rows this server could not parse are stamped without re-reading their bodies.** Re-parsing something that already failed cannot succeed, and leaving them pending would make every future migration's pass scan them again.
 
 ---
 

@@ -1,5 +1,5 @@
-//! The cache browse API: listing, filtering, searching, and inspecting
-//! individual entries.
+//! The cache browse API: listing, filtering, searching, inspecting and
+//! deleting individual entries.
 //!
 //! A separate suite from `cache.rs`, which covers the client-facing get/put/
 //! prune surface and is already near the per-file ratchet.
@@ -9,6 +9,7 @@ mod common;
 use axum::http::StatusCode;
 use common::*;
 use domarinn_core::cache::{CacheEntry, CacheKey, EntryKind};
+use domarinn_core::empty::EmptyReason;
 use domarinn_core::types::{Output, TokenUsage};
 use domarinn_server::{AuthMode, Settings};
 use serde_json::{json, Value};
@@ -718,4 +719,173 @@ async fn an_invalid_key_on_the_cross_link_is_a_400() {
         get(&app, "/api/v1/cache/entries/nope/runs").await.status,
         StatusCode::BAD_REQUEST
     );
+}
+
+// ---------------------------------------------------------------------------
+// empty_reason: finding the poison
+// ---------------------------------------------------------------------------
+
+/// An entry whose output came back empty, and why.
+fn refused(reason: &str) -> CacheEntry {
+    let mut e = entry();
+    e.output = Output::Text(String::new());
+    e.empty_reason = Some(EmptyReason::new(reason));
+    e
+}
+
+#[tokio::test]
+async fn entries_can_be_filtered_by_empty_reason() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let refusal = store(&app, "r", &refused(EmptyReason::REFUSAL)).await;
+    store(&app, "b", &refused(EmptyReason::BLANK)).await;
+    store(&app, "ok", &entry()).await;
+
+    let body: Value = get(&app, "/api/v1/cache/entries?empty_reason=refusal")
+        .await
+        .json();
+    let rows = entries(&body);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"], json!(refusal));
+    assert_eq!(rows[0]["empty_reason"], json!("refusal"));
+
+    // An entry with a real answer records no reason, and a reason filter can
+    // never reach it — the column is plain NULL, not the runs side's `''`
+    // sentinel, so there is no `AND col <> ''` trap to fall into.
+    let none: Value = get(&app, "/api/v1/cache/entries?empty_reason=thinking_only")
+        .await
+        .json();
+    assert!(entries(&none).is_empty());
+}
+
+/// The reason facet is what an operator opens when a shared cache has gone
+/// wrong: it turns "something is replaying badly" into "eleven refusals and two
+/// truncations". Uncapped, unlike `models`, because each value is length-clamped
+/// on the way in and the vocabulary is a handful of constants.
+#[tokio::test]
+async fn facets_report_empty_reasons() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    store(&app, "r1", &refused(EmptyReason::REFUSAL)).await;
+    store(&app, "r2", &refused(EmptyReason::REFUSAL)).await;
+    store(&app, "t1", &refused(EmptyReason::TRUNCATED)).await;
+    store(&app, "plain", &entry()).await;
+
+    let body: Value = get(&app, "/api/v1/cache/facets").await.json();
+    assert_eq!(
+        body["empty_reasons"],
+        json!([
+            { "value": "refusal", "count": 2 },
+            { "value": "truncated", "count": 1 },
+        ]),
+        "ordered by count, and an entry with no reason is not a facet value"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Deleting one entry
+// ---------------------------------------------------------------------------
+
+/// `DELETE` is `admin`, matching `prune` rather than `detail`.
+///
+/// The asymmetry with `detail` — which stays at `read` two lines away in the
+/// router — is deliberate: reading an entry whose 256-bit key you already
+/// possess tells you nothing new, while destroying rows out of a corpus several
+/// people share is a prune's power applied one row at a time, and quieter for it.
+#[tokio::test]
+async fn deleting_an_entry_requires_admin() {
+    let settings = Settings {
+        tokens: Some("admin:domarinn_ops,write:domarinn_ci,read:domarinn_ro".to_string()),
+        auth_mode: Some(AuthMode::ProtectWrites),
+        ..Default::default()
+    };
+    let (app, _dir) = test_app_with_mode(settings, AuthMode::ProtectWrites).await;
+
+    for (i, (token, expected)) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some("domarinn_ro"), StatusCode::FORBIDDEN),
+        (Some("domarinn_ci"), StatusCode::FORBIDDEN),
+        (Some("domarinn_ops"), StatusCode::NO_CONTENT),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // A fresh entry per attempt, so a rejected call cannot be mistaken for
+        // one that succeeded against an already-deleted key.
+        let key = store_as(&app, &format!("del{i}"), &entry(), Some("domarinn_ci")).await;
+        let reply = send(
+            &app,
+            "DELETE",
+            &format!("/api/v1/cache/entries/{key}"),
+            token,
+            None,
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(reply.status, expected, "deleting with {token:?}");
+    }
+}
+
+/// `AuthMode::Open` grants `Admin` anonymously — "the usual choice for a
+/// laptop". That turns an all-or-nothing prune button into scriptable
+/// row-by-row destruction for anyone who can reach the port, which is a real
+/// consequence of a documented setting rather than a hole. Pinned so it stays
+/// a decision: `closed` is the default, and this is what `open` costs.
+#[tokio::test]
+async fn deleting_an_entry_is_anonymously_reachable_in_open_mode() {
+    let (app, _dir) = test_app_with_mode(Settings::default(), AuthMode::Open).await;
+    let key = store(&app, "openmode", &entry()).await;
+
+    let reply = send(
+        &app,
+        "DELETE",
+        &format!("/api/v1/cache/entries/{key}"),
+        None,
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        get(&app, &format!("/api/v1/cache/entries/{key}"))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// `404`, not `204`. A script that deletes a list of keys needs to tell "I
+/// removed it" from "it was already gone" — a blanket `204` collapses those
+/// into one answer and hides a stale key list.
+#[tokio::test]
+async fn deleting_a_missing_entry_is_404() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let key = key_for("never-stored");
+
+    let reply = send(
+        &app,
+        "DELETE",
+        &format!("/api/v1/cache/entries/{key}"),
+        None,
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+/// Validated *before* the storage call, as `detail` does. A malformed key
+/// answered with a `404` from a lookup that could never have matched would read
+/// as "that entry does not exist".
+#[tokio::test]
+async fn deleting_an_invalid_key_is_a_400_not_a_404() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let reply = send(
+        &app,
+        "DELETE",
+        "/api/v1/cache/entries/nope",
+        None,
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
 }

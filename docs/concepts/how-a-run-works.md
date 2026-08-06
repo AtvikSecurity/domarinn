@@ -14,7 +14,7 @@ flowchart LR
     G["60 cells"] --> C["one provider call<br/>+ its assertions<br/>per cell"]
 ```
 
-Each cell makes **one** provider call and grades the answer against that test's assertions. Two providers and three prompts over ten tests is sixty calls, not ten — which is the point when you are comparing two phrasings or two models, and a surprise when you are not. `domarinn list tests` tells you what a suite resolves to before you spend anything.
+Each cell makes **one** provider call and grades the answer against that test's assertions — or, when the provider it names declares a [`fallback:`](../reference/providers.md#falling-back-to-another-provider) chain and refuses or cannot be reached, walks that chain until one link answers, and grades whatever it gets back. Two providers and three prompts over ten tests is sixty calls, not ten — which is the point when you are comparing two phrasings or two models, and a surprise when you are not. `domarinn list tests` tells you what a suite resolves to before you spend anything.
 
 An evaluated cell is a **case**, and a case ends in one of four states:
 

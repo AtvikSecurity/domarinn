@@ -60,4 +60,17 @@ grader_cost_usd?: number,
  * counters — where a consumer writing `?? 0` gets the right answer — an
  * undefined map reaching `Object.entries()` throws.
  */
-empty_counts?: { [key in string]: number }, };
+empty_counts?: { [key in string]: number }, 
+/**
+ * Cases answered by a provider's `fallback:` chain rather than by the
+ * provider the cell names.
+ *
+ * A run where this equals `total` is refused by the CLI: every graded case
+ * came from somewhere other than the system under test, so a green gate
+ * would mean the suite ran, not that it passed. A partial fallback is
+ * still green — that is the feature working.
+ *
+ * Absent at zero, for the byte-stability reason documented on
+ * `cache_read_tokens` above.
+ */
+fallback_cases: number, };

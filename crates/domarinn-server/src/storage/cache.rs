@@ -1,9 +1,10 @@
 //! Content-addressed cache table operations: get (with hit/miss accounting),
-//! has, immutable put, stats, and age/size pruning (also used by the retention
-//! task).
+//! has, immutable put, stats, single-entry delete, and filtered/size pruning
+//! (also used by the retention task).
 
 use anyhow::Context;
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{params, params_from_iter, Connection, TransactionBehavior};
 
 use super::cacheindex::{self, EntryIndex};
 use super::{ms_to_rfc3339, now_ms, CachePutOutcome, Storage};
@@ -93,13 +94,18 @@ impl Storage {
                 let now = now_ms();
                 let size = body.len() as i64;
                 // First-write-wins: INSERT OR IGNORE, then detect whether we won.
+                // `reindexed_at` is stamped here with `indexed_at`: this row was
+                // just derived by *this* build, so the migration-3 catch-up pass
+                // has nothing to do with it. Leaving it NULL would put every new
+                // write into that pass's queue and re-read its body once more,
+                // for a column it already holds.
                 let n = tx.execute(
                     "INSERT OR IGNORE INTO cache_entries
                          (key, body, size, created_at, last_access_at,
-                          indexed_at, index_ok, kind, model, cost_microusd,
+                          indexed_at, reindexed_at, index_ok, kind, model, cost_microusd,
                           input_tokens, output_tokens, entry_created_at,
-                          request_summary, output_preview)
-                     VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                          request_summary, output_preview, empty_reason)
+                     VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     params![
                         key,
                         body,
@@ -115,6 +121,7 @@ impl Storage {
                         index.as_ref().and_then(|i| i.entry_created_at),
                         index.as_ref().and_then(|i| i.request_summary.clone()),
                         index.as_ref().and_then(|i| i.output_preview.clone()),
+                        index.as_ref().and_then(|i| i.empty_reason.clone()),
                     ],
                 )?;
                 let outcome = if n > 0 {
@@ -139,19 +146,68 @@ impl Storage {
         self.cache.read(cache_stats).await
     }
 
-    /// Prune by age and/or a total-size target (LRU eviction to reach the target).
-    #[tracing::instrument(
-        skip_all,
-        fields(max_age_days = ?older_than_days, target_bytes = ?target_bytes)
-    )]
-    pub async fn cache_prune(
-        &self,
-        older_than_days: Option<i64>,
-        target_bytes: Option<i64>,
-    ) -> anyhow::Result<u64> {
+    /// Delete one entry by key. `false` means there was nothing there.
+    ///
+    /// The `cache_entries_delete_fts` trigger keeps the search index in step,
+    /// so this is a single statement rather than the explicit two-table delete
+    /// `storage::retention` needs on the runs side.
+    pub async fn cache_delete_entry(&self, key: String) -> anyhow::Result<bool> {
         self.cache
-            .write(move |conn| cache_prune(conn, older_than_days, target_bytes))
+            .write(move |conn| {
+                let removed =
+                    conn.execute("DELETE FROM cache_entries WHERE key = ?1", params![key])?;
+                Ok(removed > 0)
+            })
             .await
+    }
+
+    /// Prune by predicate and/or a total-size target (LRU eviction to reach it).
+    #[tracing::instrument(skip_all, fields(filter = ?filter))]
+    pub async fn cache_prune(&self, filter: CachePruneFilter) -> anyhow::Result<u64> {
+        self.cache
+            .write(move |conn| cache_prune(conn, &filter))
+            .await
+    }
+}
+
+/// What a prune is allowed to delete.
+///
+/// A struct rather than positional arguments, because the predicate set has
+/// grown past the point where `cache_prune(None, Some(x))` reads as anything —
+/// and because [`Default`] now has to mean something specific: a filter that
+/// names nothing deletes nothing. See [`cache_prune`].
+#[derive(Debug, Clone, Default)]
+pub struct CachePruneFilter {
+    /// Entries first stored more than this many days ago.
+    pub older_than_days: Option<i64>,
+    /// Entries first stored *within* this many days. Paired with
+    /// `older_than_days` it names a window; alone it names everything recent,
+    /// which is why the route requires a caller to ask for it explicitly.
+    pub newer_than_days: Option<i64>,
+    /// Entries whose promoted `empty_reason` is one of these. An empty vector
+    /// is "no such predicate", never "entries with no reason" — the difference
+    /// is the whole reason [`Self::is_empty`] exists.
+    pub empty_reason: Vec<String>,
+    pub model: Option<String>,
+    pub kind: Option<String>,
+    /// LRU-evict until the store is under this many bytes. Independent of
+    /// every predicate above: it describes the store's size, not a row.
+    pub target_bytes: Option<i64>,
+}
+
+impl CachePruneFilter {
+    /// Whether this filter names nothing at all — no predicate and no size
+    /// target. The retention route's "a bare prune means the configured
+    /// limits" rule keys off exactly this, and off nothing narrower: a prune
+    /// that named `empty_reason` must apply *only* that, or asking to evict
+    /// refusals would also silently apply `max_age_days` and `max_bytes`.
+    pub fn is_empty(&self) -> bool {
+        self.older_than_days.is_none()
+            && self.newer_than_days.is_none()
+            && self.empty_reason.is_empty()
+            && self.model.is_none()
+            && self.kind.is_none()
+            && self.target_bytes.is_none()
     }
 }
 
@@ -184,23 +240,81 @@ fn cache_stats(conn: &Connection) -> anyhow::Result<CacheStatsResponse> {
     })
 }
 
-fn cache_prune(
-    conn: &mut Connection,
-    older_than_days: Option<i64>,
-    target_bytes: Option<i64>,
-) -> anyhow::Result<u64> {
+/// `now - days`, saturating.
+///
+/// `retention::sweep`'s lesson, applied to a value that reaches SQL from a query
+/// string: `days * 86_400_000` wraps for a large `i64` and release builds wrap
+/// silently, putting the cutoff in the *future* so an "older than" prune deletes
+/// the entire store. The route additionally rejects negative days, but the
+/// arithmetic must not be the only thing standing between a typo and the cache.
+fn cutoff_ms(days: i64) -> i64 {
+    let window = (days as i128) * 86_400_000i128;
+    (now_ms() as i128 - window).clamp(i64::MIN as i128, i64::MAX as i128) as i64
+}
+
+/// Turn a filter into `WHERE` clauses and their bound values.
+///
+/// Returns an **empty** clause list for a filter that names no predicate. That
+/// is the load-bearing case: see [`cache_prune`].
+fn prune_predicate(filter: &CachePruneFilter) -> (Vec<String>, Vec<SqlValue>) {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut args: Vec<SqlValue> = Vec::new();
+
+    if let Some(days) = filter.older_than_days {
+        args.push(cutoff_ms(days).into());
+        clauses.push(format!("created_at < ?{}", args.len()));
+    }
+    if let Some(days) = filter.newer_than_days {
+        args.push(cutoff_ms(days).into());
+        clauses.push(format!("created_at >= ?{}", args.len()));
+    }
+    if !filter.empty_reason.is_empty() {
+        let placeholders: Vec<String> = filter
+            .empty_reason
+            .iter()
+            .map(|reason| {
+                args.push(reason.clone().into());
+                format!("?{}", args.len())
+            })
+            .collect();
+        // `IN` over a NOT NULL column, so an entry that recorded no reason is
+        // never matched — evicting "everything that is not a refusal" is not
+        // something any caller here can ask for by accident.
+        clauses.push(format!("empty_reason IN ({})", placeholders.join(", ")));
+    }
+    if let Some(model) = &filter.model {
+        args.push(model.clone().into());
+        clauses.push(format!("model = ?{}", args.len()));
+    }
+    if let Some(kind) = &filter.kind {
+        args.push(kind.clone().into());
+        clauses.push(format!("kind = ?{}", args.len()));
+    }
+    (clauses, args)
+}
+
+/// Delete what the filter names, then LRU-evict to its size target.
+///
+/// # Never `WHERE 1=1` in a DELETE
+///
+/// The list query in `storage::cachebrowse` opens with `WHERE 1=1` and appends
+/// ` AND …` per filter, which is a fine idiom for a SELECT and a catastrophic
+/// one here: transplanted to a DELETE, a filter that named nothing would match
+/// every row and wipe a cache several teams share. Two callers can present such
+/// a filter, and one of them — the hourly retention task — is unattended. So the
+/// clauses are collected into a `Vec` and an empty one **skips the statement
+/// entirely** rather than falling through to a bare `DELETE FROM`.
+fn cache_prune(conn: &mut Connection, filter: &CachePruneFilter) -> anyhow::Result<u64> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut pruned = 0u64;
 
-    if let Some(days) = older_than_days {
-        let cutoff = now_ms() - days * 86_400_000;
-        pruned += tx.execute(
-            "DELETE FROM cache_entries WHERE created_at < ?1",
-            params![cutoff],
-        )? as u64;
+    let (clauses, args) = prune_predicate(filter);
+    if !clauses.is_empty() {
+        let sql = format!("DELETE FROM cache_entries WHERE {}", clauses.join(" AND "));
+        pruned += tx.execute(&sql, params_from_iter(args.iter()))? as u64;
     }
 
-    if let Some(target) = target_bytes {
+    if let Some(target) = filter.target_bytes {
         let mut total: i64 = tx.query_row(
             "SELECT COALESCE(SUM(size), 0) FROM cache_entries",
             [],

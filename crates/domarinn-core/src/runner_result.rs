@@ -36,6 +36,11 @@ pub(super) struct CaseInputs {
     /// rendering the prompt), which honestly have no input identity yet.
     pub prompt_digest: Option<String>,
     pub provider_digest: Option<String>,
+    /// Whoever answered, when a `fallback:` chain was walked and it was not the
+    /// provider the cell names. `None` on every path that never reached a call.
+    pub answered_by_provider_id: Option<String>,
+    /// Chain links tried and passed over. Empty unless a chain ran.
+    pub fallback_attempts: Vec<crate::result::FallbackAttempt>,
 }
 
 pub(super) fn error_case(
@@ -88,6 +93,8 @@ pub(super) fn error_case(
         error_details: json_to_persist(true, failure.details, "error_details"),
         reasoning: None,
         empty_reason: None,
+        answered_by_provider_id: inputs.answered_by_provider_id,
+        fallback_attempts: inputs.fallback_attempts,
     }
 }
 
@@ -182,6 +189,12 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
         if !c.cached && c.attempts > 1 {
             s.retried_cases += 1;
         }
+        // Keyed on the field being present, which is set only when the answering
+        // provider differed from the configured one — so a chain that was
+        // configured and never needed does not count.
+        if c.answered_by_provider_id.is_some() {
+            s.fallback_cases += 1;
+        }
         // Keyed on the reason string, not a variant: the set is open, so an
         // unknown vendor reason has to tally under its own name rather than
         // collapse into a catch-all. An empty-string reason is excluded: no
@@ -211,6 +224,8 @@ mod tests {
     fn case(test_id: &str, status: CaseStatus, empty_reason: Option<&str>) -> CaseResult {
         CaseResult {
             cache_key: None,
+            answered_by_provider_id: None,
+            fallback_attempts: Vec::new(),
             tool_calls: Vec::new(),
             cell: CellKey {
                 provider_id: "p".into(),

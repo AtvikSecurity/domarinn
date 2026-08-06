@@ -486,6 +486,8 @@ pub(crate) fn sample_run() -> RunResult {
     };
     let case = |test: &str, status: CaseStatus, score: f64| CaseResult {
         cache_key: None,
+        answered_by_provider_id: None,
+        fallback_attempts: Vec::new(),
         tool_calls: Vec::new(),
         case_key: cell(test).case_key(),
         cell: cell(test),

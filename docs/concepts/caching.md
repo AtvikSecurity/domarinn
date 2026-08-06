@@ -30,6 +30,7 @@ A salt joins the hash **only when it is set**, which is what keeps every key wri
 | an `exec` assertion's `cache_salt` | suite | that assertion's grading requests |
 | `cache.backend: disk \| layered` | suite | which store (`http` and `s3` are deprecated aliases) |
 | `cache.s3.*` | suite | the S3 settings `layered` uses |
+| `cache.store_empty_outputs` / `--store-empty-outputs` / `DOMARINN_CACHE_STORE_EMPTY_OUTPUTS` | suite / run | [which empty answers are written at all](#empty-answers) |
 | `--cache-dir` / `DOMARINN_CACHE_DIR` | run | where the local tier lives |
 | `--no-cache` / `--cache-only` / `--no-cache-migration` | run | mode |
 | `--no-grader-cache` (`cache.grader` is deprecated) | run | grader-originated requests |
@@ -39,7 +40,7 @@ That is the complete list. Every other page links here rather than re-deriving i
 ## What is and is not cached
 
 - **One entry per key, immutable.** The first write wins, on every backend. Two writers who agree on a key agree on the *answer* — though not on the bytes, since an entry also records when the call happened, how many attempts it took, which version wrote it, and the request it answers.
-- **Errors are never cached.** Only successful responses are stored.
+- **Errors are never cached, and most empty answers are not either.** The first half is structural: the write only happens in the success arm, so there is no path by which a failed call becomes an entry. The second half is a policy, because an empty answer *is* a successful call — a `200` carrying no content blocks, a refusal, a reply cut off at `max_tokens`. `cache.store_empty_outputs` decides which of those are worth keeping, and it defaults to `reproducible`: [an empty answer is stored only when the same request would produce it again](#empty-answers).
 - **Grader calls are requests like any other.** The grader's HTTP call, an embedding, and an `exec` assertion's protocol round-trip all go through the same key function as a provider call. An LLM-graded suite used to re-pay its grader on every run even when every provider response was a hit, which is the dominant recurring cost of running one. `--no-grader-cache` turns just those off.
 - **What is stored for a grading is the response, not the verdict.** The verdict is re-derived on read, by the same parser a live call uses — so a replay can never produce a shape today's code would reject, and a parser fix applies retroactively to everything already stored. A stored payload that no longer parses is a **miss**, never an error: it is re-asked, and warned about, because an immutable entry could otherwise fail the same assertion forever.
 - **A `threshold` is not in the key.** The threshold is applied on read, so editing a `threshold:` re-scores every case instantly instead of re-paying the grader for an answer it already gave.
@@ -51,6 +52,33 @@ That is the complete list. Every other page links here rather than re-deriving i
 - **A prompt template's source text is not in the key.** The *rendered* prompt is already inside the request, so hashing the template as well would only bust on edits that render identically — a change with no effect on the provider.
 - **An `http` provider's `output_expr` *is* in the key**, even though it never goes on the wire. The entry stores the already-projected output, so the expression decides what the stored answer means: two providers reading different fields out of one endpoint's response are not asking the same question. Editing it busts that provider's entries like any other change to the request — no `--no-cache` needed.
 - **`latency` assertions bypass the cache**, since a cached latency is meaningless. `cost` and `tokens` come from the stored response, so those are honored on a hit. Under `--cache-only` that bypass would be a live call in the one mode documented as offline, so the case is [refused instead](#cache-modes).
+
+### Empty answers, and which ones are kept {#empty-answers}
+
+An empty answer is a successful call with nothing gradeable in it, so it lands in the store beside every real answer. Against a first-write-wins store that is a trap: one flaky draw from a gateway is replayed on every later run, forever, and on a shared cache it is replayed for everyone. `cache.store_empty_outputs` is the write gate.
+
+| Value | Stores |
+|---|---|
+| `reproducible` (default) | only `truncated`, `tool_use_only` and `output_expr_empty` |
+| `never` | no empty answer at all |
+| `always` | every one — the behaviour before this knob existed |
+
+The test `reproducible` applies is not "is this bad news". A refusal is perfectly real news. It is **will the same request produce this again**: `truncated` will, until `max_tokens` changes; `tool_use_only` will, for a model that keeps reaching for the same tool; `output_expr_empty` will, because a selector that matches nothing matches nothing every time. A gateway that returns an empty body on one call in five will not — and re-drawing that costs one call, where freezing it costs a wrong answer with no expiry.
+
+`--store-empty-outputs` overrides the suite for one run, and `DOMARINN_CACHE_STORE_EMPTY_OUTPUTS` does the same from the environment. A real answer is stored under all three values; nothing here touches the overwhelming majority of calls.
+
+#### Why it is a named policy and not a list of reasons
+
+The obvious design — "do not cache these reasons" — would not have fixed the bug it was written for. A reason is only computed when the output text is blank, and `refusal` only appears when the vendor sets that finish reason. So a gateway that returns an empty body with an ordinary `end_turn` classifies as `no_content_blocks` or `blank`, never as `refusal`, and a denylist naming `refusal` would have left exactly the poisoning case cached.
+
+The deeper reason is that the reason is an **open string**: a provider — including an [`exec` child](../reference/protocol.md#empty-outputs) — may report one this build has never heard of, and a vendor adds finish reasons on its own schedule. A denylist is therefore fail-*open*: anything invented next year is cached until somebody notices and edits a list. A named policy is fail-*closed*, and an unknown reason falls on the not-stored side by construction. The classification itself, and every reason domarinn names, is documented once in [grading.md](grading.md#empty-outputs-and-grading).
+
+`runner.refusal_patterns` extends the classification to prose — see [providers.md](../reference/providers.md#prose-refusals-runnerrefusal_patterns). It is opt-in and empty by default, and a pattern is re-applied on every read rather than written onto the entry, so editing one reclassifies what is already stored instead of requiring a purge.
+
+#### Two things this does not do
+
+- **It is write-side only.** An entry already in the store still replays. The runner says so — once per provider, naming the key and the command that removes it — but there is nothing it can do about it, because entries are immutable. [Removing entries you already have](#removing-entries-you-already-have) is the cure; this gate only stops the next one.
+- **With `fallback:` configured, the primary's empty is neither stored nor graded, so the primary is re-called every run.** That is the intended shape — a declined answer is not an answer, and caching it would freeze the handoff too — but it is a real cost change rather than a free one, and it does not converge: the warm-cache run still pays the primary. If that is not what you want, `--no-fallback` (or removing the chain) restores one call per cell.
 
 ## Salts
 
@@ -261,9 +289,31 @@ domarinn cache clear                 # remove everything
 
 Durations accept `d`, `h`, `m`, `s` (e.g. `12h`, `90s`).
 
-- **`gc` requires `--older-than`.** A bare `domarinn cache gc` is a usage error, not a full purge: the obvious reading of `gc` is "tidy up a bit", and the command that removes everything should be the one that says so. Use `cache clear`.
+- **`gc` needs a bound — any one of the three.** `--older-than`, `--newer-than` or `--empty-reason` satisfies it; a bare `domarinn cache gc` is a usage error, not a full purge, because the obvious reading of `gc` is "tidy up a bit" and the command that removes everything should be the one that says so. Use `cache clear` for that.
 - **These commands address the local tier only.** They do not reach an S3 bucket or the server — remote retention is the bucket's lifecycle rules and the server's [prune endpoint and hourly retention task](../reference/rest-api.md#cache-shared-provider-cache).
-- **The legacy tier is reported by `stats` and `path` always, but only purged when it is yours.** `clear` and `gc` touch it only when the suite sits at or under the process working directory, because a cwd-relative `.domarinn/cache` belongs to whatever project you happen to be standing in — `cd ~/projB && domarinn cache clear ~/projA/evals` must not take projB's cache with it. `stats` says which of the two it is.
+- **The legacy tier is reported by `stats` and `path` always, but only purged when it is yours.** `clear` and `gc` touch it only when the suite sits at or under the process working directory, because a cwd-relative `.domarinn/cache` belongs to whatever project you happen to be standing in — `cd ~/projB && domarinn cache clear ~/projA/evals` must not take projB's cache with it. `stats` says which of the two it is. `--newer-than` is additionally never applied to it: a pre-0.4 tier holds nothing recent *except* the current project's entries, so "delete the recent half" is the one filter that would turn a rule sparing a stranger's cache into one emptying your own.
+
+### Removing entries you already have {#removing-entries-you-already-have}
+
+The write gate above stops the *next* empty answer. An entry already written keeps replaying, because entries are immutable — so evicting it is a separate act, and the point of doing it by reason rather than by age is that you keep the warm cache around the poison:
+
+```sh
+domarinn cache gc --empty-reason refusal --older-than 0s
+domarinn cache gc --empty-reason blank --empty-reason no_content_blocks --older-than 90d
+domarinn cache gc --older-than 90d --newer-than 30d    # a window, both ends named
+```
+
+`--empty-reason` is repeatable and matches the reason recorded on the entry. `--newer-than` names only the recent end of a window, so it **requires** `--older-than`: on its own it would read "delete everything since", which is a whole-store wipe wearing the vocabulary of housekeeping.
+
+`gc` reaches the **local disk tier only**, and that is true even when the suite is configured `layered`: the layered backend forwards a purge to its local tier and nothing else, so running it against a shared cache tidies your laptop and leaves the poison on the server. Removing it there is one of:
+
+| | |
+|---|---|
+| `DELETE /api/v1/cache/entries/{key}` | one entry, by the key the replay warning printed |
+| `POST /api/v1/cache/prune?empty_reason=refusal` | every entry with that reason, at any age |
+| `DOMARINN_CACHE_SWEEP_EMPTY_REASON` | the same eviction, standing, on the hourly retention task |
+
+Both endpoints are `admin` scope; the wire details are in [rest-api.md](../reference/rest-api.md#cache-shared-provider-cache) and the environment variable in [server.md](../reference/server.md#environment-variables). An S3 remote has neither — its retention is the bucket's lifecycle rules, and an entry there is removed with the bucket's own tooling.
 
 ## Upgrading to 0.5
 

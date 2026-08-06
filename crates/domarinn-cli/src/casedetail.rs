@@ -416,6 +416,8 @@ mod tests {
     fn case(cell: CellKey, status: CaseStatus) -> CaseResult {
         CaseResult {
             cache_key: None,
+            answered_by_provider_id: None,
+            fallback_attempts: Vec::new(),
             tool_calls: Vec::new(),
             case_key: cell.case_key(),
             cell,

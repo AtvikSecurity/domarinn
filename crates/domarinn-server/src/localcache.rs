@@ -155,6 +155,7 @@ impl LocalTier {
                     output_tokens: index.output_tokens,
                     request_summary: index.request_summary.clone(),
                     output_preview: index.output_preview.clone(),
+                    empty_reason: index.empty_reason.clone(),
                 },
                 created_ms,
                 cost_microusd: index.cost_microusd,
@@ -194,6 +195,11 @@ impl LocalTier {
                 }
                 if let Some(model) = &filter.model {
                     if row.item.model.as_deref() != Some(model.as_str()) {
+                        return false;
+                    }
+                }
+                if let Some(reason) = &filter.empty_reason {
+                    if row.item.empty_reason.as_deref() != Some(reason.as_str()) {
                         return false;
                     }
                 }
@@ -293,6 +299,10 @@ impl LocalTier {
             return Ok(None);
         };
         let index = EntryIndex::from_entry(&entry);
+        // Read off the index rather than off `entry` so the clamp applies here
+        // too: the server tier's detail view does the same, and the two tiers
+        // must not describe the same field two different ways.
+        let empty_reason = index.empty_reason.clone();
         Ok(Some(CacheEntryDetail {
             key: key.0,
             // The body is the entry; its serialized length is the honest size
@@ -313,6 +323,7 @@ impl LocalTier {
             attempts: entry.attempts,
             provider_latency_ms: entry.provider_latency_ms,
             stop_reason: entry.stop_reason,
+            empty_reason,
             domarinn_version: Some(entry.domarinn_version),
             request: entry.request,
             provider_fingerprint: entry.provider_fingerprint,
@@ -345,6 +356,7 @@ impl LocalTier {
         Ok(CacheFacetsResponse {
             kinds: tally(|r| r.item.kind.as_ref()),
             models: tally(|r| r.item.model.as_ref()),
+            empty_reasons: tally(|r| r.item.empty_reason.as_ref()),
             total: rows.len() as i64,
             // Nothing is ever pending here: a row exists only once read.
             unindexed: 0,
@@ -379,6 +391,11 @@ fn unreadable_row(key: &CacheKey, size: u64, modified: Option<chrono::DateTime<U
             output_tokens: None,
             request_summary: None,
             output_preview: None,
+            // `None`, not "unknown": the row exists because the body would not
+            // deserialize, so nothing about *why an output was empty* has been
+            // established. `parseable: false` above is the field that says so;
+            // inventing a reason here would make it look examined.
+            empty_reason: None,
         },
         created_ms: created.timestamp_millis(),
         cost_microusd: None,

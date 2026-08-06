@@ -48,6 +48,23 @@ pub const ANTHROPIC_REFUSAL: &str = r#"{
   "usage": {"input_tokens": 26, "output_tokens": 15}
 }"#;
 
+/// Anthropic Messages, declining with nothing gradeable in it.
+///
+/// Empty `content` **and** `stop_reason: "refusal"`, which is what the parser
+/// actually keys on: `empty_reason` is computed only when the output text is
+/// blank, and `refusal` only when the vendor names it. [`ANTHROPIC_REFUSAL`]
+/// above looks like a refusal to a human and classifies as an ordinary answer,
+/// which is exactly the distinction that makes this fixture necessary.
+pub const ANTHROPIC_EMPTY_REFUSAL: &str = r#"{
+  "id": "msg_stub",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5",
+  "content": [],
+  "stop_reason": "refusal",
+  "usage": {"input_tokens": 26, "output_tokens": 0}
+}"#;
+
 /// An Anthropic `llm-rubric` verdict, passing.
 ///
 /// The grader asks for a tool call and reads the first `tool_use` block's

@@ -533,6 +533,42 @@ pub struct Runner {
     /// ```
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_on_empty_reason: Vec<String>,
+    /// Regexes that mark a *non-empty* output as a refusal.
+    ///
+    /// `empty_reason` is only computed when the output text is blank, and
+    /// `refusal` only appears there when the vendor said so — so a model that
+    /// declines in prose ("I can't help with that") is classified as nothing at
+    /// all, and is invisible to both `cache.store_empty_outputs` and a
+    /// provider's `fallback:` chain. These patterns close that gap.
+    ///
+    /// Opt-in and empty by default: a false positive silently swaps in a
+    /// different model on a perfectly good answer, which is a worse failure than
+    /// the one it fixes. A suite that wants a deterministic verdict on a prose
+    /// refusal should assert on it (`not-contains`) rather than reach for this.
+    ///
+    /// Applied at classification time, never written into a cache entry, so
+    /// editing a pattern reclassifies entries that are already stored instead of
+    /// requiring a purge.
+    ///
+    /// ```yaml
+    /// runner:
+    ///   refusal_patterns:
+    ///     - "(?i)^i (can't|cannot|won't) help with"
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refusal_patterns: Vec<String>,
+    /// Empty reasons that make a provider hand off to its `fallback:` chain.
+    ///
+    /// Defaults to `["refusal", "content_filter"]` — the two that mean "this
+    /// provider will not answer this", as opposed to "this provider answered
+    /// badly", which is a result and must be graded. Set `[]` to hand off only
+    /// on hard call failures.
+    ///
+    /// `Option` rather than a bare `Vec` (unlike [`Self::skip_on_empty_reason`],
+    /// which is genuinely opt-in): this default is non-empty, so absent and
+    /// explicitly-`[]` have to stay distinguishable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_on_empty_reason: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -588,6 +624,52 @@ pub struct CacheCfg {
     // from this digest, so nothing is invalidated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grader: Option<bool>,
+    /// Which empty provider outputs are worth storing. Defaults to
+    /// [`StoreEmptyOutputs::Reproducible`].
+    ///
+    /// An empty output is a *successful* call, so the "errors are never cached"
+    /// guard — structural, since `cache.put` only happens in the `Ok` arm — has
+    /// never covered it. Against an immutable, first-write-wins store that means
+    /// one transient empty reply from a flaky gateway is replayed on every later
+    /// run, forever, and on a shared cache it is replayed for everyone.
+    ///
+    /// Write-side only. An entry already in the store still replays; removing it
+    /// is `domarinn cache gc --empty-reason <reason> --older-than <d>` locally,
+    /// or `DELETE /api/v1/cache/entries/{key}` on a server.
+    //
+    // Not serialized when unset, so `config_digest` — a hash of the serialized
+    // suite — stays byte-identical for every suite that never writes the key.
+    // The same reasoning as `grader` above, which spells out the consequence:
+    // otherwise one `--against` comparison across the upgrade reports config
+    // drift that is not there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_empty_outputs: Option<StoreEmptyOutputs>,
+}
+
+/// What to do with a response that carries no gradeable output.
+///
+/// A named policy rather than a list of reasons to exclude, because
+/// [`crate::empty::EmptyReason`] is an open string newtype: a denylist is
+/// fail-*open*, so a reason a future vendor invents would be cached until
+/// somebody noticed and edited the list. Here an unrecognized reason falls on
+/// the not-stored side by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreEmptyOutputs {
+    /// Never store a response with no gradeable output.
+    Never,
+    /// Store only the reasons that re-occur for the same request: `truncated`
+    /// (raise `max_tokens` and it changes), `tool_use_only` (the model chose a
+    /// tool) and `output_expr_empty` (the suite's selector matches nothing).
+    /// Everything else — a refusal, a content filter, an empty body, a blank
+    /// answer, or anything this build has never heard of — is a draw, not a
+    /// verdict, and is not worth freezing.
+    #[default]
+    Reproducible,
+    /// Store every empty output, as domarinn did before 0.10. Restores the
+    /// behaviour issue #79 describes; keep it only if your provider's empties
+    /// are genuinely deterministic.
+    Always,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

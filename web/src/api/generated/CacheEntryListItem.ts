@@ -36,4 +36,14 @@ parseable: boolean | null, kind: string | null, model: string | null, cost_usd: 
  * Where the request went — transport plus host or command, never prompt
  * text and never a query string. See `storage::cacheindex`.
  */
-request_summary: string | null, output_preview: string | null, };
+request_summary: string | null, output_preview: string | null, 
+/**
+ * Why the output was empty, when it was. A plain `Option` with **no**
+ * `skip_serializing_if`, unlike `dto::cases` and `dto::runs`, which omit
+ * theirs: this module's rule is that an absent member is an explicit
+ * `null` (pinned by `an_unindexed_row_serializes_every_unknown_as_explicit_null`),
+ * because a client here has to distinguish "not examined" from "examined,
+ * nothing to report" — which is also why the column is plain `NULL` rather
+ * than the runs side's `''` sentinel.
+ */
+empty_reason: string | null, };

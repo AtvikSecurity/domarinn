@@ -65,6 +65,30 @@ impl EmptyReason {
         EmptyReason(reason.into())
     }
 
+    /// Longest reason any surface stores, logs or compares.
+    ///
+    /// Every real reason is under twenty characters; this is a bound on what an
+    /// `exec` child can make the rest of the system carry, not a guess at what
+    /// a vendor might name.
+    pub const CLAMP_MAX: usize = 64;
+
+    /// The comparable, safe-to-render form: control characters stripped and
+    /// length-bounded.
+    ///
+    /// An `exec` child writes this field verbatim, so unclamped it is a newline
+    /// away from forging a log record and unbounded in a facet list. It must
+    /// also be the form *every* consumer compares on: the server promotes the
+    /// clamped value into a column, so a disk-tier filter comparing the raw one
+    /// would make `--empty-reason X` evict on one tier and silently miss on the
+    /// other.
+    pub fn clamped(&self) -> String {
+        let cleaned: String = self.0.chars().filter(|c| !c.is_control()).collect();
+        match cleaned.char_indices().nth(Self::CLAMP_MAX) {
+            None => cleaned,
+            Some((at, _)) => cleaned[..at].to_string(),
+        }
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

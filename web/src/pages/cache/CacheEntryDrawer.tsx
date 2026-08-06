@@ -198,6 +198,15 @@ function EntryBody({
             {entry.stop_reason}
           </Chip>
         ) : null}
+        {/* `amber`, not `neutral`: this entry has no gradeable output, and it
+            is replayed on every run until someone evicts it. The output panel
+            below is blank, so without this the drawer would show nothing and
+            explain nothing. */}
+        {entry.empty_reason ? (
+          <Chip tone="amber" size="xs" mono>
+            empty: {entry.empty_reason}
+          </Chip>
+        ) : null}
         {entry.attempts !== null ? (
           <Chip tone="neutral" size="xs">
             {entry.attempts} {entry.attempts === 1 ? "attempt" : "attempts"}

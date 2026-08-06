@@ -135,6 +135,13 @@
             "string",
             "null"
           ]
+        },
+        "fallback": {
+          "description": "Providers to try, in order, when this one refuses or fails to answer.\n\n**Not chained.** A fallback provider's own `fallback:` is ignored when it\nis reached as one, which makes a cycle unconstructible rather than\nsomething to detect at run time. `domarinn validate` warns when a target\ndeclares one, so the rule is discoverable while you are writing the\nsuite rather than at three in the morning.\n\n`cell.provider_id` stays *this* provider's id whichever link answers, so\n`case_key` is stable and an `--against` baseline still joins the same\nrow. [`crate::result::CaseResult::answered_by_provider_id`] records who\nactually replied, and `provider_digest` reflects them — so a fallback\nshows up as a `ProviderChanged` in a diff, which is what it is.\n\nA test's `only_providers` / `skip_providers` is honoured for candidates:\na test that excludes a provider must not reach it through another\nprovider's back door. `--provider` is not — it chooses which cells run,\nand a cell that runs is entitled to its whole chain.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -1793,6 +1800,23 @@
           "items": {
             "type": "string"
           }
+        },
+        "refusal_patterns": {
+          "description": "Regexes that mark a *non-empty* output as a refusal.\n\n`empty_reason` is only computed when the output text is blank, and\n`refusal` only appears there when the vendor said so — so a model that\ndeclines in prose (\"I can't help with that\") is classified as nothing at\nall, and is invisible to both `cache.store_empty_outputs` and a\nprovider's `fallback:` chain. These patterns close that gap.\n\nOpt-in and empty by default: a false positive silently swaps in a\ndifferent model on a perfectly good answer, which is a worse failure than\nthe one it fixes. A suite that wants a deterministic verdict on a prose\nrefusal should assert on it (`not-contains`) rather than reach for this.\n\nApplied at classification time, never written into a cache entry, so\nediting a pattern reclassifies entries that are already stored instead of\nrequiring a purge.\n\n```yaml\nrunner:\n  refusal_patterns:\n    - \"(?i)^i (can't|cannot|won't) help with\"\n```",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fallback_on_empty_reason": {
+          "description": "Empty reasons that make a provider hand off to its `fallback:` chain.\n\nDefaults to `[\"refusal\", \"content_filter\"]` — the two that mean \"this\nprovider will not answer this\", as opposed to \"this provider answered\nbadly\", which is a result and must be graded. Set `[]` to hand off only\non hard call failures.\n\n`Option` rather than a bare `Vec` (unlike [`Self::skip_on_empty_reason`],\nwhich is genuinely opt-in): this default is non-empty, so absent and\nexplicitly-`[]` have to stay distinguishable.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -1877,6 +1901,17 @@
             "boolean",
             "null"
           ]
+        },
+        "store_empty_outputs": {
+          "description": "Which empty provider outputs are worth storing. Defaults to\n[`StoreEmptyOutputs::Reproducible`].\n\nAn empty output is a *successful* call, so the \"errors are never cached\"\nguard — structural, since `cache.put` only happens in the `Ok` arm — has\nnever covered it. Against an immutable, first-write-wins store that means\none transient empty reply from a flaky gateway is replayed on every later\nrun, forever, and on a shared cache it is replayed for everyone.\n\nWrite-side only. An entry already in the store still replays; removing it\nis `domarinn cache gc --empty-reason <reason> --older-than <d>` locally,\nor `DELETE /api/v1/cache/entries/{key}` on a server.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoreEmptyOutputs"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -1940,6 +1975,26 @@
       "additionalProperties": false,
       "required": [
         "bucket"
+      ]
+    },
+    "StoreEmptyOutputs": {
+      "description": "What to do with a response that carries no gradeable output.\n\nA named policy rather than a list of reasons to exclude, because\n[`crate::empty::EmptyReason`] is an open string newtype: a denylist is\nfail-*open*, so a reason a future vendor invents would be cached until\nsomebody noticed and edited the list. Here an unrecognized reason falls on\nthe not-stored side by construction.",
+      "oneOf": [
+        {
+          "description": "Never store a response with no gradeable output.",
+          "type": "string",
+          "const": "never"
+        },
+        {
+          "description": "Store only the reasons that re-occur for the same request: `truncated`\n(raise `max_tokens` and it changes), `tool_use_only` (the model chose a\ntool) and `output_expr_empty` (the suite's selector matches nothing).\nEverything else — a refusal, a content filter, an empty body, a blank\nanswer, or anything this build has never heard of — is a draw, not a\nverdict, and is not worth freezing.",
+          "type": "string",
+          "const": "reproducible"
+        },
+        {
+          "description": "Store every empty output, as domarinn did before 0.10. Restores the\nbehaviour issue #79 describes; keep it only if your provider's empties\nare genuinely deterministic.",
+          "type": "string",
+          "const": "always"
+        }
       ]
     }
   }

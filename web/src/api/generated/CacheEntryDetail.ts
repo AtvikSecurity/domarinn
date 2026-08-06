@@ -14,7 +14,12 @@ export type CacheEntryDetail = { key: string, size: number, created_at: string, 
 /**
  * The original call's in-flight time, not the cache read's.
  */
-provider_latency_ms: number | null, stop_reason: string | null, domarinn_version: string | null, 
+provider_latency_ms: number | null, stop_reason: string | null, 
+/**
+ * Why the output was empty. See [`CacheEntryListItem::empty_reason`] for
+ * why this is an explicit `null` rather than an omitted key.
+ */
+empty_reason: string | null, domarinn_version: string | null, 
 /**
  * The redacted canonical request. Credentials live in headers and are
  * structurally absent from both envelope shapes.

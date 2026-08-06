@@ -9,7 +9,15 @@ export type CacheFacetsResponse = { kinds: Array<CacheFacet>,
  * Capped at the most common values: a store polluted with pathological
  * model strings must not be able to produce an unbounded response.
  */
-models: Array<CacheFacet>, total: number, 
+models: Array<CacheFacet>, 
+/**
+ * Deliberately uncapped, unlike `models`: the reason vocabulary is a
+ * handful of constants, each value is length-clamped on the way into the
+ * index, and this is the dropdown someone reaches for when a refusal has
+ * poisoned a shared cache — truncating its tail would hide the rare
+ * reason they are hunting.
+ */
+empty_reasons: Array<CacheFacet>, total: number, 
 /**
  * Entries whose body has not been examined yet. They are listed, but no
  * `kind`/`model` filter can match them and search cannot reach them.

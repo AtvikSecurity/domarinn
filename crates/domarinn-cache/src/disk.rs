@@ -205,8 +205,29 @@ impl CacheBackend for LocalDiskCache {
         Ok(stats)
     }
 
+    /// Delete every entry the filter selects, returning how many went.
+    ///
+    /// The shape here is deliberate and load-bearing. "Remove everything" is
+    /// reachable *only* from [`PurgeFilter::is_default`] — every other path
+    /// goes through per-predicate arms whose unset form is an explicit `true`.
+    /// This file used to be a single `match cutoff { None => true, … }` derived
+    /// solely from `older_than`, and both obvious extensions of that are
+    /// store-destroying: `--newer-than` on its own leaves `cutoff = None` and
+    /// deletes every file, and folding an `empty_reason` vec in as a plain
+    /// conjunction makes `contains()` false for the empty vec, so
+    /// `domarinn cache clear` becomes a silent no-op that prints "cleared 0".
+    ///
+    /// Bodies are read only when the filter actually asks about one. An
+    /// age-only sweep — `cache gc --older-than 30d`, the cron-shaped case — is
+    /// answerable from `stat`, and paying to deserialize 200k entries to answer
+    /// a question nobody posed would turn housekeeping into a minutes-long job.
     async fn purge(&self, filter: &PurgeFilter) -> Result<u64, CacheError> {
-        let cutoff = filter.older_than.map(|d| chrono::Utc::now() - d);
+        let now = chrono::Utc::now();
+        let older_cutoff = filter.older_than.map(|d| now - d);
+        let newer_cutoff = filter.newer_than.map(|d| now - d);
+        // Hoisted out of the walk: this decides whether the loop below reads
+        // files at all, and it cannot change between entries.
+        let needs_body = !filter.is_age_only();
         let mut removed = 0u64;
         let mut shards = match tokio::fs::read_dir(&self.root).await {
             Ok(rd) => rd,
@@ -233,15 +254,50 @@ impl CacheBackend for LocalDiskCache {
                 if path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
                 }
-                let should_remove = match cutoff {
-                    None => true,
-                    Some(cutoff) => file
+                let should_remove = if filter.is_default() {
+                    // The only route to "everything", and it is spelled out
+                    // rather than derived. See the method doc.
+                    true
+                } else {
+                    let mtime = file
                         .metadata()
                         .await
                         .ok()
                         .and_then(|m| m.modified().ok())
-                        .map(|mtime| chrono::DateTime::<chrono::Utc>::from(mtime) < cutoff)
-                        .unwrap_or(false),
+                        .map(chrono::DateTime::<chrono::Utc>::from);
+
+                    // A timestamp predicate that cannot be evaluated must not
+                    // delete: an unreadable mtime keeps the file. Each bound is
+                    // separately vacuous when unset, so `--newer-than` alone
+                    // cannot fall through to "match all" the way a single
+                    // `Option<cutoff>` did.
+                    let matches_age = match older_cutoff {
+                        None => true,
+                        Some(cutoff) => mtime.is_some_and(|m| m < cutoff),
+                    } && match newer_cutoff {
+                        None => true,
+                        Some(cutoff) => mtime.is_some_and(|m| m >= cutoff),
+                    };
+
+                    if !matches_age {
+                        false
+                    } else if !needs_body {
+                        true
+                    } else {
+                        // Never delete what you cannot describe. A body that no
+                        // longer parses survives a body predicate — the same
+                        // rule the browse tier applies on read — because "we
+                        // could not tell whether it matched" is not a match. It
+                        // is still reachable by `cache clear` and by an age
+                        // sweep, neither of which claims to know anything about
+                        // what is inside it.
+                        match tokio::fs::read(&path).await {
+                            Ok(bytes) => serde_json::from_slice::<CacheEntry>(&bytes)
+                                .map(|entry| filter.matches_entry(&entry))
+                                .unwrap_or(false),
+                            Err(_) => false,
+                        }
+                    }
                 };
                 if should_remove && tokio::fs::remove_file(&path).await.is_ok() {
                     removed += 1;
@@ -398,6 +454,180 @@ mod tests {
         let found = cache.enumerate(10).await.unwrap();
         assert_eq!(found.entries.len(), 1);
         assert_eq!(found.entries[0].key, key);
+    }
+
+    fn entry_with_reason(reason: &str) -> CacheEntry {
+        let mut entry = sample_entry();
+        entry.output = Output::Text(String::new());
+        entry.empty_reason = Some(domarinn_core::empty::EmptyReason::new(reason));
+        entry
+    }
+
+    /// Write bytes that are *not* a `CacheEntry` at a path the walk will treat
+    /// as an entry — the "corrupt file" a truncated disk or a hand-edit leaves.
+    async fn write_garbage(cache: &LocalDiskCache, key: &CacheKey) -> PathBuf {
+        let path = cache.path_for(key);
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, b"{ not json at all").await.unwrap();
+        path
+    }
+
+    fn reason_filter(reason: &str) -> PurgeFilter {
+        PurgeFilter {
+            empty_reason: vec![domarinn_core::empty::EmptyReason::new(reason)],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn purge_with_no_filter_removes_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path());
+        for i in 0..3 {
+            cache
+                .put(&CacheKey::compute(&json!({ "i": i })), &sample_entry())
+                .await
+                .unwrap();
+        }
+        assert_eq!(cache.purge(&PurgeFilter::default()).await.unwrap(), 3);
+        assert_eq!(cache.stats().await.unwrap().entries, 0);
+    }
+
+    /// The store-destroying reading of `--newer-than`. `cutoff` used to derive
+    /// solely from `older_than`, so a `newer_than`-only filter left it `None`
+    /// and every file matched the `None => true` arm — a purge asking for
+    /// *recent* entries would have wiped the whole cache.
+    #[tokio::test]
+    async fn a_newer_than_only_purge_keeps_older_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path());
+        cache
+            .put(&CacheKey::compute(&json!({"a": 1})), &sample_entry())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+        let filter = PurgeFilter {
+            newer_than: Some(chrono::Duration::milliseconds(100)),
+            ..Default::default()
+        };
+        assert_eq!(cache.purge(&filter).await.unwrap(), 0);
+        assert_eq!(cache.stats().await.unwrap().entries, 1);
+    }
+
+    /// The other half of the same trap, in the other direction. Folding
+    /// `empty_reason` in as a plain conjunction makes `contains()` false for an
+    /// empty `Vec`, so `domarinn cache clear` deletes nothing and cheerfully
+    /// reports "cleared 0" — a data-*retention* bug that looks like success.
+    #[tokio::test]
+    async fn an_empty_reason_vec_does_not_disable_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path());
+        for i in 0..2 {
+            cache
+                .put(&CacheKey::compute(&json!({ "i": i })), &sample_entry())
+                .await
+                .unwrap();
+        }
+        let filter = PurgeFilter {
+            empty_reason: Vec::new(),
+            ..Default::default()
+        };
+        assert_eq!(cache.purge(&filter).await.unwrap(), 2);
+        assert_eq!(cache.stats().await.unwrap().entries, 0);
+    }
+
+    #[tokio::test]
+    async fn purge_by_empty_reason_removes_only_matching_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path());
+        let refused = CacheKey::compute(&json!({"which": "refused"}));
+        let blank = CacheKey::compute(&json!({"which": "blank"}));
+        let answered = CacheKey::compute(&json!({"which": "answered"}));
+        cache
+            .put(&refused, &entry_with_reason("refusal"))
+            .await
+            .unwrap();
+        cache
+            .put(&blank, &entry_with_reason("blank"))
+            .await
+            .unwrap();
+        cache.put(&answered, &sample_entry()).await.unwrap();
+
+        assert_eq!(cache.purge(&reason_filter("refusal")).await.unwrap(), 1);
+        assert!(cache.get(&refused).await.unwrap().is_none());
+        assert!(cache.get(&blank).await.unwrap().is_some());
+        assert!(
+            cache.get(&answered).await.unwrap().is_some(),
+            "an entry with no reason is not a reason we did not name"
+        );
+    }
+
+    /// The retention path must stay a `stat` walk. Proven by leaving a file on
+    /// disk that *cannot* be parsed: an age-only purge removes it, which is
+    /// only possible if nothing tried to deserialize it first.
+    #[tokio::test]
+    async fn an_age_only_purge_never_reads_a_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path());
+        let key = CacheKey::compute(&json!({"corrupt": true}));
+        let path = write_garbage(&cache, &key).await;
+
+        let filter = PurgeFilter {
+            older_than: Some(chrono::Duration::seconds(0)),
+            ..Default::default()
+        };
+        assert!(filter.is_age_only());
+        assert_eq!(cache.purge(&filter).await.unwrap(), 1);
+        assert!(!path.exists());
+    }
+
+    /// Never delete what you cannot describe. The same unreadable file the age
+    /// sweep removes must survive a *body* predicate: "we could not tell
+    /// whether it matched" is not a match.
+    #[tokio::test]
+    async fn an_unparseable_body_survives_a_body_predicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path());
+        let key = CacheKey::compute(&json!({"corrupt": true}));
+        let path = write_garbage(&cache, &key).await;
+
+        assert_eq!(cache.purge(&reason_filter("refusal")).await.unwrap(), 0);
+        assert!(path.exists());
+
+        // …and `clear` still reaches it, because that filter claims to know
+        // nothing about any entry.
+        assert_eq!(cache.purge(&PurgeFilter::default()).await.unwrap(), 1);
+        assert!(!path.exists());
+    }
+
+    /// Both bounds together select an interval, not a union. The middle entry
+    /// is old enough for `older_than` and young enough for `newer_than`; the
+    /// other two each fail exactly one bound.
+    #[tokio::test]
+    async fn older_than_and_newer_than_name_a_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = LocalDiskCache::new(dir.path());
+
+        let oldest = CacheKey::compute(&json!({"n": 0}));
+        let middle = CacheKey::compute(&json!({"n": 1}));
+        let newest = CacheKey::compute(&json!({"n": 2}));
+        for key in [&oldest, &middle, &newest] {
+            cache.put(key, &sample_entry()).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+        // Ages at this point: oldest ≈ 900ms, middle ≈ 600ms, newest ≈ 300ms.
+        let filter = PurgeFilter {
+            older_than: Some(chrono::Duration::milliseconds(450)),
+            newer_than: Some(chrono::Duration::milliseconds(750)),
+            ..Default::default()
+        };
+        assert_eq!(cache.purge(&filter).await.unwrap(), 1);
+        assert!(cache.get(&oldest).await.unwrap().is_some(), "too old");
+        assert!(cache.get(&middle).await.unwrap().is_none(), "in the window");
+        assert!(cache.get(&newest).await.unwrap().is_some(), "too new");
     }
 
     #[tokio::test]

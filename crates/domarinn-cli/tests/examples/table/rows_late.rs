@@ -471,4 +471,45 @@ pub const ROWS: &[Example] = &[
             cache_hits: 0,
         }],
     },
+    Example {
+        dir: "44-provider-fallback",
+        shows: "`fallback:` — a second provider answers when the first refuses",
+        env: &[
+            ("CLAUDE_GATEWAY_URL", Env::StubBase),
+            ("ANTHROPIC_API_KEY", Env::Literal("sk-ant-stub-not-real")),
+        ],
+        // One route, answering a *sequence*: the primary draws the refusal, the
+        // fallback draws the answer. `--provider primary` keeps `backup` out of
+        // the matrix while leaving it reachable as a fallback, which is the
+        // filter behaviour this example also documents.
+        stub: &[Route {
+            fragment: "/v1/messages",
+            bodies: &[stubs::ANTHROPIC_EMPTY_REFUSAL, stubs::ANTHROPIC_TEXT],
+        }],
+        // Three calls: the primary's refusal, the fallback that answers it, and
+        // the second case which the primary answers itself. The route repeats
+        // its last body, so only the first draw is the refusal.
+        stub_calls: 3,
+        steps: &[Step {
+            argv: &[
+                "run",
+                "{dir}",
+                "--provider",
+                "primary",
+                "--format",
+                "json",
+                "--out",
+                "{tmp}/result.json",
+                "--no-progress",
+                "--cache-dir",
+                "{tmp}/cache",
+            ],
+            exit: 0,
+            cells: Cells::pass(2),
+            case_ids: &["policy/return-window", "policy/return-window-again"],
+            priced: false,
+            writes: &[],
+            cache_hits: 0,
+        }],
+    },
 ];

@@ -161,7 +161,9 @@ export function CacheEntriesPage() {
             onClick={() =>
               patch(
                 Object.fromEntries(
-                  ["kind", "model", "q", "since", "until"].map((k) => [k, undefined]),
+                  ["kind", "model", "empty_reason", "q", "since", "until"].map(
+                    (k) => [k, undefined],
+                  ),
                 ),
               )
             }

@@ -44,6 +44,14 @@ pub struct CacheEntryListItem {
     /// text and never a query string. See `storage::cacheindex`.
     pub request_summary: Option<String>,
     pub output_preview: Option<String>,
+    /// Why the output was empty, when it was. A plain `Option` with **no**
+    /// `skip_serializing_if`, unlike `dto::cases` and `dto::runs`, which omit
+    /// theirs: this module's rule is that an absent member is an explicit
+    /// `null` (pinned by `an_unindexed_row_serializes_every_unknown_as_explicit_null`),
+    /// because a client here has to distinguish "not examined" from "examined,
+    /// nothing to report" — which is also why the column is plain `NULL` rather
+    /// than the runs side's `''` sentinel.
+    pub empty_reason: Option<String>,
 }
 
 /// `GET /cache/entries` response.
@@ -81,6 +89,9 @@ pub struct CacheEntryDetail {
     /// The original call's in-flight time, not the cache read's.
     pub provider_latency_ms: Option<u64>,
     pub stop_reason: Option<String>,
+    /// Why the output was empty. See [`CacheEntryListItem::empty_reason`] for
+    /// why this is an explicit `null` rather than an omitted key.
+    pub empty_reason: Option<String>,
     pub domarinn_version: Option<String>,
     /// The redacted canonical request. Credentials live in headers and are
     /// structurally absent from both envelope shapes.
@@ -141,6 +152,12 @@ pub struct CacheFacetsResponse {
     /// Capped at the most common values: a store polluted with pathological
     /// model strings must not be able to produce an unbounded response.
     pub models: Vec<CacheFacet>,
+    /// Deliberately uncapped, unlike `models`: the reason vocabulary is a
+    /// handful of constants, each value is length-clamped on the way into the
+    /// index, and this is the dropdown someone reaches for when a refusal has
+    /// poisoned a shared cache — truncating its tail would hide the rare
+    /// reason they are hunting.
+    pub empty_reasons: Vec<CacheFacet>,
     pub total: i64,
     /// Entries whose body has not been examined yet. They are listed, but no
     /// `kind`/`model` filter can match them and search cannot reach them.
@@ -170,6 +187,7 @@ mod tests {
             output_tokens: Some(20),
             request_summary: Some("POST https://api/x".into()),
             output_preview: Some("hi".into()),
+            empty_reason: None,
         }
     }
 
@@ -192,6 +210,7 @@ mod tests {
                 "output_tokens": 20,
                 "request_summary": "POST https://api/x",
                 "output_preview": "hi",
+                "empty_reason": null,
             })
         );
     }
@@ -211,6 +230,7 @@ mod tests {
         row.output_tokens = None;
         row.request_summary = None;
         row.output_preview = None;
+        row.empty_reason = None;
 
         let v = serde_json::to_value(row).unwrap();
         for field in [
@@ -222,6 +242,7 @@ mod tests {
             "output_tokens",
             "request_summary",
             "output_preview",
+            "empty_reason",
         ] {
             assert!(v.get(field).is_some(), "{field} was omitted");
             assert!(v[field].is_null(), "{field} was not null");

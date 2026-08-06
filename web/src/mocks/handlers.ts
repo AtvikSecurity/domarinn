@@ -118,6 +118,7 @@ function filterCacheEntries(
 ): CacheEntryListItem[] {
   const kind = p.get("kind");
   const model = p.get("model");
+  const emptyReason = p.get("empty_reason");
   const q = p.get("q")?.toLowerCase();
   const since = p.get("since");
   const until = p.get("until");
@@ -128,6 +129,9 @@ function filterCacheEntries(
     if (kind === "unparseable") return r.parseable === false;
     if (kind && r.kind !== kind) return false;
     if (model && r.model !== model) return false;
+    // An entry with a real answer records no reason, so a reason filter can
+    // never reach one — the column is NULL, not an empty-string sentinel.
+    if (emptyReason && r.empty_reason !== emptyReason) return false;
     if (since && parseTimestamp(r.created_at) < Number(since)) return false;
     if (until && parseTimestamp(r.created_at) > Number(until)) return false;
     if (q) {

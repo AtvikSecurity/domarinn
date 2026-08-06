@@ -22,7 +22,6 @@ use domarinn_core::result::{CaseStatus, RunResult, RESULT_SCHEMA_VERSION};
 
 use crate::auth::{Admin, Read, Scoped, Write};
 use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
-use crate::dto::cache::PruneResponse;
 use crate::dto::meta::{CacheTierMeta, MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
 use crate::dto::search::SearchResponse;
@@ -113,17 +112,19 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/{project}/suites/{suite}/cases/{case_key}/history",
             get(case_history),
         )
-        .route("/api/v1/cache/stats", get(cache_stats))
-        .route("/api/v1/cache/prune", post(cache_prune))
+        .route("/api/v1/cache/stats", get(crate::cachebrowse::cache_stats))
+        .route("/api/v1/cache/prune", post(crate::cachebrowse::cache_prune))
         // Static segments win over `{key}` in axum's router, and more strongly:
         // `validate_cache_key` requires `sha256:<64 hex>`, so no legal key can
         // ever be the literal `entries` or `facets`. `/cache/stats` already
         // proves the pattern in production.
         .route("/api/v1/cache/entries", get(crate::cachebrowse::list))
         .route("/api/v1/cache/facets", get(crate::cachebrowse::facets))
+        // One `MethodRouter` per path: axum takes a single one, so `delete`
+        // chains onto `get` here rather than registering the path twice.
         .route(
             "/api/v1/cache/entries/{key}",
-            get(crate::cachebrowse::detail),
+            get(crate::cachebrowse::detail).delete(crate::cachebrowse::delete_entry),
         )
         .route(
             "/api/v1/cache/entries/{key}/runs",
@@ -909,40 +910,6 @@ async fn cache_put(
         CachePutOutcome::Created => Ok(StatusCode::CREATED.into_response()),
         CachePutOutcome::Exists => Ok(StatusCode::OK.into_response()),
     }
-}
-
-async fn cache_stats(_scope: Scoped<Read>, State(state): State<AppState>) -> ApiResult<Response> {
-    Ok(Json(state.storage.cache_stats().await?).into_response())
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PruneQuery {
-    older_than_days: Option<i64>,
-    target_bytes: Option<i64>,
-}
-
-async fn cache_prune(
-    _scope: Scoped<Admin>,
-    State(state): State<AppState>,
-    ApiQuery(q): ApiQuery<PruneQuery>,
-) -> ApiResult<Response> {
-    // A bare prune with no explicit bounds — what the UI "Prune cache" button
-    // and a plain `POST /cache/prune` send — means "apply the configured
-    // retention limits", i.e. the manual equivalent of the hourly retention
-    // task. Without this, an unparameterized prune silently evicts nothing.
-    let (older_than_days, target_bytes) = match (q.older_than_days, q.target_bytes) {
-        (None, None) => (
-            Some(state.cache_limits.max_age_days as i64),
-            Some(state.cache_limits.max_bytes as i64),
-        ),
-        explicit => explicit,
-    };
-    let pruned = state
-        .storage
-        .cache_prune(older_than_days, target_bytes)
-        .await?;
-    Ok(Json(PruneResponse { pruned }).into_response())
 }
 
 // ---------------------------------------------------------------------------

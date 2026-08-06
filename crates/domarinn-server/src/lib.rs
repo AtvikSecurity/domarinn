@@ -190,6 +190,14 @@ pub struct Settings {
     /// spec-required `Origin` check and the route's CORS layer. When this and
     /// `public_url` are both unset, only loopback is allowed.
     pub mcp_allowed_origins: Option<String>,
+    /// Empty-output reasons the hourly retention task also sweeps, regardless
+    /// of age (`DOMARINN_CACHE_SWEEP_EMPTY_REASON`, comma-separated).
+    ///
+    /// Named `SWEEP` rather than `RETENTION_EMPTY_REASON` to break the visual
+    /// rhyme with the client-side `DOMARINN_CACHE_STORE_EMPTY_OUTPUTS`: one
+    /// declines to *write*, this one *deletes*, and mistaking them is data loss
+    /// in one direction and silent cache poisoning in the other.
+    pub cache_sweep_empty_reason: Option<String>,
 }
 
 impl Settings {
@@ -218,8 +226,46 @@ impl Settings {
             mcp_allowed_origins: env("DOMARINN_MCP_ALLOWED_ORIGINS"),
             local_cache_dir: env("DOMARINN_LOCAL_CACHE_DIR").map(std::path::PathBuf::from),
             local_cache_max_scan: env("DOMARINN_LOCAL_CACHE_MAX_SCAN").and_then(|v| v.parse().ok()),
+            cache_sweep_empty_reason: env("DOMARINN_CACHE_SWEEP_EMPTY_REASON"),
         })
     }
+}
+
+/// Parse `DOMARINN_CACHE_SWEEP_EMPTY_REASON` into the reasons the hourly task
+/// sweeps.
+///
+/// # Why an unrecognized value warns instead of erroring
+///
+/// [`domarinn_core::empty::EmptyReason`] is an open string newtype on purpose:
+/// vendors add finish reasons at model-release cadence with no domarinn release
+/// in the loop, and hard-failing on a name this build has not heard of would
+/// make an upgrade the price of a vendor's changelog. So an unknown value is
+/// kept and used.
+///
+/// But it is also *warned* about, because the failure this knob invites is the
+/// plural typo: `refusals` matches nothing, sweeps nothing, and would otherwise
+/// be a destructive setting that quietly does nothing forever. One log line at
+/// startup is the difference between "configured" and "believed to be
+/// configured".
+fn parse_sweep_empty_reasons(raw: Option<&str>) -> Vec<String> {
+    let reasons: Vec<String> = raw
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    for reason in &reasons {
+        if !domarinn_core::empty::PRECEDENCE.contains(&reason.as_str()) {
+            tracing::warn!(
+                reason = %reason,
+                known = ?domarinn_core::empty::PRECEDENCE,
+                "DOMARINN_CACHE_SWEEP_EMPTY_REASON names a reason this build does not know; \
+                 it will still be swept, but check for a typo"
+            );
+        }
+    }
+    reasons
 }
 
 /// Parse a boolean env value, hard-erroring on anything unrecognized — the
@@ -265,6 +311,10 @@ pub struct AppState {
     /// A mounted local disk cache, browsable read-only as `?tier=local`.
     /// `None` means no such tier exists on this instance.
     pub(crate) local_cache: Option<Arc<localcache::LocalTier>>,
+    /// Empty-output reasons the hourly retention task sweeps at any age. Empty
+    /// — the default — sweeps none, and the prune that would carry them is not
+    /// issued at all.
+    pub(crate) cache_sweep_empty_reason: Vec<String>,
 }
 
 impl AppState {
@@ -326,6 +376,9 @@ impl AppState {
             sso: sso_registry,
             mcp,
             local_cache,
+            cache_sweep_empty_reason: parse_sweep_empty_reasons(
+                settings.cache_sweep_empty_reason.as_deref(),
+            ),
         })
     }
 }
@@ -542,25 +595,59 @@ const INDEX_PAUSE: Duration = Duration::from_millis(250);
 /// How often to re-check once drained. The probe is one lookup against a
 /// partial index that is empty in the steady state, so this costs nothing.
 const INDEX_IDLE: Duration = Duration::from_secs(300);
+/// Batches between progress lines.
+///
+/// At `INDEX_BATCH` rows per `INDEX_PAUSE` this is roughly one line every two
+/// minutes — often enough to tell a draining backfill from a wedged one, rare
+/// enough that a million-entry catch-up does not become the log.
+const INDEX_LOG_EVERY: u64 = 25;
 
-/// Drain the cache migration-2 columns in the background.
+/// Drain the cache's derived columns in the background.
 ///
 /// Entries written from now on are indexed by `cache_put` on the way in, so
-/// this exists for databases that predate the migration. Deliberately *not* in
+/// this exists for databases that predate a migration. Deliberately *not* in
 /// `storage::backfill`, which runs synchronously before the server binds its
 /// port: that is fine for the runs database, bounded by run count, and would
 /// turn a restart into an outage here, where a shared cache can hold a million
 /// entries of up to 4 MiB each.
 ///
-/// It idles rather than exiting when drained, so a data dir restored from an
+/// Two passes, in order. Rows never looked at come first, because they are
+/// invisible to every filter; then rows examined by a build older than
+/// migration 3, which are listed correctly but have no `empty_reason` — and are
+/// precisely the entries a poisoned cache needs to be able to find.
+///
+/// It idles rather than exiting when both drain, so a data dir restored from an
 /// older backup is indexed without needing a restart to notice.
 fn spawn_cache_index_backfill(state: AppState) {
     tokio::spawn(async move {
+        let mut batches = 0u64;
         loop {
-            match state.storage.cache_index_batch(INDEX_BATCH).await {
-                Ok(0) => tokio::time::sleep(INDEX_IDLE).await,
-                Ok(indexed) => {
-                    tracing::debug!(indexed, "cache index backfill progressed");
+            let progressed = match state.storage.cache_index_batch(INDEX_BATCH).await {
+                Ok(0) => state.storage.cache_reindex_batch(INDEX_BATCH).await,
+                other => other,
+            };
+            match progressed {
+                Ok(0) => {
+                    batches = 0;
+                    tokio::time::sleep(INDEX_IDLE).await;
+                }
+                Ok(_) => {
+                    batches += 1;
+                    // `info!`, not `debug!`: before this the backfill's only
+                    // outward sign was the `unindexed` count on `/cache/stats`,
+                    // which does not move for the re-index pass at all. An
+                    // operator watching a restart could not tell progress from
+                    // a wedge.
+                    if batches % INDEX_LOG_EVERY == 1 {
+                        match state.storage.cache_backfill_remaining().await {
+                            Ok(remaining) => tracing::info!(
+                                unindexed = remaining.unindexed,
+                                stale = remaining.stale,
+                                "cache index backfill draining"
+                            ),
+                            Err(e) => tracing::warn!(error = %e, "cache backfill probe failed"),
+                        }
+                    }
                     tokio::time::sleep(INDEX_PAUSE).await;
                 }
                 // Never fatal: an unindexed cache still serves every read and
@@ -582,18 +669,38 @@ fn spawn_cache_retention(state: AppState) {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
         loop {
             interval.tick().await;
-            let max_age_days = state.cache_limits.max_age_days as i64;
-            let target_bytes = state.cache_limits.max_bytes as i64;
-            match state
-                .storage
-                .cache_prune(Some(max_age_days), Some(target_bytes))
-                .await
-            {
+            let limits = storage::CachePruneFilter {
+                older_than_days: Some(state.cache_limits.max_age_days as i64),
+                target_bytes: Some(state.cache_limits.max_bytes as i64),
+                ..storage::CachePruneFilter::default()
+            };
+            match state.storage.cache_prune(limits).await {
                 Ok(pruned) if pruned > 0 => {
                     tracing::info!(pruned, "cache retention evicted entries")
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "cache retention failed"),
+            }
+            // A SECOND, separate prune rather than another clause on the one
+            // above. ANDing the reasons into the age/LRU filter would mean
+            // "only *old* refusals"; what the setting says is "old entries, and
+            // refusals of any age". Skipped entirely when nothing is
+            // configured — a filter naming no predicate deletes nothing, but
+            // not issuing it at all is the version that cannot be misread.
+            if !state.cache_sweep_empty_reason.is_empty() {
+                let sweep = storage::CachePruneFilter {
+                    empty_reason: state.cache_sweep_empty_reason.clone(),
+                    ..storage::CachePruneFilter::default()
+                };
+                match state.storage.cache_prune(sweep).await {
+                    Ok(pruned) if pruned > 0 => tracing::info!(
+                        pruned,
+                        reasons = ?state.cache_sweep_empty_reason,
+                        "cache retention swept empty outputs"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "cache empty-reason sweep failed"),
+                }
             }
             if let Err(e) = state.storage.sso_gc().await {
                 tracing::warn!(error = %e, "sso gc failed");
@@ -814,6 +921,27 @@ mod tests {
     #[test]
     fn auth_mode_env_none_when_unset() {
         assert_eq!(parse_auth_mode_env(None).unwrap(), None);
+    }
+
+    /// The sweep list is a destructive knob, so both halves matter: an unknown
+    /// value is *kept* (the reason type is open by construction, and vendors add
+    /// names without a domarinn release), while nothing at all parses to an
+    /// empty list — which the retention task reads as "issue no sweep", never
+    /// as "sweep everything".
+    #[test]
+    fn an_unknown_sweep_reason_is_kept_while_an_empty_setting_sweeps_nothing() {
+        assert_eq!(
+            parse_sweep_empty_reasons(Some("refusal, content_filter")),
+            vec!["refusal".to_string(), "content_filter".to_string()]
+        );
+        // A name this build has never heard of is honoured, not rejected.
+        assert_eq!(
+            parse_sweep_empty_reasons(Some("invented_next_year")),
+            vec!["invented_next_year".to_string()]
+        );
+        assert!(parse_sweep_empty_reasons(None).is_empty());
+        assert!(parse_sweep_empty_reasons(Some("")).is_empty());
+        assert!(parse_sweep_empty_reasons(Some(" , ,")).is_empty());
     }
 
     #[test]

@@ -843,17 +843,41 @@ async fn an_exhausted_retry_caches_nothing() {
 }
 
 #[tokio::test]
-async fn an_empty_output_is_cached_and_replayed_like_any_other() {
-    // Deliberately documents today's behavior: an empty response is a
-    // *successful* response, so it is cached and replayed forever. That is what
-    // makes a transient empty sticky, and it is the constraint `empty_output_mode`
-    // has to reckon with — a mode of `error` must refuse to cache, not cache an
-    // error. When that lands, this test should change alongside it.
+async fn an_empty_output_is_not_cached_and_is_re_drawn_next_run() {
+    // This test previously documented the opposite, as a deliberate tripwire for
+    // the change that has now landed (issue #79). An empty response is a
+    // *successful* response, so it took the `Ok` arm of the write path and was
+    // replayed forever — which is what made a transient empty sticky, and on a
+    // shared cache made one bad draw everyone's problem.
+    //
+    // The same argument `an_exhausted_retry_caches_nothing` above makes, applied
+    // to the failure that does not announce itself as one.
     let yaml = suite_with(Some("v1"), "", &[Case::new("case-a", "a")]);
     let cache = MemCache::default();
 
     let first = run_default(&yaml, &cache).await;
     assert_eq!(first.cases[0].output.as_ref().unwrap().as_text(), "");
+    assert_eq!(cache.entries(), 0, "an empty draw must not be frozen");
+
+    // Re-drawn rather than replayed: the provider is called again, which is the
+    // whole point — a gateway that refuses one call in five gets another chance.
+    let second = run_default(&yaml, &cache).await;
+    assert_eq!(second.summary.cache_hits, 0);
+    assert!(!second.cases[0].cached);
+}
+
+#[tokio::test]
+async fn store_empty_outputs_always_restores_the_old_caching_behaviour() {
+    // The escape hatch, for a provider whose empties are genuinely
+    // deterministic. Kept as its own test so the old contract stays executable
+    // rather than only described.
+    let yaml = suite_with(Some("v1"), "", &[Case::new("case-a", "a")]).replace(
+        "providers:",
+        "cache:\n  store_empty_outputs: always\nproviders:",
+    );
+    let cache = MemCache::default();
+
+    run_default(&yaml, &cache).await;
     assert_eq!(cache.entries(), 1);
 
     let second = run_default(&yaml, &cache).await;

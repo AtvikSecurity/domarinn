@@ -5,6 +5,7 @@ import type { CaseStatus } from "./CaseStatus";
 import type { CellKey } from "./CellKey";
 import type { EmptyReason } from "./EmptyReason";
 import type { ErrorClass } from "./ErrorClass";
+import type { FallbackAttempt } from "./FallbackAttempt";
 import type { Output } from "./Output";
 import type { RenderedPrompt } from "./RenderedPrompt";
 import type { TokenUsage } from "./TokenUsage";
@@ -154,4 +155,30 @@ reasoning?: string,
  * empty, including when reasoning was substituted for it — renderers must
  * key on this being present, never on the output looking empty.
  */
-empty_reason?: EmptyReason, };
+empty_reason?: EmptyReason, 
+/**
+ * The provider that actually answered, when it was not the one
+ * [`Self::cell`]`.provider_id` names — that is, when a `fallback:` chain
+ * was walked.
+ *
+ * `cell.provider_id` stays the **configured** provider so `case_key` is
+ * stable and an `--against` baseline still joins the same row. This is
+ * where the truth is recorded. `provider_digest` reflects the same
+ * provider, so a fallback classifies as `ProviderChanged` in a diff —
+ * honest, because a different model answered.
+ *
+ * Note what this does *not* fix: the server keys its `cases` table on the
+ * configured provider, so a per-provider cost rollup bills the primary for
+ * the fallback's tokens. Per-case `cost_usd` is still correct.
+ */
+answered_by_provider_id?: string, 
+/**
+ * The chain links tried and passed over before the one that answered, in
+ * configured order.
+ *
+ * Absent — not an empty array — for the overwhelming majority of cases, so
+ * a run that never fell back serializes byte-identically to one from
+ * before this field existed. See the note on
+ * [`RunSummary::cache_read_tokens`] for why that matters.
+ */
+fallback_attempts?: Array<FallbackAttempt>, };
