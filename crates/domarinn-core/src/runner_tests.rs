@@ -442,6 +442,7 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
                 &req,
                 &ctx,
                 crate::runner::runner_cache::CacheCall {
+                    probe_legacy: true,
                     policy: &crate::empty_policy::EmptyPolicy::default(),
                     backend: &cache,
                     mode: CacheMode::Disabled,

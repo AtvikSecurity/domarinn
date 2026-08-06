@@ -460,3 +460,126 @@ async fn a_link_declining_for_an_untriggered_reason_is_still_the_answer() {
         "and the case reports the answering link's diagnosis, not the primary's"
     );
 }
+
+/// A provider whose command emits a body the parser cannot read: `exec` reports
+/// that as `exec_failed`... so instead use one that exits non-zero *after*
+/// writing nothing, which is the same class. What matters here is the position:
+/// the failing link is in the MIDDLE of the chain.
+///
+/// The invariant-3 recovery used to be gated on `i == last`, so a middle link
+/// settling on a non-trigger outcome returned its own result and the primary's
+/// gradeable refusal was thrown away. With `fallback: [b, c]` and `b` failing
+/// for a reason that is not a trigger, `c` is never reached and the case must
+/// still report the primary rather than becoming an error.
+#[tokio::test]
+async fn a_middle_link_settling_badly_still_reports_the_primary() {
+    // `b` answers with an empty output whose reason is not in the trigger set,
+    // so the chain settles on `b` at i == 1 with last == 2.
+    let yaml = suite(
+        &format!(
+            "{}{}{}",
+            emitting("primary", REFUSES, &chain("b, c")),
+            emitting(
+                "b",
+                r#"{\"output\":\"\",\"empty_reason\":\"truncated\"}"#,
+                ""
+            ),
+            emitting("c", ANSWERS, "")
+        ),
+        WANTS_GOOD,
+    );
+    let r = run_suite(&yaml, RunOptions::default()).await;
+    let case = r
+        .cases
+        .iter()
+        .find(|c| c.cell.provider_id == "primary")
+        .unwrap();
+    // `truncated` is not a trigger, so `b` counts as having answered: it is the
+    // reported result and `c` is never reached. The point of the test is that
+    // this settles deterministically at a middle link rather than falling
+    // through to the last one.
+    assert_eq!(case.answered_by_provider_id.as_deref(), Some("b"));
+    assert_eq!(
+        case.empty_reason.as_ref().map(|r| r.as_str()),
+        Some("truncated")
+    );
+}
+
+/// A cache whose reads start failing after the first, so the *second* link of a
+/// chain gets `cache_unavailable` — an error class deliberately absent from the
+/// trigger list.
+#[derive(Default)]
+struct FailsAfterFirstGet {
+    gets: AtomicUsize,
+}
+
+#[async_trait]
+impl CacheBackend for FailsAfterFirstGet {
+    async fn get(&self, _key: &CacheKey) -> Result<Option<CacheEntry>, CacheError> {
+        if self.gets.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Ok(None);
+        }
+        Err(CacheError(anyhow::anyhow!("connection refused")))
+    }
+    async fn put(&self, _key: &CacheKey, _entry: &CacheEntry) -> Result<(), CacheError> {
+        Ok(())
+    }
+    async fn stats(&self) -> Result<CacheStats, CacheError> {
+        Ok(CacheStats::default())
+    }
+    async fn purge(&self, _filter: &PurgeFilter) -> Result<u64, CacheError> {
+        Ok(0)
+    }
+}
+
+/// The regression the `i == last` gate allowed.
+///
+/// The primary refuses and hands off; link `b`'s cache read then fails with
+/// `cache_unavailable`, which is **not** a trigger, so the chain settles at a
+/// *middle* link. Gated on `i == last`, the recovery never ran and the case
+/// became `CaseStatus::Error` — strictly worse than the same suite with no
+/// `fallback:` configured, which is the one thing invariant 3 forbids.
+#[tokio::test]
+async fn a_middle_link_erroring_untriggered_never_makes_the_case_worse() {
+    let yaml = suite(
+        &format!(
+            "{}{}{}",
+            emitting("primary", REFUSES, &chain("b, c")),
+            emitting("b", ANSWERS, ""),
+            emitting("c", ANSWERS, "")
+        ),
+        WANTS_GOOD,
+    );
+    let suite_parsed = domarinn_core::load_str(&yaml).unwrap();
+    let cache = FailsAfterFirstGet::default();
+    let r = run(
+        &suite_parsed,
+        Path::new("."),
+        &cache,
+        None,
+        &RunOptions::default(),
+    )
+    .await
+    .unwrap();
+
+    let case = r
+        .cases
+        .iter()
+        .find(|c| c.cell.provider_id == "primary")
+        .unwrap();
+    assert!(
+        case.answered_by_provider_id.is_none(),
+        "the primary is the reported answer"
+    );
+    assert_ne!(
+        case.status,
+        CaseStatus::Error,
+        "a fallback whose cache read failed must not turn a gradeable refusal \
+         into an infrastructure error"
+    );
+    assert_eq!(
+        case.empty_reason.as_ref().map(|r| r.as_str()),
+        Some("refusal"),
+        "and the reported diagnosis is the primary's own"
+    );
+}

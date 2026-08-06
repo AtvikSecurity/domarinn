@@ -292,6 +292,19 @@ pub(crate) async fn cache_prune(
         }
     }
 
+    // Decided from the *query*, not from what the query parsed into. An empty
+    // `?empty_reason=` — a script interpolating an unset variable — splits to no
+    // reasons at all, and reading that as "no parameter given" would substitute
+    // the full configured retention: a caller asking to remove nothing would
+    // instead evict by age and size. This is the same failure `deny_unknown_fields`
+    // rules out for the plural spelling, arriving through the singular one.
+    let named_a_predicate = q.older_than_days.is_some()
+        || q.newer_than_days.is_some()
+        || q.empty_reason.is_some()
+        || q.model.is_some()
+        || q.kind.is_some()
+        || q.target_bytes.is_some();
+
     let filter = CachePruneFilter {
         older_than_days: q.older_than_days,
         newer_than_days: q.newer_than_days,
@@ -300,7 +313,7 @@ pub(crate) async fn cache_prune(
         kind: q.kind,
         target_bytes: q.target_bytes,
     };
-    let filter = if filter.is_empty() {
+    let filter = if !named_a_predicate {
         CachePruneFilter {
             older_than_days: Some(state.cache_limits.max_age_days as i64),
             target_bytes: Some(state.cache_limits.max_bytes as i64),

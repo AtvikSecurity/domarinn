@@ -167,6 +167,18 @@ pub(super) struct CacheCall<'a> {
     /// the replay warning in [`hit`]. A reference rather than a value so
     /// `CacheCall` stays `Copy` — it is passed by value to every cell.
     pub policy: &'a crate::empty_policy::EmptyPolicy,
+    /// Whether this call may spend the run's legacy-adoption probe budget.
+    ///
+    /// `false` for every non-primary link of a `fallback:` chain. The budget is
+    /// run-global (see [`crate::cache_adopt`]), so a walked chain would spend
+    /// two or three probes per case instead of one — draining it in a handful
+    /// of cells and silently stranding every legacy entry a store still holds.
+    ///
+    /// A flag rather than a probe-disabled `CacheRunState`: the state also owns
+    /// the once-per-provider warning sets, and a second one would turn "warn
+    /// once per run" into "warn once per cell" for exactly the fallback links
+    /// most likely to be replaying something worth one line.
+    pub probe_legacy: bool,
 }
 
 /// Call a provider, consulting the cache per `mode` and retrying retriable
@@ -185,6 +197,7 @@ pub(super) async fn call_with_cache(
         repeat,
         state,
         policy,
+        probe_legacy,
     } = cache;
     // Two gates compose into one: a provider may decline caching outright
     // (`cacheable`), and a *call* may have no stable identity to key on — an
@@ -216,7 +229,7 @@ pub(super) async fn call_with_cache(
                 // between 0.5.0 and 0.7.x has these, where only a ≤0.4.x store
                 // has the fingerprint-keyed kind below.
                 if let Some((_, mut entry)) =
-                    adopt_legacy_canonical(provider, req, repeat, cache, state).await
+                    adopt_legacy_canonical(provider, req, repeat, cache, state, probe_legacy).await
                 {
                     // A re-file is a brand-new entry under today's key, so it
                     // answers to the same policy a fresh write does. Without
@@ -240,7 +253,9 @@ pub(super) async fn call_with_cache(
                 }
                 // Before paying for this, check whether an older domarinn already
                 // answered it under the key shape that has since changed.
-                if let Some(mut entry) = adopt_legacy(provider, req, repeat, cache, state).await {
+                if let Some(mut entry) =
+                    adopt_legacy(provider, req, repeat, cache, state, probe_legacy).await
+                {
                     // Re-file it under the current key so the next run finds it
                     // directly and the probe budget is not spent again. A write
                     // failure is not fatal: the entry was still served.
@@ -517,9 +532,10 @@ async fn adopt_legacy_canonical(
     repeat: u32,
     cache: &dyn CacheBackend,
     state: &CacheRunState,
+    probe_legacy: bool,
 ) -> Option<(CacheKey, CacheEntry)> {
     let shapes = provider.legacy_canonical_requests(req);
-    if shapes.is_empty() || !state.migration.should_probe() {
+    if shapes.is_empty() || !probe_legacy || !state.migration.should_probe() {
         return None;
     }
     for canonical in shapes {
@@ -551,9 +567,10 @@ async fn adopt_legacy(
     repeat: u32,
     cache: &dyn CacheBackend,
     state: &CacheRunState,
+    probe_legacy: bool,
 ) -> Option<CacheEntry> {
     let legacy = provider.legacy_fingerprints();
-    if legacy.is_empty() || !state.migration.should_probe() {
+    if legacy.is_empty() || !probe_legacy || !state.migration.should_probe() {
         return None;
     }
     for fingerprint in legacy {
@@ -689,7 +706,21 @@ pub(super) fn response_to_entry(
         attempts: Some(stats.attempts),
         provider_latency_ms: Some(stats.in_flight.as_millis() as u64),
         reasoning: response.reasoning.clone(),
-        empty_reason: response.empty_reason.clone(),
+        // The *classified* reason, not the raw one the provider happened to
+        // set. `classify_empty` folds in the `classify_blank` fallback, which is
+        // where a blank answer from an `http` provider (which never sets
+        // `empty_reason`) or an `exec` child with no `stop_reason` gets its
+        // diagnosis. Storing the raw field left those entries with a NULL
+        // reason, so `cache gc --empty-reason blank` could not find them, the
+        // server's column and facet never saw them, and the once-per-provider
+        // replay warning returned early — the operator got neither the
+        // diagnostic nor the cure this change exists to provide.
+        //
+        // Deliberately *not* `EmptyPolicy::effective_reason`: that additionally
+        // consults `runner.refusal_patterns`, which is suite configuration.
+        // Freezing a config decision into an immutable entry would mean editing
+        // a pattern no longer reclassifies what is already stored.
+        empty_reason: provider.classify_empty(response),
         model: response.model.clone(),
         tool_calls: response.tool_calls.clone(),
         // Provider responses never carry a verdict; its absence is what marks

@@ -333,3 +333,79 @@ async fn the_same_prose_is_an_ordinary_answer_without_a_pattern() {
     assert_eq!(cache.puts(), 1);
     assert!(result.cases[0].empty_reason.is_none());
 }
+
+/// The stored reason has to be the *classified* one, or targeted eviction
+/// cannot reach the entry it exists to remove.
+///
+/// An `exec` child returning a blank output with no `stop_reason` sets no
+/// `empty_reason` at all — the diagnosis comes from `classify_blank` at
+/// classification time. Storing the raw field left such entries with a NULL
+/// reason: `cache gc --empty-reason blank` could not find them, the server's
+/// column and facet never saw them, and the replay warning returned early. The
+/// operator got neither the diagnostic nor the cure.
+#[tokio::test]
+async fn a_stored_entry_carries_the_classified_reason_not_the_raw_one() {
+    let cache = CountingCache::default();
+    // `always` so the entry is written at all; the point is what it carries.
+    run_suite(
+        &suite_emitting(
+            r#"{\"output\":\"\"}"#,
+            "cache:\n  store_empty_outputs: always\n",
+        ),
+        &cache,
+        RunOptions::default(),
+    )
+    .await;
+
+    let entries = cache.map.lock().unwrap();
+    let entry = entries.values().next().expect("one entry was written");
+    assert_eq!(
+        entry.empty_reason.as_ref().map(|r| r.as_str()),
+        Some("blank"),
+        "the entry must record the reason a purge filter will be asked for"
+    );
+}
+
+/// The other half of the same rule: a `refusal_patterns` match is suite
+/// *configuration*, so it must NOT be frozen into an immutable entry. Editing a
+/// pattern has to reclassify what is already stored rather than require a purge.
+#[tokio::test]
+async fn a_pattern_matched_refusal_is_not_written_into_the_entry() {
+    let cache = CountingCache::default();
+    let yaml = format!(
+        r#"
+version: 1
+project: test
+suite: no-store
+cache:
+  store_empty_outputs: always
+runner:
+  refusal_patterns:
+    - "(?i)^i cannot help with"
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '%s' '{body}'"]
+    cache_salt: "v1"
+tests:
+  - id: t
+    assert:
+      - type: contains
+        value: anything
+"#,
+        body = r#"{\"output\":\"I cannot help with that request.\"}"#
+    );
+    let result = run_suite(&yaml, &cache, RunOptions::default()).await;
+
+    assert_eq!(
+        result.cases[0].empty_reason.as_ref().map(|r| r.as_str()),
+        Some("refusal"),
+        "the case still reports the pattern's diagnosis"
+    );
+    let entries = cache.map.lock().unwrap();
+    let entry = entries.values().next().expect("one entry was written");
+    assert!(
+        entry.empty_reason.is_none(),
+        "but the entry records only what the provider itself said"
+    );
+}

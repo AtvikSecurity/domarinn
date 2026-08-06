@@ -210,12 +210,6 @@ pub(super) async fn call_chain<'a>(
         vec![primary]
     };
 
-    // A probe-disabled twin of the run state, shared by every non-primary link.
-    // Built once per cell rather than per link; the warning sets inside it are
-    // its own, which is right — a fallback that replays a rebuilt program's
-    // answers is a different fact from the primary doing so.
-    let no_probe =
-        &super::runner_cache::CacheRunState::new(crate::cache_adopt::MigrationProbe::disabled());
     let mut attempted: Vec<FallbackAttempt> = Vec::new();
     // Invariant 3: the primary's own outcome, kept so a chain that never
     // improved on it reports it rather than whichever link happened to be last.
@@ -234,14 +228,11 @@ pub(super) async fn call_chain<'a>(
             .include_raw
             .then(|| provider.request_preview(req))
             .flatten();
-        // The legacy-adoption probe budget is run-global (`cache_adopt`), so a
-        // walked chain would spend two or three probes per case instead of one
-        // — draining it in a handful of cells and silently stranding every
-        // legacy entry a store still holds. Only the primary probes.
+        // Only the primary spends the run-global legacy-adoption probe budget;
+        // see `CacheCall::probe_legacy` for why this is a flag rather than a
+        // second run state.
         let mut cache = chain.cache;
-        if i > 0 {
-            cache.state = no_probe;
-        }
+        cache.probe_legacy = i == 0;
         let outcome = call_with_cache(provider, req, ctx, cache, chain.retry_cfg).await;
 
         let attempt = Attempt {
@@ -280,14 +271,23 @@ pub(super) async fn call_chain<'a>(
         // improving on the primary, report the primary. A configured fallback
         // must never make a case worse, or different, than no fallback at all.
         //
-        // "Did not improve" is broader than "re-triggered". The last link can
-        // also settle on an error that is *not* a trigger — `cache_unavailable`
-        // from a failed cache read, or `provider_request` for a 400, which is
-        // deliberately excluded from the trigger list. Reporting either of those
-        // would turn a gradeable refusal into `CaseStatus::Error`, which is
-        // exactly the regression this invariant exists to rule out.
-        let settled_on_a_handoff = i == last && i > 0;
-        let never_improved = settled_on_a_handoff
+        // "Did not improve" is broader than "re-triggered", on two axes.
+        //
+        // A link can settle on an error that is *not* a trigger —
+        // `cache_unavailable` from a failed cache read, or `provider_request`
+        // for a 400, deliberately excluded because the next provider would
+        // reject the same body identically. Reporting either would turn a
+        // gradeable refusal into `CaseStatus::Error`.
+        //
+        // And it can do that at a *middle* link, not just the last one: with
+        // `fallback: [b, c]`, a 400 from `b` settles the chain at `i == 1`.
+        // Gating this on `i == last` therefore left the exact regression the
+        // invariant exists to rule out reachable through the middle of any
+        // chain longer than two. The only condition that matters is that we are
+        // past the primary — `i > 0` — because at a middle link `hand_off`
+        // returning `Some` is what `continue`d, so reaching here means it did
+        // not.
+        let never_improved = i > 0
             && (attempt.outcome.is_err()
                 || chain
                     .fallback

@@ -415,3 +415,39 @@ async fn a_negative_day_count_is_rejected_rather_than_deleting_everything() {
         StatusCode::OK
     );
 }
+
+/// A script doing `curl -X POST ".../cache/prune?empty_reason=$REASON"` with
+/// `REASON` unset sends `?empty_reason=`, which splits to no reasons at all.
+/// Reading that as "no parameter given" substituted the full configured
+/// retention, so a caller asking to remove *nothing* evicted by age and size
+/// instead. The presence of the parameter is what decides, not what it parsed
+/// into.
+#[tokio::test]
+async fn an_empty_empty_reason_parameter_prunes_nothing_rather_than_everything() {
+    let settings = Settings {
+        // Limits a bare prune would visibly enforce.
+        cache_max_bytes: Some(1),
+        cache_max_age_days: Some(0),
+        ..Default::default()
+    };
+    let (app, _dir) = test_app(settings).await;
+
+    let mut good = empty_entry(EmptyReason::REFUSAL);
+    good.output = Output::Text("a real answer".into());
+    good.empty_reason = None;
+    let kept = seed(&app, 1, &good).await;
+
+    for uri in [
+        "/api/v1/cache/prune?empty_reason=",
+        "/api/v1/cache/prune?empty_reason=,,",
+    ] {
+        let reply = send(&app, "POST", uri, None, None, Vec::new()).await;
+        assert_eq!(reply.status, StatusCode::OK, "{uri}");
+        assert_eq!(reply.json()["pruned"], json!(0), "{uri}");
+        assert_eq!(
+            get(&app, &format!("/api/v1/cache/{kept}")).await.status,
+            StatusCode::OK,
+            "{uri} must not fall through to the configured retention limits"
+        );
+    }
+}

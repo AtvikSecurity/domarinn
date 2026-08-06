@@ -328,16 +328,17 @@ async fn purge_tiers(
         Err(e) => return infra(&e),
     }
     if let Some(legacy) = legacy {
-        // The legacy tier never sees `--newer-than`. It is a pre-0.4 leftover,
-        // so by construction it holds nothing recent *except* this project's
-        // own entries — and `legacy_is_ours`'s cwd rule was written on the
-        // assumption that a `gc` removes old things. Handing it a "delete the
-        // recent half" filter would turn a rule that spares a stranger's cache
-        // into one that empties your own.
-        let legacy_filter = PurgeFilter {
-            newer_than: None,
-            ..filter.clone()
-        };
+        // The same filter, unmodified. An earlier version stripped `newer_than`
+        // here, reasoning that a "delete the recent half" filter would turn
+        // `legacy_is_ours`'s cwd rule from one that spares a stranger's cache
+        // into one that empties your own. That shape is already unconstructible
+        // — the guard above refuses `--newer-than` without `--older-than`, so
+        // the only reachable form is a *window* — and dropping the recent bound
+        // could therefore only ever widen the deletion: `--older-than 30d
+        // --newer-than 90d` asks for the 30–90-day band and would have taken
+        // everything older than 30 days from the legacy tier, including the
+        // entries the operator explicitly bounded away.
+        let legacy_filter = filter.clone();
         let total = if with_total {
             match legacy.stats().await {
                 Ok(s) => Some(s.entries),

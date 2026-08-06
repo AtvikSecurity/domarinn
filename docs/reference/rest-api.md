@@ -257,7 +257,7 @@ Age and LRU evict what is *old*. The other filters evict what is *wrong*: one ba
 
 | Parameter | |
 |---|---|
-| `older_than_days` | entries last accessed before `now - N` days |
+| `older_than_days` | entries first stored before `now - N` days |
 | `newer_than_days` | the recent end of a window; pair it with `older_than_days` |
 | `empty_reason` | **comma-separated**, e.g. `refusal,content_filter` |
 | `model` | entries answered by exactly this model |

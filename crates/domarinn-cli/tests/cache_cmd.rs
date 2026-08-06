@@ -244,17 +244,27 @@ fn cache_gc_applies_the_age_filter_to_the_legacy_tier() {
     assert_eq!(entry_count(&dir.path().join("evals/.domarinn/cache")), 0);
 }
 
-/// The legacy tier never sees `--newer-than`. It is a pre-0.4 leftover, so by
-/// construction it holds nothing recent except this project's own entries — and
-/// `cwd_contains`'s rule for when it is safe to purge was written assuming a
-/// `gc` removes *old* things. Handing it "delete the recent half" would turn a
-/// guard that spares a stranger's cache into one that empties your own.
+/// The legacy tier gets the **same** filter as the primary, `--newer-than`
+/// included.
 ///
-/// `--older-than 0s --newer-than 0s` is the sharpest form: the primary tier's
-/// window excludes everything written before now, while the legacy tier, which
-/// drops the recent bound, collects on age alone.
+/// This test previously pinned the opposite. The reasoning was that the legacy
+/// tier is a pre-0.4 leftover holding nothing recent except this project's own
+/// entries, and that `cwd_contains`'s rule for when it is safe to purge was
+/// written assuming a `gc` removes *old* things — so handing it "delete the
+/// recent half" would turn a guard that spares a stranger's cache into one that
+/// empties your own.
+///
+/// That shape is unconstructible: the CLI refuses `--newer-than` without
+/// `--older-than`, so the only reachable form is a *window*. Dropping the recent
+/// bound could therefore only ever **widen** the deletion — `--older-than 30d
+/// --newer-than 90d` asks for the 30–90-day band and would have taken everything
+/// older than 30 days from the legacy tier, including entries the operator had
+/// explicitly bounded away.
+///
+/// `--older-than 0s --newer-than 0s` is the sharpest form: an empty window, which
+/// must remove nothing from either tier.
 #[test]
-fn cache_gc_does_not_apply_newer_than_to_the_legacy_tier() {
+fn cache_gc_applies_newer_than_to_the_legacy_tier_too() {
     let dir = tempfile::tempdir().unwrap();
     seed_legacy_and_suite_caches(dir.path());
 
@@ -273,11 +283,12 @@ fn cache_gc_does_not_apply_newer_than_to_the_legacy_tier() {
         .success()
         .stdout(predicate::str::contains("removed 0 of 1 cache entry"))
         .stdout(predicate::str::contains(
-            "removed 1 of 1 legacy cache entry",
+            "removed 0 of 1 legacy cache entry",
         ));
 
+    // Both survive: an empty window excludes everything, on both tiers.
     assert_eq!(entry_count(&dir.path().join("evals/.domarinn/cache")), 1);
-    assert_eq!(entry_count(&dir.path().join(".domarinn/cache")), 0);
+    assert_eq!(entry_count(&dir.path().join(".domarinn/cache")), 1);
 }
 
 /// The legacy tier is resolved against the *process cwd*, so for a suite

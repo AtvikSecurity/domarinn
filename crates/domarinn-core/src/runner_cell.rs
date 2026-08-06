@@ -255,6 +255,7 @@ pub(super) async fn run_cell<'a>(
         ctx,
         super::runner_fallback::ChainCtx {
             cache: runner_cache::CacheCall {
+                probe_legacy: true,
                 backend: cache,
                 mode: effective_mode,
                 repeat,
