@@ -565,6 +565,49 @@ fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE cases ADD COLUMN answered_by_provider_id TEXT;
         "#,
         ),
+        // Migration 18: the run-level tally of migration 17's column, mirroring
+        // migration 15's `empty_count`.
+        //
+        // Its purpose is startup cost, not display. Migration 17 left
+        // `cases.answered_by_provider_id` NULL on every historical row, and the
+        // case backfill's only way to fill one is to zstd-decode that case's
+        // blob — so without a discriminator, the first open after upgrading
+        // decodes the entire store, one case at a time. Stamping `''` across
+        // the board instead is not available: the field shipped in the *client*
+        // before this column shipped in the server, so a run uploaded in that
+        // window really can carry an answerer in its blob, and `''` would erase
+        // it.
+        //
+        // No existing column can prove a run's document predates or lacks the
+        // field. `schema_version` is still 3 (the field is additive and omitted
+        // at default). `domarinn_version` is self-reported by the uploaded
+        // document, and trusting it would mean discarding real data on a
+        // misreported string. `cache_read_tokens IS NULL` does soundly prove a
+        // pre-migration-12 ingest, but bounds only runs far older than the
+        // window that matters.
+        //
+        // So: one number per run — how many of its cases a fallback answered.
+        // `= 0` proves no case row in that run can hold an answerer, which lets
+        // the case backfill stamp them all `''` in a single UPDATE and decode
+        // blobs only for the runs that actually fell back. -1 is the
+        // undecodable-blob sentinel (migration 6's numeric convention), and a
+        // blob predating provider fallback honestly counts 0 — the field is
+        // absent from the document, so no case in it carried one, exactly as
+        // `empty_count` reads a pre-`empty_reason` blob.
+        //
+        // Counted over **every** case, skipped ones included — it answers "can
+        // a blob here hold an answerer", which a skipped case can. That makes
+        // it deliberately unlike the client's graded-only
+        // `RunSummary.fallback_cases`, which is why it is derived from the
+        // cases rather than read from the summary.
+        //
+        // No index: it is only ever read as a correlated lookup from the
+        // backfill, which runs once, never as a list predicate.
+        M::up(
+            r#"
+        ALTER TABLE runs ADD COLUMN fallback_count INTEGER;
+        "#,
+        ),
     ])
 }
 

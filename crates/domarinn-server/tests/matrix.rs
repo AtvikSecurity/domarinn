@@ -370,6 +370,69 @@ async fn matrix_provider_costs_do_not_move_with_row_pagination() {
     assert_eq!(provider_costs(&paged), provider_costs(&full));
 }
 
+/// The same shape as [`fallback_run`], except the fallback's answer was
+/// *skipped*: `reserve` replied, the reply matched the suite's
+/// `skip_on_empty_reason`, and nothing was graded. The tokens were still spent.
+fn skipped_fallback_run(id: &str) -> RunResult {
+    let specs = vec![
+        CaseSpec::new("openai", "t1", CaseStatus::Pass)
+            .prompt("p-a")
+            .repeat(0)
+            .cost(Some(0.001)),
+        CaseSpec::new("openai", "t1", CaseStatus::Skip)
+            .prompt("p-a")
+            .repeat(1)
+            .cost(Some(0.002))
+            .output(Some(""))
+            .empty_reason("refusal")
+            .answered_by("reserve"),
+    ];
+    make_run(
+        id,
+        Some("proj"),
+        Some("suite"),
+        vec![],
+        Some("main"),
+        0,
+        &specs,
+    )
+}
+
+/// The two rollups draw the "a fallback answered" line in different places on
+/// purpose, and this is the one row shape where they differ.
+///
+/// `fallback_answered` is a grading view: the CLI's `RunSummary.fallback_cases`
+/// counts non-`Skip` cases only, and the popover renders this number next to
+/// the cell's verdicts, so counting a skip here is exactly how web and CLI came
+/// to report different totals for the same run. `provider_costs` is a spend
+/// view and must keep the skipped row: the call was made and billed.
+#[tokio::test]
+async fn a_skipped_fallback_answer_is_billed_but_not_counted_as_a_handoff() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    ingest(&app, &skipped_fallback_run("r-fb-skip")).await;
+
+    let body = get(&app, "/api/v1/runs/r-fb-skip/matrix").await.json();
+
+    let cell = &body["rows"][0]["cells"][0];
+    assert_eq!(cell["total"], 2);
+    assert_eq!(cell["skipped"], 1);
+    assert_eq!(
+        cell["fallback_answered"], 0,
+        "the only handoff in this cell was skipped, so no graded repeat was \
+         answered by a fallback — claiming one contradicts the CLI"
+    );
+
+    assert_eq!(
+        provider_costs(&body),
+        vec![
+            ("openai".to_string(), 1, Some(0.001)),
+            ("reserve".to_string(), 1, Some(0.002)),
+        ],
+        "spend attribution keeps the skipped row: the tokens were paid for \
+         whether or not a verdict came out of them"
+    );
+}
+
 /// A row stored before answerer attribution existed carries NULL, which is not
 /// evidence of a handoff — it degrades to billing the configured provider
 /// rather than inventing an answerer or dropping the cost entirely.

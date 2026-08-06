@@ -45,20 +45,25 @@ pub(crate) fn check(suite: &Suite, issues: &mut Vec<Issue>) {
 
         // A `fallback_only` provider nothing points at can never run at all —
         // not as a cell (the flag), not through a chain (nothing names it).
-        // A warning rather than an error: the suite still runs, the same way a
-        // provider excluded by every test does.
+        // Only a *cell-forming* referencer counts: chains are resolved for
+        // matrix providers alone and never followed link-to-link, so a
+        // reference from another `fallback_only` provider's chain is a chain
+        // that is itself never walked. A warning rather than an error: the
+        // suite still runs, the same way a provider excluded by every test
+        // does.
         if provider.fallback_only
             && !is_embeddings
             && !suite
                 .providers
                 .iter()
-                .any(|p| p.fallback.iter().any(|t| t == &provider.id))
+                .any(|p| p.forms_cells() && p.fallback.iter().any(|t| t == &provider.id))
         {
             issues.push(Issue {
                 path: path.clone(),
                 message: format!(
-                    "provider '{}' is `fallback_only`, but no other provider's `fallback:` names \
-                     it, so it can never run",
+                    "provider '{}' is `fallback_only`, but no cell-forming provider's `fallback:` \
+                     names it (a `fallback_only` provider's own chain is never walked), so it can \
+                     never run",
                     provider.id
                 ),
                 severity: Severity::Warning,
@@ -285,6 +290,42 @@ tests:
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].severity, Severity::Warning);
         assert!(issues[0].message.contains("can never run"));
+    }
+
+    /// A reference from another `fallback_only` provider's chain does not make
+    /// a provider reachable: chains are resolved for matrix providers only and
+    /// never followed, so that chain is never walked.
+    #[test]
+    fn a_reference_from_a_fallback_only_chain_does_not_count_as_reachable() {
+        let yaml = r#"
+version: 1
+providers:
+  - id: primary
+    type: exec
+    command: ["true"]
+    fallback: [a]
+  - id: a
+    type: exec
+    command: ["true"]
+    fallback_only: true
+    fallback: [b]
+  - id: b
+    type: exec
+    command: ["true"]
+    fallback_only: true
+tests:
+  - id: t
+    assert:
+      - type: contains
+        value: x
+"#;
+        let issues = check_yaml(yaml);
+        assert!(
+            issues.iter().any(|i| i.severity == Severity::Warning
+                && i.message.contains("'b'")
+                && i.message.contains("can never run")),
+            "b is reachable only through a chain that is never walked: {issues:?}"
+        );
     }
 
     #[test]

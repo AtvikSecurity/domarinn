@@ -359,9 +359,9 @@ pub struct CaseResult {
     /// provider, so a fallback classifies as `ProviderChanged` in a diff —
     /// honest, because a different model answered.
     ///
-    /// Note what this does *not* fix: the server keys its `cases` table on the
-    /// configured provider, so a per-provider cost rollup bills the primary for
-    /// the fallback's tokens. Per-case `cost_usd` is still correct.
+    /// The server promotes this onto its `cases` table and attributes
+    /// per-provider cost rollups to the answering provider; only rows ingested
+    /// before that column existed degrade to configured-provider attribution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub answered_by_provider_id: Option<String>,
@@ -374,6 +374,21 @@ pub struct CaseResult {
     /// [`RunSummary::cache_read_tokens`] for why that matters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallback_attempts: Vec<FallbackAttempt>,
+}
+
+impl CaseResult {
+    /// The provider whose answer this case reports: the fallback link when one
+    /// answered, otherwise the configured provider the cell names.
+    ///
+    /// The one place the `answered_by ?? configured` collapse is defined.
+    /// Every surface that shows "who answered" (diff annotations, tables,
+    /// rollups) goes through here rather than re-deriving it, so the rule
+    /// cannot fork per consumer.
+    pub fn answering_provider_id(&self) -> &str {
+        self.answered_by_provider_id
+            .as_deref()
+            .unwrap_or(&self.cell.provider_id)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]

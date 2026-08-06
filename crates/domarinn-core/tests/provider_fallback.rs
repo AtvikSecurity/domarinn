@@ -693,6 +693,53 @@ async fn a_provider_filter_naming_a_fallback_only_provider_gets_the_specific_dia
     }
 }
 
+/// The half-right list. `--provider primary,reserve` must refuse, not run
+/// `primary` alone: a CI job that believes it measured `reserve` would get a
+/// green gate that measured nothing of it.
+#[tokio::test]
+async fn a_mixed_provider_filter_with_a_fallback_only_id_is_refused() {
+    let yaml = suite(
+        &format!(
+            "{}{}",
+            emitting("primary", REFUSES, &chain("reserve")),
+            emitting("reserve", ANSWERS, FALLBACK_ONLY)
+        ),
+        WANTS_GOOD,
+    );
+    let mut opts = RunOptions::default();
+    opts.filter.providers = vec!["primary".to_string(), "reserve".to_string()];
+    let err = try_run_suite(&yaml, opts)
+        .await
+        .expect_err("a shrunken matrix is not a selection");
+    match err {
+        domarinn_core::runner::RunError::NothingToRun(
+            domarinn_core::empty_run::EmptyRun::FallbackOnlyExcluded { fallback_only, .. },
+        ) => assert_eq!(fallback_only, vec!["reserve".to_string()]),
+        other => panic!("expected FallbackOnlyExcluded, got: {other}"),
+    }
+}
+
+/// Same rule for a typo: one valid id must not paper over an unknown one.
+#[tokio::test]
+async fn a_mixed_provider_filter_with_a_typo_is_refused() {
+    let yaml = suite(&emitting("primary", ANSWERS, ""), WANTS_GOOD);
+    let mut opts = RunOptions::default();
+    opts.filter.providers = vec!["primary".to_string(), "gohst".to_string()];
+    let err = try_run_suite(&yaml, opts)
+        .await
+        .expect_err("a typo must refuse");
+    match err {
+        domarinn_core::runner::RunError::NothingToRun(
+            domarinn_core::empty_run::EmptyRun::NoProvidersSelected { requested, .. },
+        ) => assert_eq!(
+            requested,
+            vec!["gohst".to_string()],
+            "only the typo is quoted"
+        ),
+        other => panic!("expected NoProvidersSelected, got: {other}"),
+    }
+}
+
 // ── run-time guards for what `validate` catches only on the CLI path ────────
 
 /// `domarinn validate` refuses duplicate ids, but `validate()` is a CLI

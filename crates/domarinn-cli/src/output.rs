@@ -274,6 +274,27 @@ pub(crate) fn empty_total(s: &RunSummary) -> u64 {
     s.empty_counts.values().sum()
 }
 
+/// How many *graded* cases a fallback link answered, counted from the cases
+/// themselves rather than read off [`RunSummary::fallback_cases`].
+///
+/// The stored counter is only skip-exclusive in documents written by CLI
+/// 0.10.1 and later; every earlier one counted skipped cases too. Summaries are
+/// read back exactly as stored and never re-derived, so pairing that stored
+/// numerator with the graded denominator this crate now renders produced
+/// nonsense — a 0.10.0 run with `total: 2, skipped: 2, fallback_cases: 2` read
+/// as "2 of 0 cases", and diffing against it invented a fallback-count delta.
+///
+/// Counting here is right for a document of any vintage: `status` and
+/// `answered_by_provider_id` are per-case truth and their meaning never
+/// changed. Every renderer with the cases in hand goes through this instead of
+/// the summary field.
+pub(crate) fn graded_fallback_cases(cases: &[CaseResult]) -> u64 {
+    cases
+        .iter()
+        .filter(|c| c.status != CaseStatus::Skip && c.answered_by_provider_id.is_some())
+        .count() as u64
+}
+
 /// The stats footer line: Wilson pass-rate interval, then pass@1 and the
 /// token/cost/cache segments that are omitted when zero or absent, joined
 /// by ` · `.
@@ -547,9 +568,53 @@ pub(crate) fn sample_run() -> RunResult {
     }
 }
 
+/// [`sample_run`] as a run document stored by CLI ≤ 0.10.0: every case skipped
+/// yet answered by a fallback, with `fallback_cases` hand-set to the
+/// skip-inclusive total the old CLI wrote. Renderers must read 0 fallback cases
+/// from it — nothing was graded — rather than trusting the stored 2.
+///
+/// Shared like `sample_run` because both [`crate::outputmd`] and
+/// [`crate::cisummary`] assert against the same document; two copies could
+/// drift and stop covering the same vintage.
+#[cfg(test)]
+pub(crate) fn old_skip_inclusive_run() -> RunResult {
+    let mut run = sample_run();
+    for case in &mut run.cases {
+        case.status = CaseStatus::Skip;
+        case.answered_by_provider_id = Some("backup".into());
+    }
+    run.summary = RunSummary {
+        total: 2,
+        skipped: 2,
+        fallback_cases: 2,
+        ..Default::default()
+    };
+    run
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The helper counts *graded* fallback answers only: a skipped case graded
+    /// nothing, so it cannot have been "answered by a fallback" in the sense
+    /// the metric reports, however the stored summary counted it.
+    #[test]
+    fn graded_fallback_cases_counts_only_non_skipped_answered_cases() {
+        let run = old_skip_inclusive_run();
+        assert_eq!(
+            run.summary.fallback_cases, 2,
+            "the stored, old-semantics count"
+        );
+        assert_eq!(graded_fallback_cases(&run.cases), 0);
+
+        let mut graded = run;
+        graded.cases[0].status = CaseStatus::Pass;
+        assert_eq!(graded_fallback_cases(&graded.cases), 1);
+        // A graded case nobody fell back for is not counted either.
+        graded.cases[0].answered_by_provider_id = None;
+        assert_eq!(graded_fallback_cases(&graded.cases), 0);
+    }
 
     #[test]
     fn xml_escape_handles_specials() {

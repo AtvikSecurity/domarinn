@@ -420,6 +420,31 @@ fn the_provider_input_expands_to_repeated_flags() {
     );
 }
 
+/// Splitting must not also glob. An unquoted `$var` in a bash for-loop expands
+/// patterns against the working directory, so an id like `model-[a]` beside a
+/// checkout containing a file `model-a` would silently select a *different*
+/// provider than the one the workflow named.
+#[test]
+fn the_provider_input_never_globs_against_the_workspace() {
+    let ws = Workspace::new();
+    std::fs::write(ws.path().join("model-a"), "").expect("a decoy file the glob would match");
+    let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
+    let ran = run_step(
+        "eval",
+        &[("DOMARINN_BIN", &stub), ("INPUT_PROVIDER", "model-[a]")],
+        &ws,
+    );
+    let line = ran
+        .log
+        .lines()
+        .find(|line| line.starts_with("Running: domarinn "))
+        .unwrap_or_else(|| panic!("the step logs the command it ran:\n{}", ran.log));
+    assert!(
+        line.contains("--provider model-[a]") && !line.contains("--provider model-a "),
+        "the id must reach the CLI verbatim, not glob-matched: {line}"
+    );
+}
+
 /// The contract: `1` means the model regressed and the PR is to blame, `3`
 /// means the harness broke and it is not. A CI consumer sees that distinction
 /// only here, so the two must not render the same.

@@ -12,6 +12,7 @@ use domarinn_core::result::{CaseResult, RunResult};
 use domarinn_core::stats::{wilson, Z_95};
 use similar::{ChangeTag, TextDiff};
 
+use crate::output::graded_fallback_cases;
 use crate::style::Palette;
 
 /// Diff-cost guard: each side of an output/config diff is clamped to at most this
@@ -224,32 +225,28 @@ fn diff_header(base: &RunResult, head: &RunResult, palette: &Palette) -> String 
     let mut out = format!("{}\n{line2}\n", palette.header(&line1));
     // Stated whenever *either* side fell back, so the line that matters most —
     // a baseline whose cases the configured provider answered against a head
-    // whose cases it did not — is never the silent one.
-    if base.summary.fallback_cases > 0 || head.summary.fallback_cases > 0 {
-        out.push_str(&format!(
-            "fallback cases: {} → {}\n",
-            base.summary.fallback_cases, head.summary.fallback_cases
-        ));
+    // whose cases it did not — is never the silent one. Both counts are
+    // re-derived from the cases (a diff always holds both sides): a baseline
+    // written before 0.10.1 stored a skip-inclusive `summary.fallback_cases`,
+    // and reading it would headline a phantom delta.
+    let b = graded_fallback_cases(&base.cases);
+    let h = graded_fallback_cases(&head.cases);
+    if b > 0 || h > 0 {
+        out.push_str(&format!("fallback cases: {b} → {h}\n"));
     }
     out
-}
-
-/// Who answered a case: the `fallback:` link that stepped in, or the configured
-/// provider when the chain was never walked. `cell.provider_id` is always the
-/// configured one, which is exactly what "no fallback" means here.
-fn answered_by(case: &CaseResult) -> &str {
-    case.answered_by_provider_id
-        .as_deref()
-        .unwrap_or(case.cell.provider_id.as_str())
 }
 
 /// `answered by: <base> → <head>` when the two sides of a joined case were
 /// answered by different providers, else `None`.
 ///
 /// This is a comparison a score delta cannot express: two runs of the same cell
-/// can agree on every number while one of them measured a different model.
+/// can agree on every number while one of them measured a different model. Who
+/// answered comes from [`CaseResult::answering_provider_id`] — the single
+/// definition of the `answered_by ?? configured` collapse — rather than being
+/// re-spelled here.
 fn answered_by_note(base: &CaseResult, head: &CaseResult) -> Option<String> {
-    let (b, h) = (answered_by(base), answered_by(head));
+    let (b, h) = (base.answering_provider_id(), head.answering_provider_id());
     (b != h).then(|| format!("answered by: {b} → {h}"))
 }
 
@@ -880,14 +877,29 @@ mod diff_tests {
     #[test]
     fn table_headline_states_fallback_counts_when_either_side_fell_back() {
         let (base, mut head) = regression_pair();
-        head.summary.fallback_cases = 1;
+        head.cases[0].answered_by_provider_id = Some("backup".into());
         let text = table(&base, &head, DiffScope::Regressions);
         assert!(text.contains("fallback cases: 0 → 1"), "got:\n{text}");
 
         // Neither side fell back → the line is absent entirely.
-        head.summary.fallback_cases = 0;
+        head.cases[0].answered_by_provider_id = None;
         let quiet = table(&base, &head, DiffScope::Regressions);
         assert!(!quiet.contains("fallback cases:"), "got:\n{quiet}");
+    }
+
+    /// A baseline written by CLI ≤ 0.10.0 counted skipped cases in
+    /// `summary.fallback_cases`. Reading that field would headline a phantom
+    /// `1 → 0` delta against a head counted the new way; deriving from the
+    /// cases reports 0 on both sides and the line stays absent.
+    #[test]
+    fn table_headline_ignores_a_pre_0_10_1_skip_inclusive_fallback_count() {
+        let (mut base, head) = regression_pair();
+        base.cases[0].status = CaseStatus::Skip;
+        base.cases[0].answered_by_provider_id = Some("backup".into());
+        base.summary.skipped = 1;
+        base.summary.fallback_cases = 1;
+        let text = table(&base, &head, DiffScope::Regressions);
+        assert!(!text.contains("fallback cases:"), "got:\n{text}");
     }
 
     /// A case whose answer moved from the configured provider to a fallback is

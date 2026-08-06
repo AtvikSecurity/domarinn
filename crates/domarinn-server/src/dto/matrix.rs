@@ -36,6 +36,12 @@ pub struct MatrixResponse {
     /// else), and rows stored before this attribution existed carry no answerer
     /// and so degrade to being billed to their configured provider.
     ///
+    /// **This is a spend view.** Attribution counts every case the provider
+    /// answered, including skipped ones — money was spent regardless of
+    /// whether a verdict came out. [`MatrixCell::fallback_answered`] counts
+    /// only graded repeats, so the two will not add up on a run with skipped
+    /// fallback answers, and that is deliberate.
+    ///
     /// In first-seen order, matching `columns`.
     pub provider_costs: Vec<ProviderCost>,
     pub next_cursor: Option<String>,
@@ -46,10 +52,15 @@ pub struct MatrixResponse {
 /// Deliberately not keyed the way [`MatrixColumn`] is: columns stay keyed on
 /// the configured provider so a cell's identity is stable across runs, while
 /// cost follows the provider that actually made the call.
+///
+/// Spend attribution counts every case the provider answered, **including
+/// skipped ones** — money was spent; [`MatrixCell::fallback_answered`] on cells
+/// counts only graded repeats.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct ProviderCost {
     pub provider_id: String,
-    /// How many of the run's cases this provider answered.
+    /// How many of the run's cases this provider answered, skipped cases
+    /// included: this counts what was billed, not what was graded.
     pub cases: i64,
     /// Summed cost across those cases; `None` when every one of them recorded
     /// a NULL cost.
@@ -95,10 +106,16 @@ pub struct MatrixCell {
     pub latency_ms_mean: Option<f64>,
     /// Summed cost across repeats; `None` when every repeat's cost was NULL.
     pub cost_usd: Option<f64>,
-    /// How many of this cell's repeats were answered by a provider other than
-    /// the column's configured one (a fallback stood in). `0` for a run stored
-    /// before the attribution existed — honestly so: fallback did not exist
-    /// then, so no repeat in it had one.
+    /// How many of this cell's **graded** repeats were answered by a provider
+    /// other than the column's configured one (a fallback stood in). `0` for a
+    /// run stored before the attribution existed — honestly so: fallback did
+    /// not exist then, so no repeat in it had one.
+    ///
+    /// Skipped repeats are excluded even when a fallback answered them, so this
+    /// matches the CLI's `RunSummary.fallback_cases` (also graded-only) and can
+    /// be rendered as "N answered by a fallback" without contradicting it.
+    /// [`ProviderCost`] draws the line in the other place: it is a spend view
+    /// and counts every answered case, skipped ones included.
     pub fallback_answered: i64,
     /// The cell's case keys, ordered by `repeat_idx` (ties broken by `idx`).
     pub case_keys: Vec<CaseKey>,

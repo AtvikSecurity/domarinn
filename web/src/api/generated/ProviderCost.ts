@@ -6,10 +6,15 @@
  * Deliberately not keyed the way [`MatrixColumn`] is: columns stay keyed on
  * the configured provider so a cell's identity is stable across runs, while
  * cost follows the provider that actually made the call.
+ *
+ * Spend attribution counts every case the provider answered, **including
+ * skipped ones** — money was spent; [`MatrixCell::fallback_answered`] on cells
+ * counts only graded repeats.
  */
 export type ProviderCost = { provider_id: string, 
 /**
- * How many of the run's cases this provider answered.
+ * How many of the run's cases this provider answered, skipped cases
+ * included: this counts what was billed, not what was graded.
  */
 cases: number, 
 /**

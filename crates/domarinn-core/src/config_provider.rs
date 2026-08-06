@@ -70,6 +70,20 @@ pub struct Provider {
     pub kind: ProviderKind,
 }
 
+impl Provider {
+    /// Whether this provider expands into matrix cells: not an embeddings
+    /// provider (a grader helper, never a system under test) and not
+    /// `fallback_only`.
+    ///
+    /// The one definition of the predicate. The runner's selection, the
+    /// empty-run diagnoses, and `validate` all go through here — three sites
+    /// that re-derived it independently is how a diagnosis ends up describing
+    /// a filter the runner never applied.
+    pub fn forms_cells(&self) -> bool {
+        !matches!(self.kind, ProviderKind::Embeddings { .. }) && !self.fallback_only
+    }
+}
+
 /// The HTTP method for a `type: http` provider. Authors may write either case
 /// (`get` or `GET`) in YAML; the wire method (and the request/cache
 /// fingerprint) is always the uppercase form.

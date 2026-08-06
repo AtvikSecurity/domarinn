@@ -52,18 +52,28 @@ pub enum EmptyRun {
         requested: Vec<String>,
         available: Vec<String>,
     },
-    /// The matrix is empty because of `fallback_only:` — either `--provider`
-    /// named only `fallback_only` providers, or every provider in the suite is
-    /// one. Distinct from [`EmptyRun::NoProvidersSelected`] because the fix is
-    /// different: the id *is* in the suite, it just never forms cells.
+    /// `--provider` named a `fallback_only` provider, or every provider in the
+    /// suite is one. Distinct from [`EmptyRun::NoProvidersSelected`] because
+    /// the fix is different: the id *is* in the suite, it just never forms
+    /// cells.
     FallbackOnlyExcluded {
-        /// The `--provider` values that named `fallback_only` providers
-        /// (empty when no filter was involved).
+        /// The full `--provider` list (empty when no filter was involved).
         requested: Vec<String>,
-        /// The `fallback_only` ids involved.
+        /// The requested ids that are `fallback_only` (or, with no filter,
+        /// every `fallback_only` id in the suite).
         fallback_only: Vec<String>,
         /// Providers that can form cells (empty when the whole suite is
         /// `fallback_only`).
+        available: Vec<String>,
+    },
+    /// `--provider` named an embeddings provider — a grader helper that never
+    /// forms cells, whatever the filter says.
+    EmbeddingsSelected {
+        /// The full `--provider` list.
+        requested: Vec<String>,
+        /// The requested ids that are embeddings providers.
+        embeddings: Vec<String>,
+        /// Providers that can form cells.
         available: Vec<String>,
     },
 }
@@ -77,65 +87,104 @@ impl EmptyRun {
         ids.into_iter().take(MAX_EXAMPLES).collect()
     }
 
-    /// Diagnose a provider selection that produced nothing. Lives here rather
-    /// than in the runner so the ordering argument ("most specific first")
-    /// stays next to the messages it orders.
+    /// Refuse a `--provider` list that names anything unable to form cells —
+    /// **whether or not** other entries could. A list that is half right must
+    /// not silently shrink the matrix: a CI job that believes it measured the
+    /// dropped provider gets a green gate that measured nothing of it.
     ///
-    /// `fallback_only` gets its own diagnosis because `NoProvidersSelected`
-    /// would be misleading for it on both axes: a `--provider` naming a
-    /// `fallback_only` id names a provider that *is* in the suite, and a suite
-    /// whose every provider is `fallback_only` has nothing to do with the
-    /// filter at all.
-    pub fn no_providers(providers: &[crate::config::Provider], requested: &[String]) -> EmptyRun {
-        let eligible = |p: &&crate::config::Provider| {
-            !matches!(p.kind, crate::config::ProviderKind::Embeddings { .. })
-        };
-        let fallback_only_ids: Vec<String> = providers
-            .iter()
-            .filter(eligible)
-            .filter(|p| p.fallback_only)
-            .map(|p| p.id.clone())
-            .collect();
+    /// Ordered most-actionable first: an unknown id is a typo with a one-line
+    /// fix; a `fallback_only` or embeddings id is a category error with its
+    /// own explanation. Returns `None` when every requested id forms cells (or
+    /// the list is empty — no filter, nothing to check).
+    pub fn check_provider_filter(
+        providers: &[crate::config::Provider],
+        requested: &[String],
+    ) -> Option<EmptyRun> {
+        if requested.is_empty() {
+            return None;
+        }
         let cell_capable: Vec<String> = providers
             .iter()
-            .filter(eligible)
-            .filter(|p| !p.fallback_only)
+            .filter(|p| p.forms_cells())
             .map(|p| p.id.clone())
             .collect();
 
-        if requested.is_empty() {
-            // No filter involved: the matrix is empty because the suite itself
-            // cannot form cells. Only `fallback_only` can cause that here — a
-            // suite with no providers at all fails schema validation earlier.
-            if !fallback_only_ids.is_empty() && cell_capable.is_empty() {
-                return EmptyRun::FallbackOnlyExcluded {
-                    requested: Vec::new(),
-                    fallback_only: fallback_only_ids,
-                    available: Vec::new(),
-                };
-            }
-        } else {
-            // The filter matched real suite ids, but every one of them is
-            // `fallback_only` — a different mistake than a typo'd id.
-            let hits: Vec<String> = requested
-                .iter()
-                .filter(|r| fallback_only_ids.iter().any(|id| id == *r))
-                .cloned()
-                .collect();
-            let typos = requested
-                .iter()
-                .any(|r| !providers.iter().any(|p| &p.id == r));
-            if !hits.is_empty() && !typos {
-                return EmptyRun::FallbackOnlyExcluded {
-                    requested: requested.to_vec(),
-                    fallback_only: hits,
-                    available: cell_capable,
-                };
-            }
+        let unknown: Vec<String> = requested
+            .iter()
+            .filter(|r| !providers.iter().any(|p| &&p.id == r))
+            .cloned()
+            .collect();
+        if !unknown.is_empty() {
+            return Some(EmptyRun::NoProvidersSelected {
+                requested: unknown,
+                available: cell_capable,
+            });
+        }
+
+        let fallback_only: Vec<String> = requested
+            .iter()
+            .filter(|r| providers.iter().any(|p| &&p.id == r && p.fallback_only))
+            .cloned()
+            .collect();
+        if !fallback_only.is_empty() {
+            return Some(EmptyRun::FallbackOnlyExcluded {
+                requested: requested.to_vec(),
+                fallback_only,
+                available: cell_capable,
+            });
+        }
+
+        let embeddings: Vec<String> = requested
+            .iter()
+            .filter(|r| {
+                providers.iter().any(|p| {
+                    &&p.id == r && matches!(p.kind, crate::config::ProviderKind::Embeddings { .. })
+                })
+            })
+            .cloned()
+            .collect();
+        if !embeddings.is_empty() {
+            return Some(EmptyRun::EmbeddingsSelected {
+                requested: requested.to_vec(),
+                embeddings,
+                available: cell_capable,
+            });
+        }
+        None
+    }
+
+    /// Diagnose a selection that produced no providers at all, after
+    /// [`Self::check_provider_filter`] has already vetted any `--provider`
+    /// list. Lives here rather than in the runner so the diagnosis stays next
+    /// to the messages it produces.
+    ///
+    /// With the filter vetted, reaching this with providers empty means the
+    /// suite itself cannot form cells — every system under test is
+    /// `fallback_only` (its own diagnosis), or the suite has only grader
+    /// helpers (the generic one).
+    pub fn no_providers(providers: &[crate::config::Provider], requested: &[String]) -> EmptyRun {
+        let fallback_only_ids: Vec<String> = providers
+            .iter()
+            .filter(|p| !matches!(p.kind, crate::config::ProviderKind::Embeddings { .. }))
+            .filter(|p| p.fallback_only)
+            .map(|p| p.id.clone())
+            .collect();
+        let cell_capable = providers.iter().any(|p| p.forms_cells());
+
+        if requested.is_empty() && !fallback_only_ids.is_empty() && !cell_capable {
+            return EmptyRun::FallbackOnlyExcluded {
+                requested: Vec::new(),
+                fallback_only: fallback_only_ids,
+                available: Vec::new(),
+            };
         }
         EmptyRun::NoProvidersSelected {
             requested: requested.to_vec(),
-            available: providers.iter().map(|p| p.id.clone()).collect(),
+            available: providers
+                .iter()
+                .filter(|p| p.forms_cells())
+                .map(|p| p.id.clone())
+                .collect(),
         }
     }
 }
@@ -190,11 +239,20 @@ impl std::fmt::Display for EmptyRun {
             EmptyRun::NoProvidersSelected {
                 requested,
                 available,
-            } => write!(
-                f,
-                "--provider {requested:?} matches none of the suite's providers: {}",
-                available.join(", ")
-            ),
+            } => {
+                write!(
+                    f,
+                    "--provider {requested:?} matches none of the suite's providers"
+                )?;
+                if available.is_empty() {
+                    write!(f, ".")
+                } else {
+                    // Only the runnable ids: recommending a `fallback_only` or
+                    // embeddings provider here would send the user straight
+                    // into the next usage error.
+                    write!(f, ". Run one of: {}", available.join(", "))
+                }
+            }
             EmptyRun::NoPromptsSelected {
                 requested,
                 available,
@@ -219,8 +277,9 @@ impl std::fmt::Display for EmptyRun {
                 } else {
                     write!(
                         f,
-                        "--provider {requested:?} names only `fallback_only` providers, \
-                         which never form cells",
+                        "--provider names `fallback_only` provider(s) `{}`, which never form \
+                         cells",
+                        fallback_only.join("`, `")
                     )?;
                     if available.is_empty() {
                         write!(
@@ -236,6 +295,23 @@ impl std::fmt::Display for EmptyRun {
                             fallback_only.join("`, `")
                         )
                     }
+                }
+            }
+            EmptyRun::EmbeddingsSelected {
+                requested: _,
+                embeddings,
+                available,
+            } => {
+                write!(
+                    f,
+                    "--provider names embeddings provider(s) `{}` — grader helpers that never \
+                     form cells",
+                    embeddings.join("`, `")
+                )?;
+                if available.is_empty() {
+                    write!(f, ".")
+                } else {
+                    write!(f, ". Run one of: {}", available.join(", "))
                 }
             }
         }
@@ -339,17 +415,79 @@ mod tests {
         assert!(msg.contains("a, b"));
     }
 
+    fn mixed_suite() -> Vec<crate::config::Provider> {
+        serde_yaml_ng::from_str(
+            "- id: primary\n  type: exec\n  command: [x]\n\
+             - id: reserve\n  fallback_only: true\n  type: exec\n  command: [x]\n\
+             - id: embedder\n  type: embeddings\n  model: m\n",
+        )
+        .unwrap()
+    }
+
     /// A typo'd id alongside a `fallback_only` one is diagnosed as the typo:
     /// that is the mistake with the one-line fix.
     #[test]
     fn a_typo_outranks_the_fallback_only_diagnosis() {
-        let providers: Vec<crate::config::Provider> = serde_yaml_ng::from_str(
-            "- id: reserve\n  fallback_only: true\n  type: exec\n  command: [x]\n",
-        )
-        .unwrap();
-        let diag = EmptyRun::no_providers(&providers, &["reserve".into(), "gohst".into()]);
-        assert!(matches!(diag, EmptyRun::NoProvidersSelected { .. }));
-        let diag = EmptyRun::no_providers(&providers, &["reserve".into()]);
-        assert!(matches!(diag, EmptyRun::FallbackOnlyExcluded { .. }));
+        let providers = mixed_suite();
+        match EmptyRun::check_provider_filter(&providers, &["reserve".into(), "gohst".into()]) {
+            Some(EmptyRun::NoProvidersSelected {
+                requested,
+                available,
+            }) => {
+                assert_eq!(
+                    requested,
+                    vec!["gohst".to_string()],
+                    "only the typo is quoted"
+                );
+                assert_eq!(
+                    available,
+                    vec!["primary".to_string()],
+                    "only runnable ids offered"
+                );
+            }
+            other => panic!("expected the typo diagnosis, got {other:?}"),
+        }
+        assert!(matches!(
+            EmptyRun::check_provider_filter(&providers, &["reserve".into()]),
+            Some(EmptyRun::FallbackOnlyExcluded { .. })
+        ));
+    }
+
+    /// The half-right list is the dangerous one: a runnable id beside a
+    /// `fallback_only` id must refuse, not silently shrink the matrix.
+    #[test]
+    fn a_mixed_list_with_a_fallback_only_id_is_refused() {
+        let providers = mixed_suite();
+        match EmptyRun::check_provider_filter(&providers, &["primary".into(), "reserve".into()]) {
+            Some(EmptyRun::FallbackOnlyExcluded { fallback_only, .. }) => {
+                assert_eq!(fallback_only, vec!["reserve".to_string()]);
+            }
+            other => panic!("expected FallbackOnlyExcluded, got {other:?}"),
+        }
+    }
+
+    /// An embeddings id is a category error of its own, not a `fallback_only`
+    /// one — the message must not tell the user to remove a flag the provider
+    /// does not carry.
+    #[test]
+    fn an_embeddings_id_gets_its_own_diagnosis() {
+        let providers = mixed_suite();
+        match EmptyRun::check_provider_filter(&providers, &["primary".into(), "embedder".into()]) {
+            Some(diag @ EmptyRun::EmbeddingsSelected { .. }) => {
+                let msg = diag.to_string();
+                assert!(msg.contains("embeddings"));
+                assert!(!msg.contains("fallback_only"));
+                assert!(msg.contains("primary"));
+            }
+            other => panic!("expected EmbeddingsSelected, got {other:?}"),
+        }
+    }
+
+    /// The all-clear: a list of runnable ids has nothing to refuse.
+    #[test]
+    fn a_fully_runnable_list_passes_the_filter_check() {
+        let providers = mixed_suite();
+        assert!(EmptyRun::check_provider_filter(&providers, &["primary".into()]).is_none());
+        assert!(EmptyRun::check_provider_filter(&providers, &[]).is_none());
     }
 }

@@ -235,6 +235,13 @@ struct PreparedRun {
     /// document) does not count: it stores as the `''` "known: not empty"
     /// sentinel, which the detail `GROUP BY` and the case grid both exclude.
     empty_count: i64,
+    /// Migration-18 column: how many of this run's cases a fallback answered.
+    /// Counted over the cases (not read from `summary.fallback_cases`) and over
+    /// **all** of them, skipped included — it exists to tell the case backfill
+    /// whether any blob in this run can hold an answerer, and a skipped case
+    /// can. The client's summary counts graded cases only, so reading it here
+    /// would let a skip-only fallback run look like it never fell back.
+    fallback_count: i64,
     tags: Vec<String>,
     blob: Vec<u8>,
     cases: Vec<PreparedCase>,
@@ -372,6 +379,15 @@ impl PreparedRun {
                         .is_some_and(|r| !r.as_str().is_empty())
                 })
                 .count() as i64,
+            fallback_count: run
+                .cases
+                .iter()
+                .filter(|c| {
+                    c.answered_by_provider_id
+                        .as_deref()
+                        .is_some_and(|p| !p.is_empty())
+                })
+                .count() as i64,
             tags: run.filters.tags.clone(),
             blob,
             cases,
@@ -405,7 +421,7 @@ impl PreparedRun {
                 actor, host, domarinn_version,
                 prompts_digest, providers_digest, tests_digest, asserts_digest, grader_digest,
                 cache_read_tokens, cache_write_tokens, cache_savings_microusd, grader_cost_microusd,
-                empty_count
+                empty_count, fallback_count
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
@@ -415,7 +431,7 @@ impl PreparedRun {
                 ?26, ?27, ?28,
                 ?29, ?30, ?31, ?32, ?33,
                 ?34, ?35, ?36, ?37,
-                ?38
+                ?38, ?39
             )",
             params![
                 self.id,
@@ -456,6 +472,7 @@ impl PreparedRun {
                 self.cache_savings_microusd,
                 self.grader_cost_microusd,
                 self.empty_count,
+                self.fallback_count,
             ],
         )?;
 

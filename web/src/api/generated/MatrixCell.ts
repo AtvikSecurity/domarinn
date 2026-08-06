@@ -28,10 +28,16 @@ latency_ms_mean: number | null,
  */
 cost_usd: number | null, 
 /**
- * How many of this cell's repeats were answered by a provider other than
- * the column's configured one (a fallback stood in). `0` for a run stored
- * before the attribution existed — honestly so: fallback did not exist
- * then, so no repeat in it had one.
+ * How many of this cell's **graded** repeats were answered by a provider
+ * other than the column's configured one (a fallback stood in). `0` for a
+ * run stored before the attribution existed — honestly so: fallback did
+ * not exist then, so no repeat in it had one.
+ *
+ * Skipped repeats are excluded even when a fallback answered them, so this
+ * matches the CLI's `RunSummary.fallback_cases` (also graded-only) and can
+ * be rendered as "N answered by a fallback" without contradicting it.
+ * [`ProviderCost`] draws the line in the other place: it is a spend view
+ * and counts every answered case, skipped ones included.
  */
 fallback_answered: number, 
 /**

@@ -308,11 +308,17 @@ runs:
         results="results.xml"
 
         args=(run "${INPUT_CONFIG}" --format junit --out "${results}")
-        # Unquoted expansion is deliberate: the input is a comma- or
-        # space-separated *list*, and word-splitting is what turns it into
-        # repeated flags. Ids with spaces are unaddressable here by design.
+        # Split on commas and spaces with `read`, not unquoted expansion —
+        # unquoted `$var` in a for-loop also GLOBS, so an id like `model-[a]`
+        # (or a careless `*`) would be matched against workspace files and a
+        # different id passed to the CLI, silently. `read` splits and nothing
+        # else. Ids containing spaces or commas are unaddressable here by
+        # design.
         if [ -n "${INPUT_PROVIDER}" ]; then
-          for p in ${INPUT_PROVIDER//,/ }; do args+=(--provider "$p"); done
+          IFS=', ' read -r -a providers <<< "${INPUT_PROVIDER}"
+          for p in "${providers[@]}"; do
+            [ -n "$p" ] && args+=(--provider "$p")
+          done
         fi
         [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
         [ -n "${INPUT_CACHE_DIR}" ] && args+=(--cache-dir "${INPUT_CACHE_DIR}")

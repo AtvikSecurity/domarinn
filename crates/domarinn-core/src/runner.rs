@@ -419,16 +419,26 @@ pub async fn run_with_progress(
     // would expand cells for the fallback as well, and a fallback's missing
     // credential would fail the whole run at the preflight — which is exactly
     // backwards, since a fallback may never be reached at all.
+    // Vetted before the selection filters run, and even when other requested
+    // ids would form cells: a `--provider` list naming an unknown,
+    // `fallback_only`, or embeddings id must refuse rather than silently
+    // shrink the matrix — a CI job that believes it measured the dropped
+    // provider gets a green gate that measured nothing of it.
+    if let Some(reason) =
+        crate::empty_run::EmptyRun::check_provider_filter(&suite.providers, &opts.filter.providers)
+    {
+        return Err(RunError::NothingToRun(reason));
+    }
+
+    // `forms_cells` is the third selection axis (`fallback_only` = matrix
+    // membership), applied before `--provider` — a filter chooses among cells,
+    // it cannot conjure cells for a provider that declared it has none. It is
+    // deliberately independent of `opts.fallback` (`--no-fallback` disables
+    // chain walking, not membership).
     let selected: Vec<&crate::config::Provider> = suite
         .providers
         .iter()
-        .filter(|p| !matches!(p.kind, crate::config::ProviderKind::Embeddings { .. }))
-        // The third selection axis: `fallback_only` is matrix membership, so it
-        // applies before `--provider` — a filter can choose among cells, not
-        // conjure cells for a provider that declared it has none. It is also
-        // deliberately independent of `opts.fallback` (`--no-fallback` disables
-        // chain walking, not membership).
-        .filter(|p| !p.fallback_only)
+        .filter(|p| p.forms_cells())
         .filter(|p| opts.filter.providers.is_empty() || opts.filter.providers.contains(&p.id))
         .collect();
     let providers: Vec<Box<dyn Provider>> = selected

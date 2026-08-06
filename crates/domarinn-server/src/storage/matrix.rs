@@ -83,13 +83,31 @@ struct CellAcc {
     latency_count: i64,
     cost_micro_sum: i64,
     cost_any: bool,
-    /// Repeats answered by someone other than the column's configured provider.
+    /// **Graded** repeats answered by someone other than the column's
+    /// configured provider. A skipped repeat is excluded even when a fallback
+    /// answered it — see [`ProviderCostAcc`] for the two halves of the split.
     fallback_answered: i64,
     /// `(repeat_idx, idx, case_key)` — sorted at finalize time.
     case_keys: Vec<(i64, i64, String)>,
 }
 
 /// Run-level cost accumulator for one *answering* provider.
+///
+/// # Two counts of "a fallback answered", deliberately
+///
+/// This is a **spend** view and [`CellAcc::fallback_answered`] is a **grading**
+/// view, and they disagree by design on one row shape: a case that was skipped
+/// *and* answered by a fallback (the answerer's output matched the suite's
+/// `skip_on_empty_reason`, so nothing was graded).
+///
+/// * Spend counts it. The call was made and the tokens were paid for, so
+///   dropping it would under-report a real bill — and `cases` here counts
+///   every row this provider was billed for, skipped ones included.
+/// * Grading does not. `fallback_answered` is the number the popover renders
+///   as "N answered by a fallback" beside the cell's graded verdicts, and it
+///   has to equal the CLI's `RunSummary.fallback_cases`, which counts only
+///   non-`Skip` cases. Counting the skip here is how web and CLI came to
+///   disagree.
 struct ProviderCostAcc {
     provider_id: String,
     cases: i64,
@@ -175,6 +193,12 @@ impl MatrixFilter {
             // never formed a column of its own still gets an entry here; a
             // legacy row (no answerer recorded) falls back to the configured
             // provider, which is the only attribution its data supports.
+            //
+            // Every row is attributed, `Skip` included: a skipped case still
+            // made the provider call that produced the output the skip rule
+            // matched on, so the tokens were spent. The cell's
+            // `fallback_answered` draws the line in the other place — see
+            // `ProviderCostAcc`.
             let answerer = raw
                 .answered_by
                 .clone()
@@ -244,7 +268,12 @@ impl MatrixFilter {
                 cell.cost_micro_sum += cost;
                 cell.cost_any = true;
             }
-            if raw.answered_by.is_some() {
+            // Graded repeats only. A `Skip` can carry an answerer — the
+            // fallback replied, and the suite's `skip_on_empty_reason` matched
+            // what came back — but the CLI's `fallback_cases` excludes it, and
+            // a cell that claims a handoff the CLI never counted is the
+            // disagreement this exclusion exists to close.
+            if raw.answered_by.is_some() && raw.status != CaseStatus::Skip {
                 cell.fallback_answered += 1;
             }
             cell.case_keys.push((raw.repeat_idx, raw.idx, raw.case_key));

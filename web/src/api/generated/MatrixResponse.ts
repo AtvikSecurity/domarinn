@@ -23,6 +23,12 @@ export type MatrixResponse = { run_id: RunId, columns: Array<MatrixColumn>, rows
  * else), and rows stored before this attribution existed carry no answerer
  * and so degrade to being billed to their configured provider.
  *
+ * **This is a spend view.** Attribution counts every case the provider
+ * answered, including skipped ones — money was spent regardless of
+ * whether a verdict came out. [`MatrixCell::fallback_answered`] counts
+ * only graded repeats, so the two will not add up on a run with skipped
+ * fallback answers, and that is deliberate.
+ *
  * In first-seen order, matching `columns`.
  */
 provider_costs: Array<ProviderCost>, next_cursor: string | null, };
