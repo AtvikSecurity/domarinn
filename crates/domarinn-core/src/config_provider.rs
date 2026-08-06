@@ -20,6 +20,34 @@ pub struct Provider {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Providers to try, in order, when this one refuses or fails to answer.
+    ///
+    /// **Not chained.** A fallback provider's own `fallback:` is ignored when it
+    /// is reached as one, which makes a cycle unconstructible rather than
+    /// something to detect at run time. `domarinn validate` warns when a target
+    /// declares one, so the rule is discoverable while you are writing the
+    /// suite rather than at three in the morning.
+    ///
+    /// `cell.provider_id` stays *this* provider's id whichever link answers, so
+    /// `case_key` is stable and an `--against` baseline still joins the same
+    /// row. [`crate::result::CaseResult::answered_by_provider_id`] records who
+    /// actually replied, and `provider_digest` reflects them — so a fallback
+    /// shows up as a `ProviderChanged` in a diff, which is what it is.
+    ///
+    /// A test's `only_providers` / `skip_providers` is honoured for candidates:
+    /// a test that excludes a provider must not reach it through another
+    /// provider's back door. `--provider` is not — it chooses which cells run,
+    /// and a cell that runs is entitled to its whole chain.
+    //
+    // Deliberately on the outer struct rather than inside the flattened
+    // `ProviderKind`. Two things depend on that: `check_unknown_flatten_keys`
+    // picks it up as a common key, and — load-bearing — `build_provider`
+    // destructures only `kind` and `id`, so an outer field cannot reach
+    // `fingerprint()` or `canonical_request()` and therefore cannot move a
+    // single cache key. Moving it inside a variant would invalidate every
+    // entry in every store at once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback: Vec<String>,
     #[serde(flatten)]
     pub kind: ProviderKind,
 }

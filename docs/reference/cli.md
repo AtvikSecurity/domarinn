@@ -50,9 +50,12 @@ The exit code is a **contract for CI** — it distinguishes "the model got worse
 | `0` | OK | Everything passed. |
 | `1` | assertion | An assertion failed, or a run regressed against a `--against` baseline. |
 | `2` | config/usage | Bad config or flags, a suite that fails to load or validate (a *warning* is not one of these), a run that resolved to **zero cases**, a missing / wrong-shaped provider credential, or a `--share` **preflight refusal**: the server stated a result-schema window this CLI is outside of — or no server URL is configured at all — so the run is refused before it spends anything. |
+| `2` | config/usage | A run that **formed no opinion**: every case was skipped by `runner.skip_on_empty_reason`, or every graded case was answered by a [`fallback:`](providers.md#falling-back-to-another-provider) provider so the configured one answered nothing. |
 | `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, the server was unreachable, a `--cache-only` run could not answer honestly (a miss, or a case whose `latency` assertion always needs a live call), or a **`run --share` upload failed** without `--allow-share-failure`. |
 
 Because `3` outranks `1`, a run whose assertions failed *and* whose upload failed exits `3`: the results are graded but not published, and re-running is the wrong response to either half.
+
+The two `2`s in the second row are the same argument twice: a green gate would mean the suite ran, not that it passed. A run where every case skipped graded nothing at all; a run answered entirely by fallbacks graded a different system than the one it names. A **partial** fallback stays green on purpose — that is the feature working, and failing on it would make `fallback:` a liability rather than resilience. Use `--no-fallback` where a gate should fail on the primary directly.
 
 ---
 
@@ -73,6 +76,8 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--no-grader-cache` | Grader-originated requests (the LLM grader, `exec` graders, embeddings) bypass the cache; responses of the systems under test are still replayed. Use it to measure grader variance deliberately. Replaces the deprecated suite key `cache.grader: false`. |
 | `--cache-dir DIR` | Where the local cache lives. Defaults to `.domarinn/cache` beside the suite, so the same suite hits the same cache from any directory. `DOMARINN_CACHE_DIR` sets the same thing; the flag wins. |
 | `--no-cache-migration` | Skip looking for entries written under an older cache-key shape. domarinn probes for those on a miss so an upgrade does not discard a warm cache, and stops once it is clear there is nothing to find. |
+| `--store-empty-outputs <never\|reproducible\|always>` | Which empty provider answers are written to the cache, overriding the suite's `cache.store_empty_outputs`. Defaults to `reproducible` — an empty answer is stored only when the same request would produce it again. `DOMARINN_CACHE_STORE_EMPTY_OUTPUTS` sets the same thing; the flag wins. See [caching.md](../concepts/caching.md#empty-answers). |
+| `--no-fallback` | Do not let a provider hand off to its [`fallback:`](providers.md#falling-back-to-another-provider) chain. **The right posture for a gate**: fallback is resilience, and a CI job usually wants to learn that its primary provider is broken rather than have the result quietly produced by a different model. `DOMARINN_NO_FALLBACK=true` sets the same thing; the flag wins, and a value that is not a boolean is warned about and ignored rather than guessed at. |
 | `--repeat <N>` | Run each cell N times (variance / pass@k). |
 | `-j`, `--concurrency <N>` | Max concurrent provider calls (overrides `runner.concurrency`). |
 | `--format <F>` | Output format, repeatable: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`, on stdout. |
@@ -232,7 +237,7 @@ Manage the **local** content-addressed cache. All of these take a suite path (de
 
 - `cache stats` — entry count and total size.
 - `cache path` — print the cache directory (`.domarinn/cache` beside the suite).
-- `cache gc --older-than <30d|12h|45m|90s>` — remove entries older than a duration. `--older-than` is **required**: a bare `gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so.
+- `cache gc [--older-than <30d|12h|45m|90s>] [--newer-than <D>] [--empty-reason <R>]…` — remove entries matching an age window, an empty reason, or both. See below.
 - `cache clear` — remove all entries.
 - `cache ls [--kind K] [--model M] [--limit N] [--json]` — list entries: key, kind, model, size, and where the request went.
 - `cache show <KEY> [--raw] [--json]` — one entry in full: the request it answers, the response it returned, tokens and cost. `--raw` adds the provider's raw metadata, which is withheld by default because it is the largest part of an entry and the least often wanted.
@@ -242,6 +247,24 @@ Manage the **local** content-addressed cache. All of these take a suite path (de
 `--json` emits one object per line, so it composes with `jq`, `grep` and `head`. Both commands read the same tiers a run does, including the read-only legacy tier: an `ls` that omitted a tier a run can still hit would be an `ls` that lies.
 
 `show` distinguishes its failures: a malformed key is a usage error (exit `2`), a well-formed key that is simply not present is exit `3` — the caller asked a sensible question and the answer is no.
+
+### `cache gc` predicates
+
+| Flag | Effect |
+|------|--------|
+| `--older-than <D>` | Only entries last modified before `now - D`. |
+| `--newer-than <D>` | Keep the purge away from entries younger than `D` — the recent end of a window. **Requires `--older-than`.** |
+| `--empty-reason <R>` | Only entries whose recorded [empty reason](../concepts/caching.md#empty-answers) is `R`. Repeatable; the matches are OR'd. |
+
+`gc` prints `removed N of M`, so a targeted eviction says how much of the store it left alone.
+
+Three rules, each of which exists because the obvious alternative deletes something nobody asked for:
+
+- **At least one bound is required — any one of the three.** A bare `domarinn cache gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so. The error names `cache clear`.
+- **`--newer-than` needs `--older-than`.** Alone it would read "delete everything since", which is a whole-store wipe in the vocabulary of housekeeping. Requiring the other end makes that reading unconstructible rather than merely discouraged.
+- **No environment variables here.** `DOMARINN_CACHE_STORE_EMPTY_OUTPUTS` and `DOMARINN_NO_FALLBACK` exist because they are standing *policy*. A `gc` predicate is a one-shot destructive operation, and an environment that silently widens one is how an operator deletes a corpus they never named.
+
+Reach for `--empty-reason` when a bad draw has been frozen into the store: `cache gc --empty-reason refusal --older-than 0s` removes those entries and nothing else, where an age-only `gc` would have to throw away the warm cache around them. It is the local half of the [targeted eviction](../concepts/caching.md#removing-entries-you-already-have) story; the server half is `DELETE /api/v1/cache/entries/{key}` and `POST /cache/prune`.
 
 Two scope rules worth knowing:
 

@@ -457,6 +457,8 @@ mod diff_tests {
             cache_key: None,
             tool_calls: Vec::new(),
             case_key: cell.case_key(),
+            answered_by_provider_id: None,
+            fallback_attempts: Vec::new(),
             cell,
             name: Some(test.into()),
             tags: vec![],

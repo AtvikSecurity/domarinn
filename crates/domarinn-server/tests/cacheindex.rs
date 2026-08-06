@@ -1,12 +1,18 @@
-//! Storage-level tests for cache migration 2: the columns promoted out of the
-//! opaque `body` blob, the kind-inference ladder, the FTS index, and the
-//! background backfill that populates rows written before the migration.
+//! Storage-level tests for the cache's derived columns: what migrations 2 and 3
+//! promote out of the opaque `body` blob, the kind-inference ladder, the FTS
+//! index, the two background passes that populate rows written before each
+//! migration, and what a prune is allowed to delete.
 //!
 //! These reach past the HTTP surface and assert directly against `cache.db`
 //! with a raw `rusqlite` connection, in `backfill.rs`'s style. Rows standing in
 //! for a pre-migration database are inserted through that raw connection
 //! precisely so they bypass the indexing `cache_put` now does — otherwise there
 //! would be nothing left for the backfill to find.
+//!
+//! The prune tests live here rather than beside the route in `cache.rs` on
+//! purpose: the route's "a bare prune applies the configured retention limits"
+//! fallback would mask a storage layer that deleted everything when handed a
+//! filter naming nothing.
 
 mod common;
 
@@ -14,7 +20,7 @@ use std::path::Path;
 
 use domarinn_core::cache::{CacheEntry, CacheKey, EntryKind, GradedVerdict};
 use domarinn_core::types::Output;
-use domarinn_server::storage::Storage;
+use domarinn_server::storage::{CachePruneFilter, Storage};
 use rusqlite::{params, Connection};
 use serde_json::json;
 use tempfile::TempDir;
@@ -72,6 +78,40 @@ fn plant_unindexed(conn: &Connection, key: &CacheKey, body: &[u8]) {
         params![key.0, body, body.len() as i64],
     )
     .expect("plant row");
+}
+
+/// Insert a row the way a **migration-2** database holds one: indexed and
+/// searchable, but by a build that had never heard of `empty_reason`, so
+/// `reindexed_at` is still NULL and the promoted reason is missing.
+///
+/// The fts row is planted too, and that is the whole point of the fixture: the
+/// re-index pass meets an existing row for this rowid, and `cache_entries_fts`
+/// is plain fts5 with an explicit rowid, so a bare INSERT would raise
+/// `SQLITE_CONSTRAINT`.
+fn plant_pre_migration_3(conn: &Connection, key: &CacheKey, body: &[u8]) {
+    conn.execute(
+        "INSERT INTO cache_entries
+             (key, body, size, created_at, last_access_at, indexed_at, index_ok, model)
+         VALUES (?1, ?2, ?3, 0, 0, 1700000000000, 1, 'claude-opus-5')",
+        params![key.0, body, body.len() as i64],
+    )
+    .expect("plant row");
+    let rowid = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO cache_entries_fts (rowid, request, output) VALUES (?1, '', 'stale')",
+        params![rowid],
+    )
+    .expect("plant fts row");
+}
+
+fn fts_rows(conn: &Connection, key: &CacheKey) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM cache_entries_fts
+          WHERE rowid = (SELECT rowid FROM cache_entries WHERE key = ?1)",
+        params![key.0],
+        |row| row.get(0),
+    )
+    .expect("count fts rows")
 }
 
 fn column<T: rusqlite::types::FromSql>(conn: &Connection, key: &CacheKey, col: &str) -> T {
@@ -337,13 +377,244 @@ async fn pruning_an_entry_drops_its_search_row() {
     // Evict by size target rather than by age. `older_than_days = 0` computes
     // a cutoff of *now* and deletes strictly-older rows, so an entry written in
     // the same millisecond survives — a real flake, not a hypothetical.
-    storage.cache_prune(None, Some(0)).await.unwrap();
+    storage
+        .cache_prune(CachePruneFilter {
+            target_bytes: Some(0),
+            ..CachePruneFilter::default()
+        })
+        .await
+        .unwrap();
 
     let conn = raw(dir.path());
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM cache_entries_fts", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 0, "a pruned entry must not stay searchable");
+}
+
+// ---------------------------------------------------------------------------
+// The migration-3 re-index
+// ---------------------------------------------------------------------------
+
+/// The test that would have caught the wedge.
+///
+/// `cache_entries_fts` is plain fts5 and `insert_fts` supplies an explicit
+/// rowid, so a second INSERT for a rowid that already has a row raises
+/// `SQLITE_CONSTRAINT` — the `?` propagates out of the batch writer *before*
+/// its `commit`, rolling back every `reindexed_at` stamp with it. The driver
+/// then re-reads the identical batch forever, and the `empty_reason` this whole
+/// feature exists to filter on is never populated for a single pre-existing row.
+///
+/// So this asserts three separate things, and the first two are why a test that
+/// only checked "no duplicate fts row" would have passed against the broken
+/// code: the batch **committed** (`reindexed_at IS NOT NULL`), the reason
+/// landed, and the search index holds exactly one row for the entry.
+#[tokio::test]
+async fn re_indexing_commits_and_populates_empty_reason() {
+    let (storage, dir) = storage().await;
+    let key = key_for("poisoned");
+    let mut e = entry();
+    e.output = Output::Text(String::new());
+    e.empty_reason = Some(domarinn_core::empty::EmptyReason::new(
+        domarinn_core::empty::EmptyReason::REFUSAL,
+    ));
+    plant_pre_migration_3(&raw(dir.path()), &key, &serde_json::to_vec(&e).unwrap());
+
+    assert_eq!(storage.cache_reindex_batch(100).await.unwrap(), 1);
+
+    let conn = raw(dir.path());
+    assert!(
+        column::<Option<i64>>(&conn, &key, "reindexed_at").is_some(),
+        "the batch must have committed; a rolled-back batch leaves this NULL"
+    );
+    assert_eq!(column::<String>(&conn, &key, "empty_reason"), "refusal");
+    assert_eq!(
+        fts_rows(&conn, &key),
+        1,
+        "the entry must be searchable exactly once"
+    );
+
+    assert_eq!(
+        storage.cache_reindex_batch(100).await.unwrap(),
+        0,
+        "a re-indexed row must not be picked up again"
+    );
+}
+
+/// A row already recorded as unparseable is stamped without its body ever being
+/// read. Re-parsing what already failed cannot succeed, and leaving it pending
+/// would make every future pass scan it — the same argument
+/// `an_unparseable_row_is_stamped_once_and_never_rescanned` makes for the first
+/// pass, one migration later.
+#[tokio::test]
+async fn the_re_index_leaves_unparseable_rows_alone_but_still_drains() {
+    let (storage, dir) = storage().await;
+    let key = key_for("junk3");
+    {
+        let conn = raw(dir.path());
+        conn.execute(
+            "INSERT INTO cache_entries
+                 (key, body, size, created_at, last_access_at, indexed_at, index_ok)
+             VALUES (?1, ?2, 10, 0, 0, 1700000000000, 0)",
+            params![key.0, b"{ not json".to_vec()],
+        )
+        .unwrap();
+    }
+
+    assert_eq!(storage.cache_reindex_batch(100).await.unwrap(), 1);
+    assert_eq!(
+        storage.cache_reindex_batch(100).await.unwrap(),
+        0,
+        "the pass must drain rather than revisit rows it declined to read"
+    );
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        column::<i64>(&conn, &key, "index_ok"),
+        0,
+        "its verdict is unchanged"
+    );
+    assert_eq!(
+        fts_rows(&conn, &key),
+        0,
+        "nothing was parsed, so nothing may become searchable"
+    );
+}
+
+/// A row written by *this* build is already current, so the catch-up pass has
+/// nothing to do with it. Leaving `reindexed_at` NULL on every new write would
+/// queue the whole live cache for a second body read it does not need.
+#[tokio::test]
+async fn a_fresh_put_is_never_queued_for_the_catch_up_pass() {
+    let (storage, _dir) = storage().await;
+    let mut e = entry();
+    e.empty_reason = Some(domarinn_core::empty::EmptyReason::new(
+        domarinn_core::empty::EmptyReason::BLANK,
+    ));
+    storage
+        .cache_put(key_for("fresh").0, serde_json::to_vec(&e).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(storage.cache_reindex_batch(100).await.unwrap(), 0);
+    assert_eq!(storage.cache_backfill_remaining().await.unwrap().total(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Pruning
+// ---------------------------------------------------------------------------
+
+/// The rule that keeps an unattended caller from wiping a shared cache.
+///
+/// The list query builds from `WHERE 1=1` and appends ` AND …` per filter,
+/// which is fine for a SELECT and fatal for a DELETE: a filter that named
+/// nothing would match every row. Two callers can present one — including the
+/// **hourly** retention task, if its configured reasons parse to nothing — so
+/// the guard is asserted here, at the storage level, and not only at the route
+/// where the retention-limits fallback would mask it.
+#[tokio::test]
+async fn a_prune_with_no_predicate_deletes_nothing() {
+    let (storage, _dir) = storage().await;
+    for i in 0..3 {
+        storage
+            .cache_put(
+                key_for(&format!("keep{i}")).0,
+                serde_json::to_vec(&entry()).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(
+        storage
+            .cache_prune(CachePruneFilter::default())
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        storage.cache_stats().await.unwrap().entries,
+        3,
+        "a filter naming nothing must delete nothing at all"
+    );
+
+    // An `empty_reason` list that collapsed to empty is the same case: it is
+    // "no such predicate", never "every entry".
+    assert_eq!(
+        storage
+            .cache_prune(CachePruneFilter {
+                empty_reason: Vec::new(),
+                ..CachePruneFilter::default()
+            })
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(storage.cache_stats().await.unwrap().entries, 3);
+}
+
+#[tokio::test]
+async fn a_prune_by_empty_reason_removes_only_those_entries() {
+    let (storage, _dir) = storage().await;
+    let mut refused = entry();
+    refused.empty_reason = Some(domarinn_core::empty::EmptyReason::new(
+        domarinn_core::empty::EmptyReason::REFUSAL,
+    ));
+    let mut blank = entry();
+    blank.empty_reason = Some(domarinn_core::empty::EmptyReason::new(
+        domarinn_core::empty::EmptyReason::BLANK,
+    ));
+    for (seed, e) in [("refused", &refused), ("blank", &blank), ("fine", &entry())] {
+        storage
+            .cache_put(key_for(seed).0, serde_json::to_vec(e).unwrap())
+            .await
+            .unwrap();
+    }
+
+    let pruned = storage
+        .cache_prune(CachePruneFilter {
+            empty_reason: vec!["refusal".into(), "blank".into()],
+            ..CachePruneFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(pruned, 2);
+    assert!(
+        storage
+            .cache_get(key_for("fine").0)
+            .await
+            .unwrap()
+            .is_some(),
+        "an entry with no recorded reason is never matched by a reason predicate"
+    );
+}
+
+/// Deleting one entry has to take its search row with it, or the index keeps
+/// answering for something that is gone. The `cache_entries_delete_fts` trigger
+/// is what makes that true, and this is the test that says so.
+#[tokio::test]
+async fn a_deleted_entry_leaves_no_fts_row() {
+    let (storage, dir) = storage().await;
+    let key = key_for("doomed");
+    let mut e = entry();
+    e.output = Output::Text("ephemeral".into());
+    storage
+        .cache_put(key.0.clone(), serde_json::to_vec(&e).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(fts_rows(&raw(dir.path()), &key), 1);
+
+    assert!(storage.cache_delete_entry(key.0.clone()).await.unwrap());
+    assert!(
+        !storage.cache_delete_entry(key.0.clone()).await.unwrap(),
+        "a second delete removes nothing, which is how a caller tells the two apart"
+    );
+
+    let conn = raw(dir.path());
+    let searchable: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cache_entries_fts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(searchable, 0);
 }
 
 // ---------------------------------------------------------------------------

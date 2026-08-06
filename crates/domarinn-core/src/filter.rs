@@ -78,13 +78,25 @@ impl Filter {
         if !self.providers.is_empty() && !self.providers.iter().any(|p| p == provider_id) {
             return false;
         }
+        self.test_allows_provider(provider_id, tc)
+    }
+
+    /// True when the *test* admits this provider — its `only_providers` /
+    /// `skip_providers`, and nothing else.
+    ///
+    /// Split out of [`Self::provider_included`] because a `fallback:` candidate
+    /// is subject to the test's policy but not to `--provider`. The two say
+    /// different things: `--provider` chooses which cells run, and a cell that
+    /// runs is entitled to its whole chain — a `--provider primary` run that
+    /// silently lost its fallback would be the hardest kind of bug to see,
+    /// because it looks exactly like fallback not working. A test that names
+    /// `skip_providers: [b]`, by contrast, has said something about `b` that a
+    /// back door must not undo.
+    pub fn test_allows_provider(&self, provider_id: &str, tc: &TestCase) -> bool {
         if !tc.only_providers.is_empty() && !tc.only_providers.iter().any(|p| p == provider_id) {
             return false;
         }
-        if tc.skip_providers.iter().any(|p| p == provider_id) {
-            return false;
-        }
-        true
+        !tc.skip_providers.iter().any(|p| p == provider_id)
     }
 
     /// True when a prompt id is included by the `--prompt` allowlist.

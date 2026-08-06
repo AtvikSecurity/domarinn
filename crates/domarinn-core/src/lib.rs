@@ -19,6 +19,7 @@ pub mod config_request;
 pub mod diff;
 pub mod digests;
 pub mod embeddings;
+pub mod empty_policy;
 pub mod empty_run;
 pub mod errors;
 
@@ -43,6 +44,7 @@ pub mod interp;
 pub mod jsonschema_cache;
 pub mod loader;
 pub mod loader_validate;
+pub mod loader_validate_fallback;
 pub mod loader_validate_history;
 pub mod matrix;
 pub mod net;

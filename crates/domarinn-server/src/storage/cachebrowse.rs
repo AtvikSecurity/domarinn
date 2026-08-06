@@ -22,6 +22,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use domarinn_core::cache::CacheEntry;
 
+use super::cacheindex::clamp_empty_reason;
 use super::{from_microusd, ms_to_rfc3339, Storage};
 use crate::domain::{CacheSort, SortOrder};
 use crate::dto::cacheentries::{
@@ -49,6 +50,10 @@ pub const KIND_UNPARSEABLE: &str = "unparseable";
 pub struct CacheListFilter {
     pub kind: Option<String>,
     pub model: Option<String>,
+    /// Exactly one reason. Plural selection belongs to prune, which is a
+    /// destructive operation people script; a browser narrows one facet at a
+    /// time and the URL stays readable.
+    pub empty_reason: Option<String>,
     pub q: Option<String>,
     pub since: Option<i64>,
     pub until: Option<i64>,
@@ -142,9 +147,14 @@ impl Storage {
 }
 
 /// The columns a list row needs, in the order `row_to_item` reads them.
+///
+/// Hand-maintained and positional: adding one here means adding the matching
+/// `row.get(n)` to [`row_to_item`], and appending rather than inserting is what
+/// keeps every other index from shifting under it.
 const LIST_COLUMNS: &str = "key, size, created_at, last_access_at, entry_created_at,
      indexed_at, index_ok, kind, model, cost_microusd,
-     input_tokens, output_tokens, request_summary, output_preview";
+     input_tokens, output_tokens, request_summary, output_preview,
+     empty_reason";
 
 fn list_entries(
     conn: &Connection,
@@ -167,6 +177,10 @@ fn list_entries(
     if let Some(model) = &filter.model {
         args.push(model.clone().into());
         sql.push_str(&format!(" AND model = ?{}", args.len()));
+    }
+    if let Some(reason) = &filter.empty_reason {
+        args.push(reason.clone().into());
+        sql.push_str(&format!(" AND empty_reason = ?{}", args.len()));
     }
     if let Some(since) = filter.since {
         args.push(since.into());
@@ -295,6 +309,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<CacheEntryListItem> 
         output_tokens: row.get(11)?,
         request_summary: row.get(12)?,
         output_preview: row.get(13)?,
+        empty_reason: row.get(14)?,
     })
 }
 
@@ -358,6 +373,7 @@ fn entry_detail(
         attempts: None,
         provider_latency_ms: None,
         stop_reason: None,
+        empty_reason: None,
         domarinn_version: None,
         request: None,
         provider_fingerprint: None,
@@ -388,6 +404,10 @@ fn entry_detail(
     detail.attempts = entry.attempts;
     detail.provider_latency_ms = entry.provider_latency_ms;
     detail.stop_reason = entry.stop_reason;
+    // Clamped, not verbatim, even though this comes straight off the parsed
+    // entry: the list column is clamped, and a drawer that disagreed with the
+    // row it was opened from would look like two different entries.
+    detail.empty_reason = entry.empty_reason.as_ref().map(clamp_empty_reason);
     detail.domarinn_version = Some(entry.domarinn_version);
     detail.request = entry.request;
     detail.provider_fingerprint = entry.provider_fingerprint;
@@ -429,6 +449,24 @@ fn facets(conn: &Connection) -> anyhow::Result<CacheFacetsResponse> {
         rows.collect::<Result<Vec<_>, _>>()?
     };
 
+    // Uncapped, unlike `models`. The reason vocabulary is a handful of
+    // constants plus whatever a future vendor invents, and `clamp_empty_reason`
+    // bounds each value's length — so unlike a model string, this facet cannot
+    // be grown without bound by whatever happens to be in the store.
+    let empty_reasons = {
+        let mut stmt = conn.prepare(
+            "SELECT empty_reason, COUNT(*) FROM cache_entries
+              WHERE empty_reason IS NOT NULL GROUP BY empty_reason ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(CacheFacet {
+                value: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM cache_entries", [], |r| r.get(0))?;
     let unindexed: i64 = conn.query_row(
         "SELECT COUNT(*) FROM cache_entries WHERE indexed_at IS NULL",
@@ -444,6 +482,7 @@ fn facets(conn: &Connection) -> anyhow::Result<CacheFacetsResponse> {
     Ok(CacheFacetsResponse {
         kinds,
         models,
+        empty_reasons,
         total,
         unindexed,
         unparseable,

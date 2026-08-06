@@ -60,6 +60,7 @@ export const CACHE_FILTER_KEYS = [
   "tier",
   "kind",
   "model",
+  "empty_reason",
   "q",
   "since",
   "until",
@@ -170,6 +171,7 @@ export interface CacheRequestFilters {
   tier?: string;
   kind?: string;
   model?: string;
+  empty_reason?: string;
   q?: string;
   since?: string;
   until?: string;

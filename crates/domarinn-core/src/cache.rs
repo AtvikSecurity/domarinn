@@ -496,10 +496,116 @@ pub struct CacheStats {
     pub oldest_entry_at: Option<DateTime<Utc>>,
 }
 
-/// Filter for cache pruning.
+/// Which entries a prune should remove.
+///
+/// Two families of predicate, and the split is load-bearing rather than
+/// cosmetic. *Age* predicates are answerable from a `stat`; *body* predicates
+/// require reading and parsing the entry. A store with 200k entries can be
+/// swept by age for the cost of a directory walk, and asking it to parse every
+/// file to answer a question nobody posed would turn the retention path into a
+/// minutes-long job. [`Self::is_age_only`] is what lets a backend keep the
+/// cheap walk cheap.
+///
+/// The other structural rule is [`Self::is_default`]. A prune whose filter
+/// names nothing must mean "everything" — that is `cache clear` — but that
+/// reading must be reachable *only* from a literally-empty filter. Deriving it
+/// instead from "no predicate matched" is how `--newer-than 1h` alone comes to
+/// delete the whole store, and how an empty `empty_reason` vec comes to make
+/// `clear` a no-op. Backends are expected to write
+/// `filter.is_default() || (age && body)` rather than fold the two together.
 #[derive(Debug, Clone, Default)]
 pub struct PurgeFilter {
+    /// Remove entries last modified *before* now minus this.
     pub older_than: Option<chrono::Duration>,
+    /// Remove entries last modified *after* now minus this.
+    ///
+    /// Only ever meaningful as the other half of a window: on its own it names
+    /// "everything since", which is a whole-store wipe wearing the vocabulary
+    /// of housekeeping. The CLI refuses to construct that; this type merely
+    /// carries it.
+    pub newer_than: Option<chrono::Duration>,
+    /// Remove entries whose stored [`crate::empty::EmptyReason`] is any of
+    /// these. Empty means "do not filter on the reason at all" — *not* "match
+    /// entries with no reason".
+    pub empty_reason: Vec<crate::empty::EmptyReason>,
+    /// Remove entries answered by exactly this model.
+    pub model: Option<String>,
+    /// Remove entries of exactly this kind, compared against
+    /// [`CacheEntry::inferred_kind`].
+    pub kind: Option<String>,
+}
+
+impl PurgeFilter {
+    /// True when no predicate is set at all — the `cache clear` filter.
+    ///
+    /// The single gate for "remove everything". Every other path in a backend
+    /// must go through the per-predicate arms, so that adding a predicate can
+    /// only ever *narrow* what is deleted. A filter that names something and
+    /// matches nothing removes nothing; only this returning `true` removes the
+    /// store.
+    pub fn is_default(&self) -> bool {
+        self.older_than.is_none()
+            && self.newer_than.is_none()
+            && self.empty_reason.is_empty()
+            && self.model.is_none()
+            && self.kind.is_none()
+    }
+
+    /// True when nothing here needs the entry's body — only its timestamp.
+    ///
+    /// The disk backend's fast path. `cache gc --older-than 30d` is the
+    /// retention sweep people run on a cron against a store that may hold
+    /// hundreds of thousands of files; answering it from `stat` alone is the
+    /// difference between a directory walk and deserializing every entry on
+    /// disk. Note this is *not* the negation of [`Self::is_default`]: a
+    /// literally-default filter is also age-only, which is exactly right —
+    /// `clear` reads no bodies either.
+    pub fn is_age_only(&self) -> bool {
+        self.empty_reason.is_empty() && self.model.is_none() && self.kind.is_none()
+    }
+
+    /// Whether an entry's *body* satisfies this filter. Timestamps are the
+    /// backend's business, since only it knows where they come from.
+    ///
+    /// Every unset predicate is vacuously true, and they are ANDed: naming a
+    /// model and a kind means "entries that are both", never "either". The
+    /// alternative — ORing — would make each added predicate widen the blast
+    /// radius of a destructive command, which is the wrong direction for a
+    /// filter whose only job is to spare things.
+    pub fn matches_entry(&self, entry: &CacheEntry) -> bool {
+        // Compared by string, not by parsing into a known set. `EmptyReason` is
+        // an open newtype on purpose (vendors add finish reasons without a
+        // domarinn release), and this must not become the place that quietly
+        // closes it — an operator evicting a reason this binary has never heard
+        // of is precisely the recovery case the filter exists for.
+        let reason_ok = self.empty_reason.is_empty()
+            || entry.empty_reason.as_ref().is_some_and(|have| {
+                // Compared in the clamped form both tiers store, so the same
+                // `--empty-reason` value selects the same entries whether it is
+                // answered by a local disk walk or by the server's promoted
+                // column. See `EmptyReason::clamped`.
+                self.empty_reason
+                    .iter()
+                    .any(|want| want.clamped() == have.clamped())
+            });
+
+        let model_ok = match &self.model {
+            None => true,
+            Some(want) => entry.model.as_deref() == Some(want.as_str()),
+        };
+
+        // Against the *inferred* kind rather than the stored one, so that the
+        // disk tier and the server's browse tier agree on what `--kind judge`
+        // selects. An entry written before `kind` existed still has a kind a
+        // reader can derive, and a filter that ignored it would report "0
+        // removed" for entries plainly listed as judges.
+        let kind_ok = match &self.kind {
+            None => true,
+            Some(want) => entry.inferred_kind().as_deref() == Some(want.as_str()),
+        };
+
+        reason_ok && model_ok && kind_ok
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -678,6 +784,137 @@ mod tests {
         .unwrap();
         let written = serde_json::to_value(&entry).unwrap();
         assert!(written.get("kind").is_none(), "{written}");
+    }
+
+    fn entry(json: Json) -> CacheEntry {
+        serde_json::from_value(json).expect("test fixture must deserialize")
+    }
+
+    fn plain_entry() -> CacheEntry {
+        entry(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "domarinn_version": "0.9.0",
+        }))
+    }
+
+    /// `cache clear` is a default filter, and it must keep removing everything.
+    /// The hazard is a backend deriving "match all" from "no predicate rejected
+    /// it": add one predicate whose unset form is a `contains()` on an empty
+    /// `Vec` and `clear` silently becomes a no-op.
+    #[test]
+    fn a_default_purge_filter_matches_everything() {
+        let filter = PurgeFilter::default();
+        assert!(filter.is_default());
+        assert!(filter.is_age_only(), "clear reads no bodies either");
+        assert!(filter.matches_entry(&plain_entry()));
+
+        let poisoned = entry(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "",
+            "empty_reason": "refusal",
+            "model": "claude-x",
+            "kind": "provider",
+            "domarinn_version": "0.9.0",
+        }));
+        assert!(filter.matches_entry(&poisoned));
+    }
+
+    /// An entry with no reason recorded is not "a reason we did not name" — it
+    /// is an entry the predicate cannot speak about, so it survives. Otherwise
+    /// `gc --empty-reason refusal` would take every ordinary answer with it.
+    #[test]
+    fn an_empty_reason_predicate_never_matches_an_entry_without_one() {
+        let filter = PurgeFilter {
+            empty_reason: vec![crate::empty::EmptyReason::new(
+                crate::empty::EmptyReason::REFUSAL,
+            )],
+            ..Default::default()
+        };
+        assert!(!filter.is_default());
+        assert!(!filter.is_age_only(), "a reason predicate needs the body");
+        assert!(!filter.matches_entry(&plain_entry()));
+
+        let refused = entry(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "",
+            "empty_reason": "refusal",
+            "domarinn_version": "0.9.0",
+        }));
+        assert!(filter.matches_entry(&refused));
+
+        // Open by construction: a reason this binary has never heard of is
+        // still evictable, which is the whole point of naming one.
+        let future = PurgeFilter {
+            empty_reason: vec![crate::empty::EmptyReason::new("invented_next_year")],
+            ..Default::default()
+        };
+        let odd = entry(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "",
+            "empty_reason": "invented_next_year",
+            "domarinn_version": "9.9.9",
+        }));
+        assert!(future.matches_entry(&odd));
+        assert!(!future.matches_entry(&refused));
+    }
+
+    /// Naming two predicates must *narrow* a destructive command, never widen
+    /// it. ORing would make `--model x --kind judge` delete every judge entry
+    /// plus every entry from `x`, which is not what either flag says.
+    #[test]
+    fn body_predicates_and_rather_than_or() {
+        let filter = PurgeFilter {
+            model: Some("claude-x".into()),
+            kind: Some(EntryKind::JUDGE.into()),
+            ..Default::default()
+        };
+
+        let both = entry(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "model": "claude-x",
+            "kind": "judge",
+            "domarinn_version": "0.9.0",
+        }));
+        assert!(filter.matches_entry(&both));
+
+        let model_only = entry(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "model": "claude-x",
+            "kind": "provider",
+            "domarinn_version": "0.9.0",
+        }));
+        assert!(!filter.matches_entry(&model_only));
+
+        let kind_only = entry(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "model": "other",
+            "kind": "judge",
+            "domarinn_version": "0.9.0",
+        }));
+        assert!(!filter.matches_entry(&kind_only));
+    }
+
+    /// `kind` reads [`CacheEntry::inferred_kind`], so an entry written before
+    /// the field existed is still selectable by the kind every reader — the
+    /// disk tier and the server's listing alike — already shows for it.
+    #[test]
+    fn a_kind_predicate_matches_an_inferred_kind() {
+        let filter = PurgeFilter {
+            kind: Some(EntryKind::PROVIDER.into()),
+            ..Default::default()
+        };
+        let legacy = entry(json!({
+            "created_at": "2026-01-01T00:00:00Z",
+            "output": "hi",
+            "attempts": 1,
+            "domarinn_version": "0.4.0",
+        }));
+        assert!(legacy.kind.is_none(), "no kind was written");
+        assert!(filter.matches_entry(&legacy));
     }
 
     #[test]

@@ -15,6 +15,15 @@
 //! binding a port would turn a restart into an outage. So this drains in
 //! bounded batches alongside serving, and `indexed_at IS NULL` is the progress
 //! record — monotone, crash-safe, and restart-safe without a cursor to store.
+//!
+//! # Why there are two passes
+//!
+//! Migration 3 added `empty_reason`, and the rows that need it most are exactly
+//! the ones migration 2 already stamped `indexed_at` — a cache poisoned by a
+//! refusal months ago. `indexed_at IS NULL` cannot find them, and re-setting it
+//! in the migration would be the outage this module exists to avoid. So
+//! `reindexed_at IS NULL` is a second, independent progress record over the same
+//! rows, drained by [`Storage::cache_reindex_batch`] after the port is bound.
 
 use anyhow::Context;
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -35,8 +44,7 @@ const FTS_TEXT_MAX: usize = 16 * 1024;
 const SUMMARY_MAX: usize = 256;
 /// Characters of `output_preview`, mirroring `cases.output_preview`.
 const PREVIEW_MAX: usize = 300;
-
-/// Everything migration 2 promotes, derived from one body.
+/// Everything migrations 2 and 3 promote, derived from one body.
 pub(crate) struct EntryIndex {
     pub kind: Option<String>,
     pub model: Option<String>,
@@ -46,6 +54,9 @@ pub(crate) struct EntryIndex {
     pub entry_created_at: Option<i64>,
     pub request_summary: Option<String>,
     pub output_preview: Option<String>,
+    /// Why the output was empty, clamped. `None` means the entry recorded no
+    /// reason — a real answer, or a build that predates the field.
+    pub empty_reason: Option<String>,
     pub fts_request: String,
     pub fts_output: String,
 }
@@ -87,10 +98,37 @@ impl EntryIndex {
             entry_created_at: Some(entry.created_at.timestamp_millis()),
             request_summary: request_summary(entry.request.as_ref()),
             output_preview: Some(truncate(&output_text, PREVIEW_MAX)),
+            empty_reason: entry.empty_reason.as_ref().map(clamp_empty_reason),
+            // `empty_reason` is deliberately absent from both FTS columns. It
+            // is a facet and a filter, and folding it into free text would make
+            // `q=refusal` match every refused entry *and* every entry whose
+            // output happens to discuss one, with no way to tell them apart.
             fts_request: truncate(&request_text, FTS_TEXT_MAX),
             fts_output: truncate(&output_text, FTS_TEXT_MAX),
         }
     }
+}
+
+/// Make an entry's `empty_reason` safe to store, log and facet on.
+///
+/// `EmptyReason` is an open string newtype by design (`domarinn_types::empty`),
+/// and an `exec` provider child sets it verbatim from its own stdout — domarinn
+/// does not control that writer in any version. Two consequences follow, and
+/// neither is hypothetical:
+///
+/// * A reason containing a newline lands in a `tracing` field and forges log
+///   lines; one containing a control character corrupts a terminal reading them.
+/// * An unbounded reason is an unbounded *facet* value, and the reason facet is
+///   uncapped — a child emitting a fresh 4 KiB reason per call would make
+///   `/cache/facets` grow without limit.
+///
+/// So: control characters out, length capped. The stored entry body keeps the
+/// original verbatim; this is only what the index promotes.
+pub(crate) fn clamp_empty_reason(reason: &domarinn_core::empty::EmptyReason) -> String {
+    // Delegated rather than reimplemented: the disk tier's purge filter compares
+    // on the same form, and two copies of this rule is how one tier starts
+    // evicting entries the other cannot find.
+    reason.clamped()
 }
 
 /// A one-line description of where the request went.
@@ -178,6 +216,172 @@ impl Storage {
             .write(move |conn| write_batch(conn, derived))
             .await
     }
+
+    /// Re-derive up to `batch` rows that were indexed by a build older than
+    /// migration 3, so their `empty_reason` stops being permanently unknown.
+    ///
+    /// Returns how many were stamped. `0` means the pass has drained, and it
+    /// drains for good: every row it visits gets `reindexed_at`, including the
+    /// unparseable ones it declines to re-read.
+    ///
+    /// Same two-phase split as [`Storage::cache_index_batch`], for the same
+    /// reason — parsing happens on a pooled reader, only SQL runs under the
+    /// single writer.
+    pub async fn cache_reindex_batch(&self, batch: i64) -> anyhow::Result<usize> {
+        let derived: Vec<Reindexed> = self
+            .cache
+            .read(move |conn| read_reindex_batch(conn, batch))
+            .await?;
+        if derived.is_empty() {
+            return Ok(0);
+        }
+        self.cache
+            .write(move |conn| write_reindex_batch(conn, derived))
+            .await
+    }
+
+    /// What each backfill pass still has to look at.
+    ///
+    /// One query per pass rather than a `FILTER` over a single aggregate, so
+    /// each is served straight from its own partial index — both of which are
+    /// empty in the steady state, which is where a running server spends its
+    /// life.
+    pub async fn cache_backfill_remaining(&self) -> anyhow::Result<BackfillRemaining> {
+        self.cache
+            .read(|conn| {
+                Ok(BackfillRemaining {
+                    unindexed: conn.query_row(
+                        "SELECT COUNT(*) FROM cache_entries WHERE indexed_at IS NULL",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    stale: conn.query_row(
+                        "SELECT COUNT(*) FROM cache_entries
+                          WHERE reindexed_at IS NULL AND indexed_at IS NOT NULL",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                })
+            })
+            .await
+    }
+}
+
+/// Rows still owed to each pass. Reported so the backfill has *some* observable
+/// progress: before this it logged a per-batch count at `debug!` and nothing
+/// else, so "is it stuck or is it working" had no answer from outside.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BackfillRemaining {
+    pub unindexed: i64,
+    pub stale: i64,
+}
+
+impl BackfillRemaining {
+    pub fn total(self) -> i64 {
+        self.unindexed + self.stale
+    }
+}
+
+/// One row the re-index pass looked at, and what it found.
+///
+/// `None` carries a decision, not a failure: the row is stamped without its
+/// body ever being read, because it is already recorded as unparseable.
+struct Reindexed {
+    rowid: i64,
+    index: Option<EntryIndex>,
+}
+
+fn read_reindex_batch(conn: &Connection, batch: i64) -> anyhow::Result<Vec<Reindexed>> {
+    // `indexed_at IS NOT NULL` keeps the two passes disjoint. A row that has
+    // never been looked at is in both partial indexes, and letting this pass
+    // claim it would derive it twice and stamp only half the state.
+    let candidates: Vec<(i64, Option<i64>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT rowid, index_ok FROM cache_entries
+              WHERE reindexed_at IS NULL AND indexed_at IS NOT NULL
+              ORDER BY rowid LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![batch], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut out = Vec::with_capacity(candidates.len());
+    let mut budget = READ_BYTE_BUDGET;
+    for (rowid, index_ok) in candidates {
+        // Already known not to parse. Stamping it without a read is what makes
+        // this pass terminate rather than re-failing on the same rows forever.
+        if index_ok != Some(1) {
+            out.push(Reindexed { rowid, index: None });
+            continue;
+        }
+        let body: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT body FROM cache_entries WHERE rowid = ?1",
+                params![rowid],
+                |row| row.get(0),
+            )
+            .ok();
+        // Gone since the id was read — a prune ran between the two statements.
+        let Some(body) = body else { continue };
+        budget = budget.saturating_sub(body.len());
+        out.push(Reindexed {
+            rowid,
+            index: EntryIndex::derive(&body),
+        });
+        if budget == 0 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+fn write_reindex_batch(conn: &mut Connection, derived: Vec<Reindexed>) -> anyhow::Result<usize> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let now = now_ms();
+    let mut stamped = 0usize;
+    for Reindexed { rowid, index } in derived {
+        let Some(index) = index else {
+            // Nothing was read, so nothing is re-derived; the stamp alone takes
+            // the row out of the pending index. `index_ok` keeps its verdict.
+            stamped += tx.execute(
+                "UPDATE cache_entries SET reindexed_at = ?1
+                  WHERE rowid = ?2 AND reindexed_at IS NULL",
+                params![now, rowid],
+            )?;
+            continue;
+        };
+        // `AND reindexed_at IS NULL` closes the same read-then-write race
+        // `write_batch` documents: a prune may have deleted this row and
+        // SQLite may have handed its rowid to a new entry.
+        let changed = tx.execute(
+            "UPDATE cache_entries
+                SET reindexed_at = ?1, kind = ?2, model = ?3,
+                    cost_microusd = ?4, input_tokens = ?5, output_tokens = ?6,
+                    entry_created_at = ?7, request_summary = ?8, output_preview = ?9,
+                    empty_reason = ?10
+              WHERE rowid = ?11 AND reindexed_at IS NULL",
+            params![
+                now,
+                index.kind,
+                index.model,
+                index.cost_microusd,
+                index.input_tokens,
+                index.output_tokens,
+                index.entry_created_at,
+                index.request_summary,
+                index.output_preview,
+                index.empty_reason,
+                rowid,
+            ],
+        )?;
+        if changed == 0 {
+            continue;
+        }
+        stamped += 1;
+        insert_fts(&tx, rowid, &index)?;
+    }
+    tx.commit()?;
+    Ok(stamped)
 }
 
 /// Bytes of body held in memory before a batch cuts itself short.
@@ -231,10 +435,11 @@ fn write_batch(
         // metadata. Not decorative.
         let changed = tx.execute(
             "UPDATE cache_entries
-                SET indexed_at = ?1, index_ok = ?2, kind = ?3, model = ?4,
+                SET indexed_at = ?1, reindexed_at = ?1, index_ok = ?2, kind = ?3, model = ?4,
                     cost_microusd = ?5, input_tokens = ?6, output_tokens = ?7,
-                    entry_created_at = ?8, request_summary = ?9, output_preview = ?10
-              WHERE rowid = ?11 AND indexed_at IS NULL",
+                    entry_created_at = ?8, request_summary = ?9, output_preview = ?10,
+                    empty_reason = ?11
+              WHERE rowid = ?12 AND indexed_at IS NULL",
             params![
                 now,
                 index.is_some() as i64,
@@ -246,6 +451,7 @@ fn write_batch(
                 index.as_ref().and_then(|i| i.entry_created_at),
                 index.as_ref().and_then(|i| i.request_summary.clone()),
                 index.as_ref().and_then(|i| i.output_preview.clone()),
+                index.as_ref().and_then(|i| i.empty_reason.clone()),
                 rowid,
             ],
         )?;
@@ -261,9 +467,29 @@ fn write_batch(
     Ok(stamped)
 }
 
-/// Add one entry's searchable text, rowid-aligned with `cache_entries` so the
-/// delete trigger can find it without scanning.
+/// Replace one entry's searchable text, rowid-aligned with `cache_entries` so
+/// the delete trigger can find it without scanning.
+///
+/// # Why the DELETE is not redundant
+///
+/// `cache_entries_fts` is a plain (content-full) fts5 table, and fts5 backs
+/// those with a shadow `%_content(id INTEGER PRIMARY KEY)`. This INSERT
+/// supplies an **explicit** rowid, so a second insert for a rowid that already
+/// has a row raises `SQLITE_CONSTRAINT` — it does *not* silently duplicate.
+///
+/// That matters because the re-index pass visits rows that were indexed by an
+/// older build, and every one of those already has an fts row. Without the
+/// DELETE, the first such row would fail, the `?` would propagate out of
+/// [`write_reindex_batch`] before its `commit`, and the whole batch would roll
+/// back **including its `reindexed_at` stamps**. The driver would warn, sleep,
+/// re-read the identical batch, and fail identically — forever, never reaching
+/// the rows the pass exists to fix.
 pub(super) fn insert_fts(conn: &Connection, rowid: i64, index: &EntryIndex) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM cache_entries_fts WHERE rowid = ?1",
+        params![rowid],
+    )
+    .context("clearing stale cache entry text")?;
     conn.execute(
         "INSERT INTO cache_entries_fts (rowid, request, output) VALUES (?1, ?2, ?3)",
         params![rowid, index.fts_request, index.fts_output],
@@ -284,6 +510,34 @@ mod tests {
         );
         assert_eq!(strip_query("https://host/v1#frag"), "https://host/v1");
         assert_eq!(strip_query("https://host/v1"), "https://host/v1");
+    }
+
+    /// The same argument as [`a_query_string_never_reaches_a_summary`], for a
+    /// field a provider child writes verbatim: an `exec` grader can put
+    /// anything at all in `empty_reason`, and it reaches a `tracing` field and
+    /// an uncapped facet. Newlines forge log lines; length is facet cardinality.
+    #[test]
+    fn a_reason_an_exec_child_invented_cannot_forge_a_log_line() {
+        use domarinn_core::empty::EmptyReason;
+
+        assert_eq!(
+            clamp_empty_reason(&EmptyReason::new("refusal\n2026-01-01 ERROR forged")),
+            "refusal2026-01-01 ERROR forged"
+        );
+        assert_eq!(
+            clamp_empty_reason(&EmptyReason::new("a\r\nb\tc\u{7}")),
+            "abc"
+        );
+        assert_eq!(
+            clamp_empty_reason(&EmptyReason::new("x".repeat(4096))).len(),
+            EmptyReason::CLAMP_MAX
+        );
+        // An ordinary reason is untouched, including one this build has never
+        // heard of — the type is open by construction.
+        assert_eq!(
+            clamp_empty_reason(&EmptyReason::new("invented_next_year")),
+            "invented_next_year"
+        );
     }
 
     /// Truncation is by character, not byte: slicing a multi-byte codepoint in

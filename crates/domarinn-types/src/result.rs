@@ -18,6 +18,13 @@ use crate::types::{Output, RenderedPrompt, TokenUsage};
 /// - v3: `ChatRole::Tool` (added in 0.7.0 without a bump — retroactive
 ///   correction); otherwise wire-compatible with v2 — the additive
 ///   `RunSummary.empty_counts` is omitted at default.
+/// - still v3: `CaseResult::answered_by_provider_id`,
+///   `CaseResult::fallback_attempts` and `RunSummary::fallback_cases`, all
+///   additive and all omitted at default, so a run that did not fall back
+///   serializes byte-identically to one written before they existed. Same
+///   reasoning as `empty_counts`. Note an *older* server accepts such a run and
+///   then drops the three fields permanently, because it re-serializes its own
+///   typed struct on ingest.
 pub const RESULT_SCHEMA_VERSION: u32 = 3;
 
 /// Identity of one cell in the provider × prompt × test × repeat matrix.
@@ -342,6 +349,31 @@ pub struct CaseResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub empty_reason: Option<crate::empty::EmptyReason>,
+    /// The provider that actually answered, when it was not the one
+    /// [`Self::cell`]`.provider_id` names — that is, when a `fallback:` chain
+    /// was walked.
+    ///
+    /// `cell.provider_id` stays the **configured** provider so `case_key` is
+    /// stable and an `--against` baseline still joins the same row. This is
+    /// where the truth is recorded. `provider_digest` reflects the same
+    /// provider, so a fallback classifies as `ProviderChanged` in a diff —
+    /// honest, because a different model answered.
+    ///
+    /// Note what this does *not* fix: the server keys its `cases` table on the
+    /// configured provider, so a per-provider cost rollup bills the primary for
+    /// the fallback's tokens. Per-case `cost_usd` is still correct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub answered_by_provider_id: Option<String>,
+    /// The chain links tried and passed over before the one that answered, in
+    /// configured order.
+    ///
+    /// Absent — not an empty array — for the overwhelming majority of cases, so
+    /// a run that never fell back serializes byte-identically to one from
+    /// before this field existed. See the note on
+    /// [`RunSummary::cache_read_tokens`] for why that matters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_attempts: Vec<FallbackAttempt>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
@@ -417,6 +449,42 @@ pub struct RunSummary {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[ts(as = "Option<std::collections::BTreeMap<String, u64>>", optional)]
     pub empty_counts: std::collections::BTreeMap<String, u64>,
+    /// Cases answered by a provider's `fallback:` chain rather than by the
+    /// provider the cell names.
+    ///
+    /// A run where this equals `total` is refused by the CLI: every graded case
+    /// came from somewhere other than the system under test, so a green gate
+    /// would mean the suite ran, not that it passed. A partial fallback is
+    /// still green — that is the feature working.
+    ///
+    /// Absent at zero, for the byte-stability reason documented on
+    /// `cache_read_tokens` above.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fallback_cases: u64,
+}
+
+/// One `fallback:` link that was tried and passed over, and why.
+///
+/// Exactly one of [`Self::empty_reason`] / [`Self::error_class`] is set: a link
+/// either answered with something the suite declined to accept, or failed to
+/// answer at all. Both are open string newtypes, so a reason or class this
+/// build has never heard of round-trips rather than being dropped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+// No `export`: every other type in this crate is reached transitively by the
+// `gen-types` binary, and `#[ts(export)]` would make `cargo test` write a
+// stray, untracked `crates/domarinn-types/bindings/` directory as a side effect.
+#[ts(optional_fields)]
+pub struct FallbackAttempt {
+    /// The provider that was tried and did not answer.
+    pub provider_id: String,
+    /// Set when the link replied, but with nothing gradeable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub empty_reason: Option<crate::empty::EmptyReason>,
+    /// Set when the link failed to reply at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error_class: Option<crate::error_class::ErrorClass>,
 }
 
 /// `skip_serializing_if` helper for counters that must stay absent at zero.

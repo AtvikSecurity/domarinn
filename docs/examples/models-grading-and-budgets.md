@@ -276,3 +276,15 @@ domarinn cannot tell which is which, so it warns when it sees `{{ env.X }}` and 
 ///
 
 `body:` merges **last**, after the provider has built the body. That is the difference from `params:`, which merges *first* and is then overwritten by `model`, `messages`, and `system` — the three fields a gateway most often needs changed, and the three `params:` structurally cannot reach.
+
+## Example 44 — A second provider answers when the first refuses
+
+A refusal, or a gateway that is simply down, is not a verdict about the prompt. Without somewhere to go, that is exactly what it becomes: a failed case and a red gate on a suite that was never wrong.
+
+`fallback:` is resilience, not routing. The cell still belongs to the provider it names, so `case_key` is unchanged and an `--against` baseline joins the same row — while `answered_by_provider_id` and `provider_digest` record who actually replied.
+
+```yaml
+--8<-- "examples/44-provider-fallback/domarinn.yaml"
+```
+
+The guarantees worth knowing are the negative ones: it never fires under `--cache-only`, never on a cell carrying a `latency` assert, and never leaves a case worse than it would have been with no fallback configured. See [falling back to another provider](../reference/providers.md#falling-back-to-another-provider) for the full rules, and pass `--no-fallback` in a gate that would rather learn its primary is broken.

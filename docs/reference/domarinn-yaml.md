@@ -90,6 +90,7 @@ Each provider is one system under test. Every provider has an `id` (unique withi
 | `id` | string | **yes** | Unique identifier; used in reports and `only_providers`/`skip_providers`. |
 | `label` | string | no | Display name in output. |
 | `type` | enum | **yes** | One of the five kinds below. |
+| `fallback` | list of provider ids | no | Providers to try, in order, when this one refuses or cannot be reached. Not chained — a target's own `fallback:` is ignored when it is reached as one. The cell still belongs to *this* provider. See [providers.md](providers.md#falling-back-to-another-provider). |
 
 | `type` | Selects |
 |--------|---------|
@@ -491,6 +492,8 @@ Execution controls for the whole run.
 | `rate_limit` | object | none | `{ rps: <float> }` — cap requests per second. |
 | `timeout_ms` | int | none | Overall per-call timeout in milliseconds. |
 | `short_circuit` | bool | `true` | When true, a failing deterministic assertion short-circuits (skips) the LLM grader for that case. |
+| `refusal_patterns` | list of regex | `[]` | Outputs matching any of these are treated as a refusal even though the vendor did not say so. Opt-in; a false positive silently hands the case to a `fallback:` provider, so anchor them. An invalid regex is a `validate` error. See [providers.md](providers.md#prose-refusals-runnerrefusal_patterns). |
+| `fallback_on_empty_reason` | list of strings | `["refusal", "content_filter"]` | Which [empty reasons](../concepts/grading.md#empty-outputs-and-grading) make a provider hand off to its `fallback:` chain. Set `[]` to hand off only on hard call failures. Hard failures are a fixed list and are not configurable here. |
 
 **`retries`** sub-fields:
 
@@ -515,6 +518,7 @@ Selects the cache **backend**. Every outgoing request is cached so re-runs are c
 |-------|------|---------|-------|
 | `backend` | enum | `disk` | `disk` (local only) or `layered` (local disk in front of a shared remote). `http` and `s3` are **deprecated aliases** that warn at startup and name one tier outright instead of letting `cache.s3` choose — so they match `layered` only when the two agree (`s3` without a `cache.s3` block degrades to local disk alone). |
 | `s3` | object | none | S3 settings, which are also what makes `layered` pick the S3 remote over the server (below). |
+| `store_empty_outputs` | enum | `reproducible` | Which empty provider answers are written to the cache: `never`, `reproducible`, or `always`. `reproducible` keeps only the empties the same request would produce again (`truncated`, `tool_use_only`, `output_expr_empty`) — a refusal or a flaky gateway's blank body is not stored, so it is re-drawn rather than frozen forever. Write-side only; `always` restores the pre-0.10 behaviour. Overridable per run with `--store-empty-outputs`. See [caching.md](../concepts/caching.md#empty-answers). |
 | `grader` | bool | *(unset)* | **Deprecated.** `false` disables grader-request caching for every run of this suite; accepted with a warning. Prefer the `--no-grader-cache` run flag — whether to re-grade is a property of one run, not of the suite. |
 
 **`s3`** sub-fields (non-secret only — credentials come from the environment / AWS credential chain):

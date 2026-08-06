@@ -221,6 +221,7 @@ pub fn validate(suite: &Suite, raw: &Yaml) -> Validation {
     }
 
     crate::loader_validate_history::check(suite, &mut issues);
+    crate::loader_validate_fallback::check(suite, &mut issues);
 
     Validation { issues }
 }

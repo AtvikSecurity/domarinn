@@ -12,7 +12,10 @@
 //   * a ≤0.4.x grader entry, whose kind is inferred from its verdict tag,
 //   * one very large output, which the drawer must refuse to auto-expand,
 //   * one deeply nested `raw`, which must not go through the JSON tree,
-//   * missing usage and missing cost, which must render as "-" rather than 0.
+//   * missing usage and missing cost, which must render as "-" rather than 0,
+//   * entries whose output came back empty and why (`empty_reason`), which is
+//     what the reason filter and its facet exist to find — a store with none of
+//     them would let an empty dropdown pass for a working one.
 
 import type {
   CacheEntryDetail,
@@ -64,9 +67,18 @@ interface Shape {
   huge?: boolean;
   deepRaw?: boolean;
   noUsage?: boolean;
+  /** The output came back empty, and the entry records why. */
+  emptyReason?: string;
 }
 
-/** Which of the 180 entries deviate from the ordinary shape. */
+/**
+ * Which of the 180 entries deviate from the ordinary shape.
+ *
+ * Three distinct `empty_reason` values with different counts, deliberately: a
+ * facet dropdown with one option cannot show whether it sorts by count, and a
+ * single reason would let the page look right while `?empty_reason=` was
+ * hard-coded to it.
+ */
 function shapeOf(i: number): Shape {
   if (i < 12) return { preRequest: true };
   if (i < 32) return { unindexed: true };
@@ -75,6 +87,10 @@ function shapeOf(i: number): Shape {
   if (i === 34) return { deepRaw: true };
   if (i < 37) return { legacyVerdict: true };
   if (i < 40) return { noUsage: true };
+  // Eleven poisoned entries, weighted toward `refusal` the way a real store is.
+  if (i < 46) return { emptyReason: "refusal" };
+  if (i < 50) return { emptyReason: "blank" };
+  if (i === 50) return { emptyReason: "truncated" };
   return {};
 }
 
@@ -105,6 +121,10 @@ const OUTPUTS = [
 
 function outputFor(i: number, shape: Shape): string {
   if (shape.huge) return "x".repeat(HUGE_OUTPUT_BYTES);
+  // An `empty_reason` is only ever computed for a blank output, so a fixture
+  // that carried one beside prose would describe a state the server cannot
+  // produce — and would hide the "nothing to show, here is why" rendering.
+  if (shape.emptyReason) return "";
   return OUTPUTS[Math.floor(rand("output", i) * OUTPUTS.length)] as string;
 }
 
@@ -141,6 +161,7 @@ export function cacheEntryList(): CacheEntryListItem[] {
         output_tokens: null,
         request_summary: null,
         output_preview: null,
+        empty_reason: null,
       };
     }
     if (shape.unparseable) {
@@ -159,6 +180,9 @@ export function cacheEntryList(): CacheEntryListItem[] {
         output_tokens: null,
         request_summary: null,
         output_preview: null,
+        // Nothing was parsed, so nothing is known about why an output was
+        // empty. `parseable: false` is the field that says so.
+        empty_reason: null,
       };
     }
 
@@ -183,6 +207,7 @@ export function cacheEntryList(): CacheEntryListItem[] {
       output_tokens: outputTokens,
       request_summary: shape.preRequest ? null : requestSummaryFor(kind),
       output_preview: outputFor(i, shape).slice(0, 120),
+      empty_reason: shape.emptyReason ?? null,
     } satisfies CacheEntryListItem;
   });
 }
@@ -213,6 +238,7 @@ export function cacheEntryDetail(
     attempts: null,
     provider_latency_ms: null,
     stop_reason: null,
+    empty_reason: row.empty_reason,
     domarinn_version: null,
     request: null,
     provider_fingerprint: null,
@@ -312,6 +338,7 @@ export function cacheFacets(): CacheFacetsResponse {
   return {
     kinds: count((r) => r.kind),
     models: count((r) => r.model),
+    empty_reasons: count((r) => r.empty_reason),
     total: rows.length,
     unindexed: rows.filter((r) => !r.indexed).length,
     unparseable: rows.filter((r) => r.parseable === false).length,

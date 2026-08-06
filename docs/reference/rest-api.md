@@ -242,20 +242,48 @@ The content-addressed cache lets many CI runs share every request domarinn makes
 | HEAD   | `/api/v1/cache/{key}`      | `read`  | Existence probe: `200` hit / `404` miss. Deliberately **excluded from the hit/miss counters** — the domarinn client only ever `GET`s, so counting probes would inflate the lookup hit rate the server reports. A found entry still refreshes its last-access time so a probed entry is not evicted next. |
 | PUT    | `/api/v1/cache/{key}`      | `write` | Store an entry (first-write-wins: `201` created / `200` already present). `413` if larger than `max_entry_bytes`. |
 | GET    | `/api/v1/cache/stats`      | `read`  | `{ entries, total_bytes, hits, misses, unindexed, oldest_entry_at }`. `hits`/`misses` are `GET` lookups, which is what the web UI's **Lookup hit rate** tile is computed from. |
-| POST   | `/api/v1/cache/prune`      | `admin` | Prune by `older_than_days` and/or `target_bytes` (LRU eviction). Returns `{ "pruned": N }`. |
+| POST   | `/api/v1/cache/prune`      | `admin` | Prune by `older_than_days`, `newer_than_days`, `empty_reason`, `model`, `kind` and/or `target_bytes` (LRU eviction). Returns `{ "pruned": N }`. See [Evicting](#evicting). |
+| DELETE | `/api/v1/cache/entries/{key}` | `admin` | Remove one entry. `204` when it went, `404` when there was nothing there. |
 
 > The server also runs an **hourly retention** task that prunes the cache to
 > `DOMARINN_CACHE_MAX_AGE_DAYS` and `DOMARINN_CACHE_MAX_BYTES` automatically;
-> `POST /cache/prune` is the manual equivalent.
+> `POST /cache/prune` is the manual equivalent. When
+> `DOMARINN_CACHE_SWEEP_EMPTY_REASON` is set it also issues a **second**,
+> separate prune for those reasons at any age — see [server.md](server.md#environment-variables).
+
+### Evicting
+
+Age and LRU evict what is *old*. The other filters evict what is *wrong*: one bad draw frozen into a shared cache is a handful of rows, and before these the only cure was `older_than_days=0`, which throws away the warm cache to reach them.
+
+| Parameter | |
+|---|---|
+| `older_than_days` | entries last accessed before `now - N` days |
+| `newer_than_days` | the recent end of a window; pair it with `older_than_days` |
+| `empty_reason` | **comma-separated**, e.g. `refusal,content_filter` |
+| `model` | entries answered by exactly this model |
+| `kind` | `provider`, `judge`, `embedding`, `exec_assert` |
+| `target_bytes` | LRU-evict down to this total size |
+
+`empty_reason` is one comma-joined value rather than a repeated key because the server deserializes it as a single string: a repeated key would keep whichever the deserializer saw last, so half an operator's reasons would vanish without a word. A value that is only commas and whitespace yields no reasons at all, which is treated as "named nothing" rather than as a wider eviction than was asked for.
+
+**A prune applies only what it names.** A bare `POST /cache/prune` — no parameter of any kind, which is what the UI's *Prune cache* button sends — means "apply the configured retention limits", the manual equivalent of the hourly task. But that fallback keys off *nothing at all being named*, not off the two original parameters being absent: `?empty_reason=refusal` applies **only** that predicate, and does not also drag in `max_age_days` and `max_bytes`. Someone reaching for a scalpel must not get the blunt instrument they were trying to avoid.
+
+**Unknown parameters are a `400`, not a shrug.** The plural typo `?empty_reasons=refusal` would otherwise stop being an error and become a prune that named nothing — which then falls through to full configured retention. A destructive verb must never quietly do something other than what was asked.
+
+**A negative day count is a `400`.** `older_than_days=-1` puts the cutoff in the *future*, so it would match every entry ever stored.
+
+**Both `DELETE` and `POST /cache/prune` log the actor at `info`.** The server has no audit log and no rate limiting on these routes, so that line is the entire forensic record of who removed what. Under `AuthMode::Open` the actor is `anonymous` — which is the point of printing it. `admin` is granted anonymously in that mode, so an open instance exposes surgical, scriptable destruction of a shared corpus; `closed` is the default for a reason.
+
+Both operate on the **server** tier. A `?tier=local` browsing tier is read-only, and neither route touches it; the local half of this story is [`domarinn cache gc`](cli.md#cache-gc-predicates).
 
 ### Browsing the cache
 
 | Method | Path | Scope | Notes |
 |--------|------|-------|-------|
-| GET | `/api/v1/cache/entries` | `admin` | List entries. Filters: `kind`, `model`, `q`, `since`, `until`, `min_cost_microusd`, `max_cost_microusd`, `tier`. Sort: `sort=created\|last_access\|size\|cost` with `order=desc\|asc`. Paginates by opaque `cursor` (`limit` default `50`, max `200`). |
+| GET | `/api/v1/cache/entries` | `admin` | List entries. Filters: `kind`, `model`, `empty_reason`, `q`, `since`, `until`, `min_cost_microusd`, `max_cost_microusd`, `tier`. Sort: `sort=created\|last_access\|size\|cost` with `order=desc\|asc`. Paginates by opaque `cursor` (`limit` default `50`, max `200`). |
 | GET | `/api/v1/cache/entries/{key}` | `read` | One entry, parsed. `?raw=true` also returns the provider's raw metadata, which is withheld by default. |
 | GET | `/api/v1/cache/entries/{key}/runs` | `read` | Cases whose provider call was addressed by this key, newest run first. Cursor paginated. |
-| GET | `/api/v1/cache/facets` | `admin` | Values the `kind` and `model` filters can take, with counts, plus `total` / `unindexed` / `unparseable`. |
+| GET | `/api/v1/cache/facets` | `admin` | Values the `kind`, `model` and `empty_reason` filters can take, with counts, plus `total` / `unindexed` / `unparseable`. |
 
 **Listing is `admin`; reading one entry is `read`.** That asymmetry is deliberate.
 A key is `sha256(canonical_json({request, repeat, salts}))` — the only way to
@@ -286,6 +314,17 @@ not reached, and `kind=unparseable` selects entries whose body this server could
 not read. Without them those rows would be unreachable exactly while someone
 wants to look at them.
 
+`empty_reason` is a **facet, never folded into `q`**. Free text over the request
+and output would also match every entry whose *output discusses* a refusal,
+which is the opposite of useful when you are hunting the ones that *are* one.
+Its facet list is deliberately uncapped where `models` is capped: the reason
+vocabulary is a handful of constants, each value is length-clamped on the way
+into the index, and this is the dropdown someone reaches for when a bad draw has
+poisoned a shared cache — truncating its tail would hide the rare reason they
+are looking for. Reasons on the cache side are plain `NULL` rather than the runs
+side's empty-string sentinel, and are serialized as an explicit `null`, so a
+client can tell "not examined" from "examined, nothing to report".
+
 `sort=cost` lists only entries whose cost is known. Ordering by an unknown value
 is meaningless, and the NULL tail would also stop keyset pagination dead.
 
@@ -308,6 +347,14 @@ New entries are indexed on the way in. Entries already in a database when it was
 upgraded are indexed by a **background task** that drains in small batches
 alongside normal traffic, rather than blocking startup. `stats.unindexed` counts
 what it has left; `0` is the steady state.
+
+A schema upgrade that promotes a *new* column runs a **second** pass over rows
+the first one already stamped — otherwise the entries that most need the new
+column would be exactly the ones never looked at again. That backlog is tracked
+separately and is **not** counted by `stats.unindexed`, which stays at `0`
+throughout; the server logs its remaining count as it drains. The 0.10 upgrade
+promoting `empty_reason` is one of these — see
+[server.md](server.md#promoting-empty_reason-on-upgrade).
 
 Two consequences worth knowing:
 

@@ -319,6 +319,117 @@ The two failure classes map to `ProviderError::Retriable { retry_after }` and `P
 
 ---
 
+## Falling back to another provider
+
+Retries answer a provider that failed to reply. `fallback:` answers a provider that replied and said no — or one that is simply not there this morning. A refusal is not a verdict about the prompt, and a gateway being down is not a regression in the system under test, but without somewhere to go both become exactly that: a failed case and a red gate.
+
+```yaml
+--8<-- "examples/44-provider-fallback/domarinn.yaml:provider"
+```
+
+The list names other providers in the same suite, tried in order. The cell still belongs to `primary`: the request is handed on verbatim, and whoever answers, the case is recorded against the provider you configured.
+
+### When a link hands off
+
+Two kinds of outcome, both keyed on open string types so a value this build has never heard of round-trips rather than being swallowed.
+
+**An empty answer whose reason is in the trigger set.** `runner.fallback_on_empty_reason` defaults to `["refusal", "content_filter"]` — the two that mean *this provider will not answer this*, as opposed to *this provider answered badly*, which is a result and belongs to the grader. Set it to `[]` to hand off only on hard failures, or widen it to any reason [the classifier](../concepts/grading.md#empty-outputs-and-grading) can produce.
+
+**A call that failed outright**, in one of six classes:
+
+| Class | |
+|---|---|
+| `provider_auth` | a rejected or missing credential |
+| `provider_unavailable` | `5xx`, connection refused, DNS |
+| `provider_timeout` | no reply inside the timeout |
+| `provider_protocol` | a reply that could not be understood |
+| `provider_rate_limit` | `429` after retries are exhausted |
+| `exec_failed` | an `exec` child that did not run |
+
+This is an explicit list rather than "any infrastructure error", for two reasons. `cache_miss` and `cache_unavailable` classify as infrastructure and must **never** hand off — that would turn an offline run into a live call. And `provider_request` is deliberately absent: a `400` for a malformed body is the suite's bug, and the next provider will reject it identically, so spending a second call to learn that is noise rather than resilience.
+
+### Four things a reader can rely on
+
+1. **Never under `--cache-only`.** Offline there is no live answer to go and get, so a handoff could only replace a usable — if refused — replay with a cache miss. This is a mode check, not a property of the trigger list, so no future trigger can weaken it.
+2. **Never for a cell carrying a `latency` assert.** Such a cell is forced to cache-disabled rather than cache-only, so rule 1 does not cover it, and `latency_ms` is the *answering* link's time in flight. Since `provider_timeout` is a trigger, primary-times-out then fallback-answers-fast would make `{latency, max: 2000}` **pass**. "Never worse" needs a matching "never falsely better".
+3. **The primary is reported when nothing improved on it.** If every link is also a trigger, the case settles on the primary's own outcome rather than the last link's — so a configured `fallback:` can never make a case different from one with no fallback at all. Without this, `provider_digest` would churn for zero gain and the run document would diverge from a no-fallback run, which breaks the server's re-upload idempotency.
+4. **Chains are not followed.** A fallback's own `fallback:` is ignored when it is reached as one, which makes a cycle unconstructible rather than something to detect mid-run. `domarinn validate` **warns** when a target declares one, so the rule is discoverable while you are writing the suite. It also errors on an unknown id, a self-reference, and any `fallback:` naming — or living on — an `embeddings` provider, which is a grader helper and never a system under test.
+
+A fallback that fails to build — no credential in the environment, say — is warned about and dropped, not fatal. Fallback providers are excluded from the credential preflight for the same reason: failing a whole run over a provider nothing selected would make `fallback:` a liability to configure rather than cheap insurance.
+
+### What the results say
+
+`cell.provider_id` stays the **configured** provider, whichever link answered. That is what keeps `case_key` stable, so an `--against` baseline still joins the same row and a suite does not silently re-partition its history the first time a gateway hiccups.
+
+What actually happened is recorded rather than hidden:
+
+| Field | |
+|---|---|
+| `CaseResult.answered_by_provider_id` | who replied, set only when it was not the configured provider |
+| `CaseResult.fallback_attempts` | each link tried and passed over, in order, with its `empty_reason` or `error_class` |
+| `CaseResult.provider_digest` | the answering link's fingerprint, not the configured provider's |
+| `RunSummary.fallback_cases` | how many cases needed one |
+
+All four are omitted at their defaults, so a run that never fell back serializes byte-identically to one written before the feature existed. A **server older than this feature** accepts such a run and then drops the fields permanently, because it re-serializes its own typed struct on ingest.
+
+Because the digest moves, the server's [compare view](web-ui.md#compare--mcnemar) classifies such a pair as `ProviderChanged` — which is what it is, and it does so whether the case passed or failed. The CLI's `--against` is coarser: it reports a delta (newly failing, newly passing, unchanged) and does not carry that axis, so **a case answered by a fallback on both sides reads as `Unchanged`** even though two different models produced it. When a comparison matters, read `fallback_cases` on both runs before reading the delta.
+
+**A run where every graded case fell back exits `2`.** The suite ran, but not against the system it names, and a green gate would say otherwise. A partial fallback stays green — that is the feature working. [`--no-fallback`](cli.md#domarinn-run-path-flags) is the recommended posture for a gate that would rather fail on its primary directly.
+
+### Filters, and which one applies
+
+A test's `only_providers` / `skip_providers` **is** honoured for fallback candidates: a test that excludes a provider must not reach it through another provider's back door.
+
+`--provider` is **not**. It chooses which *cells* run, and a cell that runs is entitled to its whole chain — a run that silently lost the resilience you configured would look exactly like fallback not working. So `domarinn run --provider primary` runs only `primary`'s cells, and each of them may still reach `backup`.
+
+### Cost attribution is per-case correct and per-provider wrong
+
+Worth stating plainly, because the failure mode is a number that looks right.
+
+A case's `cost_usd` is **correct**: it is re-priced at the answering provider's rate. But the results server promotes `cell.provider_id` — the configured provider — into its `cases` table, so **a per-provider cost rollup bills the primary for the fallback's tokens.** A dashboard slicing spend by provider will under-report the fallback and over-report the primary by exactly the cases that handed off; `fallback_cases` is how you tell whether that is a rounding error or the whole picture.
+
+Two smaller gaps in the same direction, since only the answering link is summarized: the primary's own spend on a handoff is not counted at all, a retry on the primary does not reach `retried_cases`, and a hit-then-handoff counts as a miss. Per-case dollars stay right; it is attribution that is lost.
+
+### Prose refusals: `runner.refusal_patterns`
+
+A refusal is only classified as one when the vendor sets that finish reason. A model that answers *"I can't help with that request."* in ordinary prose is, as far as every mechanism above is concerned, a normal answer — so it is graded, and it is cached.
+
+`runner.refusal_patterns` is the opt-in for that case: a list of regexes, empty by default, and an output matching any of them is treated as an effective `refusal`.
+
+```yaml
+runner:
+  refusal_patterns:
+    - "(?i)^i (can't|cannot|won't) help with"
+```
+
+Three things to know before using it:
+
+- **A false positive silently swaps in a different model.** A pattern loose enough to match a legitimate answer hands that case to the fallback and reports a `ProviderChanged`, not an error. Anchor the pattern; test it against outputs you expect to keep.
+- **A `not-contains` assertion is the deterministic alternative.** If what you want is *this case must fail when the model refuses*, assert it. That is a verdict about the response, computed the same way every run, with no dependence on which providers happen to be configured.
+- **The pattern is re-applied on every read**, never written onto a cache entry, so editing one reclassifies what is already stored rather than requiring a purge. An invalid regex is a `validate` error.
+
+Patterns compile once per run, and matching a JSON output uses its rendered form — a refusal that arrived as `{"error": "I can't help with that"}` is still a refusal.
+
+### `${env:VAR}` works here, and is not a secret channel
+
+Interpolation runs over the raw document before anything is parsed, so `fallback: ["${env:FALLBACK_PROVIDER}"]` works like any other config string, with the usual `:-default` rules. `fallback:` itself sits on the provider's outer struct and never reaches a fingerprint or a canonical request, so no value of it can move a single cache key — turning it on for an existing suite invalidates nothing.
+
+/// danger | Do not read that as "so environment values are safe to put anywhere"
+
+Everywhere `${env:…}` reaches something that *is* part of the request — a model, an endpoint path, an `exec` argv — it is resolved at load time and the substituted value is **in the cache key**. That is correct for anything that must separate two runs' entries. It is wrong for a credential, which must not, or a shared cache quietly becomes a private one per API key.
+
+A credential belongs in a provider's own `{{ env.X }}` template, which is withheld from the key. It must **never** be routed through a case var: vars are resolved long before a provider renders anything, so the value reaches the request in the clear, is keyed, is stored on the entry, and is published in `CaseResult.vars`. The full split is in [caching.md](../concepts/caching.md#which-env-syntax).
+
+///
+
+### Example 44 — a second provider answers when the first refuses
+
+```yaml
+--8<-- "examples/44-provider-fallback/domarinn.yaml"
+```
+
+---
+
 ## See also
 
 - **[protocol.md](protocol.md)** — the exec JSON protocol wire format for `exec` providers, asserts, and generators.

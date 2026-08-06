@@ -62,6 +62,21 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_cache_migration: bool,
 
+    /// Which empty provider outputs are worth storing (overrides the suite's
+    /// `cache.store_empty_outputs`, which defaults to `reproducible`).
+    ///
+    /// An empty output is a *successful* call, so it is cached like any answer
+    /// — and against an immutable store one transient empty reply from a flaky
+    /// gateway is then replayed forever. `reproducible` keeps only the empties
+    /// that recur for the same request. `DOMARINN_CACHE_STORE_EMPTY_OUTPUTS`
+    /// sets the same thing; the flag wins.
+    #[arg(
+        long,
+        value_name = "POLICY",
+        env = "DOMARINN_CACHE_STORE_EMPTY_OUTPUTS"
+    )]
+    pub store_empty_outputs: Option<StoreEmptyOutputsArg>,
+
     /// Number of trials per cell (variance).
     #[arg(long, default_value_t = 1)]
     pub repeat: u32,
@@ -139,6 +154,31 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_grader_cache: bool,
 
+    /// Empty-output reasons that make a provider hand off to its `fallback:`
+    /// chain (overrides the suite's `runner.fallback_on_empty_reason`).
+    ///
+    /// Defaults to `refusal,content_filter` — the two that mean "this provider
+    /// will not answer this". Pass the flag with no value to hand off only on
+    /// hard call failures. `DOMARINN_FALLBACK_ON_EMPTY_REASON` sets the same
+    /// thing as a comma-separated list; the flag wins.
+    #[arg(
+        long,
+        value_name = "REASON",
+        value_delimiter = ',',
+        num_args = 0..,
+        env = "DOMARINN_FALLBACK_ON_EMPTY_REASON"
+    )]
+    pub fallback_on_empty_reason: Option<Vec<String>>,
+
+    /// Do not let a provider hand off to its `fallback:` chain.
+    ///
+    /// The right posture for a gate: fallback is resilience, and a CI job
+    /// usually wants to learn that its primary provider is broken rather than
+    /// have the result quietly produced by a different model.
+    /// `DOMARINN_NO_FALLBACK=true` sets the same thing; the flag wins.
+    #[arg(long)]
+    pub no_fallback: bool,
+
     /// Succeed even if the run resolves to zero test cases.
     ///
     /// Without this a run that graded nothing exits 2, because a green result
@@ -161,6 +201,35 @@ pub struct RunArgs {
     /// lever for a whole machine or container image.
     #[arg(long)]
     pub no_provenance: bool,
+}
+
+/// The CLI mirror of [`domarinn_core::config::StoreEmptyOutputs`].
+///
+/// A separate enum because `domarinn-core` does not depend on clap, and a plain
+/// `String` flag would move a typo from `--help` to run time. The variants and
+/// their spellings must stay in step with the core enum; the `From` below is
+/// where that is enforced, since a new core variant will not compile here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum StoreEmptyOutputsArg {
+    /// Never store a response with no gradeable output.
+    Never,
+    /// Store only empties that recur for the same request: `truncated`,
+    /// `tool_use_only`, `output_expr_empty`.
+    Reproducible,
+    /// Store every empty output, as domarinn did before 0.10.
+    Always,
+}
+
+impl From<StoreEmptyOutputsArg> for domarinn_core::config::StoreEmptyOutputs {
+    fn from(a: StoreEmptyOutputsArg) -> Self {
+        use domarinn_core::config::StoreEmptyOutputs as S;
+        match a {
+            StoreEmptyOutputsArg::Never => S::Never,
+            StoreEmptyOutputsArg::Reproducible => S::Reproducible,
+            StoreEmptyOutputsArg::Always => S::Always,
+        }
+    }
 }
 
 pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verbose: u8) -> u8 {
@@ -215,6 +284,17 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         CacheMode::ReadWrite
     };
 
+    // Read here rather than through clap's `env =`: for a `bool` flag clap uses
+    // `SetTrue`, which would treat `DOMARINN_NO_FALLBACK=false` as *enabling*
+    // it — the reverse of what it says, in the unsafe direction.
+    let no_fallback_env = match no_fallback_from_env() {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return exit::USAGE;
+        }
+    };
+
     let opts = RunOptions {
         filter: FilterOpts {
             tags: args.tags.clone(),
@@ -234,6 +314,14 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
             args.retries
         },
         include_raw: !args.no_raw,
+        store_empty_outputs: args.store_empty_outputs.map(Into::into),
+        fallback: !(args.no_fallback || no_fallback_env),
+        // An empty element is dropped rather than treated as a reason: an env
+        // var set to "" must mean "no triggers", not "one trigger named ''".
+        fallback_on_empty_reason: args
+            .fallback_on_empty_reason
+            .clone()
+            .map(|v| v.into_iter().filter(|r| !r.trim().is_empty()).collect()),
         provenance: {
             // Env sets the machine-wide policy; `--no-provenance` can only
             // tighten it, never re-enable identity the environment turned off.
@@ -421,6 +509,15 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
             result.summary.total
         );
         exit::USAGE
+    } else if answered_entirely_by_fallbacks(&result.summary) {
+        eprintln!(
+            "run error: all {} graded cases were answered by a `fallback:` provider, so the \
+             configured provider answered nothing — a green gate here would mean the suite ran, \
+             not that the system under test passed. Check why the primary provider is refusing \
+             or unreachable, or pass --no-fallback to fail on it directly.",
+            result.summary.total
+        );
+        exit::USAGE
     } else if result.summary.failed > 0 || regressed {
         exit::ASSERT_FAIL
     } else {
@@ -441,4 +538,38 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
 /// "grading nothing is expected".
 fn graded_nothing(summary: &domarinn_core::result::RunSummary) -> bool {
     summary.total > 0 && summary.skipped == summary.total
+}
+
+/// Every graded case came from a fallback, so the configured provider answered
+/// nothing at all.
+///
+/// The same argument `graded_nothing` makes, on a different axis: the suite ran,
+/// but not against the system it names. A *partial* fallback stays green on
+/// purpose — that is the feature working, and failing on it would make
+/// `fallback:` a liability rather than resilience.
+fn answered_entirely_by_fallbacks(summary: &domarinn_core::result::RunSummary) -> bool {
+    summary.total > 0 && summary.fallback_cases == summary.total
+}
+
+/// `DOMARINN_NO_FALLBACK`, parsed strictly.
+///
+/// Fail-loud, matching the server's posture for `DOMARINN_AUTH_MODE` and
+/// `DOMARINN_MCP_ENABLED`: an unrecognized value is refused, not guessed at.
+/// Guessing here would guess in the unsafe direction — `=treu` in a CI job
+/// would leave fallback *enabled*, which is exactly the case the variable was
+/// set to prevent, and the only trace would be one warning line.
+///
+/// An unset or empty value is "not set", which is not an error.
+fn no_fallback_from_env() -> Result<bool, String> {
+    let Ok(raw) = std::env::var("DOMARINN_NO_FALLBACK") else {
+        return Ok(false);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(false),
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => Err(format!(
+            "DOMARINN_NO_FALLBACK={other:?} is not a boolean. Use true or false."
+        )),
+    }
 }

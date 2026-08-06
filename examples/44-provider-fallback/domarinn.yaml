@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# A second provider answers when the first will not.
+#
+# A refusal, or a gateway that is simply down, is not a verdict about the
+# prompt — but without somewhere to go, that is exactly what it becomes: a
+# failed case, a red gate, and a morning spent looking at a suite that was
+# never wrong.
+#
+# `fallback:` is resilience, not routing. The cell still belongs to `primary`,
+# so `case_key` is unchanged and an `--against` baseline joins the same row.
+# What changed is recorded rather than hidden: `answered_by_provider_id` names
+# who actually replied, `provider_digest` is theirs, and the run summary counts
+# how many cases needed it.
+#
+# Chains are NOT followed. If `backup` declared its own `fallback:`, it would
+# be ignored when `backup` is reached as one — which makes a cycle
+# unconstructible rather than something to detect mid-run. `domarinn validate`
+# warns if you write one by accident.
+#
+# When it will not fire, and these are guarantees rather than accidents:
+#
+#   - under `--cache-only`, where a handoff could only trade a usable replay
+#     for a cache miss;
+#   - on a cell carrying a `latency` assert, where a slow primary followed by a
+#     fast fallback would make the budget *pass* on a provider that never
+#     answered;
+#   - when no link improved on the primary — then the primary's own outcome is
+#     what the case reports, so a configured fallback can never make a case
+#     worse, or different, than no fallback at all.
+#
+# For a CI gate, consider `--no-fallback`: a gate usually wants to learn that
+# its primary is broken rather than get a green from a different model. A run
+# where *every* graded case fell back exits 2 for that reason.
+#
+# `--provider primary` below is not incidental. It chooses which cells run, and
+# deliberately does NOT strip the chain — a run that silently lost the
+# resilience you configured would look exactly like fallback not working.
+#
+# Run:  domarinn run examples/44-provider-fallback --provider primary
+version: 1
+project: examples
+suite: provider-fallback
+
+providers:
+  # --8<-- [start:provider]
+  # The gateway that is having a bad day. When it returns nothing gradeable,
+  # the identical request goes to `backup` rather than the case reporting a
+  # failure the model never had a chance to cause.
+  - id: primary
+    type: anthropic
+    model: claude-haiku-4-5
+    base_url: "${env:CLAUDE_GATEWAY_URL:-https://api.anthropic.com}"
+    fallback: [backup]
+
+  - id: backup
+    type: anthropic
+    model: claude-haiku-4-5
+    base_url: "${env:CLAUDE_GATEWAY_URL:-https://api.anthropic.com}"
+  # --8<-- [end:provider]
+
+runner:
+  # The default, spelled out. These two mean "this provider will not answer
+  # this"; every other reason an output can be empty is a result to be graded,
+  # not a reason to ask somebody else.
+  fallback_on_empty_reason: [refusal, content_filter]
+
+prompts:
+  - id: only
+    template: "Answer in one short sentence: {{ question }}"
+
+tests:
+  # The first case draws the refusal and is answered by `backup`.
+  - id: policy/return-window
+    vars:
+      question: "How long do I have to return an item?"
+    assert:
+      - type: contains
+        value: "30 days"
+
+  # The second is answered by `primary` normally — which is the point of having
+  # two here. A run where *every* graded case fell back exits 2, on the same
+  # argument the all-skipped guard makes: the suite ran, but not against the
+  # system it names. A partial fallback is the feature working, and stays green.
+  - id: policy/return-window-again
+    vars:
+      question: "What is the return window?"
+    assert:
+      - type: contains
+        value: "30 days"

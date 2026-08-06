@@ -92,6 +92,28 @@ export function CacheFilterBar({
         </select>
       </Field>
 
+      {/* Only when the store holds one. An empty-output reason is rare by
+          construction, and an always-present dropdown reading "All" over
+          nothing would suggest a dimension this cache does not have. */}
+      {facets && facets.empty_reasons.length > 0 ? (
+        <Field label="Empty output">
+          <select
+            className={controlCls}
+            value={filters.empty_reason ?? ""}
+            onChange={(e) =>
+              onPatch({ empty_reason: e.target.value || undefined })
+            }
+          >
+            <option value="">All</option>
+            {facets.empty_reasons.map((r) => (
+              <option key={r.value} value={r.value}>
+                {r.value} ({r.count})
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : null}
+
       <Field label="From">
         <input
           type="date"

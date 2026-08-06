@@ -442,6 +442,7 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
                 &req,
                 &ctx,
                 crate::runner::runner_cache::CacheCall {
+                    policy: &crate::empty_policy::EmptyPolicy::default(),
                     backend: &cache,
                     mode: CacheMode::Disabled,
                     repeat: 0,
@@ -664,6 +665,7 @@ async fn empty_case(
     };
     run_cell(
         provider,
+        &[],
         None,
         &test,
         0,
@@ -681,6 +683,8 @@ async fn empty_case(
         skip_on_empty_reason,
         &[],
         &cache_state,
+        &crate::empty_policy::EmptyPolicy::default(),
+        &crate::runner::runner_fallback::FallbackPolicy::default(),
     )
     .await
 }

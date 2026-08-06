@@ -41,11 +41,26 @@ mod runner_asserts;
 /// is how one of them starts storing something the other would have trimmed.
 #[path = "runner_cache.rs"]
 pub(crate) mod runner_cache;
+#[path = "runner_cell.rs"]
+mod runner_cell;
+#[path = "runner_fallback.rs"]
+mod runner_fallback;
 #[path = "runner_result.rs"]
 mod runner_result;
 
 use runner_asserts::{assert_error_message, evaluate_asserts, has_latency_assert, AssertCtx};
-use runner_cache::{call_with_cache, CallFailure, CallOutcome};
+use runner_cache::{CallFailure, CallOutcome};
+// Reached only by `runner_tests`, which sees it through `use super::*`; the
+// production caller now goes through `runner_fallback::call_chain`.
+#[cfg(test)]
+use runner_cache::call_with_cache;
+use runner_cell::run_cell;
+// Re-exported rather than left in `runner_cell`: `runner_tests` reaches it
+// through `use super::*`, and a test module that has to know which sibling a
+// function was moved into is a test module that breaks on the next split.
+// `cfg(test)` because the only non-test caller moved out with it.
+#[cfg(test)]
+use runner_cell::reasoning_is_skippable;
 use runner_result::{error_case, json_to_persist, summarize, CaseInputs};
 
 #[derive(Debug, thiserror::Error)]
@@ -128,6 +143,22 @@ pub struct RunOptions {
     /// shard legitimately has no work, and a registry-driven generator that
     /// yields nothing for some inputs. The diagnosis is still logged at `warn`.
     pub allow_empty: bool,
+    /// Which empty provider outputs are worth storing. `None` uses the suite's
+    /// `cache.store_empty_outputs`, which itself defaults to `reproducible`.
+    ///
+    /// A run option rather than a suite mutation, for the same reason as
+    /// `retries`: `config_digest` is derived from the serialized suite, so
+    /// editing the suite here would report config drift in every `--against`.
+    pub store_empty_outputs: Option<crate::config::StoreEmptyOutputs>,
+    /// Whether a provider may hand off to its `fallback:` chain. Default `true`;
+    /// `--no-fallback` turns it off for a run that would rather learn its
+    /// primary is broken than have the result papered over.
+    pub fallback: bool,
+    /// Empty reasons that make a provider hand off. `None` uses the suite's
+    /// `runner.fallback_on_empty_reason`, which itself defaults to
+    /// `["refusal", "content_filter"]`. A run option rather than a suite
+    /// mutation, for the same `config_digest` reason as `retries`.
+    pub fallback_on_empty_reason: Option<Vec<String>>,
 }
 
 impl Default for RunOptions {
@@ -143,23 +174,11 @@ impl Default for RunOptions {
             grader_cache: true,
             cache_migration: true,
             allow_empty: false,
+            store_empty_outputs: None,
+            fallback: true,
+            fallback_on_empty_reason: None,
         }
     }
-}
-
-/// Whether this cell's empty reason is one the suite asked to skip.
-///
-/// The distinction `skip` exists to draw: a blank output is a *successful*
-/// call, so it gets graded and scores zero against every assertion — which
-/// reads as a prompt failure whether or not it was one. `skip` says "not
-/// gradeable, and that is not a verdict", and is counted separately rather
-/// than dragging the pass rate down.
-///
-/// Compared as a plain string against the configured list, so a reason this
-/// build has never heard of still works — `EmptyReason` is open by design and
-/// this must not become the one place that closes it.
-fn reasoning_is_skippable(reason: Option<&crate::empty::EmptyReason>, skip: &[String]) -> bool {
-    reason.is_some_and(|r| skip.iter().any(|s| s == r.as_str()))
 }
 
 /// A one-way latch that stops a run once continuing is pointless.
@@ -341,6 +360,35 @@ pub async fn run_with_progress(
         .as_ref()
         .map(|r| r.skip_on_empty_reason.as_slice())
         .unwrap_or(&[]);
+    // Built once per run: compiling the same refusal patterns for every cell of
+    // a two-thousand-cell matrix is work nobody asked for. A bad pattern is
+    // reported and dropped rather than fatal — `validate` already refuses the
+    // suite for it, and killing a run at cell one over a diagnostic regex is a
+    // worse trade than running without it.
+    let empty_policy = &match crate::empty_policy::EmptyPolicy::from_suite(suite) {
+        Ok(policy) => policy.with_store(
+            opts.store_empty_outputs
+                .or_else(|| suite.cache.as_ref().and_then(|c| c.store_empty_outputs))
+                .unwrap_or_default(),
+        ),
+        Err((pattern, e)) => {
+            tracing::error!(
+                %pattern, error = %e,
+                "runner.refusal_patterns: this pattern will not compile, so no output will be \
+                 matched against it. `domarinn validate` reports it as an error."
+            );
+            crate::empty_policy::EmptyPolicy::default().with_store(
+                opts.store_empty_outputs
+                    .or_else(|| suite.cache.as_ref().and_then(|c| c.store_empty_outputs))
+                    .unwrap_or_default(),
+            )
+        }
+    };
+    let fallback_policy = &runner_fallback::FallbackPolicy::resolve(
+        suite,
+        opts.fallback,
+        opts.fallback_on_empty_reason.clone(),
+    );
     let filter = Filter::build(&opts.filter).map_err(|e| {
         RunError::Resolve(crate::resolve::ResolveError::Parse {
             path: "<filter>".into(),
@@ -349,13 +397,55 @@ pub async fn run_with_progress(
     })?;
 
     // Providers (embeddings providers are grader helpers, not systems under test).
-    let providers: Vec<Box<dyn Provider>> = suite
+    //
+    // Two passes into two lists, and the separation is load-bearing. `providers`
+    // is what expands into cells and what the credential preflight checks;
+    // `fallback_pool` is only ever reached by a chain. Appending fallbacks to
+    // the first list would do two wrong things at once: `--provider primary`
+    // would expand cells for the fallback as well, and a fallback's missing
+    // credential would fail the whole run at the preflight — which is exactly
+    // backwards, since a fallback may never be reached at all.
+    let selected: Vec<&crate::config::Provider> = suite
         .providers
         .iter()
         .filter(|p| !matches!(p.kind, crate::config::ProviderKind::Embeddings { .. }))
         .filter(|p| opts.filter.providers.is_empty() || opts.filter.providers.contains(&p.id))
+        .collect();
+    let providers: Vec<Box<dyn Provider>> = selected
+        .iter()
         .map(|p| build_provider(p, Some(base_dir)))
         .collect::<Result<_, _>>()?;
+
+    // The fallback targets of the selected providers that pass 1 did not build.
+    // Built even when `--provider` excluded them: that flag says which cells
+    // run, not which providers may answer them.
+    //
+    // One level only — a fallback's own `fallback:` is never followed — so this
+    // needs no fixpoint and can contain no cycle.
+    let wanted: std::collections::BTreeSet<&str> = selected
+        .iter()
+        .flat_map(|p| p.fallback.iter().map(String::as_str))
+        .filter(|id| !selected.iter().any(|s| s.id == *id))
+        .collect();
+    let mut fallback_pool: Vec<Box<dyn Provider>> = Vec::new();
+    for cfg in suite
+        .providers
+        .iter()
+        .filter(|p| wanted.contains(p.id.as_str()))
+        .filter(|p| !matches!(p.kind, crate::config::ProviderKind::Embeddings { .. }))
+    {
+        // Tolerant, unlike the pass above: a fallback that will not build is one
+        // this run may never reach, and failing the whole run over a provider
+        // nothing selected would make `fallback:` a liability to configure.
+        match build_provider(cfg, Some(base_dir)) {
+            Ok(p) => fallback_pool.push(p),
+            Err(e) => tracing::warn!(
+                provider = %cfg.id,
+                error = %e,
+                "fallback provider could not be built; it will be skipped if a chain reaches it"
+            ),
+        }
+    }
 
     // Tests (files + inline + generators).
     let expanded = expand_tests(suite, base_dir)?;
@@ -431,10 +521,26 @@ pub async fn run_with_progress(
     // output order.
     struct Cell<'a> {
         provider: &'a dyn Provider,
+        /// The `fallback:` chain, resolved and filtered at expansion time:
+        /// unknown ids dropped, `skip_providers` honoured, order preserved.
+        /// Empty for almost every cell.
+        fallbacks: Vec<&'a dyn Provider>,
         prompt: Option<&'a crate::config::Prompt>,
         test: &'a TestCase,
         repeat: u32,
     }
+    // Every provider a chain could name, selected or not, indexed once rather
+    // than scanned per cell.
+    let by_id: std::collections::HashMap<&str, &dyn Provider> = providers
+        .iter()
+        .chain(fallback_pool.iter())
+        .map(|p| (p.id(), p.as_ref()))
+        .collect();
+    let fallback_ids: std::collections::HashMap<&str, &[String]> = suite
+        .providers
+        .iter()
+        .map(|p| (p.id.as_str(), p.fallback.as_slice()))
+        .collect();
     let mut cells: Vec<Cell> = Vec::new();
     for provider in &providers {
         for prompt in &prompt_slots {
@@ -447,9 +553,16 @@ pub async fn run_with_progress(
                 if !filter.matches_test(test) || !filter.provider_included(provider.id(), test) {
                     continue;
                 }
+                // Per `(provider, test)`, because the test's own
+                // `only_providers` / `skip_providers` narrows the chain.
+                let chain = fallback_ids
+                    .get(provider.id())
+                    .map(|ids| runner_fallback::resolve_chain(ids, &by_id, &filter, test))
+                    .unwrap_or_default();
                 for repeat_idx in 0..repeat {
                     cells.push(Cell {
                         provider: provider.as_ref(),
+                        fallbacks: chain.clone(),
                         prompt: *prompt,
                         test,
                         repeat: repeat_idx,
@@ -552,6 +665,7 @@ pub async fn run_with_progress(
                 }
                 let case = run_cell(
                     cell.provider,
+                    &cell.fallbacks,
                     cell.prompt,
                     cell.test,
                     cell.repeat,
@@ -569,6 +683,8 @@ pub async fn run_with_progress(
                     skip_on_empty_reason,
                     &suite.tools,
                     cache_state,
+                    empty_policy,
+                    fallback_policy,
                 )
                 .await;
                 if let Some(sink) = progress {
@@ -646,353 +762,6 @@ pub async fn run_with_progress(
         cases,
         summary,
     })
-}
-
-/// Evaluate one matrix cell.
-#[allow(clippy::too_many_arguments)]
-#[tracing::instrument(
-    name = "case",
-    skip_all,
-    fields(
-        provider = %provider.id(),
-        prompt = prompt.map(|p| p.id.as_str()).unwrap_or(""),
-        test = test.id.as_deref().unwrap_or(""),
-        repeat = repeat,
-    )
-)]
-async fn run_cell(
-    provider: &dyn Provider,
-    prompt: Option<&crate::config::Prompt>,
-    test: &TestCase,
-    repeat: u32,
-    engine: &TemplateEngine,
-    cache: &dyn CacheBackend,
-    grader: Option<&dyn AssertGrader>,
-    ctx: &CallCtx,
-    base_dir: &Path,
-    cache_mode: CacheMode,
-    include_raw: bool,
-    retry_cfg: &RetryPolicy,
-    schemas: &crate::jsonschema_cache::SchemaCache,
-    grader_cache: bool,
-    aborted: &AbortFlag,
-    skip_on_empty_reason: &[String],
-    tools: &[crate::config::ToolDef],
-    cache_state: &runner_cache::CacheRunState,
-) -> CaseResult {
-    let test_id = test.id.clone().unwrap_or_default();
-    let cell = CellKey {
-        provider_id: provider.id().to_string(),
-        prompt_id: prompt.map(|p| p.id.clone()),
-        test_id: test_id.clone(),
-        repeat,
-    };
-    let case_key = cell.case_key();
-    let name = test.description.clone().or_else(|| test.id.clone());
-
-    // Checked before the *provider* call, not just before grading: once the
-    // grader's credential is known bad, paying a model to produce output that
-    // will never be graded is the expensive half of the failure this prevents.
-    if let Some(reason) = aborted.reason() {
-        return error_case(
-            cell,
-            case_key,
-            name,
-            test,
-            CallFailure::before_any_attempt(ErrorClass::PROVIDER_AUTH, reason),
-            0,
-            CaseInputs::default(),
-        );
-    }
-
-    // Render the test's vars once. `rendered_vars` excludes the environment, so
-    // it is a stable request identity (cache key) and does not leak the whole
-    // environment to exec providers. `render_ctx` adds `env` for rendering
-    // prompts and `jinja` assertions (`{{ env.X }}`), and never enters the key.
-    let rendered_vars = match render::render_vars(&test.vars, engine) {
-        Ok(v) => v,
-        Err(e) => {
-            return error_case(
-                cell,
-                case_key,
-                name,
-                test,
-                CallFailure::before_any_attempt(
-                    ErrorClass::RENDER_FAILED,
-                    format!("rendering vars: {e}"),
-                ),
-                0,
-                CaseInputs::default(),
-            )
-        }
-    };
-    // Persisted verbatim into `CaseResult.vars` (the UI's Input view). Cloned
-    // because `rendered_vars` is moved into the provider request below.
-    let case_vars = rendered_vars.clone();
-    let var_ctx = render::context_with_env(&rendered_vars);
-    // The case's prior turns, rendered against the same context as the prompt.
-    // They reach the request only inside `rendered_prompt`, so they join
-    // `prompt_digest` and the cache key with no code of their own.
-    let history = match &test.history {
-        Some(spec) => match render::resolve_history(spec, &var_ctx, engine, base_dir) {
-            Ok(h) => h,
-            Err(e) => {
-                return error_case(
-                    cell,
-                    case_key,
-                    name,
-                    test,
-                    CallFailure::before_any_attempt(
-                        ErrorClass::RENDER_FAILED,
-                        format!("rendering history: {e}"),
-                    ),
-                    0,
-                    CaseInputs {
-                        vars: case_vars,
-                        ..Default::default()
-                    },
-                )
-            }
-        },
-        None => Vec::new(),
-    };
-    let rendered_prompt = match prompt {
-        Some(p) => {
-            match render::render_prompt_with_history(p, &var_ctx, engine, base_dir, &history) {
-                Ok(rp) => Some(rp),
-                Err(e) => {
-                    return error_case(
-                        cell,
-                        case_key,
-                        name,
-                        test,
-                        CallFailure::before_any_attempt(
-                            ErrorClass::RENDER_FAILED,
-                            format!("rendering prompt: {e}"),
-                        ),
-                        0,
-                        CaseInputs {
-                            vars: case_vars,
-                            ..Default::default()
-                        },
-                    )
-                }
-            }
-        }
-        // No `prompts:` block: the history is the whole transcript.
-        None if !history.is_empty() => Some(crate::types::RenderedPrompt::Messages(history)),
-        None => None,
-    };
-
-    let req = ProviderRequest {
-        prompt: rendered_prompt.clone(),
-        vars: rendered_vars.into_iter().collect(),
-        params: serde_json::Map::new(),
-        test: TestMeta {
-            id: test_id.clone(),
-            tags: test.tags.clone(),
-        },
-        // Keys this case's cache entry only; never reaches the provider.
-        case_salt: test.cache_salt.clone(),
-        tools: tools.to_vec(),
-    };
-
-    // Computed here, not inside `call_with_cache`'s `use_cache` gate: the cache
-    // key is skipped entirely under `--no-cache`, for a case with a `latency`
-    // assert, and for an unsalted `exec` provider — which is exactly the set of
-    // runs a CI comparison cares about. Identity must not depend on caching.
-    let prompt_digest = Some(crate::digests::prompt_digest(&req));
-    let provider_digest = Some(crate::digests::provider_digest(&provider.fingerprint()));
-
-    // What this provider will actually send, built by the provider itself from
-    // the same code path as the call. Captured *before* the call so a failed
-    // case still carries it — which is where it earns its keep: an HTTP 404
-    // explains itself the moment the model id in the request is visible.
-    //
-    // Built only when it will be persisted. For `http` a preview is a full
-    // template render — engine, env snapshot, url/headers/body — per case, and
-    // under `--no-raw` every byte of it was being discarded. The cache no longer
-    // depends on this call: it keys on `canonical_request`, which the provider
-    // builds for itself inside `call_with_cache`.
-    let request = include_raw
-        .then(|| json_to_persist(true, provider.request_preview(&req), "request"))
-        .flatten();
-
-    // Latency assertions must not observe a cached (near-zero) latency.
-    let bypass_cache = has_latency_assert(&test.assert);
-    // ...but under `--cache-only` that bypass is a live call in the one mode
-    // documented as offline — and the mode the credential preflight above is
-    // skipped for. Refuse the case instead of quietly reaching the provider.
-    // Per case, like a strict-mode miss: the rest of the suite still replays.
-    if bypass_cache && cache_mode == CacheMode::ReadOnlyStrict {
-        return error_case(
-            cell,
-            case_key,
-            name,
-            test,
-            CallFailure::before_any_attempt(
-                ErrorClass::CACHE_MISS,
-                format!(
-                    "cache-only: test '{test_id}' has a latency assert, which always \
-                     measures a live call; there is nothing honest to replay"
-                ),
-            ),
-            0,
-            CaseInputs {
-                prompt: rendered_prompt,
-                vars: case_vars,
-                request,
-                prompt_digest,
-                provider_digest,
-            },
-        );
-    }
-    let effective_mode = if bypass_cache {
-        CacheMode::Disabled
-    } else {
-        cache_mode
-    };
-
-    let start = Instant::now();
-    let outcome = match call_with_cache(
-        provider,
-        &req,
-        ctx,
-        runner_cache::CacheCall {
-            backend: cache,
-            mode: effective_mode,
-            repeat,
-            state: cache_state,
-        },
-        retry_cfg,
-    )
-    .await
-    {
-        Ok(outcome) => outcome,
-        Err(failure) => {
-            return error_case(
-                cell,
-                case_key,
-                name,
-                test,
-                failure,
-                start.elapsed().as_millis() as u64,
-                CaseInputs {
-                    prompt: rendered_prompt,
-                    vars: case_vars,
-                    request,
-                    prompt_digest,
-                    provider_digest,
-                },
-            );
-        }
-    };
-    let CallOutcome {
-        response,
-        cached,
-        attempts,
-        provider_latency_ms,
-        cache_key,
-    } = outcome;
-    let attempts = attempts.unwrap_or(0);
-    let wall_ms = start.elapsed().as_millis() as u64;
-    // Provider time, never wall time: `latency` assertions read this, and
-    // charging retry backoff to it fails them on a model that answered fast.
-    // Entries predating the field fall back to wall time, as they always did.
-    let latency_ms = provider_latency_ms.unwrap_or(wall_ms);
-    // After the cache read, so a replayed hit carries the same diagnosis a fresh
-    // call would. Keyed on the reason being present, never on the output's shape.
-    let empty_reason = provider.classify_empty(&response);
-    let reasoning = response.reasoning.clone();
-
-    let metrics = MetricCtx {
-        latency_ms,
-        cost_usd: response.cost_usd,
-        total_tokens: response.usage.as_ref().map(|u| u.total()),
-        billable_tokens: response.usage.as_ref().map(|u| u.billable_total()),
-    };
-
-    let (assert_results, scored, assert_error_classes) = evaluate_asserts(
-        &AssertCtx {
-            provider_id: provider.id(),
-            test_id: &test_id,
-            test_tags: &test.tags,
-            engine,
-            grader,
-            base_dir,
-            schemas,
-            cache,
-            cache_mode,
-            grader_cache,
-            migration: &cache_state.migration,
-            repeat,
-            aborted,
-            tool_calls: &response.tool_calls,
-            empty_reason: empty_reason.as_ref(),
-        },
-        &test.assert,
-        &response.output,
-        &var_ctx,
-        &metrics,
-        test.threshold,
-    )
-    .await;
-
-    // `Some` exactly when at least one assert errored, so it carries both the
-    // diagnosis and the "did anything error" verdict input.
-    let assert_error = assert_error_message(&assert_results);
-    // Computed before the results are moved into the case below.
-    let assert_digest = crate::digests::assert_digest(&assert_results, test.threshold);
-    let assert_error_class = crate::error_class::most_specific(&assert_error_classes);
-    let verdict = case_verdict(&scored, test.threshold);
-    // `Error` first: a grader that broke is a fact about the run, and outranks
-    // any statement about whether the output was gradeable.
-    let status = if assert_error.is_some() {
-        CaseStatus::Error
-    // The *classified* reason — what the case reports — so `["blank"]` can skip a blank output.
-    } else if reasoning_is_skippable(empty_reason.as_ref(), skip_on_empty_reason) {
-        CaseStatus::Skip
-    } else if verdict.passed {
-        CaseStatus::Pass
-    } else {
-        CaseStatus::Fail
-    };
-
-    CaseResult {
-        cell,
-        case_key,
-        name,
-        tags: test.tags.clone(),
-        vars: case_vars,
-        status,
-        score: verdict.score,
-        output: Some(response.output),
-        cache_key: cache_key.map(|k| k.0),
-        prompt: rendered_prompt,
-        request,
-        stop_reason: response.stop_reason,
-        model: response.model,
-        tool_calls: response.tool_calls.clone(),
-        raw: json_to_persist(include_raw, response.raw, "raw"),
-        asserts: assert_results,
-        usage: response.usage,
-        cost_usd: response.cost_usd,
-        latency_ms,
-        wall_ms: Some(wall_ms),
-        cached,
-        attempts,
-        prompt_digest,
-        provider_digest,
-        assert_digest,
-        error: assert_error,
-        // A graded case reached the provider, so any error here came from an
-        // assertion rather than the call; assert-level detail lives on each
-        // AssertResult.
-        error_details: None,
-        error_class: assert_error_class,
-        reasoning,
-        empty_reason,
-    }
 }
 
 #[cfg(test)]

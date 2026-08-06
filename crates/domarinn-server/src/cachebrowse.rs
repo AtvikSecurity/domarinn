@@ -1,7 +1,10 @@
-//! Handlers for browsing the cache.
+//! Handlers for browsing and administering the cache.
 //!
 //! Separate from [`crate::routes`], which is near the per-file line ratchet,
-//! and wired from its router the way [`crate::accounts`] already is.
+//! and wired from its router the way [`crate::accounts`] already is. The
+//! stats/prune/delete surface lives here beside the browse surface rather than
+//! back in `routes`, because finding an entry and destroying it are one
+//! workflow — you prune what a filter just showed you.
 //!
 //! # Why listing is admin-scoped and reading one entry is not
 //!
@@ -23,16 +26,20 @@
 //! not.
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
-use crate::auth::{Admin, Read, Scoped};
+use crate::auth::{Admin, Identity, Read, Scoped};
 use crate::domain::{CacheSort, CacheTier, SortOrder};
+use crate::dto::cache::PruneResponse;
 use crate::extract::ApiQuery;
-use crate::routes::{clamp_limit, not_found, validate_cache_key, ApiResult};
+use crate::routes::{clamp_limit, not_found, validate_cache_key, ApiError, ApiResult};
 use crate::runsets::RunVisibility;
-use crate::storage::{decode_entry_cursor, decode_run_cursor, parse_time_ms, CacheListFilter};
+use crate::storage::{
+    decode_entry_cursor, decode_run_cursor, parse_time_ms, CacheListFilter, CachePruneFilter,
+};
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +49,9 @@ pub(crate) struct ListQuery {
     /// A recorded kind, or the `unindexed` / `unparseable` pseudo-values.
     kind: Option<String>,
     model: Option<String>,
+    /// One recorded `empty_reason`. Never folded into `q`: it is a facet, and a
+    /// free-text match would also hit every entry whose *output* discusses one.
+    empty_reason: Option<String>,
     /// Free text over the request and output. Quoted term-by-term before it
     /// reaches fts5, so no input can be a syntax error.
     q: Option<String>,
@@ -100,6 +110,7 @@ pub(crate) async fn list(
     let filter = CacheListFilter {
         kind: q.kind,
         model: q.model,
+        empty_reason: q.empty_reason,
         q: q.q,
         since: q.since.as_deref().and_then(parse_time_ms),
         until: q.until.as_deref().and_then(parse_time_ms),
@@ -172,4 +183,169 @@ pub(crate) async fn facets(
         _ => state.storage.cache_facets().await?,
     };
     Ok(Json(facets).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Administering: stats, delete, prune
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn cache_stats(
+    _scope: Scoped<Read>,
+    State(state): State<AppState>,
+) -> ApiResult<Response> {
+    Ok(Json(state.storage.cache_stats().await?).into_response())
+}
+
+/// Who is doing this, for the log line.
+///
+/// Label first (a username, or a static token's scope name), falling back to
+/// the authenticator that resolved the request — which under `AuthMode::Open`
+/// is `anonymous`, and saying so is the point.
+fn actor(identity: &Identity) -> String {
+    match identity.label.as_deref() {
+        Some(label) => format!("{label} ({})", identity.source.as_str()),
+        None => identity.source.as_str().to_string(),
+    }
+}
+
+/// Delete one entry.
+///
+/// `Scoped<Admin>`, matching [`cache_prune`] rather than [`detail`]. The
+/// asymmetry is deliberate and is [`list`]'s argument run the other way:
+/// *reading* an entry you already hold the key for tells you nothing you did
+/// not already have, so it stays at `read`; *destroying* rows out of a corpus
+/// several people share is the same power a prune has, applied one row at a
+/// time and therefore quieter. Widening a gate later is non-breaking.
+///
+/// `204` when it went, `404` when there was nothing there — so a script can
+/// tell "I removed it" from "it was already gone", which a blanket `204` would
+/// collapse into one answer.
+pub(crate) async fn delete_entry(
+    scope: Scoped<Admin>,
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> ApiResult<Response> {
+    // Before the storage call, as `detail` does: a malformed key is the
+    // caller's mistake, and answering it with a `404` from a lookup that could
+    // never match would read as "that entry does not exist".
+    validate_cache_key(&key)?;
+    if !state.storage.cache_delete_entry(key.clone()).await? {
+        return Err(not_found("cache entry"));
+    }
+    // The server has no audit log and no rate limiting on this route. This line
+    // is the entire forensic record of who removed what, so it is `info!` and
+    // it names the actor.
+    tracing::info!(actor = %actor(&scope.identity), %key, "cache entry deleted");
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Filters for `POST /cache/prune`.
+///
+/// `deny_unknown_fields` is load-bearing rather than tidy: without it
+/// `?empty_reasons=refusal` — the plural typo — stops being a `400` and becomes
+/// a prune that named nothing, which then falls through to the configured
+/// retention limits and evicts on age and size instead. A destructive verb must
+/// never quietly do something other than what was asked.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PruneQuery {
+    older_than_days: Option<i64>,
+    newer_than_days: Option<i64>,
+    /// Comma-separated, so one query parameter carries a set. The client side
+    /// joins on `,`; splitting here is the only place that contract lives.
+    empty_reason: Option<String>,
+    model: Option<String>,
+    kind: Option<String>,
+    target_bytes: Option<i64>,
+}
+
+/// Evict entries.
+///
+/// # A prune applies only what it names
+///
+/// A bare prune — no parameter of any kind, which is what the UI's "Prune
+/// cache" button and a plain `POST /cache/prune` send — means "apply the
+/// configured retention limits", the manual equivalent of the hourly task.
+/// Without that, an unparameterized prune would silently evict nothing.
+///
+/// But that fallback keys off *nothing at all being named*, not off the two
+/// original parameters being absent. Otherwise `?empty_reason=refusal` would
+/// **also** apply `max_age_days` and `max_bytes`, and someone reaching for a
+/// scalpel would get the blunt instrument they were trying to avoid.
+pub(crate) async fn cache_prune(
+    scope: Scoped<Admin>,
+    State(state): State<AppState>,
+    ApiQuery(q): ApiQuery<PruneQuery>,
+) -> ApiResult<Response> {
+    // A negative window puts the cutoff in the *future*, so `older_than_days=-1`
+    // matches every entry ever stored. Live today, and easier to reach by
+    // accident now that there are two day parameters to mistype.
+    for (name, value) in [
+        ("older_than_days", q.older_than_days),
+        ("newer_than_days", q.newer_than_days),
+    ] {
+        if value.is_some_and(|days| days < 0) {
+            return Err(ApiError::status(
+                StatusCode::BAD_REQUEST,
+                format!("{name} must not be negative"),
+            ));
+        }
+    }
+
+    let filter = CachePruneFilter {
+        older_than_days: q.older_than_days,
+        newer_than_days: q.newer_than_days,
+        empty_reason: split_csv(q.empty_reason.as_deref()),
+        model: q.model,
+        kind: q.kind,
+        target_bytes: q.target_bytes,
+    };
+    let filter = if filter.is_empty() {
+        CachePruneFilter {
+            older_than_days: Some(state.cache_limits.max_age_days as i64),
+            target_bytes: Some(state.cache_limits.max_bytes as i64),
+            ..CachePruneFilter::default()
+        }
+    } else {
+        filter
+    };
+
+    tracing::info!(
+        actor = %actor(&scope.identity),
+        filter = ?filter,
+        "cache prune requested"
+    );
+    let pruned = state.storage.cache_prune(filter).await?;
+    Ok(Json(PruneResponse { pruned }).into_response())
+}
+
+/// Split a comma-separated parameter, dropping empties.
+///
+/// `?empty_reason=` and `?empty_reason=,,` both yield no values, which
+/// [`CachePruneFilter::is_empty`] then reads as "named nothing" — the same
+/// answer as omitting the parameter, and the only one that does not turn a
+/// stray comma into a wider eviction than was asked for.
+fn split_csv(raw: Option<&str>) -> Vec<String> {
+    raw.into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_comma_separated_reason_list_never_widens_into_no_filter() {
+        assert_eq!(split_csv(None), Vec::<String>::new());
+        assert_eq!(split_csv(Some("")), Vec::<String>::new());
+        assert_eq!(split_csv(Some(" , ,")), Vec::<String>::new());
+        assert_eq!(
+            split_csv(Some("refusal, content_filter")),
+            vec!["refusal".to_string(), "content_filter".to_string()]
+        );
+    }
 }

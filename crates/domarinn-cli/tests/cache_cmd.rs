@@ -31,11 +31,12 @@ fn cache_path_and_stats() {
         .stdout(predicate::str::contains("legacy tier").not());
 }
 
-/// The whole point of `gc` is an age bound; without one it used to fall through
-/// to an unbounded purge, so `domarinn cache gc` silently did what `cache clear`
-/// does.
+/// The whole point of `gc` is a bound; without one it used to fall through to
+/// an unbounded purge, so `domarinn cache gc` silently did what `cache clear`
+/// does. The message has to name `clear`, because the operator who typed this
+/// wanted one of the two and the gentler-sounding verb is the wrong one.
 #[test]
-fn cache_gc_without_older_than_is_a_usage_error_that_deletes_nothing() {
+fn cache_gc_without_any_bound_refuses_and_names_clear() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
     bin().arg("run").current_dir(dir.path()).assert().success();
@@ -58,6 +59,131 @@ fn cache_gc_without_older_than_is_a_usage_error_that_deletes_nothing() {
         seeded,
         "a refused gc must not remove anything"
     );
+}
+
+/// `--newer-than` on its own reads "delete everything since", which is a
+/// whole-store wipe spelled as housekeeping. It is only ever the recent end of
+/// a window, so the destructive reading is refused rather than merely
+/// discouraged.
+#[test]
+fn cache_gc_newer_than_without_older_than_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+    bin().arg("run").current_dir(dir.path()).assert().success();
+    let seeded = cache_stats(dir.path());
+
+    bin()
+        .args(["cache", "gc", "--newer-than", "1h"])
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--older-than"))
+        .stderr(predicate::str::contains("cache clear"));
+
+    assert_eq!(
+        cache_stats(dir.path()),
+        seeded,
+        "a refused gc must not remove anything"
+    );
+
+    // The window form is accepted — the entry is younger than 30d, so nothing
+    // matches and nothing goes.
+    bin()
+        .args(["cache", "gc", "--older-than", "30d", "--newer-than", "90d"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed 0 of 1 cache entry"));
+    assert_eq!(cache_stats(dir.path()), seeded);
+}
+
+/// Targeted eviction: the poisoned entry goes and the warm cache around it
+/// stays. The `removed N of M` denominator is what makes that claim checkable —
+/// a bare count cannot distinguish "removed the one bad entry" from "removed
+/// the only entry there was".
+#[test]
+fn cache_gc_by_empty_reason_removes_only_matching() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(".domarinn/cache");
+    seed_entry(&root, 'a', Some("refusal"));
+    seed_entry(&root, 'b', Some("blank"));
+    seed_entry(&root, 'c', None);
+    assert_eq!(entry_count(&root), 3);
+
+    bin()
+        .args(["cache", "gc", "--empty-reason", "refusal"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed 1 of 3 cache entries"));
+
+    assert_eq!(
+        entry_count(&root),
+        2,
+        "only the refusal should have been evicted"
+    );
+
+    // Repeatable, and an unknown reason is still evictable — `EmptyReason` is
+    // an open type and this must not become the place that closes it.
+    seed_entry(&root, 'd', Some("invented_next_year"));
+    bin()
+        .args([
+            "cache",
+            "gc",
+            "--empty-reason",
+            "blank",
+            "--empty-reason",
+            "invented_next_year",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed 2 of 3 cache entries"));
+    assert_eq!(
+        entry_count(&root),
+        1,
+        "the entry with no reason at all must survive"
+    );
+}
+
+/// The single most important invariant on this side of the change. `clear` is a
+/// literally-default filter, which is the only thing a backend reads as
+/// "everything" — fold an empty `--empty-reason` vec into the match as a plain
+/// conjunction and this becomes a silent no-op that prints "cleared 0".
+#[test]
+fn cache_clear_still_removes_everything() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(".domarinn/cache");
+    seed_entry(&root, 'a', Some("refusal"));
+    seed_entry(&root, 'b', None);
+    seed_entry(&root, 'c', Some("truncated"));
+
+    bin()
+        .args(["cache", "clear"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cleared 3 cache entries"));
+
+    assert_eq!(entry_count(&root), 0);
+}
+
+/// Write one cache entry file directly, so a test can pin a body predicate
+/// without needing a provider that actually refuses. `fill` picks the key, so
+/// each call lands in its own shard.
+fn seed_entry(root: &std::path::Path, fill: char, empty_reason: Option<&str>) {
+    let hex: String = std::iter::repeat_n(fill, 64).collect();
+    let shard = root.join(&hex[..2]);
+    std::fs::create_dir_all(&shard).unwrap();
+    let mut entry = serde_json::json!({
+        "created_at": "2026-01-01T00:00:00Z",
+        "output": "",
+        "domarinn_version": "test",
+    });
+    if let Some(reason) = empty_reason {
+        entry["empty_reason"] = serde_json::json!(reason);
+    }
+    std::fs::write(shard.join(format!("{hex}.json")), entry.to_string()).unwrap();
 }
 
 /// A run layers a cwd-relative `.domarinn/cache` under the suite's own cache as
@@ -97,8 +223,10 @@ fn cache_gc_applies_the_age_filter_to_the_legacy_tier() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("removed 0 cache entries"))
-        .stdout(predicate::str::contains("removed 0 legacy cache entries"));
+        .stdout(predicate::str::contains("removed 0 of 1 cache entry"))
+        .stdout(predicate::str::contains(
+            "removed 0 of 1 legacy cache entry",
+        ));
     assert_eq!(entry_count(&dir.path().join(".domarinn/cache")), 1);
     assert_eq!(entry_count(&dir.path().join("evals/.domarinn/cache")), 1);
 
@@ -108,10 +236,48 @@ fn cache_gc_applies_the_age_filter_to_the_legacy_tier() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("removed 1 cache entry"))
-        .stdout(predicate::str::contains("removed 1 legacy cache entry"));
+        .stdout(predicate::str::contains("removed 1 of 1 cache entry"))
+        .stdout(predicate::str::contains(
+            "removed 1 of 1 legacy cache entry",
+        ));
     assert_eq!(entry_count(&dir.path().join(".domarinn/cache")), 0);
     assert_eq!(entry_count(&dir.path().join("evals/.domarinn/cache")), 0);
+}
+
+/// The legacy tier never sees `--newer-than`. It is a pre-0.4 leftover, so by
+/// construction it holds nothing recent except this project's own entries — and
+/// `cwd_contains`'s rule for when it is safe to purge was written assuming a
+/// `gc` removes *old* things. Handing it "delete the recent half" would turn a
+/// guard that spares a stranger's cache into one that empties your own.
+///
+/// `--older-than 0s --newer-than 0s` is the sharpest form: the primary tier's
+/// window excludes everything written before now, while the legacy tier, which
+/// drops the recent bound, collects on age alone.
+#[test]
+fn cache_gc_does_not_apply_newer_than_to_the_legacy_tier() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_legacy_and_suite_caches(dir.path());
+
+    bin()
+        .args([
+            "cache",
+            "gc",
+            "--older-than",
+            "0s",
+            "--newer-than",
+            "0s",
+            "evals",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed 0 of 1 cache entry"))
+        .stdout(predicate::str::contains(
+            "removed 1 of 1 legacy cache entry",
+        ));
+
+    assert_eq!(entry_count(&dir.path().join("evals/.domarinn/cache")), 1);
+    assert_eq!(entry_count(&dir.path().join(".domarinn/cache")), 0);
 }
 
 /// The legacy tier is resolved against the *process cwd*, so for a suite

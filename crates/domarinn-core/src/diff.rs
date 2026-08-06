@@ -225,6 +225,8 @@ mod tests {
             error_details: None,
             model: None,
             error_class: None,
+            answered_by_provider_id: None,
+            fallback_attempts: Vec::new(),
         }
     }
 

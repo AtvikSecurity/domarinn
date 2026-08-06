@@ -611,9 +611,12 @@ pub(super) fn cache_migrations() -> Migrations<'static> {
         CREATE INDEX idx_cache_cost ON cache_entries(cost_microusd, key)
             WHERE cost_microusd IS NOT NULL;
 
-        -- Plain fts5, not external-content: entries are immutable and are only
-        -- ever inserted or deleted, so there is no update path to keep in sync
-        -- and nothing to gain from making the blob table the content source.
+        -- Plain fts5, not external-content: an entry's *body* is immutable, so
+        -- the indexed text never changes for a given row and there is nothing
+        -- to gain from making the blob table the content source. The index
+        -- itself is nevertheless rewritable — migration 3 re-derives promoted
+        -- columns for rows indexed by an older build, and `insert_fts` is
+        -- delete-then-insert for exactly that reason (see `cacheindex`).
         -- Rowids are kept aligned with `cache_entries` so a delete is a rowid
         -- lookup rather than a scan over an UNINDEXED key column.
         CREATE VIRTUAL TABLE cache_entries_fts USING fts5(request, output);
@@ -625,6 +628,44 @@ pub(super) fn cache_migrations() -> Migrations<'static> {
         CREATE TRIGGER cache_entries_delete_fts AFTER DELETE ON cache_entries BEGIN
             DELETE FROM cache_entries_fts WHERE rowid = old.rowid;
         END;
+        "#,
+        ),
+        // Migration 3: promote `empty_reason` so the poison a refusal leaves
+        // behind can be *found*. Without it the only cure for one bad draw
+        // frozen into a shared cache is `older_than_days=0`, which throws away
+        // the warm cache to evict a handful of rows.
+        //
+        // `reindexed_at` is the same tri-state trick migration 2 used for
+        // `indexed_at`, one turn further on: migration 2's rows were indexed by
+        // a build that had never heard of `empty_reason`, so they are stamped
+        // "looked at" and would otherwise never be looked at again. NULL means
+        // "indexed by a pre-migration-3 build"; the background pass in
+        // `cacheindex` fills it in.
+        //
+        // Deliberately NOT `UPDATE cache_entries SET indexed_at = NULL`.
+        // Migrations run inside `Storage::open_blocking`, *before the port
+        // binds*, and a full-table UPDATE rewriting pages that hold multi-MiB
+        // bodies is exactly the "a restart becomes an outage" property the
+        // background backfill exists to avoid (see `cacheindex`'s module doc).
+        // An ALTER that appends a NULL column is O(1) in SQLite; a rewrite is
+        // not.
+        M::up(
+            r#"
+        ALTER TABLE cache_entries ADD COLUMN empty_reason TEXT;
+        ALTER TABLE cache_entries ADD COLUMN reindexed_at INTEGER;
+
+        -- Partial, matching the filter and the facet query exactly: the
+        -- overwhelming majority of entries have no reason at all, and indexing
+        -- their NULLs would be paying for the rows nobody searches for.
+        CREATE INDEX idx_cache_empty_reason ON cache_entries(empty_reason)
+            WHERE empty_reason IS NOT NULL;
+
+        -- Drains to empty, like `idx_cache_unindexed`. Rows this server could
+        -- not parse are stamped without re-reading their bodies rather than
+        -- left pending: re-parsing a body that already failed cannot succeed,
+        -- and leaving them in the index makes every future pass scan them.
+        CREATE INDEX idx_cache_unreindexed ON cache_entries(reindexed_at)
+            WHERE reindexed_at IS NULL;
         "#,
         ),
     ])

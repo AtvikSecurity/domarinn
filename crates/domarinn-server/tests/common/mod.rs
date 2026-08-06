@@ -365,6 +365,11 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
     CaseResult {
         cache_key: None,
         tool_calls: Vec::new(),
+        // No fixture falls back: the server stores and re-serializes whatever
+        // it is handed, and leaving these at their defaults is what keeps the
+        // fixtures byte-identical to a run written before the fields existed.
+        answered_by_provider_id: None,
+        fallback_attempts: Vec::new(),
         cell,
         case_key,
         name: Some(format!("{}::{}", spec.provider, spec.test)),
