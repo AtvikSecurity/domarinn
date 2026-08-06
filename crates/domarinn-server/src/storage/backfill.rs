@@ -1,32 +1,38 @@
-//! One-shot, idempotent backfill of the migration-3, -6, -7 and -15 columns
-//! from the stored zstd blobs.
+//! One-shot, idempotent backfill of the migration-3, -6, -7, -15 and -17
+//! columns from the stored zstd blobs.
 //!
 //! Migration 3 adds `provider_id`/`prompt_id`/`test_id`/`repeat_idx`/`score`/
 //! `stop_reason` to `cases` and `config_digest` to `runs`; migration 6 adds
 //! `cached` to `cases` and `cache_hits`/`cache_misses` to `runs`; migration 7
 //! adds `error` to `cases`; migration 15 adds `empty_reason` to `cases` and
-//! `empty_count` to `runs`. A schema
+//! `empty_count` to `runs`; migration 17 adds `answered_by_provider_id` to
+//! `cases`. A schema
 //! migration cannot decode the compressed blobs to fill them, so pre-existing
 //! rows land with those columns NULL. This runs once on every open (right after
 //! `to_latest`) and populates any still-NULL rows from `cases.detail` and
 //! `run_blobs.body`.
 //!
 //! It is idempotent by construction: the driving predicates are `provider_id IS
-//! NULL OR cached IS NULL OR error IS NULL OR empty_reason IS NULL` /
+//! NULL OR cached IS NULL OR error IS NULL OR empty_reason IS NULL OR
+//! answered_by_provider_id IS NULL` /
 //! `config_digest IS NULL OR cache_hits IS NULL OR empty_count IS NULL`, so
 //! a fully-backfilled database (and every fresh database, whose rows are
 //! written already-populated by ingest) selects zero rows and the loops exit
 //! immediately. A row whose blob cannot be decompressed or parsed is stamped
 //! with a sentinel (empty string on text columns, -1 on the numeric cache and
 //! empty counters) so it is never rescanned — the alternative (leaving it NULL)
-//! would spin forever. `error` and `empty_reason` are tri-states for the same
-//! reason: NULL means "not yet backfilled", and a case with no error (or no
-//! empty reason) is stamped `''` rather than left NULL, which would make it
-//! eligible for every subsequent pass.
+//! would spin forever. `error`, `empty_reason` and `answered_by_provider_id`
+//! are tri-states for the same reason: NULL means "not yet backfilled", and a
+//! case with no error (no empty reason, no fallback answerer) is stamped `''`
+//! rather than left NULL, which would make it eligible for every subsequent
+//! pass.
 //!
 //! A blob written before `empty_reason` existed honestly backfills to `''` per
 //! case and `0` for the run: the field is absent from the document, so no case
-//! in it carried one. That is the right answer, not a gap.
+//! in it carried one. That is the right answer, not a gap. The same holds for
+//! `answered_by_provider_id`: a blob predating provider fallback records no
+//! handoff because none happened, so `''` ("the configured provider answered")
+//! is the truth about it.
 //!
 //! A run missing *only* `empty_count` — the shape every run in the store has on
 //! the first open after the migration-15 upgrade — is filled by one SQL COUNT
@@ -63,7 +69,7 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
             let mut stmt = conn.prepare(
                 "SELECT rowid, detail FROM cases
                  WHERE provider_id IS NULL OR cached IS NULL OR error IS NULL
-                    OR empty_reason IS NULL
+                    OR empty_reason IS NULL OR answered_by_provider_id IS NULL
                  LIMIT ?1",
             )?;
             let rows = stmt.query_map(params![CASE_CHUNK], |row| {
@@ -84,8 +90,9 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
                         "UPDATE cases
                          SET provider_id = ?1, prompt_id = ?2, test_id = ?3,
                              repeat_idx = ?4, score = ?5, stop_reason = ?6, cached = ?7,
-                             error = ?8, empty_reason = ?9
-                         WHERE rowid = ?10",
+                             error = ?8, empty_reason = ?9,
+                             answered_by_provider_id = ?10
+                         WHERE rowid = ?11",
                         params![
                             case.cell.provider_id,
                             case.cell.prompt_id,
@@ -104,6 +111,11 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
                                 .as_ref()
                                 .map(|r| r.as_str())
                                 .unwrap_or_default(),
+                            // Same tri-state once more: a blob predating
+                            // provider fallback carries no answerer, and "the
+                            // configured provider answered" is the honest
+                            // reading of that absence.
+                            case.answered_by_provider_id.as_deref().unwrap_or_default(),
                             rowid,
                         ],
                     )?;
@@ -116,7 +128,7 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
                     );
                     tx.execute(
                         "UPDATE cases SET provider_id = '', cached = -1, error = '',
-                             empty_reason = ''
+                             empty_reason = '', answered_by_provider_id = ''
                          WHERE rowid = ?1",
                         params![rowid],
                     )?;

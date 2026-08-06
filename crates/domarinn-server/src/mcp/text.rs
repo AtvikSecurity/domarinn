@@ -229,6 +229,13 @@ pub fn cases_table(cases: &Value, run_id: &str) -> String {
                 header: "empty",
                 key: "empty_reason",
             },
+            // Who actually answered, when it was not the configured provider.
+            // Absent on every case the configured provider answered, which is
+            // nearly all of them, so it reads as `-`.
+            Column {
+                header: "answered_by",
+                key: "answered_by_provider_id",
+            },
             Column {
                 header: "preview",
                 key: "output_preview",

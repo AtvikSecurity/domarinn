@@ -28,6 +28,13 @@ latency_ms_mean: number | null,
  */
 cost_usd: number | null, 
 /**
+ * How many of this cell's repeats were answered by a provider other than
+ * the column's configured one (a fallback stood in). `0` for a run stored
+ * before the attribution existed — honestly so: fallback did not exist
+ * then, so no repeat in it had one.
+ */
+fallback_answered: number, 
+/**
  * The cell's case keys, ordered by `repeat_idx` (ties broken by `idx`).
  */
 case_keys: Array<CaseKey>, };

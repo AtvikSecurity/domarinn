@@ -637,6 +637,146 @@ async fn backfill_stamps_empty_sentinels_for_corrupt_blobs_and_stops_rescanning(
     assert_eq!(unstamped, 0, "sentinels must end the rescan");
 }
 
+/// A two-case run on the `primary` provider whose first case was answered by
+/// the `reserve` fallback instead. The cell stays keyed on `primary` — only the
+/// answerer differs.
+fn fallback_run(id: &str) -> domarinn_core::result::RunResult {
+    make_run(
+        id,
+        Some("proj"),
+        Some("suite"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("primary", "t1", CaseStatus::Pass).answered_by("reserve"),
+            CaseSpec::new("primary", "t2", CaseStatus::Pass),
+        ],
+    )
+}
+
+/// `(answered_by_provider_id, ...)` for a run's cases, in `idx` order.
+fn answered_by(conn: &Connection, run_id: &str) -> Vec<Option<String>> {
+    let mut stmt = conn
+        .prepare("SELECT answered_by_provider_id FROM cases WHERE run_id = ?1 ORDER BY idx")
+        .unwrap();
+    stmt.query_map([run_id], |r| r.get::<_, Option<String>>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[tokio::test]
+async fn migration_adds_the_answered_by_provider_column() {
+    let dir = TempDir::new().unwrap();
+    let _storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    let conn = raw(dir.path());
+
+    assert!(
+        table_columns(&conn, "cases").contains(&"answered_by_provider_id".to_string()),
+        "cases missing answered_by_provider_id"
+    );
+}
+
+#[tokio::test]
+async fn ingest_promotes_the_answering_provider_and_stamps_the_rest() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(fallback_run("run-fallback"), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        answered_by(&conn, "run-fallback"),
+        vec![Some("reserve".to_string()), Some(String::new())],
+        "ingest must stamp '' when the configured provider answered, never \
+         NULL: NULL is reserved for 'not yet backfilled' and would make the \
+         backfill predicate re-select fresh rows on every open"
+    );
+
+    // The cell identity is untouched: the column and every case_key join stay
+    // keyed on the configured provider.
+    let cells = cell_rows(&conn, "run-fallback");
+    assert_eq!(cells[0].provider_id, "primary");
+    assert_eq!(cells[1].provider_id, "primary");
+}
+
+#[tokio::test]
+async fn backfill_populates_answered_by_provider_from_blobs() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(fallback_run("run-bf-fallback"), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    // Simulate rows written before migration 17.
+    {
+        let conn = raw(dir.path());
+        conn.execute_batch("UPDATE cases SET answered_by_provider_id = NULL;")
+            .unwrap();
+    }
+
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        answered_by(&conn, "run-bf-fallback"),
+        vec![Some("reserve".to_string()), Some(String::new())],
+        "the answerer comes back out of the case blob; a case whose blob has no \
+         such field is stamped '' rather than left NULL"
+    );
+
+    // The anti-spin property: every row is stamped, so a second open selects
+    // nothing at all.
+    let unstamped: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cases WHERE answered_by_provider_id IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unstamped, 0, "backfill must stamp every case row");
+}
+
+#[tokio::test]
+async fn backfill_stamps_the_answered_by_sentinel_for_a_corrupt_blob() {
+    let dir = TempDir::new().unwrap();
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    storage
+        .ingest_run(fallback_run("run-fallback-corrupt"), None)
+        .await
+        .unwrap();
+    drop(storage);
+
+    {
+        let conn = raw(dir.path());
+        conn.execute_batch("UPDATE cases SET answered_by_provider_id = NULL;")
+            .unwrap();
+        conn.execute(
+            "UPDATE cases SET detail = ?1 WHERE run_id='run-fallback-corrupt' AND idx=0",
+            rusqlite::params![vec![0xde_u8, 0xad, 0xbe, 0xef]],
+        )
+        .unwrap();
+    }
+
+    let storage = Storage::open(dir.path().to_path_buf()).await.unwrap();
+    drop(storage);
+
+    let conn = raw(dir.path());
+    assert_eq!(
+        answered_by(&conn, "run-fallback-corrupt"),
+        vec![Some(String::new()), Some(String::new())],
+        "an undecodable case blob gets the empty-string sentinel, which ends \
+         the rescan even though the answerer it held is now unrecoverable"
+    );
+}
+
 #[tokio::test]
 async fn backfill_marks_corrupt_case_blob_with_sentinel_and_completes() {
     let dir = TempDir::new().unwrap();

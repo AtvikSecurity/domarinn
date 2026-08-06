@@ -164,6 +164,13 @@ struct PreparedCase {
     /// reserved for "not yet backfilled" — ingest writes `''` for "no reason"
     /// (see `storage::backfill`).
     empty_reason: String,
+    /// Migration-17 column: the provider that actually answered, when a
+    /// fallback stood in for the configured one. `provider_id` above stays the
+    /// configured provider (matrix columns and `case_key` joins depend on it),
+    /// so this is the only record of who spent the tokens. `String` for the
+    /// same tri-state reason as `empty_reason`: `''` means "the configured
+    /// provider answered", NULL is reserved for "not yet backfilled".
+    answered_by_provider_id: String,
 }
 
 struct PreparedRun {
@@ -303,6 +310,7 @@ impl PreparedRun {
                     .as_ref()
                     .map(|r| r.as_str().to_string())
                     .unwrap_or_default(),
+                answered_by_provider_id: case.answered_by_provider_id.clone().unwrap_or_default(),
             });
         }
 
@@ -471,11 +479,11 @@ impl PreparedRun {
                     latency_ms, detail,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached,
                     error, prompt_digest, provider_digest, assert_digest, error_class,
-                    cache_key, empty_reason
+                    cache_key, empty_reason, answered_by_provider_id
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                     ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27,
-                    ?28
+                    ?28, ?29
                 )",
                 params![
                     self.id,
@@ -514,6 +522,9 @@ impl PreparedRun {
                     // Already `''` rather than NULL for "no reason", for the
                     // same reason `error` above is (see storage::backfill).
                     case.empty_reason,
+                    // Same again: `''` means "the configured provider answered",
+                    // NULL means "not yet backfilled".
+                    case.answered_by_provider_id,
                 ],
             )?;
             for tag in &case.tags {

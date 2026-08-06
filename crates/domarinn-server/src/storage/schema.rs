@@ -540,6 +540,31 @@ fn runs_migrations() -> Migrations<'static> {
         WHERE cache_misses = 0 AND cache_hits > 0;
         "#,
         ),
+        // Migration 17: promote which provider actually answered a case, when it
+        // was not the one configured for the cell.
+        //
+        // A cell may be configured with a fallback: if the configured provider
+        // refuses or fails, another one answers in its place. `provider_id`
+        // stays the *configured* provider — the matrix column and every
+        // `case_key` join depend on that being stable across runs — so without
+        // this column the tokens a fallback spent are billed to a provider that
+        // never made the call, and a per-provider cost rollup is simply wrong.
+        //
+        // Same tri-state as migration 15's `empty_reason`, for the same reason:
+        // NULL is not available to mean "the configured provider answered",
+        // because that is the overwhelming majority of rows and NULL has to keep
+        // meaning "not yet backfilled". NULL = not backfilled, `''` = decoded
+        // and the configured provider answered, non-empty = the provider that
+        // answered instead. Ingest writes `''`, never NULL.
+        //
+        // No index: the column is only ever read inside a scan already narrowed
+        // to one `run_id`, never as a predicate of its own, so an index here
+        // would cost a write per case row and serve no query.
+        M::up(
+            r#"
+        ALTER TABLE cases ADD COLUMN answered_by_provider_id TEXT;
+        "#,
+        ),
     ])
 }
 
