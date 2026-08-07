@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.1](https://github.com/AtvikSecurity/domarinn/compare/0.10.0...0.10.1) (2026-08-06)
+
+
+### Features
+
+* **cli:** fallback visibility across case detail, run output, ci-summary and diffs, plus a provider input and fallback-cases output on the eval action ([341eccd](https://github.com/AtvikSecurity/domarinn/commit/341eccd278b5633dd927994622f84e900b3eacef))
+* **providers:** a fallback_only provider forms no matrix cells ([#83](https://github.com/AtvikSecurity/domarinn/issues/83)) ([341eccd](https://github.com/AtvikSecurity/domarinn/commit/341eccd278b5633dd927994622f84e900b3eacef))
+* **server:** per-provider cost attribution follows the provider that answered ([341eccd](https://github.com/AtvikSecurity/domarinn/commit/341eccd278b5633dd927994622f84e900b3eacef))
+* **web:** fallback attribution in the matrix and case views ([341eccd](https://github.com/AtvikSecurity/domarinn/commit/341eccd278b5633dd927994622f84e900b3eacef))
+
+
+### Bug Fixes
+
+* **cli:** the all-fallback exit gate measures graded cases, not total ([341eccd](https://github.com/AtvikSecurity/domarinn/commit/341eccd278b5633dd927994622f84e900b3eacef))
+
 ## [0.10.0](https://github.com/AtvikSecurity/domarinn/compare/0.9.0...0.10.0) (2026-08-06)
 
 

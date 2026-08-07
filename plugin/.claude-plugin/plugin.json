@@ -1,7 +1,7 @@
 {
   "name": "domarinn",
   "displayName": "domarinn",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "LLM eval harness. Connects to a domarinn server's MCP endpoint for read-only access to eval history, and ships skills for authoring, running, and triaging eval suites with the domarinn CLI.",
   "author": {
     "name": "Atvik Security",
