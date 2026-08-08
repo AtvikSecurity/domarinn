@@ -1,17 +1,14 @@
-import * as Dialog from "@radix-ui/react-dialog";
 import { useCaseDetail } from "@/api/queries";
 import type { AssertResult, CaseResult } from "@/api";
-import { CenteredSpinner } from "@/components/ui/Spinner";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
-import { ErrorState } from "@/components/States";
+import { DetailDrawer } from "@/components/ui/DetailDrawer";
 import { JsonTree, OutputViewer, RawText, outputToString } from "@/components/output";
 import { BaselineDiffSection } from "./BaselineDiffSection";
 import { CaseAssertRow } from "./CaseAssertRow";
 import { CaseInputSection } from "./CaseInputSection";
 import { CaseVerdictStrip } from "./CaseVerdictStrip";
 import { RawMetadataSection, reasoningNotice } from "./CaseDrawerSections";
-import { DrawerResizer, useDrawerWidth } from "./DrawerResizer";
 
 export function CaseDrawer({
   runId,
@@ -19,186 +16,139 @@ export function CaseDrawer({
   suite,
   caseKey,
   onClose,
+  onPrev,
+  onNext,
+  position,
 }: {
   runId: string;
   project: string;
   suite: string;
   caseKey: string | undefined;
   onClose: () => void;
+  /** Step to the neighbouring case. Omitted at the ends of the loaded rows. */
+  onPrev?: () => void;
+  onNext?: () => void;
+  position?: { index: number; total: number };
 }) {
-  const open = !!caseKey;
   const detail = useCaseDetail(runId, caseKey);
-  const drawer = useDrawerWidth();
 
   // Shareable deep link to this exact case (the drawer re-opens from `?case=`).
-  const permalink = caseKey
-    ? `${window.location.origin}/runs/${encodeURIComponent(runId)}?case=${encodeURIComponent(caseKey)}`
-    : "";
+  const permalinkFor = (key: string) =>
+    `${window.location.origin}/runs/${encodeURIComponent(runId)}?case=${encodeURIComponent(key)}`;
 
   return (
-    <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] data-[state=open]:animate-[overlay-in_120ms_ease-out]" />
-        <Dialog.Content
-          className="fixed inset-y-0 right-0 z-50 flex max-w-full flex-col border-l border-border bg-surface shadow-2xl outline-none data-[state=open]:animate-[drawer-in_160ms_ease-out]"
-          style={{ width: drawer.width }}
-          aria-describedby={undefined}
-          // Radix focuses the first tabbable node on open; without this that is
-          // the resize handle, which is a confusing place to land.
-          onOpenAutoFocus={(e) => e.preventDefault()}
-        >
-          <DrawerResizer
-            width={drawer.width}
-            onResize={drawer.set}
-            onToggle={drawer.toggle}
-          />
-          <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-3">
-            <div className="min-w-0">
-              <Dialog.Title className="truncate text-sm font-semibold">
-                {detail.data?.name ?? caseKey}
-              </Dialog.Title>
-              <div className="truncate font-mono text-xs text-muted">{caseKey}</div>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {caseKey ? (
-                <CopyButton value={permalink} label="Copy link" />
-              ) : null}
-              {/* The drag handle is a hairline and nobody finds it. This is the
-                  discoverable path to the same width, and the one that reaches
-                  full width in a single click. */}
-              <button
-                type="button"
-                onClick={drawer.toggle}
-                aria-label="Toggle panel width"
-                title="Expand / collapse (or drag the left edge)"
-                className="rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 4l-5 8 5 8M15 4l5 8-5 8" />
-                </svg>
-              </button>
-              <Dialog.Close className="rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </Dialog.Close>
-            </div>
-          </div>
-
-          {detail.isPending ? (
-            <div className="flex-1 overflow-y-auto px-5 py-4">
-              <CenteredSpinner label="Loading case…" />
-            </div>
-          ) : detail.isError ? (
-            <div className="flex-1 overflow-y-auto px-5 py-4">
-              <ErrorState error={detail.error} onRetry={() => detail.refetch()} />
-            </div>
-          ) : detail.data && caseKey ? (
-            <>
-              <CaseVerdictStrip
-                detail={detail.data}
-                project={project}
-                suite={suite}
-                runId={runId}
-                caseKey={caseKey}
-              />
-
-              {/* Body order runs verdict-first: what went wrong, why, and what
-                  the model actually said — then the provenance. Prompt and
-                  Input are re-derivable from the suite config; the output is
-                  the only thing this run alone knows, so it leads. */}
-              <div className="flex-1 overflow-y-auto px-5 py-4">
-                <div className="space-y-5">
-                  {detail.data.error ? (
-                    <div className="rounded-lg border border-fail/25 bg-fail/5 p-3">
-                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-fail">
-                        Error
-                      </div>
-                      <p className="text-sm text-fail">{detail.data.error}</p>
-                      {/* The structured diagnostic a provider sent alongside
-                          the message — a rate-limit window, a validation
-                          payload, a child's own error object. An errored case
-                          has no output and no raw metadata, so this is the
-                          only thing it carries; it is deliberately exempt from
-                          `--no-raw` for that reason. Rendered inline rather
-                          than collapsed: you opened an errored case to read
-                          exactly this. */}
-                      {detail.data.error_details != null ? (
-                        <div className="mt-2.5">
-                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-fail/70">
-                            Details
-                          </div>
-                          {typeof detail.data.error_details === "object" ? (
-                            <JsonTree
-                              data={detail.data.error_details}
-                              className="text-[11px]/relaxed"
-                            />
-                          ) : (
-                            <RawText
-                              text={outputToString(detail.data.error_details)}
-                              wrap
-                              className="text-[11px]/relaxed"
-                            />
-                          )}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  <CollapsibleSection
-                    title="Assertions"
-                    meta={assertMeta(detail.data.asserts)}
-                  >
-                    <div className="space-y-2">
-                      {detail.data.asserts.map((a, i) => (
-                        <CaseAssertRow
-                          key={`${a.kind}-${i}`}
-                          assert={a}
-                          showWeight={hasVaryingWeights(detail.data.asserts)}
-                        />
-                      ))}
-                      {detail.data.asserts.length === 0 ? (
-                        <p className="text-sm text-muted">
-                          No assertions were evaluated.
-                        </p>
-                      ) : null}
-                    </div>
-                  </CollapsibleSection>
-
-                  {/* The one capped viewer in the drawer: the prompt messages
-                      and assert details scroll with the body, so this is the
-                      single inner scrollbar rather than one per block. */}
-                  <OutputSection
-                    output={detail.data.output}
-                    raw={detail.data.raw}
-                    stopReason={detail.data.stop_reason}
-                  />
-
-                  <BaselineDiffSection
-                    project={project}
-                    suite={suite}
-                    runId={runId}
-                    caseKey={caseKey}
-                    currentOutput={detail.data.output}
-                  />
-
-                  <CaseInputSection
-                    cell={detail.data.cell}
-                    vars={detail.data.vars}
-                    prompt={detail.data.prompt}
-                    request={detail.data.request}
-                  />
-
-                  {detail.data.raw !== undefined ? (
-                    <RawMetadataSection raw={detail.data.raw} />
-                  ) : null}
+    <DetailDrawer
+      open={!!caseKey}
+      item={detail.data}
+      error={detail.isError ? detail.error : undefined}
+      onRetry={() => detail.refetch()}
+      onClose={onClose}
+      onPrev={onPrev}
+      onNext={onNext}
+      position={position}
+      navItemLabel="case"
+      // Both fall back to the selection, so a cold deep link and a failed load
+      // still name the case in the URL instead of an anonymous bar. Once the
+      // case lands they follow it, so the copied link is always the one on
+      // screen rather than a row still loading behind it.
+      renderHeaderActions={(c) => {
+        const key = c?.case_key ?? caseKey;
+        return key ? <CopyButton value={permalinkFor(key)} label="Copy link" /> : null;
+      }}
+      renderEyebrow={(c) => c?.case_key ?? caseKey ?? null}
+      renderTitle={(c) => c.name ?? c.case_key}
+      renderSubheader={(c) => (
+        <CaseVerdictStrip
+          detail={c}
+          project={project}
+          suite={suite}
+          runId={runId}
+          caseKey={c.case_key}
+        />
+      )}
+      // Body order runs verdict-first: what went wrong, why, and what the model
+      // actually said — then the provenance. Prompt and Input are re-derivable
+      // from the suite config; the output is the only thing this run alone
+      // knows, so it leads.
+      // Keyed by case: this element is the drawer's scroller, and the sections
+      // inside it own their expanded state. Reused across a step, the next case
+      // opens part-way down the previous one's output with whichever sections
+      // that case happened to leave collapsed.
+      renderBody={(c) => (
+        <div key={c.case_key} className="flex-1 overflow-y-auto px-5 py-4">
+          <div className="space-y-5">
+            {c.error ? (
+              <div className="rounded-lg border border-fail/25 bg-fail/5 p-3">
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-fail">
+                  Error
                 </div>
+                <p className="text-sm text-fail">{c.error}</p>
+                {/* The structured diagnostic a provider sent alongside the
+                    message — a rate-limit window, a validation payload, a
+                    child's own error object. An errored case has no output and
+                    no raw metadata, so this is the only thing it carries; it is
+                    deliberately exempt from `--no-raw` for that reason.
+                    Rendered inline rather than collapsed: you opened an errored
+                    case to read exactly this. */}
+                {c.error_details != null ? (
+                  <div className="mt-2.5">
+                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-fail/70">
+                      Details
+                    </div>
+                    {typeof c.error_details === "object" ? (
+                      <JsonTree data={c.error_details} className="text-[11px]/relaxed" />
+                    ) : (
+                      <RawText
+                        text={outputToString(c.error_details)}
+                        wrap
+                        className="text-[11px]/relaxed"
+                      />
+                    )}
+                  </div>
+                ) : null}
               </div>
-            </>
-          ) : null}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+            ) : null}
+
+            <CollapsibleSection title="Assertions" meta={assertMeta(c.asserts)}>
+              <div className="space-y-2">
+                {c.asserts.map((a, i) => (
+                  <CaseAssertRow
+                    key={`${a.kind}-${i}`}
+                    assert={a}
+                    showWeight={hasVaryingWeights(c.asserts)}
+                  />
+                ))}
+                {c.asserts.length === 0 ? (
+                  <p className="text-sm text-muted">No assertions were evaluated.</p>
+                ) : null}
+              </div>
+            </CollapsibleSection>
+
+            {/* The one capped viewer in the drawer: the prompt messages and
+                assert details scroll with the body, so this is the single inner
+                scrollbar rather than one per block. */}
+            <OutputSection output={c.output} raw={c.raw} stopReason={c.stop_reason} />
+
+            <BaselineDiffSection
+              project={project}
+              suite={suite}
+              runId={runId}
+              caseKey={c.case_key}
+              currentOutput={c.output}
+            />
+
+            <CaseInputSection
+              cell={c.cell}
+              vars={c.vars}
+              prompt={c.prompt}
+              request={c.request}
+            />
+
+            {c.raw !== undefined ? <RawMetadataSection raw={c.raw} /> : null}
+          </div>
+        </div>
+      )}
+    />
   );
 }
 

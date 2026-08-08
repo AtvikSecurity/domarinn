@@ -151,6 +151,66 @@ body {
     transform: translateX(100%);
   }
 }
+@keyframes overlay-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes drawer-out {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* The resize tab is the visible affordance; the drawer edge itself supplies the
+ * continuous line. Lighting that existing border avoids drawing a duplicate
+ * hairline inside the hit target. */
+.detail-drawer-panel:has(.drawer-resizer:hover),
+.detail-drawer-panel:has(.drawer-resizer:focus-visible),
+.detail-drawer-panel:has(.drawer-resizer[data-dragging="true"]) {
+  border-left-color: var(--accent);
+}
+
+/* Motion opt-out.
+ *
+ * A panel flying in from the screen edge and a field of pulsing bars are the
+ * vestibular triggers this media query exists for, and neither carries
+ * information the static end state does not — the drawer's position and the
+ * skeleton's shape are the whole message. Everything else in the app is
+ * `transition-colors`, which is not motion.
+ *
+ * Done by redefining the keyframes rather than by selecting the animated
+ * elements: a later `@keyframes` of the same name wins, so this needs no
+ * `!important` and no guess at which Radix node carries the class. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes overlay-in {
+    from {
+      opacity: 1;
+    }
+  }
+  @keyframes drawer-in {
+    from {
+      transform: none;
+    }
+  }
+  @keyframes overlay-out {
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes drawer-out {
+    to {
+      transform: none;
+    }
+  }
+  .detail-drawer-overlay,
+  .detail-drawer-panel {
+    animation-duration: 1ms !important;
+  }
+  .skeleton-bar {
+    animation: none;
+  }
+}
 
 /* highlight.js theme mapped onto the design tokens instead of shipping a stock
  * hljs stylesheet. Because every color is a theme variable, syntax colors

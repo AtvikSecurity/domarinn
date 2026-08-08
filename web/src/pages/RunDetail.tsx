@@ -13,6 +13,7 @@ import { mergeParams, parseCaseFilters } from "@/lib/filters";
 import { parseSort, serializeSort } from "@/lib/sort";
 import { distinctProviders, distinctPrompts } from "@/lib/matrix";
 import { previousRun } from "@/lib/compare";
+import { listNeighbors } from "@/lib/listNeighbors";
 import {
   formatCost,
   formatDate,
@@ -125,6 +126,17 @@ export function RunDetail() {
   const cases = useMemo(
     () => casesQ.data?.pages.flatMap((p) => p.cases) ?? [],
     [casesQ.data],
+  );
+
+  // The rows either side of the open case, so the drawer can step without
+  // closing. Scoped to loaded rows — see `lib/listNeighbors`.
+  const {
+    prevKey: prevCaseKey,
+    nextKey: nextCaseKey,
+    position: casePosition,
+  } = useMemo(
+    () => listNeighbors(cases, filters.case, (c) => c.case_key),
+    [cases, filters.case],
   );
 
   // Debounced output search -> ?q=
@@ -611,6 +623,9 @@ export function RunDetail() {
         suite={r.suite ?? ""}
         caseKey={filters.case}
         onClose={closeCase}
+        onPrev={prevCaseKey === undefined ? undefined : () => selectCase(prevCaseKey)}
+        onNext={nextCaseKey === undefined ? undefined : () => selectCase(nextCaseKey)}
+        position={casePosition}
       />
 
       <Modal

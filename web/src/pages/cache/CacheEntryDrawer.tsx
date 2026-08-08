@@ -1,5 +1,4 @@
 import { useState } from "react";
-import * as Dialog from "@radix-ui/react-dialog";
 import type { CacheEntryDetail } from "@/api";
 import { Link } from "react-router";
 import { useCacheEntry, useCacheEntryRuns } from "@/api/queries";
@@ -10,7 +9,7 @@ import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { StatBlock } from "@/components/ui/StatBlock";
-import { DrawerResizer, useDrawerWidth } from "@/pages/run-detail/DrawerResizer";
+import { DetailDrawer } from "@/components/ui/DetailDrawer";
 import {
   formatBytes,
   formatCost,
@@ -56,99 +55,92 @@ export interface CacheEntryDrawerProps {
   /** From the list row, so section defaults are decided before the fetch lands. */
   size?: number;
   onClose: () => void;
+  /** Step to the neighbouring entry. Omitted at the ends of the loaded rows. */
+  onPrev?: () => void;
+  onNext?: () => void;
+  position?: { index: number; total: number };
 }
 
-export function CacheEntryDrawer({ entryKey, size, onClose }: CacheEntryDrawerProps) {
-  const drawer = useDrawerWidth();
+export function CacheEntryDrawer({
+  entryKey,
+  size,
+  onClose,
+  onPrev,
+  onNext,
+  position,
+}: CacheEntryDrawerProps) {
   // `raw` is the largest member of an entry and the least often wanted, so the
   // server withholds it until asked. Asking re-fetches under a different key.
-  const [withRaw, setWithRaw] = useState(false);
+  //
+  // Stored as *which* entry was asked about rather than a bare flag: a flag
+  // set on one entry stays set as you step, so every later entry would fetch
+  // its largest payload off the back of a single click on the first.
+  const [rawFor, setRawFor] = useState<string | undefined>(undefined);
+  const withRaw = rawFor !== undefined && rawFor === entryKey;
   const query = useCacheEntry(entryKey, { raw: withRaw });
-  const open = !!entryKey;
-  const entry = query.data;
   const compact = (size ?? 0) > SMALL_ENTRY_BYTES;
 
   return (
-    <Dialog.Root
-      open={open}
-      onOpenChange={(o) => {
-        if (!o) {
-          setWithRaw(false);
-          onClose();
-        }
+    <DetailDrawer
+      open={!!entryKey}
+      item={query.data}
+      error={query.isError ? query.error : undefined}
+      onRetry={() => query.refetch()}
+      onClose={() => {
+        setRawFor(undefined);
+        onClose();
       }}
-    >
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] data-[state=open]:animate-[overlay-in_120ms_ease-out]" />
-        <Dialog.Content
-          className="fixed inset-y-0 right-0 z-50 flex max-w-full flex-col border-l border-border bg-surface shadow-2xl outline-none data-[state=open]:animate-[drawer-in_160ms_ease-out]"
-          style={{ width: drawer.width }}
-          aria-describedby={undefined}
-          onOpenAutoFocus={(e) => e.preventDefault()}
-        >
-          <DrawerResizer
-            width={drawer.width}
-            onResize={drawer.set}
-            onToggle={drawer.toggle}
+      onPrev={onPrev}
+      onNext={onNext}
+      position={position}
+      navItemLabel="cache entry"
+      // Both from the shown entry, falling back to the selection so a cold open
+      // and a failure still name the hash that is already in the URL. Keyed off
+      // the entry once it lands, so "Copy key" can never hand back the hash of
+      // a row that is still loading behind this one.
+      renderHeaderActions={(entry) => {
+        const key = entry?.key ?? entryKey;
+        return key ? <CopyButton value={key} label="Copy key" /> : null;
+      }}
+      renderEyebrow={(entry) => {
+        const key = entry?.key ?? entryKey;
+        return key ? <span title={key}>sha256:{shortCacheKey(key)}</span> : null;
+      }}
+      renderTitle={(entry) => entry.model ?? "Cache entry"}
+      renderBody={(entry) => (
+        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+          {/* Keyed by entry: the sections below decide `defaultOpen` from the
+              row's size, and `Used by runs` only queries once opened. Reusing
+              the subtree across a step carries both decisions onto an entry
+              they were not made for — the compact guard stops protecting the
+              4 MiB entry you just stepped onto, and its runs lookup fires
+              without anyone asking. */}
+          <EntryBody
+            key={entry.key}
+            entry={entry}
+            compact={compact}
+            withRaw={withRaw}
+            rawPending={withRaw && query.isFetching}
+            onRequestRaw={() => setRawFor(entryKey)}
           />
-
-          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-5 py-3">
-            <div className="min-w-0">
-              {/* Never `undefined` while pending: the title is the dialog's
-                  accessible name, and "undefined" is what a screen reader
-                  would otherwise announce. */}
-              <Dialog.Title className="truncate text-sm font-semibold">
-                {entry?.model ?? "Cache entry"}
-              </Dialog.Title>
-              {entryKey ? (
-                <p className="truncate font-mono text-xs text-muted" title={entryKey}>
-                  sha256:{shortCacheKey(entryKey)}
-                </p>
-              ) : null}
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {entryKey ? <CopyButton value={entryKey} label="Copy key" /> : null}
-              <Dialog.Close
-                className="rounded-md px-2 py-1 text-sm text-muted hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-label="Close"
-              >
-                ✕
-              </Dialog.Close>
-            </div>
-          </div>
-
-          <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
-            {query.isPending ? (
-              <CenteredSpinner label="Loading entry…" />
-            ) : query.isError ? (
-              <ErrorState error={query.error} onRetry={() => query.refetch()} />
-            ) : entry ? (
-              <EntryBody
-                entry={entry}
-                entryKey={entryKey}
-                compact={compact}
-                withRaw={withRaw}
-                onRequestRaw={() => setWithRaw(true)}
-              />
-            ) : null}
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        </div>
+      )}
+    />
   );
 }
 
 function EntryBody({
   entry,
-  entryKey,
   compact,
   withRaw,
+  rawPending,
   onRequestRaw,
 }: {
   entry: CacheEntryDetail;
-  entryKey?: string;
   compact: boolean;
   withRaw: boolean;
+  /** The raw re-fetch is in flight, so `entry.raw` is still the lean response. */
+  rawPending: boolean;
   onRequestRaw: () => void;
 }) {
   const tokens =
@@ -258,11 +250,17 @@ function EntryBody({
         </CollapsibleSection>
       ) : null}
 
-      <UsedByRuns entryKey={entryKey} />
+      <UsedByRuns entryKey={entry.key} />
 
       <CollapsibleSection title="Provider metadata" defaultOpen={false}>
         {withRaw ? (
-          entry.raw === null ? (
+          // Until the raw re-fetch lands, `entry` is still the lean response,
+          // whose `raw` is null because it was withheld — not because the
+          // entry has none. Saying so would be a wrong answer to the question
+          // the user just asked.
+          rawPending ? (
+            <CenteredSpinner label="Loading metadata…" />
+          ) : entry.raw === null ? (
             <p className="text-sm text-muted">This entry recorded no metadata.</p>
           ) : (
             <Payload value={entry.raw} />

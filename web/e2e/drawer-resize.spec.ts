@@ -70,4 +70,40 @@ test.describe("Case drawer resizing", () => {
 
     expect(await drawerWidth(page)).toBeCloseTo(expanded, 0);
   });
+
+  test("the visible grip sits on the leading edge and the drawer retracts before unmount", async ({
+    page,
+  }) => {
+    await openDrawer(page);
+    const dialog = page.getByRole("dialog");
+    const grip = page.getByTestId("drawer-resize-grip");
+
+    await expect(grip).toBeVisible();
+    // Both rects in one frame. Two `boundingBox()` round-trips can straddle a
+    // frame of the 160ms slide-in and disagree by most of the drawer's travel,
+    // which fails on timing rather than on placement. The grip rides inside the
+    // panel, so their offset is what this is actually about and it holds at
+    // every frame of the animation.
+    const offsets = await page.evaluate(() => {
+      const panel = document.querySelector<HTMLElement>('[role="dialog"]');
+      const tab = document.querySelector<HTMLElement>('[data-testid="drawer-resize-grip"]');
+      if (!panel || !tab) return null;
+      const p = panel.getBoundingClientRect();
+      const t = tab.getBoundingClientRect();
+      return {
+        fromLeadingEdge: Math.abs(t.right - p.left),
+        fromCentre: Math.abs(t.top + t.height / 2 - (p.top + p.height / 2)),
+      };
+    });
+    expect(offsets).not.toBeNull();
+    expect(offsets!.fromLeadingEdge).toBeLessThanOrEqual(2);
+    expect(offsets!.fromCentre).toBeLessThanOrEqual(2);
+
+    await page.getByRole("button", { name: "Close case drawer" }).click();
+    await expect(dialog).toHaveAttribute("data-state", "closed");
+    expect(await dialog.evaluate((el) => getComputedStyle(el).animationName)).toContain(
+      "drawer-out",
+    );
+    await expect(dialog).toHaveCount(0);
+  });
 });

@@ -91,6 +91,29 @@ describe("CacheEntriesPage", () => {
     });
   });
 
+  // The wiring the drawer's chevrons depend on: neighbours come from the page's
+  // loaded rows, and stepping goes through the same `?entry=` edit as a click,
+  // so every position stays deep-linkable.
+  it("steps to the next entry without closing the drawer", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const all = await rows();
+    await user.click(all[0]!);
+
+    // The count is over LOADED rows, which the virtualizer does not equate with
+    // rendered ones — so assert the position, not a total taken from the DOM.
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/^1 of \d+$/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Previous cache entry/ })).toBeDisabled();
+
+    await user.click(within(dialog).getByRole("button", { name: /Next cache entry/ }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByText(/^2 of \d+$/)).toBeInTheDocument();
+    });
+    expect(within(dialog).getByRole("button", { name: /Previous cache entry/ })).toBeEnabled();
+  });
+
   it("shows the teaching empty state, not just 'no entries', when nothing matches", async () => {
     renderPage("/cache/entries?q=zzzznotpresentzzzz");
     expect(

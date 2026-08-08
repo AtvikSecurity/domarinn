@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { cn } from "@/lib/cn";
 import {
   clampWidth,
   DEFAULT_WIDTH,
   DRAWER_WIDTH_KEY,
+  maxWidth,
   MIN_WIDTH,
   parseStoredWidth,
   RESIZE_STEP,
@@ -72,7 +74,11 @@ export function DrawerResizer({
   onResize: (next: number) => void;
   onToggle: () => void;
 }) {
+  // The ref gates pointermove synchronously; state exposes the same lifecycle to
+  // the grip and drawer edge so the active affordance stays painted while the
+  // pointer is away from this narrow rail.
   const dragging = useRef(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   return (
     <div
@@ -81,14 +87,24 @@ export function DrawerResizer({
       aria-label="Resize panel"
       aria-valuenow={width}
       aria-valuemin={MIN_WIDTH}
-      aria-valuemax={typeof window === "undefined" ? width : window.innerWidth}
+      // The clamp, not the viewport: the drawer stops at 95%, and announcing a
+      // width the handle refuses to reach makes the control look broken to
+      // anyone driving it by the numbers.
+      aria-valuemax={
+        typeof window === "undefined" ? width : maxWidth(window.innerWidth)
+      }
       tabIndex={0}
-      // A 1px visual seam with a wider invisible hit area: a hairline is the
-      // right look and an unusable target.
-      className="group absolute inset-y-0 left-0 z-10 w-3 -translate-x-1/2 cursor-col-resize focus-visible:outline-none"
+      // The rail stays wider than its painted tab: a large invisible target is
+      // easy to grab without drawing a second line beside the drawer border.
+      // `touch-none`: without it the browser may claim the drag as a pan and
+      // fire pointercancel part-way through, leaving the drawer at whatever
+      // width the gesture had reached.
+      className="drawer-resizer group absolute inset-y-0 left-0 z-10 w-3 -translate-x-1/2 cursor-col-resize touch-none select-none focus-visible:outline-none"
+      data-dragging={isDragging ? "true" : undefined}
       onDoubleClick={onToggle}
       onPointerDown={(e) => {
         dragging.current = true;
+        setIsDragging(true);
         e.currentTarget.setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
@@ -99,7 +115,12 @@ export function DrawerResizer({
       }}
       onPointerUp={(e) => {
         dragging.current = false;
+        setIsDragging(false);
         e.currentTarget.releasePointerCapture(e.pointerId);
+      }}
+      onPointerCancel={() => {
+        dragging.current = false;
+        setIsDragging(false);
       }}
       onKeyDown={(e) => {
         const step = e.shiftKey ? RESIZE_STEP_LARGE : RESIZE_STEP;
@@ -117,7 +138,38 @@ export function DrawerResizer({
         }
       }}
     >
-      <div className="mx-auto h-full w-px bg-border transition-colors group-hover:bg-accent group-focus-visible:bg-accent" />
+      {/* A solid tab hanging off the leading edge: unlike a hairline, this is
+          visible before the user already knows the panel can be resized. */}
+      <span
+        aria-hidden
+        data-testid="drawer-resize-grip"
+        className={cn(
+          "absolute right-1/2 top-1/2 z-10 flex h-24 w-7 -translate-y-1/2 items-center justify-center",
+          "cursor-col-resize rounded-md border border-border bg-surface-2 text-muted shadow-sm",
+          "transition-all duration-150",
+          "group-hover:scale-110 group-hover:border-accent/60 group-hover:text-fg",
+          "group-focus-visible:scale-110 group-focus-visible:border-accent/60 group-focus-visible:text-fg",
+          isDragging && "scale-110 border-accent bg-surface-2 text-fg",
+        )}
+      >
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <circle cx="9" cy="7" r="0.75" fill="currentColor" stroke="none" />
+          <circle cx="15" cy="7" r="0.75" fill="currentColor" stroke="none" />
+          <circle cx="9" cy="12" r="0.75" fill="currentColor" stroke="none" />
+          <circle cx="15" cy="12" r="0.75" fill="currentColor" stroke="none" />
+          <circle cx="9" cy="17" r="0.75" fill="currentColor" stroke="none" />
+          <circle cx="15" cy="17" r="0.75" fill="currentColor" stroke="none" />
+        </svg>
+      </span>
     </div>
   );
 }
