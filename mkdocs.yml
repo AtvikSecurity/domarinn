@@ -29,6 +29,14 @@ edit_uri: edit/main/docs/
 docs_dir: docs
 site_dir: site
 
+# Session working notes (plans, specs) live under docs/superpowers/ so they sit
+# beside the work they describe, but they are not part of the published book.
+# Excluded rather than added to `nav:` — with `omitted_files: warn` and
+# `--strict`, an untracked scratch file appearing there would otherwise fail the
+# docs build for whoever happens to have one on disk.
+exclude_docs: |
+  superpowers/
+
 # Fail the build on a broken internal link or a nav entry pointing at a missing
 # file. This is our doc lint; build-docs.sh and CI pass --strict, which promotes
 # these warnings to errors.

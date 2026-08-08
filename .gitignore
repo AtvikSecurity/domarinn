@@ -37,3 +37,12 @@ core
 # Docs-screenshot pipeline: the saved login session (a real bearer token),
 # never the captured PNGs — those under docs/assets/screenshots/ are committed.
 web/screenshots/.auth/
+
+# Per-deployment compose settings (public URL, cookie policy, tokens). The
+# checked-in docker-compose.yml reads these, so the template stays generic and
+# nobody's LAN address or relaxed cookie policy ships to everyone else.
+.env
+
+# Session working notes (plans, specs). Under docs/ only so they sit beside the
+# work they describe; they are not part of the published site.
+docs/superpowers/

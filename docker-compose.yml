@@ -45,8 +45,22 @@ services:
 
       # Public base URL the server prints in share links and uses to build
       # absolute URLs behind a reverse proxy. No trailing slash, no path
-      # prefix. REQUIRED if you enable any SSO provider below.
-      DOMARINN_PUBLIC_URL: "https://domarinn.example.com"
+      # prefix. REQUIRED if you enable SSO below.
+      #
+      # Set it per deployment in a `.env` beside this file (gitignored) rather
+      # than editing it here — a hard-coded origin is wrong for every host but
+      # the one that wrote it, and silently sends share links and SSO callbacks
+      # somewhere unreachable:
+      #
+      #   DOMARINN_PUBLIC_URL=https://domarinn.example.com
+      DOMARINN_PUBLIC_URL: "${DOMARINN_PUBLIC_URL:-http://localhost:8321}"
+
+      # Session cookies are Secure whenever the public URL is https, so this
+      # normally needs no setting at all. Override it to "false" ONLY for a
+      # deployment reached over plain HTTP (a LAN box, a local trial) — the
+      # browser would otherwise refuse to store the cookie and nobody could
+      # stay signed in. Never set it on an internet-facing server.
+      DOMARINN_COOKIE_SECURE: "${DOMARINN_COOKIE_SECURE:-}"
 
       # --- Single sign-on (optional) — see
       # docs/reference/server.md#single-sign-on-oidc--saml ---
