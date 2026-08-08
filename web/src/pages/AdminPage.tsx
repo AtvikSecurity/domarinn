@@ -11,6 +11,9 @@ import { useAuthView } from "@/auth/AuthProvider";
 import { ALL_ROLES } from "@/lib/authz";
 import { formatDate } from "@/lib/format";
 import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Chip } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { TextField } from "@/components/ui/TextField";
 import { CenteredSpinner } from "@/components/ui/Spinner";
@@ -121,7 +124,7 @@ export function AdminPage() {
 
       <CreateUserForm onError={(m) => setBanner(m)} />
 
-      <section className="overflow-hidden rounded-xl border border-border bg-surface">
+      <section className={cn(CHROME_FRAME, "overflow-hidden")}>
         <header className="border-b border-border px-4 py-2.5 text-sm font-semibold">
           Accounts
         </header>
@@ -150,7 +153,7 @@ export function AdminPage() {
               onReset={() => resetColumns(USERS_TABLE_ID)}
             />
           </div>
-          <div className="overflow-x-auto scroll-hint">
+          <div className="overflow-x-auto scroll-hint [--scroll-hint-bg:var(--bg)]">
             {/* 840px is the declared tracks' sum, and has to stay under the
                 page's own `max-w-4xl` (896px) — a floor above it would clip
                 the row actions against the card rather than scroll to them. */}
@@ -224,16 +227,9 @@ export function AdminPage() {
                     )}
                     {shownIds.has("status") && (
                     <td className="px-3 py-2">
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset",
-                          u.disabled
-                            ? "bg-surface-2 text-muted ring-border"
-                            : "bg-pass/12 text-pass ring-pass/25",
-                        )}
-                      >
+                      <Chip tone={u.disabled ? "neutral" : "pass"}>
                         {u.disabled ? "disabled" : "active"}
-                      </span>
+                      </Chip>
                     </td>
                     )}
                     {shownIds.has("created") && (
@@ -347,8 +343,10 @@ function CreateUserForm({ onError }: { onError: (message: string) => void }) {
   }
 
   return (
-    <section className="rounded-xl border border-border bg-surface p-4">
-      <h2 className="text-sm font-semibold">Create user</h2>
+    <Card as="section">
+      <h2 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+        Create user
+      </h2>
       <form onSubmit={onSubmit} className="mt-3 flex flex-wrap items-end gap-3">
         <div className="min-w-[10rem] flex-1">
           <TextField
@@ -392,7 +390,7 @@ function CreateUserForm({ onError }: { onError: (message: string) => void }) {
           {createUser.isPending ? "Creating…" : "Create user"}
         </Button>
       </form>
-    </section>
+    </Card>
   );
 }
 

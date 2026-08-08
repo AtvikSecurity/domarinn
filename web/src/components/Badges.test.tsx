@@ -1,20 +1,72 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { StatusBadge } from "./StatusBadge";
-import { PassRateBadge } from "./PassRateBadge";
+import { PassRateBadge, RateBadge } from "./PassRateBadge";
+import { ProviderBadge } from "./ProviderBadge";
 import { Sparkline } from "./Sparkline";
+import { TooltipProvider } from "./ui/Tooltip";
 
 describe("StatusBadge", () => {
-  it("renders the human label for a status", () => {
+  it("renders the human label and dot in the matching outline tone", () => {
     render(<StatusBadge status="fail" />);
-    expect(screen.getByText("Fail")).toBeInTheDocument();
+    const badge = screen.getByText("Fail");
+    expect(badge).toHaveClass(
+      "rounded-[3px]",
+      "border-fail",
+      "text-fail",
+      "bg-transparent",
+    );
+    expect(badge).not.toHaveClass("rounded-full");
+    expect(badge.querySelector("[aria-hidden]")).toBeInTheDocument();
   });
 });
 
 describe("PassRateBadge", () => {
-  it("shows the computed pass percentage", () => {
-    render(<PassRateBadge pass={95} fail={4} error={1} />);
-    expect(screen.getByText("95.0%")).toBeInTheDocument();
+  it("shows the computed pass percentage as a transparent outline", () => {
+    const { container } = render(<PassRateBadge pass={95} fail={4} error={1} />);
+    expect(screen.getByText("95.0%").parentElement).toHaveClass(
+      "border-pass",
+      "text-pass",
+    );
+    expect(container.querySelector(".absolute")).toBeNull();
+  });
+
+  it.each([
+    [0.95, "border-pass", "text-pass"],
+    [0.8, "border-amber", "text-amber"],
+    [0.79, "border-fail", "text-fail"],
+    [null, "border-border-strong", "text-muted"],
+  ] as const)("maps %s to the expected outline tone", (rate, border, text) => {
+    render(<RateBadge rate={rate} />);
+    expect(
+      screen.getByText(rate === null ? "-" : `${(rate * 100).toFixed(1)}%`).parentElement,
+    ).toHaveClass(border, text);
+  });
+});
+
+describe("ProviderBadge", () => {
+  it("stays a focusable tooltip trigger with the outline recipe", () => {
+    render(
+      <TooltipProvider>
+        <ProviderBadge
+          identity={{
+            provider: "oidc:google",
+            kind: "oidc",
+            subject: "user-123",
+            email: "dev@example.com",
+            last_login_at: null,
+          }}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByText("Google")).toHaveAttribute("tabindex", "0");
+    expect(screen.getByText("Google")).toHaveClass(
+      "rounded-[3px]",
+      "border-border-strong",
+      "bg-transparent",
+      "focus-visible:ring-2",
+    );
   });
 });
 

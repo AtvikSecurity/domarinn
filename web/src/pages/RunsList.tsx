@@ -28,11 +28,12 @@ import { useRowNav } from "@/lib/useRowNav";
 import { RunsFilterBar } from "@/components/RunsFilterBar";
 import { Sparkline } from "@/components/Sparkline";
 import { PassRateBadge } from "@/components/PassRateBadge";
+import { Chip } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
-import { Chip } from "@/components/ui/Chip";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { RunOriginCell } from "@/components/RunOriginCell";
 
@@ -240,7 +241,7 @@ function SuiteGroup({ group }: { group: Group }) {
   const pair = comparePair(group.runs, selected);
 
   return (
-    <section className="overflow-hidden rounded-xl border border-border bg-surface">
+    <section className={cn(CHROME_FRAME, "overflow-hidden")}>
       <header className="flex items-center gap-3 border-b border-border px-4 py-2.5">
         <div className="min-w-0">
           {/* The group is named by the set it belongs to, so it links there.
@@ -313,7 +314,7 @@ function SuiteGroup({ group }: { group: Group }) {
       {/* `relative`: contains the Select column's `sr-only` header. Harmless
           today only because that column is leftmost; see SetsPage, where the
           same markup in a trailing column gave the page a sideways scroll. */}
-      <div className="relative overflow-x-auto scroll-hint">
+      <div className="relative overflow-x-auto scroll-hint [--scroll-hint-bg:var(--bg)]">
         {/* `table-layout: fixed` is what makes the <colgroup> widths
             authoritative; under the default `auto` a column's width is
             advisory and a resize does nothing. */}
@@ -477,12 +478,9 @@ function SuiteGroup({ group }: { group: Group }) {
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-1">
                       {r.tags.map((t) => (
-                        <span
-                          key={t}
-                          className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted"
-                        >
+                        <Chip key={t} size="xs" className="normal-case">
                           {t}
-                        </span>
+                        </Chip>
                       ))}
                     </div>
                   </td>

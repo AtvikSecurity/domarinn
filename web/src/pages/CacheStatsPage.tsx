@@ -5,6 +5,8 @@ import { formatBytes, formatInt, formatPercent, formatRelative } from "@/lib/for
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { StatBlock } from "@/components/ui/StatBlock";
 import { ApiError } from "@/api/client";
 import { useAuth } from "@/auth/AuthProvider";
 
@@ -55,7 +57,7 @@ export function CacheStatsPage() {
         <Tile label="Misses" value={formatInt(s.misses)} />
       </div>
 
-      <div className="rounded-xl border border-border bg-surface p-4">
+      <Card>
         <div className="text-sm text-muted">
           Oldest entry:{" "}
           <span className="text-fg">{formatRelative(s.oldest_entry_at)}</span>
@@ -67,10 +69,12 @@ export function CacheStatsPage() {
             search will not reach them.
           </div>
         ) : null}
-      </div>
+      </Card>
 
-      <div className="rounded-xl border border-border bg-surface p-4">
-        <h2 className="text-sm font-semibold">Prune cache</h2>
+      <Card>
+        <h2 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+          Prune cache
+        </h2>
         <p className="mt-1 text-sm text-muted">
           Remove expired and least-recently-used entries. This is an admin action
           {isOpen ? "" : " and requires a valid token"}.
@@ -108,7 +112,7 @@ export function CacheStatsPage() {
         {prune.isSuccess ? (
           <p className="mt-2 text-sm text-pass">Cache pruned.</p>
         ) : null}
-      </div>
+      </Card>
     </div>
   );
 }
@@ -123,15 +127,8 @@ function Tile({
   accent?: boolean;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-surface p-4">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-muted">
-        {label}
-      </div>
-      <div
-        className={`mt-1 text-2xl font-semibold tabular-nums ${accent ? "text-accent" : ""}`}
-      >
-        {value}
-      </div>
-    </div>
+    <StatBlock label={label} tone={accent ? "text-accent" : undefined} className="p-4">
+      <span className="text-2xl font-semibold tabular-nums">{value}</span>
+    </StatBlock>
   );
 }

@@ -11,6 +11,8 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { CaseListItem } from "@/api";
 import { AssertDot, StatusBadge } from "@/components/StatusBadge";
+import { Chip } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import {
@@ -210,12 +212,13 @@ export function CaseGrid({
                   </span>
                 ) : null}
                 {c.cached === true ? (
-                  <span
-                    className="shrink-0 rounded bg-surface-2 px-1 py-px text-[10px] text-muted"
+                  <Chip
+                    className="shrink-0"
+                    size="xs"
                     title="Provider response served from cache"
                   >
                     cached
-                  </span>
+                  </Chip>
                 ) : null}
               </div>
               <div className="truncate font-mono text-[11px] text-muted">
@@ -498,7 +501,7 @@ export function CaseGrid({
         />
       </div>
 
-      <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-surface lg:min-h-0 lg:flex-1">
+      <div className={cn(CHROME_FRAME, "flex flex-col overflow-hidden lg:min-h-0 lg:flex-1")}>
         <div
           ref={parentRef}
           // Sized by the shell rather than by a guessed `vh` fraction: the

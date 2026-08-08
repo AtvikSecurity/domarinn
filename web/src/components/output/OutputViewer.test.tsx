@@ -53,6 +53,20 @@ describe("OutputViewer", () => {
     expect(screen.getByText("text")).toBeInTheDocument();
   });
 
+  it("uses an outline pill for soft wrap and reports its pressed state", async () => {
+    const user = userEvent.setup();
+    __resetOutputPrefs({ raw: false, wrap: false });
+    render(<OutputViewer value={"just some plain prose output"} />);
+
+    const wrap = screen.getByRole("button", { name: "Wrap" });
+    expect(wrap).toHaveAttribute("aria-pressed", "false");
+    expect(wrap).toHaveClass("rounded-[3px]", "border-border-strong", "bg-transparent");
+
+    await user.click(wrap);
+    expect(wrap).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("domarinn.output.wrap")).toBe("1");
+  });
+
   it("toggles to Raw and persists the preference to localStorage", async () => {
     const user = userEvent.setup();
     const json = '{"intent":"resolve"}';

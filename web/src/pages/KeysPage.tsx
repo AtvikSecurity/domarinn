@@ -6,6 +6,9 @@ import { useAuth } from "@/auth/AuthProvider";
 import { scopesAtMost } from "@/lib/authz";
 import { formatDate, formatRelative } from "@/lib/format";
 import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Chip } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { TextField } from "@/components/ui/TextField";
@@ -73,10 +76,10 @@ export function KeysPage() {
     return (
       <div className="max-w-2xl space-y-5">
         <PageHeader />
-        <div className="rounded-xl border border-border bg-surface p-6 text-sm text-muted">
+        <Card className="p-6 text-sm text-muted">
           Your access level does not permit managing API keys. A write or admin
           scope is required.
-        </div>
+        </Card>
       </div>
     );
   }
@@ -96,8 +99,10 @@ export function KeysPage() {
     <div className="max-w-3xl space-y-5">
       <PageHeader />
 
-      <section className="rounded-xl border border-border bg-surface p-4">
-        <h2 className="text-sm font-semibold">Create a key</h2>
+      <Card as="section">
+        <h2 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+          Create a key
+        </h2>
         <p className="mt-1 text-sm text-muted">
           The secret is shown once, immediately after creation. Store it
           somewhere safe.
@@ -142,9 +147,9 @@ export function KeysPage() {
             Could not create the key. Please try again.
           </p>
         ) : null}
-      </section>
+      </Card>
 
-      <section className="overflow-hidden rounded-xl border border-border bg-surface">
+      <section className={cn(CHROME_FRAME, "overflow-hidden")}>
         <header className="border-b border-border px-4 py-2.5 text-sm font-semibold">
           Your keys
         </header>
@@ -175,7 +180,7 @@ export function KeysPage() {
                 onReset={() => resetColumns(KEYS_TABLE_ID)}
               />
             </div>
-            <div className="overflow-x-auto scroll-hint">
+            <div className="overflow-x-auto scroll-hint [--scroll-hint-bg:var(--bg)]">
               {/* 745px is the declared tracks' sum, kept under the page's own
                   `max-w-3xl` (768px) so the table scrolls rather than clips. */}
               <table className="w-full min-w-[745px] table-fixed text-sm">
@@ -232,13 +237,9 @@ export function KeysPage() {
                       {shownIds.has("status") && (
                         <td className="px-3 py-2">
                           {k.revoked ? (
-                            <span className="rounded-full bg-fail/12 px-2 py-0.5 text-[11px] font-medium text-fail ring-1 ring-inset ring-fail/25">
-                              revoked
-                            </span>
+                            <Chip tone="fail">revoked</Chip>
                           ) : (
-                            <span className="rounded-full bg-pass/12 px-2 py-0.5 text-[11px] font-medium text-pass ring-1 ring-inset ring-pass/25">
-                              active
-                            </span>
+                            <Chip tone="pass">active</Chip>
                           )}
                         </td>
                       )}
@@ -340,18 +341,9 @@ function PageHeader() {
 
 function ScopeChip({ scope }: { scope: AuthScope }) {
   return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset",
-        scope === "admin"
-          ? "bg-accent/12 text-accent ring-accent/25"
-          : scope === "write"
-            ? "bg-amber/12 text-amber ring-amber/25"
-            : "bg-surface-2 text-muted ring-border",
-      )}
-    >
+    <Chip tone={scope === "admin" ? "accent" : scope === "write" ? "amber" : "neutral"}>
       {scope}
-    </span>
+    </Chip>
   );
 }
 
@@ -359,14 +351,14 @@ function SignInPrompt({ message }: { message: string }) {
   return (
     <div className="max-w-2xl space-y-5">
       <PageHeader />
-      <div className="rounded-xl border border-border bg-surface p-6">
+      <Card className="p-6">
         <p className="text-sm text-muted">{message}</p>
         <Link to="/login" className="mt-3 inline-block">
           <Button variant="primary" size="sm">
             Go to sign in
           </Button>
         </Link>
-      </div>
+      </Card>
     </div>
   );
 }

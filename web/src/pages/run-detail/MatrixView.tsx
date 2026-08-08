@@ -8,6 +8,7 @@ import {
   singleCellStatus,
 } from "@/lib/matrix";
 import { CenteredSpinner } from "@/components/ui/Spinner";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { ErrorState, EmptyState } from "@/components/States";
 import { cn } from "@/lib/cn";
 import { ColumnResizer } from "@/components/ui/ColumnResizer";
@@ -110,7 +111,12 @@ export function MatrixView({
   // `border-collapse` stays: the row separators are declared on `<tr>`, which
   // does not paint under `border-separate`.
   return (
-    <div className="max-h-[70vh] overflow-auto overscroll-contain rounded-xl border border-border bg-surface lg:max-h-none lg:min-h-0 lg:flex-1">
+    <div
+      className={cn(
+        CHROME_FRAME,
+        "max-h-[70vh] overflow-auto overscroll-contain lg:max-h-none lg:min-h-0 lg:flex-1",
+      )}
+    >
       <table
         className="w-full border-collapse text-sm"
         aria-label="Prompt by provider matrix"

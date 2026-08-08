@@ -1,6 +1,8 @@
 import { Suspense, lazy } from "react";
 import type { Output } from "@/api";
+import { Chip } from "@/components/ui/Chip";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { PillButton } from "@/components/ui/PillButton";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { cn } from "@/lib/cn";
 import { detectContent, outputToString } from "./detect";
@@ -99,22 +101,16 @@ export function OutputViewer({
           />
         ) : null}
         {showWrap ? (
-          <button
-            type="button"
+          <PillButton
             onClick={toggleWrap}
-            aria-pressed={wrap}
+            pressed={wrap}
+            size="xs"
             title="Toggle soft wrap"
-            className={cn(
-              "rounded-md border border-border px-2 py-0.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              wrap ? "bg-surface-2 text-fg" : "text-muted hover:text-fg",
-            )}
           >
             Wrap
-          </button>
+          </PillButton>
         ) : null}
-        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-muted">
-          {TYPE_LABEL[type]}
-        </span>
+        <Chip size="xs">{TYPE_LABEL[type]}</Chip>
         <CopyButton value={raw} label="Copy" className="ml-auto" />
       </div>
 

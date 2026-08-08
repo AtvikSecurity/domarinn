@@ -14,14 +14,16 @@ import { runPath, runsFilterHref } from "@/lib/routes";
 import { Sparkline } from "@/components/Sparkline";
 import { PassRateBadge } from "@/components/PassRateBadge";
 import { Chip } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
+import { cn } from "@/lib/cn";
 
 /** Border tint by severity, so the card reads before you focus on it. */
-const EDGE: Record<Severity, string> = {
+const EDGE: Record<Severity, string | undefined> = {
   failing: "border-fail/50",
   stale: "border-amber/50",
   drifting: "border-amber/30",
-  unknown: "border-border",
-  healthy: "border-border",
+  unknown: "border-skip/40",
+  healthy: undefined,
 };
 
 function DeltaLabel({ points }: { points: number | null }) {
@@ -77,7 +79,8 @@ export function SuiteHealthCard({
   // overlay, not to paint over a neighbour in the grid.
   return (
     <div
-      className={`relative isolate rounded-xl border ${EDGE[severity]} bg-surface p-4`}
+      data-testid="suite-health-card"
+      className={cn("relative isolate p-4", CHROME_FRAME, EDGE[severity])}
     >
       <div className="flex items-baseline justify-between gap-2">
         <h2 className="text-sm font-semibold">
@@ -87,15 +90,12 @@ export function SuiteHealthCard({
             // the wrong thing. Heading colour is kept — accent here would read
             // as one more inline link rather than as the card's identity.
             //
-            // `after:z-[1]` so the overlay also covers the pass-rate badge,
-            // which is `relative` (it contains its own meter bar) and would
-            // otherwise paint above and leave the card's focal point as its
-            // one dead spot. The cost is the badge's `title` breakdown, which
-            // was hover-only and therefore already unreachable on the touch
-            // devices this card most often gets read on.
+            // `after:z-[1]` puts the stretched hit target above the card body.
+            // The explicit links below are raised higher so they remain separate
+            // destinations instead of being intercepted by the card overlay.
             <Link
               to={to}
-              className="rounded-sm hover:underline focus-visible:outline-none after:absolute after:inset-0 after:z-[1] after:rounded-xl focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-offset-1 focus-visible:after:ring-offset-bg"
+              className="rounded-sm hover:underline focus-visible:outline-none after:absolute after:inset-0 after:z-[1] after:rounded-lg focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-offset-1 focus-visible:after:ring-offset-bg"
             >
               <span className="text-muted">{project}</span>
               <span className="text-muted"> / </span>

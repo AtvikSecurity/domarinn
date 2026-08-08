@@ -9,6 +9,7 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { CacheEntryListItem } from "@/api";
 import { Chip } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -173,7 +174,7 @@ export function CacheEntryGrid({
               // One tone for every kind. A per-kind colour needs a design token
               // the contrast test does not cover, and five hues for a nominal
               // facet is noise rather than information.
-              <Chip tone="neutral" size="xs" mono>
+              <Chip tone="neutral" size="xs">
                 {row.original.kind}
               </Chip>
             ) : row.original.parseable === false ? (
@@ -335,7 +336,7 @@ export function CacheEntryGrid({
         />
       </div>
 
-      <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-surface lg:min-h-0 lg:flex-1">
+      <div className={cn(CHROME_FRAME, "flex flex-col overflow-hidden lg:min-h-0 lg:flex-1")}>
         <div
           ref={parentRef}
           className={cn(

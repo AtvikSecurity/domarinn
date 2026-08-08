@@ -13,6 +13,8 @@
   --border-strong: #cfd5de;
   --accent: #4f46e5;
   --accent-fg: #ffffff;
+  --info: #2563eb;
+  --info-rgb: 37 99 235;
   /* Semantic tones. These are painted as 11-12px TEXT on their own tint
    * (`bg-<tone>/12`, and `/15` in DiffView), not on bare white, so they are
    * chosen to clear WCAG AA 4.5:1 against that mix — one to two steps deeper
@@ -36,6 +38,8 @@
   --border-strong: #333a45;
   --accent: #6366f1;
   --accent-fg: #ffffff;
+  --info: #6aa6ff;
+  --info-rgb: 106 166 255;
   --pass: #22c55e;
   --fail: #f56a6a;
   /* `--error` was byte-identical to `--amber` (#f59e0b), which made an error
@@ -56,6 +60,9 @@
   --color-border-strong: var(--border-strong);
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
+  --color-info: var(--info);
+  --color-chrome-border: rgb(var(--info-rgb) / 0.22);
+  --color-chrome-highlight: rgb(var(--info-rgb) / 0.05);
   --color-pass: var(--pass);
   --color-fail: var(--fail);
   --color-error: var(--error);
@@ -123,9 +130,9 @@ body {
  * than an overlay. */
 .scroll-hint {
   background:
-    linear-gradient(to right, var(--surface), transparent) 0 0 / 28px 100%
+    linear-gradient(to right, var(--scroll-hint-bg, var(--surface)), transparent) 0 0 / 28px 100%
       no-repeat local,
-    linear-gradient(to left, var(--surface), transparent) 100% 0 / 28px 100%
+    linear-gradient(to left, var(--scroll-hint-bg, var(--surface)), transparent) 100% 0 / 28px 100%
       no-repeat local,
     linear-gradient(to right, var(--border-strong), transparent) 0 0 / 14px 100%
       no-repeat scroll,

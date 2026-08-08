@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Navigate, useNavigate } from "react-router";
 import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
 import { TextField } from "@/components/ui/TextField";
 
 export function SetupPage() {
@@ -42,7 +43,7 @@ export function SetupPage() {
 
   return (
     <div className="mx-auto max-w-sm py-10">
-      <div className="rounded-xl border border-border bg-surface p-6 shadow-sm">
+      <Card className="p-6">
         <h1 className="text-lg font-semibold tracking-tight">
           Create the first admin
         </h1>
@@ -95,7 +96,7 @@ export function SetupPage() {
             {pending ? "Creating…" : "Create admin & continue"}
           </Button>
         </form>
-      </div>
+      </Card>
     </div>
   );
 }

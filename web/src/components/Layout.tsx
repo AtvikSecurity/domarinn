@@ -13,6 +13,7 @@ import { onUnauthorized } from "@/lib/auth";
 import { cn } from "@/lib/cn";
 import { navItems } from "@/lib/nav";
 import { Button } from "./ui/Button";
+import { Chip } from "./ui/Chip";
 import { MobileNavSheet } from "./MobileNavSheet";
 import { SearchBar } from "./SearchBar";
 import { ThemeToggleButton } from "./ThemeToggle";
@@ -68,23 +69,12 @@ function Logo() {
   );
 }
 
-/**
- * The signed-in user's permission role (admin / viewer). Distinct from the chat
- * turn's `ChatRoleChip` in the case drawer — same word, unrelated concept, so
- * they stay visually distinct on purpose: pill, uppercase, ringed.
- */
+/** The signed-in user's permission role (admin / viewer). */
 function AuthRoleChip({ role }: { role: string }) {
   return (
-    <span
-      className={cn(
-        "rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset",
-        role === "admin"
-          ? "bg-accent/12 text-accent ring-accent/25"
-          : "bg-surface-2 text-muted ring-border",
-      )}
-    >
+    <Chip tone={role === "admin" ? "accent" : "neutral"} size="xs">
       {role}
-    </span>
+    </Chip>
   );
 }
 
@@ -180,11 +170,7 @@ export function Layout() {
           </nav>
           {chromeOnly ? null : <SearchBar />}
           <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
-            {isMockEnabled() ? (
-              <span className="rounded-full bg-amber/12 px-2 py-0.5 text-[11px] font-medium text-amber ring-1 ring-inset ring-amber/25">
-                mock data
-              </span>
-            ) : null}
+            {isMockEnabled() ? <Chip tone="amber">mock data</Chip> : null}
             {meta.data ? (
               <span className="hidden text-xs text-muted sm:inline">
                 v{meta.data.version} · {meta.data.auth_mode}

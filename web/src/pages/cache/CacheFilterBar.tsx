@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import type { CacheFacetsResponse } from "@/api";
 import { Button } from "@/components/ui/Button";
+import { CHROME_FRAME } from "@/components/ui/chrome";
+import { cn } from "@/lib/cn";
 import { CACHE_FILTER_KEYS, type CacheFilters } from "@/lib/filters";
 
 const controlCls =
@@ -38,7 +40,7 @@ export function CacheFilterBar({
     onPatch(Object.fromEntries(CLEARABLE.map((k) => [k, undefined])));
 
   return (
-    <div className="flex shrink-0 flex-wrap items-end gap-3 rounded-xl border border-border bg-surface/60 p-3">
+    <div className={cn(CHROME_FRAME, "flex shrink-0 flex-wrap items-end gap-3 p-3")}>
       <Field label="Search">
         <input
           type="search"

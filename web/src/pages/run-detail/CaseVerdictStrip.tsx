@@ -56,14 +56,19 @@ export function CaseVerdictStrip({
         </span>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
           {(detail.tags ?? []).map((t) => (
-            <Chip key={t}>{t}</Chip>
+            <Chip key={t} className="normal-case">
+              {t}
+            </Chip>
           ))}
           {/* The model the provider *reported* serving, which is not always the
               one configured: an alias silently repointing to a new snapshot is
               exactly the drift this exists to make visible. Absent on runs
               stored before it was recorded. */}
           {detail.model ? (
-            <Chip mono title="The model the provider reported using">
+            <Chip
+              className="normal-case"
+              title="The model the provider reported using"
+            >
               {detail.model}
             </Chip>
           ) : null}
@@ -81,7 +86,7 @@ export function CaseVerdictStrip({
             <Link
               to={`/cache/entries?entry=${encodeURIComponent(detail.cache_key)}`}
               title="Open the cache entry this case was addressed by"
-              className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="rounded-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Chip tone="accent">{detail.cached ? "cached" : "cache entry"} →</Chip>
             </Link>

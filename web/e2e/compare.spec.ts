@@ -53,6 +53,7 @@ test.describe("Compare view", () => {
 
     const outputChanged = chip("Output changed");
     await expect(outputChanged).toBeVisible();
+    await expect(outputChanged).toHaveAttribute("aria-pressed", "false");
     await expect(chip("Newly failing")).toBeVisible();
     await expect(chip("Newly passing")).toBeVisible();
     await expect(chip("Still failing")).toBeVisible();
@@ -65,6 +66,7 @@ test.describe("Compare view", () => {
     await outputChanged.click();
     await expect(page).toHaveURL(/[?&]delta=output_changed/);
     expect(deltaParam(page)).toBe("output_changed");
+    await expect(outputChanged).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByText("No cases in this delta group")).toHaveCount(0);
 
     // Every filtered row is flagged "changed" in the Output column.
@@ -84,6 +86,12 @@ test.describe("Compare view", () => {
     await expect(page.getByText(/^Head$/)).toHaveCount(2);
     // Both diff columns are <pre> blocks.
     expect(await page.locator("pre").count()).toBeGreaterThanOrEqual(2);
+
+    // Selecting the active filter again clears both state channels.
+    await outputChanged.click();
+    await expect(page).not.toHaveURL(/[?&]delta=/);
+    expect(deltaParam(page)).toBeNull();
+    await expect(outputChanged).toHaveAttribute("aria-pressed", "false");
   });
 
   test("base and head selectors are populated with the suite's runs", async ({ page }) => {
@@ -255,11 +263,13 @@ test.describe("Compare view", () => {
     // "changed" ("Output changed"), so a loose match is ambiguous.
     const chip = page.getByRole("button", { name: "prompts changed", exact: true });
     await expect(chip).toBeVisible();
+    await expect(chip).toHaveAttribute("aria-pressed", "false");
 
     // No panel until the chip is clicked.
     await expect(page.getByTestId("config-drift")).toHaveCount(0);
     await chip.click();
     await expect(page).toHaveURL(/[?&]config=1/);
+    await expect(chip).toHaveAttribute("aria-pressed", "true");
 
     const drift = page.getByTestId("config-drift");
     await expect(drift).toBeVisible();
@@ -279,6 +289,7 @@ test.describe("Compare view", () => {
     await chip.click();
     await expect(page.getByTestId("config-drift")).toHaveCount(0);
     await expect(page).not.toHaveURL(/[?&]config=1/);
+    await expect(chip).toHaveAttribute("aria-pressed", "false");
   });
 
   test("an expanded newly-failing row shows the assertion transitions", async ({
