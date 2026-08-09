@@ -61,7 +61,7 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           install_args: rust
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # pin to SHA
       - run: mise run clippy
 
   test:
@@ -79,7 +79,7 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           install_args: rust
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # pin to SHA
         with:
           key: test
       - run: mise run test
@@ -103,7 +103,7 @@ jobs:
       # The rust:bookworm image ships rustc/cargo but not the clippy
       # component; the other CI jobs get it via mise-action.
       - run: rustup component add clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # pin to SHA
         with:
           key: saml
       - run: cargo clippy -p domarinn-server --features saml --all-targets -- -D warnings
@@ -254,7 +254,7 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           install_args: rust
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # pin to SHA
       # Regenerates the schema and diffs it against the committed copy; the
       # full logic lives in the `schema-check` task (.mise/config.toml) so the
       # local run and CI can never drift apart.
@@ -271,7 +271,7 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           install_args: rust
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # pin to SHA
       # Regenerates the TypeScript DTOs and fails on any drift (including
       # untracked new files); the full logic lives in the `gen-types-check`
       # task (.mise/config.toml) so the local run and CI can never drift apart.
@@ -314,7 +314,7 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           install_args: rust
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1 # pin to SHA
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # pin to SHA
         with:
           key: ${{ matrix.target }}
 
