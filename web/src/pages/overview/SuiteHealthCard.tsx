@@ -17,12 +17,20 @@ import { Chip } from "@/components/ui/Chip";
 import { CHROME_FRAME } from "@/components/ui/chrome";
 import { cn } from "@/lib/cn";
 
-/** Border tint by severity, so the card reads before you focus on it. */
+/**
+ * Border tint by severity, so the card reads before you focus on it.
+ *
+ * Only a real verdict colours the edge. `healthy` and `unknown` both fall
+ * through to the chrome frame's own info-blue: one has nothing wrong, the other
+ * has nothing to say yet, and "no CI run has happened" is not a fault to paint.
+ * That distinction is the difference between a quiet page and a wall of warning
+ * on a fresh server, where every suite is `unknown` until CI runs once.
+ */
 const EDGE: Record<Severity, string | undefined> = {
   failing: "border-fail/50",
   stale: "border-amber/50",
   drifting: "border-amber/30",
-  unknown: "border-skip/40",
+  unknown: undefined,
   healthy: undefined,
 };
 
