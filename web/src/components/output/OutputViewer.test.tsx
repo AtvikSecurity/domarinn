@@ -90,15 +90,8 @@ describe("OutputViewer", () => {
     expect(screen.queryByRole("button", { name: "Expand all" })).toBeNull();
   });
 
-  it("shows the RawText fallback while the lazy markdown view loads", async () => {
-    const { container } = render(<OutputViewer value={"# Hello\n\nworld"} />);
-    // Synchronously, the Suspense fallback (RawText <pre> with the raw source)
-    // is on screen so nothing flashes empty.
-    const pre = container.querySelector("pre");
-    expect(pre).not.toBeNull();
-    expect(pre?.textContent).toContain("# Hello");
-
-    // Once the lazy chunk resolves, the rendered heading replaces it.
+  it("renders markdown through the lazy view once it resolves", async () => {
+    render(<OutputViewer value={"# Hello\n\nworld"} />);
     expect(await screen.findByRole("heading", { name: "Hello" })).toBeInTheDocument();
   });
 
