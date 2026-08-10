@@ -12,7 +12,8 @@ import { RawText } from "./RawText";
 import { setRawMode, setWrap, useOutputPrefs } from "./prefs";
 
 const MarkdownView = lazy(() => import("./MarkdownView"));
-const CodeView = lazy(() => import("./CodeView"));
+// Lazy so highlight.js never lands in the main bundle.
+const CodeBlock = lazy(() => import("./CodeBlock"));
 
 /** `code` is only reachable via an explicit `contentType`; detection yields
  *  json/markdown/text. */
@@ -67,10 +68,14 @@ export function OutputViewer({
   const { raw: rawMode, wrap } = useOutputPrefs();
 
   const showRendered = hasRendered && !rawMode;
-  // Soft-wrap only matters when a monospace `<pre>` is actually on screen: the
-  // raw view, plain text, or the (rendered-or-raw) code view. The json tree and
-  // rendered markdown ignore it.
-  const showWrap = !showRendered || type === "code";
+  // The rendered code view is a `CodeBlock`, which carries its own wrap toggle
+  // and copy button in its header. Leaving ours on screen too would put two of
+  // each within a few pixels, both driving the same shared preference.
+  const codeView = showRendered && type === "code";
+  // Soft-wrap only matters when a monospace `<pre>` we own is on screen: the
+  // raw view or plain text. The json tree and rendered markdown ignore it, and
+  // the code block owns its own.
+  const showWrap = !showRendered;
 
   const boxMaxHeight = maxHeight;
 
@@ -111,7 +116,7 @@ export function OutputViewer({
           </PillButton>
         ) : null}
         <Chip size="xs">{TYPE_LABEL[type]}</Chip>
-        <CopyButton value={raw} label="Copy" className="ml-auto" />
+        {codeView ? null : <CopyButton value={raw} label="Copy" className="ml-auto" />}
       </div>
 
       {showRendered ? (
@@ -173,7 +178,13 @@ function RenderedView({
   // code
   return (
     <Suspense fallback={fallback}>
-      <CodeView code={raw} langHint={hint} wrap={wrap} maxHeight={maxHeight} />
+      <CodeBlock
+        code={raw}
+        language={hint}
+        wrap={wrap}
+        onWrapChange={setWrap}
+        maxHeight={maxHeight}
+      />
     </Suspense>
   );
 }

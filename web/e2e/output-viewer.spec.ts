@@ -42,6 +42,33 @@ test.describe("OutputViewer", () => {
     ).toBeVisible();
   });
 
+  test("a fenced code block renders a numbered gutter and its own controls", async ({
+    page,
+  }) => {
+    // Only reachable in a real browser: jsdom has no layout, so the grid gutter
+    // and the block's own lazy chunk are not provable in the unit suite.
+    await page.goto(`/runs/${MONEY_RUN}?case=case-0004`);
+    const drawer = page.getByRole("dialog");
+    await expect(drawer).toBeVisible();
+
+    const block = drawer.getByTestId("code-block").first();
+    await expect(block).toBeVisible();
+    // The fixture's fence is pretty-printed JSON, so the gutter numbers each of
+    // its five lines.
+    await expect(block.getByTestId("code-block-line-num")).toHaveCount(5);
+    await expect(block.getByText("json", { exact: true })).toBeVisible();
+
+    // The header controls are revealed on hover; they drive the shared wrap
+    // preference, so the pressed state has to survive the round trip.
+    await block.hover();
+    const wrap = block.getByTestId("code-block-wrap-toggle");
+    await expect(wrap).toHaveAttribute("aria-pressed", "true");
+    await wrap.click();
+    await expect(wrap).toHaveAttribute("aria-pressed", "false");
+
+    await block.getByRole("button", { name: "Copy code" }).click();
+  });
+
   test("the wrap toggle flips its pressed state on a text output", async ({
     page,
   }) => {

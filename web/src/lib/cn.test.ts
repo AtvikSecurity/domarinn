@@ -53,7 +53,7 @@ describe("cn — the font-size / line-height trap", () => {
   // In Tailwind v4 every `text-<size>` also sets a line-height, so
   // tailwind-merge treats a later `text-*` size as overriding an earlier
   // `leading-*`. This bites the monospace primitives (RawText, JsonTree,
-  // CodeView), whose base is `text-xs leading-relaxed` and which accept a
+  // CodeBlock), whose base is `text-xs leading-relaxed` and which accept a
   // `className` size override from the caller.
   it("keeps leading-* when it follows the size", () => {
     expect(cn("text-[10px] leading-none")).toBe("text-[10px] leading-none");

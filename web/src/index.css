@@ -214,7 +214,7 @@ body {
 
 /* highlight.js theme mapped onto the design tokens instead of shipping a stock
  * hljs stylesheet. Because every color is a theme variable, syntax colors
- * follow light/dark automatically (see CodeView.tsx, which emits `.hljs-*`
+ * follow light/dark automatically (see CodeBlock.tsx, which emits `.hljs-*`
  * spans). Accent = keywords, pass(green) = strings, amber = numbers/literals,
  * muted = comments. */
 .hljs {
