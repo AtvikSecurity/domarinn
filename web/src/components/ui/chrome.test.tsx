@@ -28,7 +28,7 @@ describe("Chip", () => {
   it("renders a semantic outline label", () => {
     render(<Chip tone="fail">failed</Chip>);
     expect(screen.getByText("failed")).toHaveClass(
-      "rounded-[3px]",
+      "rounded-[8px]",
       "border-fail",
       "text-fail",
       "bg-transparent",
@@ -86,7 +86,7 @@ describe("PillButton", () => {
     expect(button).toHaveAttribute("type", "button");
     expect(button).toHaveAttribute("aria-pressed", "true");
     expect(button).toHaveAttribute("data-pressed", "true");
-    expect(button).toHaveClass("rounded-[3px]", "border-amber", "text-amber");
+    expect(button).toHaveClass("rounded-[8px]", "border-amber", "text-amber");
     expect(button).toBeDisabled();
     expect(ref.current).toBe(button);
   });

@@ -65,7 +65,7 @@ describe("OutputViewer", () => {
     // same outline pill driving the same shared preference.
     const wrap = await screen.findByRole("button", { name: "Wrap" });
     expect(wrap).toHaveAttribute("aria-pressed", "false");
-    expect(wrap).toHaveClass("rounded-[3px]", "border-border-strong", "bg-transparent");
+    expect(wrap).toHaveClass("rounded-[8px]", "border-border-strong", "bg-transparent");
 
     await user.click(wrap);
     expect(wrap).toHaveAttribute("aria-pressed", "true");

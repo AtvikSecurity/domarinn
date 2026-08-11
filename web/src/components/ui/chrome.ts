@@ -12,7 +12,7 @@ export type OutlineTone =
   | "skip";
 
 export const OUTLINE_LABEL_BASE =
-  "inline-flex items-center gap-1 rounded-[3px] border bg-transparent font-mono font-medium uppercase tracking-[0.08em] leading-none transition-colors";
+  "inline-flex items-center gap-1 rounded-[8px] border bg-transparent font-mono font-medium uppercase tracking-[0.08em] leading-none transition-colors";
 
 export const OUTLINE_LABEL_TONE: Record<OutlineTone, string> = {
   neutral: "border-border-strong text-muted",

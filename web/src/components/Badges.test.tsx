@@ -11,7 +11,7 @@ describe("StatusBadge", () => {
     render(<StatusBadge status="fail" />);
     const badge = screen.getByText("Fail");
     expect(badge).toHaveClass(
-      "rounded-[3px]",
+      "rounded-[8px]",
       "border-fail",
       "text-fail",
       "bg-transparent",
@@ -62,7 +62,7 @@ describe("ProviderBadge", () => {
 
     expect(screen.getByText("Google")).toHaveAttribute("tabindex", "0");
     expect(screen.getByText("Google")).toHaveClass(
-      "rounded-[3px]",
+      "rounded-[8px]",
       "border-border-strong",
       "bg-transparent",
       "focus-visible:ring-2",
