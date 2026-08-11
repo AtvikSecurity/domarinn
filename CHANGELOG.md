@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.10.2](https://github.com/AtvikSecurity/domarinn/compare/0.10.1...0.10.2) (2026-08-11)
+
+
+### Features
+
+* expected-to-fail cases — `expect_fail` with xfail/xpass statuses ([#91](https://github.com/AtvikSecurity/domarinn/issues/91)) ([3bf584b](https://github.com/AtvikSecurity/domarinn/commit/3bf584b9ee363fbb8f46e285fe189149402bbb17))
+* **ui:** overhaul and adopt Atvik Design System ([a42e365](https://github.com/AtvikSecurity/domarinn/commit/a42e3656f3b2999adb0d29f9ddc9788016af2f3c))
+* **web:** adopt Atvik chrome cards and outline pills ([b4f73bb](https://github.com/AtvikSecurity/domarinn/commit/b4f73bb22a196bf14735f308d1915d5023e181ab))
+* **web:** bring run detail's filter groups onto the tab treatment ([b7c3383](https://github.com/AtvikSecurity/domarinn/commit/b7c33832f8c451704387e894c3a819b0069556f0))
+* **web:** fill the pass-rate pill to its own percentage again ([1f52d87](https://github.com/AtvikSecurity/domarinn/commit/1f52d87ad1a89578cf167bbf6ed663375b2eb4e7))
+* **web:** flatten the top bar onto the page background ([4c6c6c4](https://github.com/AtvikSecurity/domarinn/commit/4c6c6c4d8b5f48752fc797ecd4c2ce9ddfec37ea))
+* **web:** give json trees and the raw view the code-block surface ([76d7554](https://github.com/AtvikSecurity/domarinn/commit/76d75540952b86f8131806a7f482f3989e13e4e6))
+* **web:** give the view switchers an underline tab treatment ([0afa117](https://github.com/AtvikSecurity/domarinn/commit/0afa117ecfcb721e067af6c9345972308398e4ce))
+* **web:** move the dark base canvas to [#0](https://github.com/AtvikSecurity/domarinn/issues/0)d1117 ([0c6bd4c](https://github.com/AtvikSecurity/domarinn/commit/0c6bd4cb1b6420f6ec45cb239413b89ed32cd616))
+* **web:** render code through a block with a line-number gutter ([1039a7b](https://github.com/AtvikSecurity/domarinn/commit/1039a7b376f930b15a6b9852a905c2c19f26a98a))
+* **web:** restyle buttons to the operator-grade recipe ([61a7a44](https://github.com/AtvikSecurity/domarinn/commit/61a7a44d2bf713d088149814938a79db6822609e))
+* **web:** round the outline pills to 8px ([7a382e0](https://github.com/AtvikSecurity/domarinn/commit/7a382e0772ba1abde4107099afd5d5f1670bf3cf))
+* **web:** sit the case rows on the page instead of a surface ([421d0c3](https://github.com/AtvikSecurity/domarinn/commit/421d0c351f2f2a2385068e717216aa62f3ee387e))
+
+
+### Bug Fixes
+
+* **compose:** read the public URL and cookie policy from .env ([6fcbe62](https://github.com/AtvikSecurity/domarinn/commit/6fcbe62cea9c91f21bb3f637ce835eb00c6cb75e))
+* **web:** stop painting a suite with no CI run as a warning ([cdfef5c](https://github.com/AtvikSecurity/domarinn/commit/cdfef5cea29f5ae485012f737f3af12d49db73ab))
+* **web:** stop the scroll hint painting a grey band on every table ([7005914](https://github.com/AtvikSecurity/domarinn/commit/70059141d3a884e3954729bf195ad3e3cf7dce03))
+
+
+### Reverts
+
+* **web:** put pills and eyebrows back in the page font ([7abe699](https://github.com/AtvikSecurity/domarinn/commit/7abe699064d3a71741e3331ca223eb4662bd9100))
+
+
+### Code Refactoring
+
+* **web:** share one detail drawer between cases and cache entries ([9dc707f](https://github.com/AtvikSecurity/domarinn/commit/9dc707f8e6de026d5b9a2f4a45b604ca7b5cb9ac))
+
 ## [0.10.1](https://github.com/AtvikSecurity/domarinn/compare/0.10.0...0.10.1) (2026-08-06)
 
 
