@@ -9,11 +9,25 @@ describe("StatusBadge", () => {
     render(<StatusBadge status="fail" />);
     expect(screen.getByText("Fail")).toBeInTheDocument();
   });
+
+  it("labels the expected-failure statuses", () => {
+    render(<StatusBadge status="xfail" />);
+    expect(screen.getByText("XFail")).toBeInTheDocument();
+    render(<StatusBadge status="xpass" />);
+    expect(screen.getByText("XPass")).toBeInTheDocument();
+  });
 });
 
 describe("PassRateBadge", () => {
   it("shows the computed pass percentage", () => {
     render(<PassRateBadge pass={95} fail={4} error={1} />);
+    expect(screen.getByText("95.0%")).toBeInTheDocument();
+  });
+
+  it("counts an xpass against the rate like a fail", () => {
+    // 95 pass / 5 gate-failures: xpasses drag the gate view identically
+    // to fails, so the badge cannot show green over a red run.
+    render(<PassRateBadge pass={95} fail={0} error={0} xpass={5} />);
     expect(screen.getByText("95.0%")).toBeInTheDocument();
   });
 });

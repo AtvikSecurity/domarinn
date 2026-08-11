@@ -15,6 +15,8 @@ const STATUS_STYLE: Record<BadgeStatus, string> = {
   error: "bg-error/12 text-error ring-error/25",
   skip: "bg-skip/12 text-skip ring-skip/25",
   skipped: "bg-skip/12 text-skip ring-skip/25",
+  xfail: "bg-xfail/12 text-xfail ring-xfail/25",
+  xpass: "bg-xpass/12 text-xpass ring-xpass/25",
 };
 
 const STATUS_LABEL: Record<BadgeStatus, string> = {
@@ -23,6 +25,8 @@ const STATUS_LABEL: Record<BadgeStatus, string> = {
   error: "Error",
   skip: "Skip",
   skipped: "Skip",
+  xfail: "XFail",
+  xpass: "XPass",
 };
 
 export function StatusBadge({

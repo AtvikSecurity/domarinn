@@ -168,6 +168,27 @@ matrix:
         assert_eq!(ids(&expand_matrix(&tc).unwrap()), ids(&expanded));
     }
 
+    /// Expansion clones the whole case, so the annotation rides along — but a
+    /// pin, because losing it would silently turn every cell's XFail into a
+    /// gate-failing Fail.
+    #[test]
+    fn expect_fail_propagates_to_every_matrix_cell() {
+        let tc = case(
+            r#"
+id: greet
+expect_fail: "known bug"
+matrix:
+  style: [terse, warm]
+"#,
+        );
+        let expanded = expand_matrix(&tc).unwrap();
+        assert_eq!(expanded.len(), 2);
+        for cell in &expanded {
+            assert!(cell.expect_fail_enabled());
+            assert_eq!(cell.expect_fail_reason(), Some("known bug"));
+        }
+    }
+
     #[test]
     fn axis_values_merge_into_vars() {
         let tc = case(

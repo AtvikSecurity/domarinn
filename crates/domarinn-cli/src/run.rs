@@ -529,7 +529,11 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
             result.summary.total - result.summary.skipped
         );
         exit::USAGE
-    } else if result.summary.failed > 0 || regressed {
+    } else if result.summary.failed > 0 || result.summary.xpassed > 0 || regressed {
+        // An xpass is an assertion-level failure of the gate: the case passed,
+        // but its `expect_fail` marker says it must not — strict xfail, so the
+        // stale marker has to be removed before the gate goes green. xfails
+        // deliberately appear nowhere in this chain.
         exit::ASSERT_FAIL
     } else {
         exit::OK

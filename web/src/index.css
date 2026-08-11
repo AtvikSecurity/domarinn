@@ -23,6 +23,12 @@
   --error: #b23b0b;
   --skip: #5a6675;
   --amber: #a54c08;
+  /* Expected-failure tones: xfail is expected and unremarkable (muted,
+   * amber-adjacent so it neither greens nor reds a glance); xpass fails
+   * the gate but for a different reason than fail, so it gets its own
+   * alarming hue (fuchsia) rather than borrowing fail's red. */
+  --xfail: #7c5806;
+  --xpass: #a21caf;
   --ring: #6366f1;
 }
 
@@ -43,6 +49,8 @@
   --error: #fb923c;
   --skip: #8c96a6;
   --amber: #f59e0b;
+  --xfail: #d3a94c;
+  --xpass: #e879f9;
   --ring: #818cf8;
 }
 
@@ -61,6 +69,8 @@
   --color-error: var(--error);
   --color-skip: var(--skip);
   --color-amber: var(--amber);
+  --color-xfail: var(--xfail);
+  --color-xpass: var(--xpass);
   --color-ring: var(--ring);
 
   --font-sans:

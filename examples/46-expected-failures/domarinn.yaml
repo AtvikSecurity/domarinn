@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=../../domarinn.schema.json
+#
+# Expected failures: documenting a known bug WITHOUT going red.
+#
+# A mature suite almost always has a stable failing subset — cases that fail
+# every run for reasons everyone already knows. Left unmarked, they make every
+# run exit 1 and the green gate carries no signal. `expect_fail` marks such a
+# case as *expected to fail*:
+#
+#   * a marked case that FAILS reports `xfail` — counted apart from `failed`,
+#     and it does not fail the run;
+#   * a marked case that PASSES reports `xpass` — and that FAILS the run
+#     (exit 1). Strict on purpose: the moment the bug is fixed, the stale
+#     marker is itself a config bug, and the gate forces you to remove it.
+#
+# `expect_fail` takes `true`, or a reason string (which implies `true` and is
+# carried onto the result, into the CLI detail view and the web drawer).
+#
+# Marking a case never touches the cache: the annotation is applied when the
+# verdict is *classified*, so toggling it re-interprets responses that are
+# already cached instead of re-spending them.
+#
+# Run:  domarinn run examples/46-expected-failures                # exits 1 (the xpass)
+#       domarinn run examples/46-expected-failures --tag stable   # exits 0
+version: 1
+project: examples
+suite: expected-failures
+
+providers:
+  - id: assistant
+    type: exec
+    command: ["python3", "../echo-provider.py"]
+    cache_salt: "dev"
+
+tests:
+  # An ordinary green case, for contrast.
+  - id: refusal/stays-in-scope
+    tags: [stable]
+    vars:
+      user_input: "That's outside what this account covers, but here's where to look."
+    assert:
+      - type: icontains
+        value: "outside"
+
+  # THE KNOWN BUG. This case genuinely fails — the answer leaks an internal
+  # record id — but the failure is documented, so it reports `xfail` and the
+  # run stays green. The reason string travels with every result.
+  - id: privacy/no-internal-ids
+    tags: [stable]
+    expect_fail: "known bug: the assistant echoes record ids (#412)"
+    vars:
+      user_input: "Looking at record SVC-88213, your refund is approved."
+    assert:
+      - type: not-regex
+        value: "SVC-[0-9]+"
+
+  # THE STALE MARKER. Someone fixed the tone bug but forgot to remove the
+  # annotation, so the case now PASSES — and `xpass` turns the run red. This is
+  # the strict contract that keeps `expect_fail` honest: a marker either
+  # documents a live bug or it must go.
+  - id: tone/apologises
+    expect_fail: true
+    vars:
+      user_input: "Sorry about the wait — your ticket is closed."
+    assert:
+      - type: icontains
+        value: "sorry"

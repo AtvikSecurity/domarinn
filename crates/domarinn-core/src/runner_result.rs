@@ -95,6 +95,8 @@ pub(super) fn error_case(
         empty_reason: None,
         answered_by_provider_id: inputs.answered_by_provider_id,
         fallback_attempts: inputs.fallback_attempts,
+        // The annotation is a fact about the case even when the call broke.
+        expect_fail_reason: test.expect_fail_reason().map(String::from),
     }
 }
 
@@ -145,6 +147,10 @@ pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
             CaseStatus::Fail => s.failed += 1,
             CaseStatus::Error => s.errored += 1,
             CaseStatus::Skip => s.skipped += 1,
+            // Counted apart from `failed`/`passed`: an xfail never fails the
+            // gate, an xpass always does (strict `expect_fail`).
+            CaseStatus::XFail => s.xfailed += 1,
+            CaseStatus::XPass => s.xpassed += 1,
         }
         if let Some(u) = &c.usage {
             // Cache reads included: they are prompt tokens that were sent, and
@@ -263,6 +269,7 @@ mod tests {
             error_details: None,
             model: None,
             error_class: None,
+            expect_fail_reason: None,
         }
     }
 
@@ -299,6 +306,27 @@ mod tests {
     fn summarize_leaves_empty_counts_empty_when_no_case_is_empty() {
         let summary = summarize(&[case("a", CaseStatus::Pass, None)]);
         assert!(summary.empty_counts.is_empty());
+    }
+
+    /// The expected-failure statuses get their own counters — an xfail is not
+    /// a `failed` (it never fails the gate) and an xpass is not a `passed`
+    /// (it does). `total` still counts every case.
+    #[test]
+    fn summarize_tallies_xfail_and_xpass_apart_from_fail_and_pass() {
+        let summary = summarize(&[
+            case("a", CaseStatus::Pass, None),
+            case("b", CaseStatus::Fail, None),
+            case("c", CaseStatus::XFail, None),
+            case("d", CaseStatus::XFail, None),
+            case("e", CaseStatus::XPass, None),
+        ]);
+        assert_eq!(summary.total, 5);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.xfailed, 2);
+        assert_eq!(summary.xpassed, 1);
+        assert_eq!(summary.errored, 0);
+        assert_eq!(summary.skipped, 0);
     }
 
     /// `""` is the storage layer's "known: not empty" sentinel, and the server

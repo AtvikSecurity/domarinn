@@ -212,6 +212,7 @@ Inline tests, and every test loaded from a file, share the same shape:
 | `assert` | list | no | Assertions to run against the output. See [`assertions.md`](assertions.md). |
 | `threshold` | float | no | If set, the case **passes when its weighted-mean assertion score ≥ `threshold`**. If unset, the case passes only when **every** assertion passes. |
 | `cache_salt` | string | no | Opaque per-case cache-busting token, folded into the key of the provider requests of **every case this test produces**, and nothing else. Never sent to the provider and never templated. Use it when the system under test loads content domarinn cannot see. See [caching.md](../concepts/caching.md#per-case-salts). |
+| `expect_fail` | bool or string | no | Marks the case **expected to fail** — the documented state of a known bug. A string is a reason (implies `true`) carried onto every result. A marked case that fails reports `xfail` and never fails the run; one that passes reports `xpass` and **does** (strict — a stale marker is a config bug). Applied at classification time, never part of any cache key. See [example 46](../examples/running-and-reporting.md#example-46--expected-failures). |
 | `only_providers` | list of provider ids | no | Restrict this case to these providers. |
 | `skip_providers` | list of provider ids | no | Exclude these providers from this case. |
 | `history` | list of turns, or `file://` string | no | This case's prior conversation, spliced into the prompt. See [Per-case history](#per-case-history). |
@@ -341,6 +342,7 @@ A glob string must start with `file://`; the remainder is a glob resolved relati
 | `tags` | Comma-separated tag list. |
 | `threshold` | Parsed as a float (ignored if it doesn't parse). |
 | `cache_salt` | The case's [cache salt](../concepts/caching.md#per-case-salts) — reserved so a digest column keys the cache instead of becoming a var. |
+| `expect_fail` | `true`/`false`, or a reason string that implies `true`; an empty cell is unset. Reserved for the same reason as `cache_salt`: a marker column must annotate the case, not leak to the provider as a var. |
 | `__assert` | A JSON array of assertions. |
 | `__history` | The case's [history](#per-case-history): a JSON array of `{role, content}` turns, or a `file://` transcript path. An empty cell means *unset* — like an absent YAML field, it falls back to `defaults.history`; a literal `[]` cell opts out of the default entirely. |
 

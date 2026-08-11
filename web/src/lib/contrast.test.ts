@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
 // vitest's root is `web/`.
 const CSS = readFileSync(resolve(process.cwd(), "src/index.css"), "utf8");
 
-const TONES = ["pass", "fail", "error", "skip", "amber"] as const;
+const TONES = ["pass", "fail", "error", "skip", "amber", "xfail", "xpass"] as const;
 const AA_TEXT = 4.5;
 
 function block(selector: string): string {

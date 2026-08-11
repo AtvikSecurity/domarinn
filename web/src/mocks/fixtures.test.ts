@@ -51,10 +51,14 @@ describe("fixture dataset", () => {
     const fail = cases.filter((c) => c.status === "fail").length;
     const error = cases.filter((c) => c.status === "error").length;
     const skip = cases.filter((c) => c.status === "skip").length;
+    const xfail = cases.filter((c) => c.status === "xfail").length;
+    const xpass = cases.filter((c) => c.status === "xpass").length;
     expect(summary.pass_count).toBe(pass);
     expect(summary.fail_count).toBe(fail);
     expect(summary.error_count).toBe(error);
-    expect(pass + fail + error + skip).toBe(500);
+    expect(summary.xfail_count).toBe(xfail);
+    expect(summary.xpass_count).toBe(xpass);
+    expect(pass + fail + error + skip + xfail + xpass).toBe(500);
   });
 
   it("returns full case detail (a real CaseResult) with output and per-assert reasons", () => {

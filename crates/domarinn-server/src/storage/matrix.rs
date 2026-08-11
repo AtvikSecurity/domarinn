@@ -76,6 +76,8 @@ struct CellAcc {
     failed: i64,
     errored: i64,
     skipped: i64,
+    xfailed: i64,
+    xpassed: i64,
     score_sum: f64,
     score_count: i64,
     output_hashes: HashSet<String>,
@@ -252,6 +254,8 @@ impl MatrixFilter {
                 CaseStatus::Fail => cell.failed += 1,
                 CaseStatus::Error => cell.errored += 1,
                 CaseStatus::Skip => cell.skipped += 1,
+                CaseStatus::XFail => cell.xfailed += 1,
+                CaseStatus::XPass => cell.xpassed += 1,
             }
             if let Some(score) = raw.score {
                 cell.score_sum += score;
@@ -379,6 +383,8 @@ fn finalize_cell(acc: CellAcc) -> MatrixCell {
         failed: acc.failed,
         errored: acc.errored,
         skipped: acc.skipped,
+        xfailed: acc.xfailed,
+        xpassed: acc.xpassed,
         score_mean,
         pass_fraction,
         distinct_outputs: acc.output_hashes.len() as i64,

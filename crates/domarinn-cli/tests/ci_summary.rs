@@ -542,6 +542,10 @@ fn ci_summary_writes_github_output_pairs() {
     assert_eq!(pairs.get("failed"), Some(&"1"));
     assert_eq!(pairs.get("errored"), Some(&"0"));
     assert_eq!(pairs.get("failed-or-errored"), Some(&"1"));
+    // Emitted at zero like every counter: a gating workflow needs `0` to mean
+    // "no expected-failure cases", not "this CLI is too old to say".
+    assert_eq!(pairs.get("xfailed"), Some(&"0"));
+    assert_eq!(pairs.get("xpassed"), Some(&"0"));
     assert_eq!(pairs.get("total"), Some(&"1"));
     assert_eq!(pairs.get("pass-rate"), Some(&"0.0"));
     assert_eq!(pairs.get("regressed"), Some(&"0"));

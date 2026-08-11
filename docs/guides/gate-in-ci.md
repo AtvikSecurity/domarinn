@@ -83,6 +83,8 @@ Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command), w
 | `failed`         | Number of cases that failed **or** errored. |
 | `errored`        | Number of cases that errored (a subset of `failed`). |
 | `total`          | Total number of cases. |
+| `xfailed`        | Number of [`expect_fail`](../reference/domarinn-yaml.md#inline-and-loaded-test-fields) cases that failed as expected. **Not** part of `failed` — an expected failure never fails the gate. |
+| `xpassed`        | Number of `expect_fail` cases that passed unexpectedly. Not folded into `failed` either (its meaning predates these statuses), but the exit code is `1` whenever this is nonzero. |
 | `pass-rate`      | Percentage of cases that passed, one decimal (e.g. `91.7`). |
 | `cost-usd` | Cost of the work this run represents, in USD (empty when unpriced). |
 | `cache-savings-usd` | What the cached cases would have cost. Actual spend is `cost-usd` minus this. |

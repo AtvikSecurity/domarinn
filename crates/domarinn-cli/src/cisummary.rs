@@ -185,7 +185,13 @@ fn write_github_output(
         // The action's long-standing `failed` output means "failed or errored";
         // keeping that sum available under its own key lets the action preserve
         // its contract without either side lying about what it counted.
+        // `xpassed` is deliberately NOT folded in: that sum's meaning is
+        // documented and consumers gate on the exit code, which already goes
+        // red on an xpass.
         ("failed-or-errored", (s.failed + s.errored).to_string()),
+        // Always written, zeros included, like every counter here.
+        ("xfailed", s.xfailed.to_string()),
+        ("xpassed", s.xpassed.to_string()),
         ("total", s.total.to_string()),
         ("pass-rate", pct(s.passed, s.total)),
         ("cache-hits", s.cache_hits.to_string()),

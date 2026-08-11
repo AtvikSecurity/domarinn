@@ -83,6 +83,10 @@ pub struct Cells {
     pub failed: u64,
     pub errored: u64,
     pub skipped: u64,
+    /// Expected failures (`expect_fail` cases that failed) — green, like skip.
+    pub xfailed: u64,
+    /// Unexpected passes (`expect_fail` cases that passed) — red, like fail.
+    pub xpassed: u64,
 }
 
 impl Cells {
@@ -92,6 +96,8 @@ impl Cells {
         failed: 0,
         errored: 0,
         skipped: 0,
+        xfailed: 0,
+        xpassed: 0,
     };
 
     /// The common case: everything green.
@@ -101,11 +107,13 @@ impl Cells {
             failed: 0,
             errored: 0,
             skipped: 0,
+            xfailed: 0,
+            xpassed: 0,
         }
     }
 
     pub fn total(&self) -> u64 {
-        self.passed + self.failed + self.errored + self.skipped
+        self.passed + self.failed + self.errored + self.skipped + self.xfailed + self.xpassed
     }
 }
 
@@ -152,6 +160,22 @@ pub const RUN: &[&str] = &[
 /// A second run against the same cache directory — the warm half of a caching
 /// example.
 pub const RUN_AGAIN: &[&str] = RUN;
+
+/// [`RUN`] narrowed to `--tag stable`, for the expected-failures example: the
+/// green half of the demo excludes the case whose marker has gone stale.
+pub const RUN_TAG_STABLE: &[&str] = &[
+    "run",
+    "{dir}",
+    "--tag",
+    "stable",
+    "--format",
+    "json",
+    "--out",
+    "{tmp}/result.json",
+    "--no-progress",
+    "--cache-dir",
+    "{tmp}/cache",
+];
 
 /// [`RUN`] with three trials per cell, for the confidence-interval example.
 pub const REPEAT_3: &[&str] = &[

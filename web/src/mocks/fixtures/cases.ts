@@ -98,24 +98,31 @@ function statusFor(meta: RunMeta, seed: string | number): CaseStatus {
   const passProb = clamp(0.98 - difficulty * 0.9 + drift + wobble, 0.03, 0.99);
 
   if (rand(meta.suiteKey, "skip", seed) > 0.985) return "skip";
+  // A small stable subset of cases carries an `expect_fail` annotation — a
+  // property of the *case*, so it never wobbles with the run. Annotated cases
+  // land xfail/xpass instead of fail/pass; a hard error outranks the marker.
+  const annotated = rand(meta.suiteKey, "xf", seed) > 0.94;
   const roll = rand(meta.suiteKey, seed, meta.runIndex, "roll");
   if (roll > passProb) {
     // Some failures are hard errors rather than assertion failures.
-    return rand(meta.suiteKey, seed, meta.runIndex, "err") > 0.8 ? "error" : "fail";
+    if (rand(meta.suiteKey, seed, meta.runIndex, "err") > 0.8) return "error";
+    return annotated ? "xfail" : "fail";
   }
-  return "pass";
+  return annotated ? "xpass" : "pass";
 }
 
 function leanAsserts(meta: RunMeta, seed: string | number, status: CaseStatus): CaseAssertLean[] {
   if (status === "skip") return [];
   const kinds = meta.suiteDef.labels;
   // For a failing/error case, choose which labels are the culprits.
-  const failingIdx =
-    status === "pass"
-      ? -1
-      : Math.floor(rand(meta.suiteKey, seed, meta.runIndex, "fl") * kinds.length);
+  // An xpass graded like a pass and an xfail like a fail — the annotation
+  // moves the *status*, never the asserts underneath it.
+  const passish = status === "pass" || status === "xpass";
+  const failingIdx = passish
+    ? -1
+    : Math.floor(rand(meta.suiteKey, seed, meta.runIndex, "fl") * kinds.length);
   return kinds.map((kind, li) => {
-    const isCulprit = status !== "pass" && (li === failingIdx || (status === "error" && li === 0));
+    const isCulprit = !passish && (li === failingIdx || (status === "error" && li === 0));
     const passed = !isCulprit;
     const score = passed
       ? 0.8 + rand(meta.suiteKey, seed, kind, "s") * 0.2

@@ -181,4 +181,12 @@ answered_by_provider_id?: string,
  * before this field existed. See the note on
  * [`RunSummary::cache_read_tokens`] for why that matters.
  */
-fallback_attempts?: Array<FallbackAttempt>, };
+fallback_attempts?: Array<FallbackAttempt>, 
+/**
+ * The reason string from the case's `expect_fail` annotation, when it
+ * carried one. Present whenever the annotation had a reason — including
+ * on an [`CaseStatus::Error`] or [`CaseStatus::Skip`] case, because the
+ * annotation is a fact about the case, not about this run's outcome.
+ * Documentation only: it never participates in grading or digests.
+ */
+expect_fail_reason?: string, };

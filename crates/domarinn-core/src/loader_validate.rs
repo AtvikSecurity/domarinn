@@ -220,6 +220,28 @@ pub fn validate(suite: &Suite, raw: &Yaml) -> Validation {
         }
     }
 
+    // An `expect_fail` case with nothing to grade scores 1.0 unconditionally
+    // (see `scoring::weighted_mean`), so it can only ever xpass and fail the
+    // gate — almost certainly not what the author meant. Default asserts count
+    // as something to grade; file-loaded tests are validated by their own
+    // loaders and checked again at grading time.
+    let default_asserts = suite
+        .defaults
+        .as_ref()
+        .is_some_and(|d| !d.assert.is_empty());
+    for (i, source) in suite.tests.iter().enumerate() {
+        let crate::config::TestSource::Inline(tc) = source else {
+            continue;
+        };
+        if tc.expect_fail_enabled() && tc.assert.is_empty() && !default_asserts {
+            issues.push(Issue::warning(
+                format!("tests[{i}]"),
+                "`expect_fail` on a case with no asserts: it grades nothing, \
+                 so it can only ever pass unexpectedly (xpass) and fail the run",
+            ));
+        }
+    }
+
     crate::loader_validate_history::check(suite, &mut issues);
     crate::loader_validate_fallback::check(suite, &mut issues);
 
@@ -498,6 +520,49 @@ mod tests {
         let (suite, raw) = load_str_raw("version: 1\nproviders: []\n").unwrap();
         let issues = validate(&suite, &raw).into_issues();
         assert!(issues.iter().any(|i| i.path == "providers"));
+    }
+
+    /// An `expect_fail` case with no asserts (its own or the suite default's)
+    /// scores 1.0 unconditionally, so it can only ever XPass and fail the
+    /// gate. A warning, not an error: the run itself reports it loudly.
+    #[test]
+    fn expect_fail_with_nothing_to_grade_warns_and_defaults_asserts_silence_it() {
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers:
+  - {id: p, type: openai, model: gpt-x}
+tests:
+  - {id: bare, expect_fail: true}
+  - {id: graded, expect_fail: true, assert: [{type: contains, value: x}]}
+"#,
+        )
+        .unwrap();
+        let validation = validate(&suite, &raw);
+        let warnings: Vec<_> = validation.warnings().collect();
+        assert_eq!(warnings.len(), 1, "exactly the bare case: {warnings:?}");
+        assert_eq!(warnings[0].path, "tests[0]");
+        assert!(
+            warnings[0].message.contains("expect_fail"),
+            "{}",
+            warnings[0].message
+        );
+        assert_eq!(validation.errors().count(), 0);
+
+        // Suite-level default asserts grade the case, so no warning.
+        let (suite, raw) = load_str_raw(
+            r#"
+version: 1
+providers:
+  - {id: p, type: openai, model: gpt-x}
+defaults:
+  assert: [{type: is-json}]
+tests:
+  - {id: bare, expect_fail: true}
+"#,
+        )
+        .unwrap();
+        assert_eq!(validate(&suite, &raw).warnings().count(), 0);
     }
 
     #[test]

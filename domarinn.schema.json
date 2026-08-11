@@ -921,6 +921,17 @@
               "type": "null"
             }
           ]
+        },
+        "expect_fail": {
+          "description": "Marks this case as *expected to fail* — the documented state of a known\nbug. `true`, or a reason string (which implies `true`). A failing case\nbecomes `xfail` and does not fail the run; a passing one becomes\n`xpass` and *does* (strict: a stale marker is a config bug).\n\nApplied at classification time, never part of any cache key — toggling\nit re-interprets results that are already cached, like editing a\n`refusal_patterns` entry. It *does* join the case's assert digest (like\n`threshold`: it decides the verdict), though only as a bool — the\nreason is documentation and editing it moves nothing.\n\nDeliberately not fillable from `defaults`: a suite-wide \"everything is\nexpected to fail\" inverts what a green gate means. Annotate the\nspecific known bug.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExpectFail"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -1696,6 +1707,17 @@
           "items": {
             "$ref": "#/$defs/Message"
           }
+        }
+      ]
+    },
+    "ExpectFail": {
+      "description": "The value of [`TestCase::expect_fail`]: a switch, or a reason that implies\nit. Untagged: bool vs. string is unambiguous, and the derived schema is the\n`anyOf: [boolean, string]` the published config schema wants.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string"
         }
       ]
     },

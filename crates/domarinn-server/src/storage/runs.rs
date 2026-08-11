@@ -242,6 +242,11 @@ struct PreparedRun {
     /// can. The client's summary counts graded cases only, so reading it here
     /// would let a skip-only fallback run look like it never fell back.
     fallback_count: i64,
+    /// Migration-19 columns: the expected-failure tallies, from the summary
+    /// like `pass_count`. NULL on rows ingested before the columns existed —
+    /// honestly zero, since no historical blob can contain the statuses.
+    xfail_count: i64,
+    xpass_count: i64,
     tags: Vec<String>,
     blob: Vec<u8>,
     cases: Vec<PreparedCase>,
@@ -355,6 +360,8 @@ impl PreparedRun {
             pass_count: run.summary.passed as i64,
             fail_count: run.summary.failed as i64,
             error_count: run.summary.errored as i64,
+            xfail_count: run.summary.xfailed as i64,
+            xpass_count: run.summary.xpassed as i64,
             prompt_tokens: run.summary.prompt_tokens as i64,
             completion_tokens: run.summary.completion_tokens as i64,
             cost_microusd: to_microusd(run.summary.cost_usd),
@@ -421,7 +428,7 @@ impl PreparedRun {
                 actor, host, domarinn_version,
                 prompts_digest, providers_digest, tests_digest, asserts_digest, grader_digest,
                 cache_read_tokens, cache_write_tokens, cache_savings_microusd, grader_cost_microusd,
-                empty_count, fallback_count
+                empty_count, fallback_count, xfail_count, xpass_count
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
@@ -431,7 +438,7 @@ impl PreparedRun {
                 ?26, ?27, ?28,
                 ?29, ?30, ?31, ?32, ?33,
                 ?34, ?35, ?36, ?37,
-                ?38, ?39
+                ?38, ?39, ?40, ?41
             )",
             params![
                 self.id,
@@ -473,6 +480,8 @@ impl PreparedRun {
                 self.grader_cost_microusd,
                 self.empty_count,
                 self.fallback_count,
+                self.xfail_count,
+                self.xpass_count,
             ],
         )?;
 
@@ -643,7 +652,8 @@ impl RunListFilter {
                     prompt_tokens, completion_tokens, cost_microusd, duration_ms,
                     cache_hits, cache_misses,
                     actor, host, uploaded_by, ci_provider, ci_run_url,
-                    description, domarinn_version, empty_count
+                    description, domarinn_version, empty_count,
+                    xfail_count, xpass_count
              FROM runs",
         );
         let mut clauses: Vec<String> = Vec::new();
@@ -689,11 +699,16 @@ impl RunListFilter {
             args.push(actor.clone().into());
         }
         match self.status {
-            Some(RunStatusFilter::Fail) => clauses.push("fail_count > 0".into()),
-            Some(RunStatusFilter::Error) => clauses.push("error_count > 0".into()),
-            Some(RunStatusFilter::Pass) => {
-                clauses.push("fail_count = 0 AND error_count = 0".into())
+            // An xpass is a gate failure (strict expect_fail), so a run whose
+            // only red is xpasses is a failing run. COALESCE is fine in these
+            // list clauses — the no-COALESCE rule guards partial-index
+            // predicate matching, and no index covers these counters.
+            Some(RunStatusFilter::Fail) => {
+                clauses.push("(fail_count > 0 OR COALESCE(xpass_count, 0) > 0)".into())
             }
+            Some(RunStatusFilter::Error) => clauses.push("error_count > 0".into()),
+            Some(RunStatusFilter::Pass) => clauses
+                .push("fail_count = 0 AND error_count = 0 AND COALESCE(xpass_count, 0) = 0".into()),
             None => {}
         }
 
@@ -787,6 +802,8 @@ impl RunListFilter {
                 description: row.get(22)?,
                 domarinn_version: row.get(23)?,
                 empty_count: row.get(24)?,
+                xfail_count: row.get(25)?,
+                xpass_count: row.get(26)?,
             })
         })?;
         let mut collected: Vec<RunRow> = Vec::new();
@@ -844,6 +861,10 @@ struct RunRow {
     description: Option<String>,
     domarinn_version: Option<String>,
     empty_count: Option<i64>,
+    // Migration-19 counters. NULL on pre-migration rows, which honestly reads
+    // 0 — the statuses did not exist to be counted.
+    xfail_count: Option<i64>,
+    xpass_count: Option<i64>,
 }
 
 /// Map a stored cache counter to its wire value: NULL (legacy, pre-backfill)
@@ -880,6 +901,8 @@ impl RunRow {
             pass_count: self.pass_count,
             fail_count: self.fail_count,
             error_count: self.error_count,
+            xfail_count: self.xfail_count.unwrap_or(0),
+            xpass_count: self.xpass_count.unwrap_or(0),
             pass_rate,
             prompt_tokens: self.prompt_tokens,
             completion_tokens: self.completion_tokens,
@@ -925,7 +948,8 @@ fn get_run_detail(
                     content_hash, uploaded_by, config_digest, cache_hits, cache_misses,
                     actor, host, description, domarinn_version,
                     cache_read_tokens, cache_write_tokens,
-                    cache_savings_microusd, grader_cost_microusd
+                    cache_savings_microusd, grader_cost_microusd,
+                    xfail_count, xpass_count
              FROM runs WHERE id = ?1 AND {clause}"
     );
     let row = conn
@@ -968,6 +992,9 @@ fn get_run_detail(
                 cache_write_tokens: row.get::<_, Option<i64>>(29)?,
                 cache_savings_usd: from_microusd(row.get::<_, Option<i64>>(30)?),
                 grader_cost_usd: from_microusd(row.get::<_, Option<i64>>(31)?),
+                // Migration-19 counters: NULL honestly reads 0.
+                xfail_count: row.get::<_, Option<i64>>(32)?.unwrap_or(0),
+                xpass_count: row.get::<_, Option<i64>>(33)?.unwrap_or(0),
                 // Filled in below, after the row is loaded.
                 tags: Vec::new(),
                 assert_labels: Vec::new(),

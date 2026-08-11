@@ -71,7 +71,7 @@ The scope gate is `read` rather than `write` so a `viewer` account can mint the 
 | Method | Path                                    | Scope   | Notes |
 |--------|-----------------------------------------|---------|-------|
 | POST   | `/api/v1/runs`                          | `write` | Ingest a run document. See [ingest](#run-ingest). Uploading into a **restricted** run set additionally needs an `upload` grant (`403`); see [run sets](#run-sets-access-control). |
-| GET    | `/api/v1/runs`                          | `read`  | List runs (filterable, paginated). Filters: `project`, `suite`, `tag`, `branch`, `since`, `until`, `status`, `cached`, `origin` (`ci`\|`local`), `actor`. |
+| GET    | `/api/v1/runs`                          | `read`  | List runs (filterable, paginated). Filters: `project`, `suite`, `tag`, `branch`, `since`, `until`, `status` (`pass`\|`fail`\|`error` — a run whose only red is `xpass` cases counts as failing), `cached`, `origin` (`ci`\|`local`), `actor`. |
 | GET    | `/api/v1/runs/{id}`                      | `read`  | Full run detail. `404` if unknown. |
 | GET    | `/api/v1/runs/{id}/cases`               | `read`  | Lean list of the run's cases (filterable, paginated). |
 | GET    | `/api/v1/runs/{id}/cases/{case_key}`    | `read`  | One case's full detail. |
@@ -98,7 +98,7 @@ The `url` in the response is a browser link to the run. It is built from `DOMARI
 
 **List filters** (`GET /api/v1/runs`, all optional query params): `project`, `suite`, `tag`, `branch`, `status`, `since`, `until` (each epoch-ms *or* RFC3339), `limit` (default `50`, max `200`), `cursor`. The response is `{ "runs": [...], "next_cursor": "<cursor|null>" }`; pass `next_cursor` back as `cursor` to page.
 
-**Case filters** (`GET /api/v1/runs/{id}/cases`): `status`, `tag`, `q` (free-text), `provider`, `prompt`, `test`, `stop_reason`, `error_class`, `empty_reason` (each an exact match on the promoted cell columns), `cached` (`true` fetches cache hits only, `false` fresh calls only), `limit`, `cursor`.
+**Case filters** (`GET /api/v1/runs/{id}/cases`): `status` (`pass`, `fail`, `error`, `skip`, `xfail`, `xpass`), `tag`, `q` (free-text), `provider`, `prompt`, `test`, `stop_reason`, `error_class`, `empty_reason` (each an exact match on the promoted cell columns), `cached` (`true` fetches cache hits only, `false` fresh calls only), `limit`, `cursor`.
 
 <a id="empty-outputs"></a>**Empty outputs.** A case whose output had nothing gradeable in it carries `empty_reason` — `refusal`, `truncated`, `thinking_only`, `tool_use_only`, and others; the set is **open**, so match on the value you see rather than on a closed list. An empty answer is a *successful* provider call, so nothing errors and this is the only field that explains a blank `output_preview`. It aggregates upward: `GET /runs/{id}` carries `empty_counts` (reason → count, grouped from the same case rows, so the map, the list count and the case grid always agree) and each `GET /runs` row carries `empty_count`. Both are **omitted rather than `0`/`{}`** when there is nothing to report — and absence also covers a row stored before the column existed, so a reader must render it as blank, never as a `0` that claims the run had none. See [empty outputs and grading](../concepts/grading.md#empty-outputs-and-grading).
 

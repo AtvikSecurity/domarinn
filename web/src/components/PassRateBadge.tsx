@@ -9,17 +9,25 @@ export function PassRateBadge({
   pass,
   fail,
   error,
+  xpass = 0,
   className,
 }: {
   pass: number;
   fail: number;
   error: number;
+  /** Cases that passed despite `expect_fail` — gate failures, so they
+   *  join the fail side of the rate (this is the gate view, not the model
+   *  view). Defaults to 0 for callers whose payload predates the field. */
+  xpass?: number;
   className?: string;
 }) {
   return (
     <RateBadge
-      rate={passRate(pass, fail, error)}
-      title={`${pass} pass / ${fail} fail / ${error} error`}
+      rate={passRate(pass, fail + xpass, error)}
+      title={
+        `${pass} pass / ${fail} fail / ${error} error` +
+        (xpass > 0 ? ` / ${xpass} xpass` : "")
+      }
       className={className}
     />
   );

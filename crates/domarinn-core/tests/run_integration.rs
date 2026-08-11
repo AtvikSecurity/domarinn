@@ -475,6 +475,8 @@ tests:
     let mut passed = 0u64;
     let mut failed = 0u64;
     let mut errored = 0u64;
+    let mut xfailed = 0u64;
+    let mut xpassed = 0u64;
     for e in events.iter() {
         if let ProgressEvent::CaseFinished { status, .. } = e {
             match status {
@@ -482,12 +484,16 @@ tests:
                 CaseStatus::Fail => failed += 1,
                 CaseStatus::Error => errored += 1,
                 CaseStatus::Skip => {}
+                CaseStatus::XFail => xfailed += 1,
+                CaseStatus::XPass => xpassed += 1,
             }
         }
     }
     assert_eq!(passed, result.summary.passed);
     assert_eq!(failed, result.summary.failed);
     assert_eq!(errored, result.summary.errored);
+    assert_eq!(xfailed, result.summary.xfailed);
+    assert_eq!(xpassed, result.summary.xpassed);
 }
 
 #[tokio::test]

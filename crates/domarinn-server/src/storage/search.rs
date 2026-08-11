@@ -175,7 +175,7 @@ fn case_hits(
             run_id: RunId::new(row.get::<_, String>(0)?),
             case_key: CaseKey::new(row.get::<_, String>(1)?),
             name: row.get(2)?,
-            // The column is CHECK-constrained to the four statuses; Error
+            // The column is CHECK-constrained to the six statuses; Error
             // is an unreachable fallback, not a real decode path.
             status: row
                 .get::<_, String>(3)?

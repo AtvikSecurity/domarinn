@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-use crate::spec::{Cells, Env, Example, Route, Step, RUN, VALIDATE};
+use crate::spec::{Cells, Env, Example, Route, Step, RUN, RUN_TAG_STABLE, VALIDATE};
 use crate::stubs;
 
 pub const ROWS: &[Example] = &[
@@ -546,5 +546,58 @@ pub const ROWS: &[Example] = &[
             writes: &[],
             cache_hits: 0,
         }],
+    },
+    Example {
+        dir: "46-expected-failures",
+        shows: "`expect_fail`: a known bug reports xfail and stays green; a stale marker xpasses and goes red",
+        env: &[],
+        stub: &[],
+        stub_calls: 0,
+        steps: &[
+            // The green half: the documented bug fails as expected (`xfail`,
+            // not `failed`) and the run exits 0. `--tag stable` excludes the
+            // stale-marker case, which is the red half's whole subject.
+            Step {
+                argv: RUN_TAG_STABLE,
+                exit: 0,
+                cells: Cells {
+                    passed: 1,
+                    failed: 0,
+                    errored: 0,
+                    skipped: 0,
+                    xfailed: 1,
+                    xpassed: 0,
+                },
+                case_ids: &["refusal/stays-in-scope", "privacy/no-internal-ids"],
+                priced: false,
+                writes: &[],
+                cache_hits: 0,
+            },
+            // The red half: the full run includes the case whose marker went
+            // stale. It passes, reports `xpass`, and THAT exits 1 — strict
+            // expect_fail is what keeps the marker set honest. The two cases
+            // from the first step replay from cache; toggling nothing about
+            // them, which is the "annotations never touch the cache" claim.
+            Step {
+                argv: RUN,
+                exit: 1,
+                cells: Cells {
+                    passed: 1,
+                    failed: 0,
+                    errored: 0,
+                    skipped: 0,
+                    xfailed: 1,
+                    xpassed: 1,
+                },
+                case_ids: &[
+                    "refusal/stays-in-scope",
+                    "privacy/no-internal-ids",
+                    "tone/apologises",
+                ],
+                priced: false,
+                writes: &[],
+                cache_hits: 2,
+            },
+        ],
     },
 ];

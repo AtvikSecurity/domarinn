@@ -363,20 +363,29 @@ pub(super) async fn run_cell<'a>(
     // diagnosis and the "did anything error" verdict input.
     let assert_error = assert_error_message(&assert_results);
     // Computed before the results are moved into the case below.
-    let assert_digest = crate::digests::assert_digest(&assert_results, test.threshold);
+    let assert_digest =
+        crate::digests::assert_digest(&assert_results, test.threshold, test.expect_fail_enabled());
     let assert_error_class = crate::error_class::most_specific(&assert_error_classes);
     let verdict = case_verdict(&scored, test.threshold);
     // `Error` first: a grader that broke is a fact about the run, and outranks
-    // any statement about whether the output was gradeable.
+    // any statement about whether the output was gradeable — including an
+    // `expect_fail` annotation, which is a statement about the verdict.
     let status = if assert_error.is_some() {
         CaseStatus::Error
     // The *classified* reason — what the case reports — so `["blank"]` can skip a blank output.
     } else if reasoning_is_skippable(empty_reason.as_ref(), skip_on_empty_reason) {
         CaseStatus::Skip
-    } else if verdict.passed {
-        CaseStatus::Pass
     } else {
-        CaseStatus::Fail
+        // Applied at classification time, like `refusal_patterns` — never part
+        // of any cache key, so toggling the annotation re-interprets results
+        // that are already cached.
+        match (verdict.passed, test.expect_fail_enabled()) {
+            (true, false) => CaseStatus::Pass,
+            (false, false) => CaseStatus::Fail,
+            (false, true) => CaseStatus::XFail,
+            // Strict xfail: the marker is stale, and that fails the gate.
+            (true, true) => CaseStatus::XPass,
+        }
     };
 
     CaseResult {
@@ -415,5 +424,7 @@ pub(super) async fn run_cell<'a>(
         empty_reason,
         answered_by_provider_id,
         fallback_attempts,
+        // Whatever the outcome — the annotation is a fact about the case.
+        expect_fail_reason: test.expect_fail_reason().map(String::from),
     }
 }

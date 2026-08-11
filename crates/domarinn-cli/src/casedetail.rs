@@ -198,6 +198,19 @@ pub fn render_case_detail(case: &CaseResult, palette: &Palette, show_raw: bool) 
     }
     out.push_str(&format!("  {ident}\n"));
 
+    // The `expect_fail` annotation, whatever the outcome — it explains an
+    // XFAIL's calm and an XPASS's red alike.
+    if case.status == CaseStatus::XFail
+        || case.status == CaseStatus::XPass
+        || case.expect_fail_reason.is_some()
+    {
+        let line = match &case.expect_fail_reason {
+            Some(reason) => format!("expected to fail: {reason}"),
+            None => "expected to fail".to_string(),
+        };
+        out.push_str(&format!("  {}\n", palette.dim(&line)));
+    }
+
     // Metrics line: score, latency, and the optional token/cost/stop segments.
     let mut metrics = format!("score {:.2} · {} ms", case.score, case.latency_ms);
     if let Some(usage) = &case.usage {
@@ -426,9 +439,11 @@ fn fmt_num(n: f64) -> String {
     }
 }
 
-/// Whether a case is a failure or infrastructure error (the `--failed` filter).
+/// Whether a case is red for the `--failed` filter: a failure, an
+/// infrastructure error, or a strict-xfail xpass. An xfail is expected and
+/// excluded — the same predicate the table and markdown renderers use.
 pub fn is_failed(case: &CaseResult) -> bool {
-    matches!(case.status, CaseStatus::Fail | CaseStatus::Error)
+    crate::output::is_gate_failing(case.status)
 }
 
 #[cfg(test)]
@@ -486,6 +501,7 @@ mod tests {
             error: None,
             error_details: None,
             error_class: None,
+            expect_fail_reason: None,
         }
     }
 
@@ -513,6 +529,35 @@ mod tests {
 
     /// Tier 1 (exact key) wins even when the same selector would also match a
     /// prefix, a test id, and a name substring on other cases.
+    /// The detail view names the annotation and its reason — the drawer-level
+    /// answer to "why is this XFAIL fine / this XPASS red".
+    #[test]
+    fn detail_shows_the_expect_fail_annotation_and_reason() {
+        let mut c = case(cell("p", "known-bad", 0), CaseStatus::XFail);
+        c.expect_fail_reason = Some("known bug (#123)".into());
+        let text = render_case_detail(&c, &Palette::disabled(), false);
+        assert!(text.starts_with("XFAIL"), "{text}");
+        assert!(
+            text.contains("expected to fail: known bug (#123)"),
+            "{text}"
+        );
+
+        // Annotated but reasonless: the marker still shows.
+        let bare = case(cell("p", "fixed", 0), CaseStatus::XPass);
+        let text = render_case_detail(&bare, &Palette::disabled(), false);
+        assert!(text.contains("expected to fail"), "{text}");
+    }
+
+    /// `--failed` treats an xpass as red (it fails the gate) and an xfail as
+    /// expected.
+    #[test]
+    fn is_failed_selects_xpass_and_not_xfail() {
+        assert!(is_failed(&case(cell("p", "t", 0), CaseStatus::XPass)));
+        assert!(!is_failed(&case(cell("p", "t", 0), CaseStatus::XFail)));
+        assert!(is_failed(&case(cell("p", "t", 0), CaseStatus::Fail)));
+        assert!(!is_failed(&case(cell("p", "t", 0), CaseStatus::Pass)));
+    }
+
     #[test]
     fn exact_key_beats_lower_tiers() {
         // Craft a run where `target`'s full key is also a prefix/test-id/name of

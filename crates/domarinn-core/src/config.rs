@@ -269,6 +269,52 @@ pub struct TestCase {
     /// Kept out of the serialized config when unset (digest stability).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<HistorySpec>,
+    /// Marks this case as *expected to fail* — the documented state of a known
+    /// bug. `true`, or a reason string (which implies `true`). A failing case
+    /// becomes `xfail` and does not fail the run; a passing one becomes
+    /// `xpass` and *does* (strict: a stale marker is a config bug).
+    ///
+    /// Applied at classification time, never part of any cache key — toggling
+    /// it re-interprets results that are already cached, like editing a
+    /// `refusal_patterns` entry. It *does* join the case's assert digest (like
+    /// `threshold`: it decides the verdict), though only as a bool — the
+    /// reason is documentation and editing it moves nothing.
+    ///
+    /// Deliberately not fillable from `defaults`: a suite-wide "everything is
+    /// expected to fail" inverts what a green gate means. Annotate the
+    /// specific known bug.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_fail: Option<ExpectFail>,
+}
+
+/// The value of [`TestCase::expect_fail`]: a switch, or a reason that implies
+/// it. Untagged: bool vs. string is unambiguous, and the derived schema is the
+/// `anyOf: [boolean, string]` the published config schema wants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ExpectFail {
+    Flag(bool),
+    Reason(String),
+}
+
+impl TestCase {
+    /// Whether this case is annotated expected-to-fail. `expect_fail: false`
+    /// and an absent key are equivalently off.
+    pub fn expect_fail_enabled(&self) -> bool {
+        match &self.expect_fail {
+            Some(ExpectFail::Flag(flag)) => *flag,
+            Some(ExpectFail::Reason(_)) => true,
+            None => false,
+        }
+    }
+
+    /// The annotation's reason string, when it carried one.
+    pub fn expect_fail_reason(&self) -> Option<&str> {
+        match &self.expect_fail {
+            Some(ExpectFail::Reason(reason)) => Some(reason),
+            _ => None,
+        }
+    }
 }
 
 /// A single assertion with its common controls. `type: not-<kind>` is sugar for
@@ -716,6 +762,40 @@ mod tests {
     #[test]
     fn http_method_defaults_to_post() {
         assert_eq!(HttpMethod::default(), HttpMethod::Post);
+    }
+
+    /// `expect_fail` takes `true`/`false` or a reason string; a string means
+    /// "enabled, and here is why".
+    #[test]
+    fn expect_fail_accepts_a_bool_or_a_reason_string() {
+        let on: TestCase = serde_yaml_ng::from_str("expect_fail: true").unwrap();
+        assert!(on.expect_fail_enabled());
+        assert_eq!(on.expect_fail_reason(), None);
+
+        let off: TestCase = serde_yaml_ng::from_str("expect_fail: false").unwrap();
+        assert!(!off.expect_fail_enabled());
+        assert_eq!(off.expect_fail_reason(), None);
+
+        let why: TestCase =
+            serde_yaml_ng::from_str(r#"expect_fail: "known bug: leaks ids""#).unwrap();
+        assert!(why.expect_fail_enabled());
+        assert_eq!(why.expect_fail_reason(), Some("known bug: leaks ids"));
+
+        assert!(!TestCase::default().expect_fail_enabled());
+    }
+
+    /// Digest/snapshot stability: a case that never mentions `expect_fail`
+    /// must serialize without the key, like every other optional case field.
+    #[test]
+    fn a_case_without_expect_fail_serializes_without_the_key() {
+        let json = serde_json::to_string(&TestCase::default()).unwrap();
+        assert!(!json.contains("expect_fail"), "{json}");
+    }
+
+    /// `deny_unknown_fields` still catches a typo of the new key.
+    #[test]
+    fn a_typo_of_expect_fail_is_still_a_hard_parse_error() {
+        assert!(serde_yaml_ng::from_str::<TestCase>("expect_failure: true").is_err());
     }
 
     #[test]

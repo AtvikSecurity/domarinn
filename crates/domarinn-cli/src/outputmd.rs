@@ -155,7 +155,14 @@ fn result_line(s: &RunSummary, fallback: u64) -> String {
     if s.skipped > 0 {
         parts.push(format!("{} skipped", s.skipped));
     }
-    let glyph = if s.failed > 0 || s.errored > 0 {
+    if s.xfailed > 0 {
+        parts.push(format!("{} xfailed", s.xfailed));
+    }
+    if s.xpassed > 0 {
+        parts.push(format!("{} xpassed", s.xpassed));
+    }
+    // An xpass is a gate failure (strict expect_fail); an xfail is not.
+    let glyph = if s.failed > 0 || s.errored > 0 || s.xpassed > 0 {
         "❌"
     } else {
         "✅"
@@ -177,7 +184,7 @@ pub fn render_failures_md(run: &RunResult) -> String {
     let failures: Vec<&CaseResult> = run
         .cases
         .iter()
-        .filter(|c| matches!(c.status, CaseStatus::Fail | CaseStatus::Error))
+        .filter(|c| crate::output::is_gate_failing(c.status))
         .collect();
     if failures.is_empty() {
         return String::new();
@@ -207,6 +214,12 @@ pub fn render_failures_md(run: &RunResult) -> String {
 /// Why a case failed: its first failing assertion, or the error that stopped it
 /// before any assertion ran.
 fn failure_reason(case: &CaseResult) -> String {
+    if case.status == CaseStatus::XPass {
+        return match &case.expect_fail_reason {
+            Some(reason) => format!("expected to fail, but passed ({reason})"),
+            None => "expected to fail, but passed".to_string(),
+        };
+    }
     if let Some(a) = case
         .asserts
         .iter()
@@ -241,6 +254,38 @@ mod tests {
     /// The ci-summary body is [`render_run_md_headline`] plus links, so the row
     /// added there is what a PR comment shows — asserted through `cisummary`
     /// rather than the renderer to prove the composition really carries it.
+    /// The markdown verdict includes the expected-failure buckets when
+    /// nonzero, goes red on an xpass, and explains each xpass row.
+    #[test]
+    fn result_line_and_failures_cover_expected_failures() {
+        let run = sample_run();
+        let md = render_run_md(&run);
+        assert!(md.contains("1 xfailed"), "{md}");
+        assert!(md.contains("1 xpassed"), "{md}");
+        assert!(md.contains("❌"), "an xpass is red: {md}");
+
+        let failures = render_failures_md(&run);
+        assert!(failures.contains("fixed"), "the xpass row: {failures}");
+        assert!(
+            failures.contains("expected to fail, but passed"),
+            "{failures}"
+        );
+        assert!(
+            !failures.contains("known-bad"),
+            "xfail rows are expected, not failures: {failures}"
+        );
+
+        // A run whose only red is xfail (no xpass, no fail) is green.
+        let mut calm = sample_run();
+        calm.cases
+            .retain(|c| matches!(c.status, CaseStatus::Pass | CaseStatus::XFail));
+        calm.summary.failed = 0;
+        calm.summary.xpassed = 0;
+        calm.summary.total = 2;
+        let md = render_run_md(&calm);
+        assert!(md.contains("✅"), "{md}");
+    }
+
     #[test]
     fn ci_summary_notes_empty_cases() {
         let mut run = sample_run();
@@ -385,11 +430,11 @@ mod tests {
         };
         let md = render_run_md(&run);
         assert!(
-            md.contains("| Result | ✅ 5 passed, 1 skipped · 2 via fallback |"),
+            md.contains("| Result | ✅ 5 passed, 1 skipped · 4 via fallback |"),
             "got:\n{md}"
         );
         assert!(
-            md.contains("| Answered by fallback | 2 of 5 cases |"),
+            md.contains("| Answered by fallback | 4 of 5 cases |"),
             "got:\n{md}"
         );
     }
@@ -422,7 +467,7 @@ mod tests {
         assert!(!md.contains("Answered by fallback"), "got:\n{md}");
         assert!(!md.contains("via fallback"), "got:\n{md}");
         assert!(
-            md.contains("| Result | ✅ 0 passed, 2 skipped |"),
+            md.contains("| Result | ✅ 0 passed, 4 skipped |"),
             "got:\n{md}"
         );
     }

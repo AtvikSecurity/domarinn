@@ -25,7 +25,14 @@ use crate::types::{Output, RenderedPrompt, TokenUsage};
 ///   reasoning as `empty_counts`. Note an *older* server accepts such a run and
 ///   then drops the three fields permanently, because it re-serializes its own
 ///   typed struct on ingest.
-pub const RESULT_SCHEMA_VERSION: u32 = 3;
+/// - v4: `CaseStatus::XFail`/`CaseStatus::XPass` (`expect_fail` cases). A new
+///   *status* is not additive — a v3 reader (`FromStr`, the server's CHECK
+///   constraint) rejects the strings outright — hence the bump. The
+///   accompanying `CaseResult::expect_fail_reason` and
+///   `RunSummary::{xfailed,xpassed}` fields *are* additive and omitted at
+///   default, so a run with no `expect_fail` cases is byte-identical to v3
+///   apart from the version number.
+pub const RESULT_SCHEMA_VERSION: u32 = 4;
 
 /// Identity of one cell in the provider × prompt × test × repeat matrix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -68,6 +75,16 @@ pub enum CaseStatus {
     Error,
     /// Filtered out / not applicable to this cell.
     Skip,
+    /// Failed, and the case was annotated `expect_fail` — the documented state
+    /// of a known bug. Counted separately, like [`Self::Skip`]; never fails
+    /// the gate. The explicit rename overrides `snake_case`'s `"x_fail"`.
+    #[serde(rename = "xfail")]
+    XFail,
+    /// Passed *despite* an `expect_fail` annotation. Strict xfail: this fails
+    /// the gate, because a stale annotation is a config bug — remove the
+    /// marker once the underlying issue is fixed.
+    #[serde(rename = "xpass")]
+    XPass,
 }
 
 impl CaseStatus {
@@ -78,6 +95,8 @@ impl CaseStatus {
             CaseStatus::Fail => "fail",
             CaseStatus::Error => "error",
             CaseStatus::Skip => "skip",
+            CaseStatus::XFail => "xfail",
+            CaseStatus::XPass => "xpass",
         }
     }
 }
@@ -92,8 +111,10 @@ impl std::str::FromStr for CaseStatus {
             "fail" => Ok(CaseStatus::Fail),
             "error" => Ok(CaseStatus::Error),
             "skip" => Ok(CaseStatus::Skip),
+            "xfail" => Ok(CaseStatus::XFail),
+            "xpass" => Ok(CaseStatus::XPass),
             other => Err(format!(
-                "invalid case status '{other}'; expected one of: pass, fail, error, skip"
+                "invalid case status '{other}'; expected one of: pass, fail, error, skip, xfail, xpass"
             )),
         }
     }
@@ -374,6 +395,14 @@ pub struct CaseResult {
     /// [`RunSummary::cache_read_tokens`] for why that matters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallback_attempts: Vec<FallbackAttempt>,
+    /// The reason string from the case's `expect_fail` annotation, when it
+    /// carried one. Present whenever the annotation had a reason — including
+    /// on an [`CaseStatus::Error`] or [`CaseStatus::Skip`] case, because the
+    /// annotation is a fact about the case, not about this run's outcome.
+    /// Documentation only: it never participates in grading or digests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub expect_fail_reason: Option<String>,
 }
 
 impl CaseResult {
@@ -477,6 +506,16 @@ pub struct RunSummary {
     /// `cache_read_tokens` above.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub fallback_cases: u64,
+    /// Cases that failed while annotated `expect_fail` ([`CaseStatus::XFail`]).
+    /// Not folded into `failed` — an expected failure never fails the gate.
+    /// Absent at zero, per the byte-stability rule on `cache_read_tokens`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub xfailed: u64,
+    /// Cases that passed while annotated `expect_fail` ([`CaseStatus::XPass`]).
+    /// Fails the gate exactly like `failed` (strict xfail), but counted apart
+    /// so the report can say *why*. Absent at zero, same rule.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub xpassed: u64,
 }
 
 /// One `fallback:` link that was tried and passed over, and why.
@@ -741,6 +780,10 @@ mod tests {
         // add `"tool_calls":[]` to every stored case ever written.
         assert!(case.tool_calls.is_empty());
         assert!(!reserialized.contains("tool_calls"));
+        // The expected-failure annotation's reason. Only annotated cases carry
+        // it; every historical case must stay byte-identical.
+        assert!(case.expect_fail_reason.is_none());
+        assert!(!reserialized.contains("expect_fail"));
     }
 
     /// The run-level counterpart of the guard above.
@@ -783,6 +826,9 @@ mod tests {
         assert!(!reserialized.contains("cache_write_tokens"));
         assert!(!reserialized.contains("cache_savings_usd"));
         assert!(!reserialized.contains("grader_cost_usd"));
+        // The expected-failure counters, added with the same contract.
+        assert!(!reserialized.contains("xfailed"));
+        assert!(!reserialized.contains("xpassed"));
     }
 
     /// Same 409 fence, for the empty-output tally: a run where nothing came
@@ -810,12 +856,60 @@ mod tests {
             CaseStatus::Fail,
             CaseStatus::Error,
             CaseStatus::Skip,
+            CaseStatus::XFail,
+            CaseStatus::XPass,
         ] {
             let serde_str = serde_json::to_value(status).unwrap();
             assert_eq!(serde_str, serde_json::json!(status.as_str()));
             assert_eq!(status.as_str().parse::<CaseStatus>().unwrap(), status);
         }
         assert!("bogus".parse::<CaseStatus>().is_err());
+    }
+
+    /// The enum is `rename_all = "snake_case"`, under which `XFail` would
+    /// serialize as `"x_fail"` — a wire string no reader expects. The variants
+    /// carry explicit renames; this pins the exact strings.
+    #[test]
+    fn expected_failure_statuses_serialize_without_a_snake_case_underscore() {
+        assert_eq!(
+            serde_json::to_string(&CaseStatus::XFail).unwrap(),
+            "\"xfail\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CaseStatus::XPass).unwrap(),
+            "\"xpass\""
+        );
+    }
+
+    /// Same 409 fence as the guards above, for the expected-failure counters:
+    /// a run with no `expect_fail` cases must not grow `xfailed`/`xpassed`
+    /// keys on re-serialization, and a summary that has them must emit them.
+    #[test]
+    fn expected_failure_counters_are_absent_at_zero_and_present_when_set() {
+        let quiet = RunSummary {
+            total: 1,
+            passed: 1,
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&quiet).unwrap();
+        assert!(
+            value.get("xfailed").is_none(),
+            "xfailed must skip at 0: {value}"
+        );
+        assert!(
+            value.get("xpassed").is_none(),
+            "xpassed must skip at 0: {value}"
+        );
+
+        let marked = RunSummary {
+            total: 2,
+            xfailed: 1,
+            xpassed: 1,
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&marked).unwrap();
+        assert_eq!(value["xfailed"], 1);
+        assert_eq!(value["xpassed"], 1);
     }
 
     /// The smallest document the current `CaseResult` accepts.

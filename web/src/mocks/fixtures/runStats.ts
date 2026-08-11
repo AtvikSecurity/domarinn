@@ -40,6 +40,8 @@ export interface RunStats {
   case_count: number;
   pass_count: number;
   fail_count: number;
+  xfail_count: number;
+  xpass_count: number;
   error_count: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -73,6 +75,8 @@ export function runStats(runId: string): RunStats {
   let pass = 0;
   let fail = 0;
   let error = 0;
+  let xfail = 0;
+  let xpass = 0;
   let prompt_tokens = 0;
   let completion_tokens = 0;
   let cost = 0;
@@ -88,6 +92,8 @@ export function runStats(runId: string): RunStats {
     if (c.status === "pass") pass++;
     else if (c.status === "fail") fail++;
     else if (c.status === "error") error++;
+    else if (c.status === "xfail") xfail++;
+    else if (c.status === "xpass") xpass++;
     prompt_tokens += c.prompt_tokens;
     completion_tokens += c.completion_tokens;
     cost += c.cost_usd;
@@ -120,6 +126,8 @@ export function runStats(runId: string): RunStats {
     case_count: cases.length,
     pass_count: pass,
     fail_count: fail,
+    xfail_count: xfail,
+    xpass_count: xpass,
     error_count: error,
     prompt_tokens,
     completion_tokens,
@@ -155,7 +163,7 @@ function emptyTotal(s: RunStats): number {
 }
 
 function toRunListItem(s: RunStats): RunListItem {
-  const denom = s.pass_count + s.fail_count + s.error_count;
+  const denom = s.pass_count + s.fail_count + s.error_count + s.xpass_count;
   const empty = emptyTotal(s);
   return {
     id: s.id,
@@ -169,6 +177,8 @@ function toRunListItem(s: RunStats): RunListItem {
     pass_count: s.pass_count,
     fail_count: s.fail_count,
     error_count: s.error_count,
+    xfail_count: s.xfail_count,
+    xpass_count: s.xpass_count,
     pass_rate: denom === 0 ? 0 : round4(s.pass_count / denom),
     prompt_tokens: s.prompt_tokens,
     completion_tokens: s.completion_tokens,
@@ -208,6 +218,8 @@ function toRunDetailResponse(s: RunStats): RunDetailResponse {
     pass_count: s.pass_count,
     fail_count: s.fail_count,
     error_count: s.error_count,
+    xfail_count: s.xfail_count,
+    xpass_count: s.xpass_count,
     prompt_tokens: s.prompt_tokens,
     completion_tokens: s.completion_tokens,
     cost_usd: s.cost_usd,

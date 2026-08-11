@@ -84,8 +84,13 @@ impl RunDiff {
     }
 }
 
+/// The diff axis measures the **model**, not the gate: an `XPass` is the model
+/// genuinely passing (the failing gate is the stale `expect_fail` marker — a
+/// config problem the exit code reports separately), and an `XFail` is the
+/// model failing, stably, so a mature suite's known-failing set never reads as
+/// a regression.
 fn passed(status: CaseStatus) -> bool {
-    matches!(status, CaseStatus::Pass)
+    matches!(status, CaseStatus::Pass | CaseStatus::XPass)
 }
 
 /// Compute the diff of `head` against `base`, joining on `case_key`.
@@ -227,6 +232,7 @@ mod tests {
             error_class: None,
             answered_by_provider_id: None,
             fallback_attempts: Vec::new(),
+            expect_fail_reason: None,
         }
     }
 
@@ -249,6 +255,48 @@ mod tests {
             summary: RunSummary::default(),
             cases,
         }
+    }
+
+    /// The diff axis measures the *model*, the exit code measures the *gate*.
+    /// `passed()` therefore counts XPass as passing (the model genuinely
+    /// passed; the failing gate is the stale annotation, which the exit code
+    /// already reports) and XFail as failing — stably, so a suite of known
+    /// failures never reads as regressing.
+    #[test]
+    fn expected_failure_transitions_measure_the_model_not_the_gate() {
+        let base = run(vec![
+            case("stable-xfail", CaseStatus::XFail, "x"),
+            case("fixed-under-marker", CaseStatus::Fail, "x"),
+            case("marker-added", CaseStatus::Pass, "x"),
+            case("fixed-and-unmarked", CaseStatus::XFail, "x"),
+        ]);
+        let head = run(vec![
+            // XFail→XFail: the normal shape of a mature suite. Not a change.
+            case("stable-xfail", CaseStatus::XFail, "x"),
+            // Fail→XPass: the model improved; report NewlyPassing.
+            case("fixed-under-marker", CaseStatus::XPass, "x"),
+            // Pass→XFail: the model regressed (annotated in the same window,
+            // but the diff still reports the model's movement).
+            case("marker-added", CaseStatus::XFail, "x"),
+            // XFail→Pass: fixed and the marker removed; NewlyPassing.
+            case("fixed-and-unmarked", CaseStatus::Pass, "x"),
+        ]);
+        let d = diff_runs(&base, &head);
+        assert_eq!(d.summary.newly_passing, 2);
+        assert_eq!(d.summary.newly_failing, 1);
+        assert_eq!(d.summary.still_failing, 1);
+        assert_eq!(d.summary.unchanged, 0);
+        // McNemar counts stay honest model-behavior counts.
+        assert_eq!(d.mcnemar.fixes, 2);
+        assert_eq!(d.mcnemar.regressions, 1);
+    }
+
+    /// A suite whose xfail set is stable has no regression to report.
+    #[test]
+    fn a_stable_xfail_set_is_not_a_regression() {
+        let base = run(vec![case("known", CaseStatus::XFail, "x")]);
+        let head = run(vec![case("known", CaseStatus::XFail, "x")]);
+        assert!(!diff_runs(&base, &head).has_regression());
     }
 
     #[test]

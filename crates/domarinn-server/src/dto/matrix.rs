@@ -95,6 +95,12 @@ pub struct MatrixCell {
     pub failed: i64,
     pub errored: i64,
     pub skipped: i64,
+    /// Repeats that failed under an `expect_fail` annotation. Not in `failed`,
+    /// and not in `pass_fraction`'s numerator — like `skipped`, they depress
+    /// the fraction, which these counts let the UI qualify.
+    pub xfailed: i64,
+    /// Repeats that passed *despite* an `expect_fail` annotation (gate-failing).
+    pub xpassed: i64,
     /// Mean of the non-null scores; `None` when no repeat carried a score.
     pub score_mean: Option<f64>,
     /// `passed / total`.
@@ -145,11 +151,13 @@ mod tests {
                 name: Some("openai::t1".to_string()),
                 cells: vec![
                     Some(MatrixCell {
-                        total: 2,
+                        total: 4,
                         passed: 1,
                         failed: 1,
                         errored: 0,
                         skipped: 0,
+                        xfailed: 1,
+                        xpassed: 1,
                         score_mean: Some(0.5),
                         pass_fraction: 0.5,
                         distinct_outputs: 2,
@@ -191,11 +199,13 @@ mod tests {
                         "name": "openai::t1",
                         "cells": [
                             {
-                                "total": 2,
+                                "total": 4,
                                 "passed": 1,
                                 "failed": 1,
                                 "errored": 0,
                                 "skipped": 0,
+                                "xfailed": 1,
+                                "xpassed": 1,
                                 "score_mean": 0.5,
                                 "pass_fraction": 0.5,
                                 "distinct_outputs": 2,
@@ -242,6 +252,8 @@ mod tests {
             failed: 0,
             errored: 0,
             skipped: 1,
+            xfailed: 0,
+            xpassed: 0,
             score_mean: None,
             pass_fraction: 0.0,
             distinct_outputs: 0,

@@ -452,6 +452,7 @@ function SuiteGroup({ group }: { group: Group }) {
                       pass={r.pass_count}
                       fail={r.fail_count}
                       error={r.error_count}
+                      xpass={r.xpass_count}
                     />
                   </td>
                 )}

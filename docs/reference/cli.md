@@ -48,7 +48,7 @@ The exit code is a **contract for CI** — it distinguishes "the model got worse
 | Code | Name | Meaning |
 |------|------|---------|
 | `0` | OK | Everything passed. |
-| `1` | assertion | An assertion failed, or a run regressed against a `--against` baseline. |
+| `1` | assertion | An assertion failed, an [`expect_fail`](domarinn-yaml.md#inline-and-loaded-test-fields) case passed (`xpass` — the marker is stale and must be removed), or a run regressed against a `--against` baseline. An **expected** failure (`xfail`) never trips this. |
 | `2` | config/usage | Bad config or flags, a suite that fails to load or validate (a *warning* is not one of these), a run that resolved to **zero cases**, a missing / wrong-shaped provider credential, or a `--share` **preflight refusal**: the server stated a result-schema window this CLI is outside of — or no server URL is configured at all — so the run is refused before it spends anything. |
 | `2` | config/usage | A run that **formed no opinion**: every case was skipped by `runner.skip_on_empty_reason`, or every **graded** case — total minus skipped — was answered by a [`fallback:`](providers.md#falling-back-to-another-provider) provider, so the configured one answered nothing. |
 | `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, the server was unreachable, a `--cache-only` run could not answer honestly (a miss, or a case whose `latency` assertion always needs a live call), or a **`run --share` upload failed** without `--allow-share-failure`. |
