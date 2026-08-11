@@ -1,5 +1,6 @@
 import { Suspense, lazy } from "react";
 import type { Output } from "@/api";
+import { Chip } from "@/components/ui/Chip";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { cn } from "@/lib/cn";
@@ -10,7 +11,8 @@ import { RawText } from "./RawText";
 import { setRawMode, setWrap, useOutputPrefs } from "./prefs";
 
 const MarkdownView = lazy(() => import("./MarkdownView"));
-const CodeView = lazy(() => import("./CodeView"));
+// Lazy so highlight.js never lands in the main bundle.
+const CodeBlock = lazy(() => import("./CodeBlock"));
 
 /** `code` is only reachable via an explicit `contentType`; detection yields
  *  json/markdown/text. */
@@ -65,10 +67,13 @@ export function OutputViewer({
   const { raw: rawMode, wrap } = useOutputPrefs();
 
   const showRendered = hasRendered && !rawMode;
-  // Soft-wrap only matters when a monospace `<pre>` is actually on screen: the
-  // raw view, plain text, or the (rendered-or-raw) code view. The json tree and
-  // rendered markdown ignore it.
-  const showWrap = !showRendered || type === "code";
+
+  // Every surface below except rendered markdown is a `CodeSurface`, and each
+  // one carries its own type label, wrap toggle and copy button. Leaving ours on
+  // screen too would put two of each within a few pixels, both driving the same
+  // shared preference. `MarkdownView` has no header of its own — only its fenced
+  // blocks do — so the toolbar stays whole for that one case.
+  const childHasHeader = !(showRendered && type === "markdown");
 
   const boxMaxHeight = maxHeight;
 
@@ -76,11 +81,9 @@ export function OutputViewer({
     setRawMode(next === "raw");
   }
 
-  function toggleWrap() {
-    setWrap(!wrap);
-  }
-
   if (raw === "") {
+    // `RawText` and not a surface: an empty payload has nothing to copy, wrap or
+    // label, and it carries the `(empty)` affordance the block has no place for.
     return <RawText text="" wrap={wrap} maxHeight={boxMaxHeight} className={className} />;
   }
 
@@ -98,24 +101,16 @@ export function OutputViewer({
             onChange={chooseView}
           />
         ) : null}
-        {showWrap ? (
-          <button
-            type="button"
-            onClick={toggleWrap}
-            aria-pressed={wrap}
-            title="Toggle soft wrap"
-            className={cn(
-              "rounded-md border border-border px-2 py-0.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              wrap ? "bg-surface-2 text-fg" : "text-muted hover:text-fg",
-            )}
-          >
-            Wrap
-          </button>
-        ) : null}
-        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-muted">
-          {TYPE_LABEL[type]}
-        </span>
-        <CopyButton value={raw} label="Copy" className="ml-auto" />
+        {/* Rendered markdown is the one surface with no header of its own, so it
+            is the only one that still needs a label and a copy button here.
+            There is deliberately no wrap toggle left: every other view owns one,
+            and soft wrap means nothing to rendered prose. */}
+        {childHasHeader ? null : (
+          <>
+            <Chip size="xs">{TYPE_LABEL[type]}</Chip>
+            <CopyButton value={raw} label="Copy" className="ml-auto" />
+          </>
+        )}
       </div>
 
       {showRendered ? (
@@ -128,7 +123,7 @@ export function OutputViewer({
           maxHeight={boxMaxHeight}
         />
       ) : (
-        <RawText text={raw} wrap={wrap} maxHeight={boxMaxHeight} />
+        <RawBlock type={type} raw={raw} hint={hint} wrap={wrap} maxHeight={boxMaxHeight} />
       )}
     </div>
   );
@@ -149,24 +144,27 @@ function RenderedView({
   wrap: boolean;
   maxHeight?: string;
 }) {
-  const fallback = <RawText text={raw} wrap={wrap} maxHeight={maxHeight} />;
-
   if (type === "json") {
     const parsed = parseJson(value, raw);
+    // The tree owns its own scrollport through the surface's cap.
     if (parsed.ok) {
-      // Only becomes its own scrollport when a cap was asked for.
       return (
-        <div style={maxHeight ? { maxHeight, overflow: "auto" } : undefined}>
-          <JsonTree data={parsed.data} />
-        </div>
+        <JsonTree
+          data={parsed.data}
+          wrap={wrap}
+          onWrapChange={setWrap}
+          maxHeight={maxHeight}
+        />
       );
     }
-    return fallback;
+    // Detected as json but it does not parse — show the source rather than an
+    // empty tree, through the same block the Raw toggle would have given.
+    return <RawBlock type={type} raw={raw} hint={hint} wrap={wrap} maxHeight={maxHeight} />;
   }
 
   if (type === "markdown") {
     return (
-      <Suspense fallback={fallback}>
+      <Suspense fallback={<RawText text={raw} wrap={wrap} maxHeight={maxHeight} />}>
         <div style={maxHeight ? { maxHeight, overflow: "auto" } : undefined}>
           <MarkdownView markdown={raw} />
         </div>
@@ -175,9 +173,47 @@ function RenderedView({
   }
 
   // code
+  return <RawBlock type={type} raw={raw} hint={hint} wrap={wrap} maxHeight={maxHeight} />;
+}
+
+/**
+ * The raw source, through the shared block: syntax-highlighted, numbered, and
+ * carrying its own copy and wrap.
+ *
+ * `RawText` remains the Suspense fallback rather than the destination — it
+ * renders instantly with no lazy chunk behind it, so the drawer never flashes
+ * empty while highlight.js loads.
+ */
+function RawBlock({
+  type,
+  raw,
+  hint,
+  wrap,
+  maxHeight,
+}: {
+  type: ViewType;
+  raw: string;
+  hint?: string;
+  wrap: boolean;
+  maxHeight?: string;
+}) {
+  // `text` is prose. Auto-detection would colour ordinary words as keywords and
+  // label the block with whatever grammar it guessed at — most provider outputs
+  // are a sentence or two, and "sql" over an English sentence is worse than no
+  // colour at all. Every other type names a grammar we actually know.
+  const prose = type === "text";
+  const language = prose ? "text" : (hint ?? type);
+
   return (
-    <Suspense fallback={fallback}>
-      <CodeView code={raw} langHint={hint} wrap={wrap} maxHeight={maxHeight} />
+    <Suspense fallback={<RawText text={raw} wrap={wrap} maxHeight={maxHeight} />}>
+      <CodeBlock
+        code={raw}
+        language={language}
+        highlight={!prose}
+        wrap={wrap}
+        onWrapChange={setWrap}
+        maxHeight={maxHeight}
+      />
     </Suspense>
   );
 }

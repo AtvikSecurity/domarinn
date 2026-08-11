@@ -217,9 +217,14 @@ echo "==> style gates (docs/ link + fence conventions)"
 #
 # Every violation is printed, not a sample: the caller has to fix all of them,
 # and a truncated list makes that two build cycles instead of one.
+# `--exclude-dir=superpowers`: session working notes live under
+# docs/superpowers/ (gitignored, and excluded from the built site by
+# `exclude_docs` in mkdocs.yml). They are not published prose, so holding them
+# to the book's conventions only fails this build for whoever happens to have a
+# scratch plan on disk.
 style_gate() {
   local pattern="$1" label="$2" fix="$3" matches
-  matches="$(grep -rn "$pattern" docs || true)"
+  matches="$(grep -rn --exclude-dir=superpowers "$pattern" docs || true)"
   if [ -z "$matches" ]; then
     echo "    0 ${label} in docs/"
     return 0

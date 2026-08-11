@@ -4,6 +4,7 @@ import { useSearch, useSetSearch } from "@/api/queries";
 import { Snippet } from "@/components/Snippet";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Chip } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import {
@@ -17,6 +18,7 @@ import { runPath, setsPath } from "@/lib/routes";
 import { resolveCached } from "@/lib/cached";
 import { useCachedPref } from "@/lib/cachedPref";
 import { mergeParams } from "@/lib/filters";
+import { cn } from "@/lib/cn";
 import { CachedRunsToggle } from "@/components/CachedRunsToggle";
 
 /** Higher than the dropdown's — there is room here — but still bounded. */
@@ -109,10 +111,10 @@ export function SearchPage() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+      <h2 className="mb-2 text-[10px] font-medium uppercase tracking-wide text-muted">
         {title}
       </h2>
-      <div className="divide-y divide-border rounded-xl border border-border bg-surface">
+      <div className={cn(CHROME_FRAME, "divide-y divide-border overflow-hidden")}>
         {children}
       </div>
     </section>

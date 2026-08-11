@@ -1,4 +1,6 @@
 import type { CompareStats, WilsonView } from "@/api";
+import { Chip, type ChipTone } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/cn";
 
@@ -83,21 +85,19 @@ export function McNemarPanel({ stats }: { stats: CompareStats }) {
   // When significant, the badge takes the tone of the dominant direction:
   // fail when regressions outweigh fixes, pass when fixes win.
   const worsened = regressions > fixes;
-  const badgeTone = significant
-    ? worsened
-      ? "bg-fail/12 text-fail ring-fail/30"
-      : "bg-pass/12 text-pass ring-pass/30"
-    : "bg-surface-2 text-muted ring-border";
+  const badgeTone: ChipTone = significant ? (worsened ? "fail" : "pass") : "neutral";
   const badgeLabel = significant ? "Statistically significant" : "Not significant";
 
   return (
     <div
       data-testid="mcnemar-panel"
-      className="rounded-xl border border-border bg-surface p-4"
+      className={cn(CHROME_FRAME, "p-4")}
     >
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-1.5">
-          <h2 className="text-sm font-semibold tracking-tight">Significance</h2>
+          <h2 className="text-[10px] font-medium uppercase tracking-wide text-muted">
+            Significance
+          </h2>
           <Tooltip
             content="McNemar's test asks whether the pass↔fail flips between the two runs are asymmetric beyond chance (α = 0.05). A significant result means the fixes and regressions are unlikely to be noise."
           >
@@ -110,14 +110,7 @@ export function McNemarPanel({ stats }: { stats: CompareStats }) {
             </button>
           </Tooltip>
         </div>
-        <span
-          className={cn(
-            "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset",
-            badgeTone,
-          )}
-        >
-          {badgeLabel}
-        </span>
+        <Chip tone={badgeTone}>{badgeLabel}</Chip>
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2">

@@ -67,7 +67,7 @@ test.describe("Overview", () => {
         level: 2,
         name: /checkout-agent\s*\/\s*regression/,
       })
-      .locator("xpath=ancestor::div[contains(@class,'rounded-xl')][1]");
+      .locator("xpath=ancestor::*[@data-testid='suite-health-card'][1]");
     await card.click();
     await expect(page).toHaveURL("/sets/checkout-agent/regression");
   });

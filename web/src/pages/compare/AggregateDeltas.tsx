@@ -1,3 +1,5 @@
+import { CHROME_FRAME } from "@/components/ui/chrome";
+import { StatBlock } from "@/components/ui/StatBlock";
 import { formatCost, formatDuration, formatInt, formatTokens } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
@@ -92,22 +94,19 @@ export function AggregateDeltas({
   return (
     <div
       data-testid="aggregate-deltas"
-      className="flex flex-wrap gap-x-6 gap-y-2 rounded-xl border border-border bg-surface px-4 py-3"
+      className={cn(CHROME_FRAME, "flex flex-wrap gap-x-6 gap-y-2 px-4 py-3")}
     >
       {metrics.map((m) => (
-        <div key={m.key} className="flex flex-col">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-muted">
-            {m.label}
-          </span>
+        <StatBlock key={m.key} label={m.label} variant="bare">
           <span
             className={cn(
-              "font-mono text-sm font-semibold tabular-nums",
+              "font-mono font-semibold",
               toneFor(m.delta, m.lowerIsBetter, m.neutral ?? false),
             )}
           >
             {signedText(m.delta, m.formatAbs)}
           </span>
-        </div>
+        </StatBlock>
       ))}
     </div>
   );

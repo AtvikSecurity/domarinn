@@ -146,7 +146,7 @@ const ROLE_TONE: Record<string, ChipTone> = {
  */
 function ChatRoleChip({ role }: { role: string }) {
   return (
-    <Chip tone={ROLE_TONE[role] ?? "neutral"} mono className="lowercase">
+    <Chip tone={ROLE_TONE[role] ?? "neutral"} className="lowercase">
       {role}
     </Chip>
   );

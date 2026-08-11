@@ -1,10 +1,12 @@
 import { cn } from "@/lib/cn";
 import { formatPercent, passRate } from "@/lib/format";
+import {
+  OUTLINE_LABEL_BASE,
+  OUTLINE_LABEL_TONE,
+  type OutlineTone,
+} from "@/components/ui/chrome";
 
-/**
- * Pass-rate pill with a color that shifts green -> amber -> red as the rate
- * drops. Shows a tiny inline meter behind the number.
- */
+/** Pass-rate outline label with a tone that shifts as the rate drops. */
 export function PassRateBadge({
   pass,
   fail,
@@ -34,14 +36,25 @@ export function PassRateBadge({
 }
 
 /**
- * The same pill, for a payload that carries a rate rather than counts.
+ * The same label, for a payload that carries a rate rather than counts.
  *
  * The run-set browser is the one such caller: its `latest_pass_rate` is the
  * newest run's, while the counts beside it are the set's lifetime totals.
- * Feeding those counts to {@link PassRateBadge} would put a percentage over
- * every run ever in a column labelled "latest", and a tooltip describing a
- * different set of runs than the number above it.
  */
+/** The meter fill, in the same hue the outline is already using. */
+const METER: Record<OutlineTone, string> = {
+  neutral: "bg-skip",
+  info: "bg-info",
+  accent: "bg-accent",
+  pass: "bg-pass",
+  fail: "bg-fail",
+  error: "bg-error",
+  amber: "bg-amber",
+  skip: "bg-skip",
+  xfail: "bg-xfail",
+  xpass: "bg-xpass",
+};
+
 export function RateBadge({
   rate,
   title,
@@ -52,37 +65,33 @@ export function RateBadge({
   className?: string;
 }) {
   const pct = rate === null ? 0 : rate * 100;
-  const tone =
-    rate === null
-      ? "text-muted ring-border"
-      : pct >= 95
-        ? "text-pass ring-pass/25"
-        : pct >= 80
-          ? "text-amber ring-amber/25"
-          : "text-fail ring-fail/25";
-  const bar =
-    rate === null
-      ? "var(--color-skip)"
-      : pct >= 95
-        ? "var(--color-pass)"
-        : pct >= 80
-          ? "var(--color-amber)"
-          : "var(--color-fail)";
+  const tone: OutlineTone =
+    rate === null ? "neutral" : pct >= 95 ? "pass" : pct >= 80 ? "amber" : "fail";
 
   return (
     <span
       className={cn(
-        "relative inline-flex min-w-[3.75rem] items-center justify-center overflow-hidden rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums ring-1 ring-inset",
-        tone,
+        OUTLINE_LABEL_BASE,
+        // `relative` + `overflow-hidden` for the meter: it is absolutely
+        // positioned against this box and clipped to the pill's corner radius.
+        "relative min-w-[3.75rem] justify-center overflow-hidden px-[7px] py-[3px] text-[11px] font-semibold tabular-nums",
+        OUTLINE_LABEL_TONE[tone],
         className,
       )}
       title={title}
     >
+      {/* The rate, read as a bar as well as a number — the width is the value.
+          Kept faint enough that the percentage stays the thing you read first,
+          and the outline recipe's own fill is transparent, so this is the only
+          thing painting inside the border. */}
       <span
-        className="absolute inset-y-0 left-0 opacity-[0.14]"
-        style={{ width: `${pct}%`, backgroundColor: bar }}
+        className={cn("absolute inset-y-0 left-0 opacity-[0.14]", METER[tone])}
+        style={{ width: `${pct}%` }}
         aria-hidden
       />
+      {/* `relative` so the label paints above the meter: both sit in this
+          stacking context, and a positioned box otherwise covers static
+          in-flow content whatever the DOM order. */}
       <span className="relative">{formatPercent(rate)}</span>
     </span>
   );

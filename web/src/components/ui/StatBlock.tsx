@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
+import { CHROME_FRAME } from "./chrome";
 
 /**
  * One labelled number.
@@ -36,12 +37,12 @@ export function StatBlock({
   return (
     <div
       className={cn(
-        variant === "boxed" && "rounded-lg border border-border bg-bg/40 px-3 py-2",
+        variant === "boxed" && cn(CHROME_FRAME, "px-3 py-2"),
         className,
       )}
       title={title}
     >
-      <div className="text-[11px] font-medium uppercase tracking-wide text-muted">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-muted">
         {label}
       </div>
       <div className={cn("mt-0.5 text-sm font-medium tabular-nums", tone)}>

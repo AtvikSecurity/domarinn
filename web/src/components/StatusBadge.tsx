@@ -1,5 +1,10 @@
 import type { AssertStatus, CaseStatus } from "@/api";
 import { cn } from "@/lib/cn";
+import {
+  OUTLINE_LABEL_BASE,
+  OUTLINE_LABEL_TONE,
+  type OutlineTone,
+} from "@/components/ui/chrome";
 
 /**
  * Both a case's status (`CaseStatus`) and a single assertion's status
@@ -9,14 +14,14 @@ import { cn } from "@/lib/cn";
  */
 type BadgeStatus = CaseStatus | AssertStatus;
 
-const STATUS_STYLE: Record<BadgeStatus, string> = {
-  pass: "bg-pass/12 text-pass ring-pass/25",
-  fail: "bg-fail/12 text-fail ring-fail/25",
-  error: "bg-error/12 text-error ring-error/25",
-  skip: "bg-skip/12 text-skip ring-skip/25",
-  skipped: "bg-skip/12 text-skip ring-skip/25",
-  xfail: "bg-xfail/12 text-xfail ring-xfail/25",
-  xpass: "bg-xpass/12 text-xpass ring-xpass/25",
+const STATUS_TONE: Record<BadgeStatus, OutlineTone> = {
+  pass: "pass",
+  fail: "fail",
+  error: "error",
+  skip: "skip",
+  skipped: "skip",
+  xfail: "xfail",
+  xpass: "xpass",
 };
 
 const STATUS_LABEL: Record<BadgeStatus, string> = {
@@ -41,9 +46,11 @@ export function StatusBadge({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full font-medium ring-1 ring-inset",
-        size === "xs" ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-0.5 text-xs",
-        STATUS_STYLE[status],
+        OUTLINE_LABEL_BASE,
+        size === "xs"
+          ? "px-1 py-0.5 text-[10px]"
+          : "px-[7px] py-[3px] text-[11px]",
+        OUTLINE_LABEL_TONE[STATUS_TONE[status]],
         className,
       )}
     >

@@ -20,10 +20,12 @@ describe("cn — conflict resolution", () => {
     // `bg-bg` is the token most at risk of being read as background-position.
     expect(cn("bg-bg/40", "bg-surface")).toBe("bg-surface");
     expect(cn("bg-pass/70", "bg-fail/70")).toBe("bg-fail/70");
+    expect(cn("bg-transparent", "bg-surface")).toBe("bg-surface");
   });
 
   it("keeps last-wins for the other tokenised colour utilities", () => {
     expect(cn("border-pass/50", "border-fail/50")).toBe("border-fail/50");
+    expect(cn("border-chrome-border", "border-fail/50")).toBe("border-fail/50");
     expect(cn("text-fg/90", "text-fail")).toBe("text-fail");
     expect(cn("ring-pass/25", "ring-fail/25")).toBe("ring-fail/25");
   });
@@ -51,7 +53,7 @@ describe("cn — the font-size / line-height trap", () => {
   // In Tailwind v4 every `text-<size>` also sets a line-height, so
   // tailwind-merge treats a later `text-*` size as overriding an earlier
   // `leading-*`. This bites the monospace primitives (RawText, JsonTree,
-  // CodeView), whose base is `text-xs leading-relaxed` and which accept a
+  // CodeBlock), whose base is `text-xs leading-relaxed` and which accept a
   // `className` size override from the caller.
   it("keeps leading-* when it follows the size", () => {
     expect(cn("text-[10px] leading-none")).toBe("text-[10px] leading-none");
@@ -86,6 +88,7 @@ describe("cn — ordinary Tailwind groups", () => {
     expect(cn("size-3.5", "size-6")).toBe("size-6");
     expect(cn("px-1", "px-3")).toBe("px-3");
     expect(cn("rounded-[5px]", "rounded-full")).toBe("rounded-full");
+    expect(cn("rounded-lg", "rounded-[3px]")).toBe("rounded-[3px]");
   });
 
   it("collapses inset utilities without touching position", () => {

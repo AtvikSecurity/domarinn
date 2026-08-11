@@ -12,6 +12,7 @@ import {
   mergeParams,
   parseCacheFilters,
 } from "@/lib/filters";
+import { listNeighbors } from "@/lib/listNeighbors";
 import { formatBytes, formatInt } from "@/lib/format";
 import { parseSort, serializeSort } from "@/lib/sort";
 import { CacheEntryDrawer } from "./CacheEntryDrawer";
@@ -76,6 +77,19 @@ export function CacheEntriesPage() {
   );
   const selectedKey = filters.entry;
   const selectedSize = entries.find((e) => e.key === selectedKey)?.size;
+
+  // The rows either side of the open entry, so the drawer can step without
+  // closing. Scoped to loaded rows — see `lib/listNeighbors`.
+  const {
+    prevKey: prevEntryKey,
+    nextKey: nextEntryKey,
+    position: entryPosition,
+  } = useMemo(
+    () => listNeighbors(entries, selectedKey, (e) => e.key),
+    [entries, selectedKey],
+  );
+  const selectEntry = (key: string) =>
+    setParams(mergeParams(params, { entry: key }), { replace: true });
 
   if (entriesQ.isPending) return <CenteredSpinner label="Loading cache entries…" />;
   if (entriesQ.isError) {
@@ -192,9 +206,7 @@ export function CacheEntriesPage() {
             )
           }
           selectedKey={selectedKey}
-          onSelect={(key) =>
-            setParams(mergeParams(params, { entry: key }), { replace: true })
-          }
+          onSelect={selectEntry}
         />
       )}
 
@@ -204,6 +216,9 @@ export function CacheEntriesPage() {
         onClose={() =>
           setParams(mergeParams(params, { entry: undefined }), { replace: true })
         }
+        onPrev={prevEntryKey === undefined ? undefined : () => selectEntry(prevEntryKey)}
+        onNext={nextEntryKey === undefined ? undefined : () => selectEntry(nextEntryKey)}
+        position={entryPosition}
       />
     </div>
   );

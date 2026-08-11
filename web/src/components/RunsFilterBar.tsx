@@ -7,6 +7,7 @@ import {
   parseRunsFilters,
   RUNS_FILTER_KEYS,
 } from "@/lib/filters";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { cn } from "@/lib/cn";
 import { resolveCached } from "@/lib/cached";
 import { setCachedPref, useCachedPref } from "@/lib/cachedPref";
@@ -82,7 +83,7 @@ export function RunsFilterBar() {
   ];
 
   return (
-    <div className="rounded-xl border border-border bg-surface/60 p-3">
+    <div className={cn(CHROME_FRAME, "p-3")}>
       {/* Nine controls wrap into two tidy rows on a desktop and into nine
           stacked ones on a phone, where they filled the entire first screen
           and pushed every run below the fold. Collapsed there by default, and

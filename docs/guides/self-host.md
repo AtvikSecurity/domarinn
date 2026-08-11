@@ -78,6 +78,24 @@ docker compose up -d
 # UI + API on http://localhost:8321
 ```
 
+It reads per-deployment settings from a `.env` beside it, so the committed file
+stays generic and your host's address never becomes anyone else's default:
+
+```sh
+# .env
+DOMARINN_PUBLIC_URL=https://domarinn.example.com
+```
+
+Reaching the server over plain HTTP — a LAN box, a local trial — also needs the
+session cookie's `Secure` flag off, or the browser refuses to store it and no
+one can stay signed in. Leave it unset anywhere reachable from the internet:
+
+```sh
+# .env, for an HTTP-only deployment
+DOMARINN_PUBLIC_URL=http://192.168.1.10:8321
+DOMARINN_COOKIE_SECURE=false
+```
+
 A production-shaped compose service that bootstraps an admin and sets the public URL:
 
 ```yaml

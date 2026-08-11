@@ -1,11 +1,10 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
+import { CHROME_FRAME } from "./chrome";
 
 /**
- * The app's surface container: `rounded-xl border border-border bg-surface`.
- *
- * Repeated verbatim at 20+ call sites before this existed. Adopted incrementally
- * — only in files already being changed — so the diff stays reviewable.
+ * The app's transparent chrome frame. The shared recipe owns only its outline;
+ * callers continue to own padding, clipping, and layout.
  *
  * `padding="flush"` is for containers that own their own insets: tables and
  * virtualized grids whose header/rows carry the horizontal padding, and which
@@ -25,7 +24,7 @@ export function Card({
   return (
     <Tag
       className={cn(
-        "rounded-xl border border-border bg-surface",
+        CHROME_FRAME,
         padding === "md" && "p-4",
         padding === "flush" && "overflow-hidden",
         className,

@@ -54,7 +54,7 @@ export function CaseAssertRow({
     >
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge status={assert.status} size="xs" />
-        <Chip mono className="text-fg">
+        <Chip className="text-fg">
           {assert.kind}
         </Chip>
         {criteria?.negated ? (

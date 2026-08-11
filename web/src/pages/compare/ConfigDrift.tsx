@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
 import { useRunConfig } from "@/api/queries";
+import { Chip, type ChipTone } from "@/components/ui/Chip";
 import { CopyButton } from "@/components/ui/CopyButton";
+import {
+  CHROME_FRAME,
+  OUTLINE_LABEL_BASE,
+  OUTLINE_LABEL_TONE,
+} from "@/components/ui/chrome";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Spinner } from "@/components/ui/Spinner";
 import { ErrorState } from "@/components/States";
@@ -70,10 +76,12 @@ export function ConfigDrift({
   return (
     <div
       data-testid="config-drift"
-      className="space-y-3 rounded-xl border border-border bg-surface p-4"
+      className={cn(CHROME_FRAME, "space-y-3 p-4")}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold tracking-tight">Config drift</h2>
+        <h2 className="text-[10px] font-medium uppercase tracking-wide text-muted">
+          Config drift
+        </h2>
         <SegmentedControl
           ariaLabel="Config diff view"
           size="xs"
@@ -119,7 +127,13 @@ function DigestChip({
   digest: string | null;
 }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-2 py-0.5">
+    <span
+      className={cn(
+        OUTLINE_LABEL_BASE,
+        OUTLINE_LABEL_TONE.neutral,
+        "px-2 py-0.5 normal-case",
+      )}
+    >
       <span className="text-[10px] font-medium uppercase tracking-wide text-muted">
         {label}
       </span>
@@ -129,10 +143,10 @@ function DigestChip({
   );
 }
 
-const KIND_TONE: Record<JsonDiffEntry["kind"], string> = {
-  added: "text-pass ring-pass/30 bg-pass/8",
-  removed: "text-fail ring-fail/30 bg-fail/8",
-  changed: "text-amber ring-amber/30 bg-amber/8",
+const KIND_TONE: Record<JsonDiffEntry["kind"], ChipTone> = {
+  added: "pass",
+  removed: "fail",
+  changed: "amber",
 };
 
 function StructuredDiff({ entries }: { entries: JsonDiffEntry[] }) {
@@ -143,18 +157,13 @@ function StructuredDiff({ entries }: { entries: JsonDiffEntry[] }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-xs text-fg break-all">{e.path}</span>
             {isPromptPath(e.path) ? (
-              <span className="rounded bg-accent/12 px-1.5 py-0.5 text-[10px] font-medium text-accent ring-1 ring-inset ring-accent/25">
+              <Chip tone="accent" size="xs">
                 prompt
-              </span>
+              </Chip>
             ) : null}
-            <span
-              className={cn(
-                "rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ring-1 ring-inset",
-                KIND_TONE[e.kind],
-              )}
-            >
+            <Chip tone={KIND_TONE[e.kind]} size="xs">
               {e.kind}
-            </span>
+            </Chip>
           </div>
           <div className="mt-1">
             <ValueChange entry={e} />
@@ -199,13 +208,8 @@ function ValueChange({ entry }: { entry: JsonDiffEntry }) {
 
 function ValuePill({ tone, value }: { tone: "pass" | "fail"; value: string }) {
   return (
-    <span
-      className={cn(
-        "rounded px-1.5 py-0.5 font-mono text-[11px] break-all",
-        tone === "pass" ? "bg-pass/10 text-pass" : "bg-fail/10 text-fail",
-      )}
-    >
+    <Chip tone={tone} className="break-all normal-case">
       {value}
-    </span>
+    </Chip>
   );
 }
