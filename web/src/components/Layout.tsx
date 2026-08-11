@@ -126,7 +126,11 @@ export function Layout() {
     // that fills it (see `useFillViewport`) can hand its own scroller the exact
     // remaining height instead of nesting one scrollport inside another.
     <div className="flex h-dvh flex-col overflow-hidden">
-      <header className="z-30 shrink-0 border-b border-border bg-surface/85 backdrop-blur supports-[backdrop-filter]:bg-surface/70">
+      {/* Same fill as the page body. The bar is a flex sibling of `<main>`, not
+          an overlay, so nothing ever scrolls beneath it — the translucency and
+          `backdrop-blur` this used to carry had nothing to act on and only
+          composited `--surface` against `--bg`. */}
+      <header className="z-30 shrink-0 border-b border-border bg-bg">
         {/* `min-w-0` on the flex children plus a scrollable nav: with neither,
             the nav and the right-hand cluster refused to shrink and pushed the
             document to 508px wide at a 390px viewport — the one place the page
