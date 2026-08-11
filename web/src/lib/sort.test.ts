@@ -65,9 +65,13 @@ describe("parse <-> serialize round-trip", () => {
 
 describe("status rank comparator", () => {
   it("ranks fail > error > pass > skip", () => {
-    expect(STATUS_RANK.fail).toBeGreaterThan(STATUS_RANK.error);
+    expect(STATUS_RANK.fail).toBeGreaterThan(STATUS_RANK.xpass);
+    // xpass floats next to fail (it fails the gate); xfail sinks below
+    // pass (it is expected and unremarkable) but above skip (it was graded).
+    expect(STATUS_RANK.xpass).toBeGreaterThan(STATUS_RANK.error);
     expect(STATUS_RANK.error).toBeGreaterThan(STATUS_RANK.pass);
-    expect(STATUS_RANK.pass).toBeGreaterThan(STATUS_RANK.skip);
+    expect(STATUS_RANK.pass).toBeGreaterThan(STATUS_RANK.xfail);
+    expect(STATUS_RANK.xfail).toBeGreaterThan(STATUS_RANK.skip);
   });
 
   it("sorts ascending as skip < pass < error < fail", () => {

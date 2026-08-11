@@ -45,6 +45,11 @@
 //!   supported way to separate them. (`exec` sends `test` to its child and
 //!   [`crate::provider::Provider::canonical_request`] strips it back out for
 //!   exactly this reason.)
+//! - **`expect_fail`.** A verdict-interpretation policy, not a property of the
+//!   request — like `refusal_patterns`, it is applied at classification time.
+//!   Keeping it out is what makes toggling the annotation free: the cached
+//!   exchange replays and the new policy re-reads it, instead of the marker
+//!   edit re-spending every call it touches.
 
 use serde_json::Value as Json;
 

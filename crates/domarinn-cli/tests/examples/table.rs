@@ -395,6 +395,8 @@ const ROWS_EARLY: &[Example] = &[
                 failed: 2,
                 errored: 0,
                 skipped: 0,
+                xfailed: 0,
+                xpassed: 0,
             },
             case_ids: &[
                 "refusal/stays-in-scope",
@@ -423,6 +425,8 @@ const ROWS_EARLY: &[Example] = &[
                 failed: 0,
                 errored: 2,
                 skipped: 1,
+                xfailed: 0,
+                xpassed: 0,
             },
             case_ids: &[
                 "ok/plain-answer",

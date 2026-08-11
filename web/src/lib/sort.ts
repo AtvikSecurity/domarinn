@@ -36,14 +36,20 @@ export function serializeSort(sorting: SortingState): string | null {
  * cases an operator most wants to see first.
  */
 export const STATUS_RANK: Record<CaseStatus, number> = {
-  fail: 3,
-  error: 2,
-  pass: 1,
+  fail: 5,
+  // Gate-failing, so it sorts beside fail; its own rank keeps the two
+  // separable in a sorted grid.
+  xpass: 4,
+  error: 3,
+  pass: 2,
+  // Expected and unremarkable: below pass, above skip (it was graded).
+  xfail: 1,
   skip: 0,
 };
 
 /**
- * Ascending comparator by status rank (skip < pass < error < fail). react-table
+ * Ascending comparator by status rank
+ * (skip < xfail < pass < error < xpass < fail). react-table
  * reverses it for a descending sort, surfacing failures first.
  */
 export function compareStatus(a: CaseStatus, b: CaseStatus): number {

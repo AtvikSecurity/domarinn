@@ -709,6 +709,8 @@ fn check_result(ctx: &Context, step: &Step, path: &Path) {
         failed: run.summary.failed,
         errored: run.summary.errored,
         skipped: run.summary.skipped,
+        xfailed: run.summary.xfailed,
+        xpassed: run.summary.xpassed,
     };
     if got != step.cells {
         // A table, not a struct dump: the reader is comparing four numbers and
@@ -720,6 +722,8 @@ fn check_result(ctx: &Context, step: &Step, path: &Path) {
              \n  | fail  | {:>8} | {:>6} |\
              \n  | error | {:>8} | {:>6} |\
              \n  | skip  | {:>8} | {:>6} |\
+             \n  | xfail | {:>8} | {:>6} |\
+             \n  | xpass | {:>8} | {:>6} |\
              \n\n  not passing: {}",
             step.cells.passed,
             got.passed,
@@ -729,6 +733,10 @@ fn check_result(ctx: &Context, step: &Step, path: &Path) {
             got.errored,
             step.cells.skipped,
             got.skipped,
+            step.cells.xfailed,
+            got.xfailed,
+            step.cells.xpassed,
+            got.xpassed,
             not_passing(&run),
         ));
     }
@@ -736,7 +744,7 @@ fn check_result(ctx: &Context, step: &Step, path: &Path) {
     // model would otherwise vanish silently.
     if run.summary.total != step.cells.total() {
         ctx.fail(&format!(
-            "summary.total is {} but the four statuses account for {} — the run \
+            "summary.total is {} but the six statuses account for {} — the run \
              carries a case status this harness does not model",
             run.summary.total,
             step.cells.total()

@@ -232,6 +232,16 @@ It is a **verdict override, not a grading skip**, and the difference is worth mo
 
 The list matches the **classified** reason each case reports — the value shown in results, which domarinn fills in as `blank` when the provider named none — so list what you see there, not what you expect the provider to send.
 
+### Expected failures (`expect_fail`)
+
+The other verdict override is per-case: [`expect_fail`](../reference/domarinn-yaml.md#inline-and-loaded-test-fields) marks a case as the documented state of a known bug. Grading runs exactly as ever — every rule above applies, every assert result is stored — and only the final classification moves:
+
+- a marked case whose verdict is **fail** reports **`xfail`**: counted apart from `failed`, excluded from the exit code, rendered muted. The reason string (if the marker carried one) travels on the result.
+- a marked case whose verdict is **pass** reports **`xpass`**: the marker has gone stale, and that **fails the run** (exit 1). Strict on purpose — a marker either documents a live bug or it must be removed.
+- `Error` and `Skip` outrank the marker, exactly as they outrank a plain verdict: infrastructure breaking and "nothing gradeable came back" are facts about the run, not about the bug the marker documents.
+
+Like `skip_on_empty_reason`, this is applied at **classification time** and is never part of any cache key or request — toggling a marker re-interprets results that are already cached instead of re-spending them. It *does* join the case's assert digest (like `threshold`: it decides the verdict), so annotating a case classifies as a grading change in a diff, never as a prompt change. See [example 46](../examples/running-and-reporting.md#example-46--expected-failures) for the full green/red demonstration.
+
 ### Where the reasons show up
 
 | Surface | What you get |

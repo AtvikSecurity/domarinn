@@ -608,6 +608,84 @@ fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE runs ADD COLUMN fallback_count INTEGER;
         "#,
         ),
+        // Migration 19: the expected-failure statuses (result schema v4).
+        // Widening `status`'s CHECK means rebuilding `cases` — SQLite has no
+        // ALTER for it — via the same documented recipe as migration 14's
+        // `users` rebuild, and it is likewise only safe because
+        // [`migrate_runs`] turns foreign keys off around the migration run:
+        // with enforcement on, the `DROP TABLE` would cascade through
+        // `case_tags` and the `RENAME` would rewrite its REFERENCES clause to
+        // name `cases_new`.
+        //
+        // The column set is migration 1's plus every later ALTER (3, 6, 7, 10,
+        // 13, 15, 17), and all seven `cases` indexes are recreated —
+        // `idx_cases_cache_key` with its exact partial predicate, which the
+        // cache-key lookup's WHERE must keep provably implying (see
+        // migration 13; no COALESCE may appear on either side).
+        //
+        // The run-level counters follow migration 8's no-backfill reasoning,
+        // stated at its sharpest here: the statuses are *new*, so no
+        // historical blob can contain one, and a NULL on an old row honestly
+        // reads 0. Readers COALESCE. Ingest fills them from the summary like
+        // `pass_count`.
+        M::up(
+            r#"
+        CREATE TABLE cases_new (
+            run_id                  TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+            case_key                TEXT NOT NULL,
+            idx                     INTEGER NOT NULL,
+            name                    TEXT,
+            status                  TEXT NOT NULL CHECK
+                (status IN ('pass','fail','error','skip','xfail','xpass')),
+            output_preview          TEXT,
+            output_text             TEXT,
+            output_hash             TEXT,
+            asserts                 TEXT,
+            prompt_tokens           INTEGER,
+            completion_tokens       INTEGER,
+            cost_microusd           INTEGER,
+            latency_ms              INTEGER,
+            detail                  BLOB,
+            provider_id             TEXT,
+            prompt_id               TEXT,
+            test_id                 TEXT,
+            repeat_idx              INTEGER,
+            score                   REAL,
+            stop_reason             TEXT,
+            cached                  INTEGER,
+            error                   TEXT,
+            prompt_digest           TEXT,
+            provider_digest         TEXT,
+            assert_digest           TEXT,
+            error_class             TEXT,
+            cache_key               TEXT,
+            empty_reason            TEXT,
+            answered_by_provider_id TEXT,
+            PRIMARY KEY (run_id, case_key)
+        );
+        INSERT INTO cases_new
+            SELECT run_id, case_key, idx, name, status, output_preview, output_text,
+                   output_hash, asserts, prompt_tokens, completion_tokens, cost_microusd,
+                   latency_ms, detail, provider_id, prompt_id, test_id, repeat_idx, score,
+                   stop_reason, cached, error, prompt_digest, provider_digest, assert_digest,
+                   error_class, cache_key, empty_reason, answered_by_provider_id
+            FROM cases;
+        DROP TABLE cases;
+        ALTER TABLE cases_new RENAME TO cases;
+
+        CREATE INDEX idx_cases_run_status ON cases(run_id, status);
+        CREATE INDEX idx_cases_run_provider ON cases(run_id, provider_id);
+        CREATE INDEX idx_cases_run_test ON cases(run_id, test_id);
+        CREATE INDEX idx_cases_key ON cases(case_key);
+        CREATE INDEX idx_cases_run_error_class ON cases(run_id, error_class);
+        CREATE INDEX idx_cases_cache_key ON cases(cache_key)
+            WHERE cache_key IS NOT NULL;
+        CREATE INDEX idx_cases_run_empty_reason ON cases(run_id, empty_reason);
+
+        ALTER TABLE runs ADD COLUMN xfail_count INTEGER;
+        ALTER TABLE runs ADD COLUMN xpass_count INTEGER;
+        "#,
+        ),
     ])
 }
 
@@ -740,160 +818,5 @@ pub(super) fn cache_migrations() -> Migrations<'static> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use rusqlite::{params, Connection};
-
-    /// A runs database stopped at migration 13, with foreign keys enforced
-    /// exactly as `open_conn` configures the real writer connection — the
-    /// state every deployed instance upgrades into migration 14 from.
-    fn v13_conn() -> Connection {
-        let mut conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        runs_migrations().to_version(&mut conn, 13).unwrap();
-        conn
-    }
-
-    /// A runs database at the latest migration, reached through the same
-    /// [`migrate_runs`] the server's own open path uses.
-    fn latest_conn() -> Connection {
-        let mut conn = v13_conn();
-        migrate_runs(&mut conn).unwrap();
-        conn
-    }
-
-    fn seed_user(conn: &Connection, id: &str, username: &str, role: &str) {
-        conn.execute(
-            "INSERT INTO users (id, username, password_hash, role, disabled, created_at, email)
-             VALUES (?1, ?2, 'phc', ?3, 0, 1700000000000, ?4)",
-            params![id, username, role, format!("{username}@example.com")],
-        )
-        .unwrap();
-    }
-
-    fn count(conn: &Connection, sql: &str) -> i64 {
-        conn.query_row(sql, [], |r| r.get(0)).unwrap()
-    }
-
-    /// The `users` rebuild is the risky half of migration 14: SQLite cannot
-    /// widen a CHECK in place, and a naive rebuild drops every session, API
-    /// key and SSO identity on the floor via `ON DELETE CASCADE`.
-    #[test]
-    fn migration_14_rebuilds_users_without_losing_rows_or_their_children() {
-        let mut conn = v13_conn();
-        seed_user(&conn, "u1", "root", "admin");
-        seed_user(&conn, "u2", "dana", "member");
-        conn.execute_batch(
-            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_used_at)
-                 VALUES ('sh', 'u2', 1, 2, 3);
-             INSERT INTO api_keys (id, user_id, name, prefix, key_hash, scope, created_at)
-                 VALUES ('k1', 'u2', 'ci', 'domarinn_ab', 'kh', 'write', 1);
-             INSERT INTO user_identities
-                 (id, user_id, provider, kind, subject, email, display_name, created_at)
-                 VALUES ('i1', 'u2', 'oidc:corp', 'oidc', 'sub-1', 'd@example.com', 'Dana', 1);",
-        )
-        .unwrap();
-
-        migrate_runs(&mut conn).unwrap();
-
-        // Every user column survives the rebuild, values included.
-        let (username, role, email, disabled, created_at): (String, String, String, i64, i64) =
-            conn.query_row(
-                "SELECT username, role, email, disabled, created_at FROM users WHERE id = 'u2'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .unwrap();
-        assert_eq!(username, "dana");
-        assert_eq!(role, "member");
-        assert_eq!(email, "dana@example.com");
-        assert_eq!(disabled, 0);
-        assert_eq!(created_at, 1_700_000_000_000);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM users"), 2);
-
-        // The children the FKs point at are still there.
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sessions"), 1);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM api_keys"), 1);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM user_identities"), 1);
-
-        // `username` is still unique.
-        assert!(conn
-            .execute(
-                "INSERT INTO users (id, username, password_hash, role, disabled, created_at)
-                 VALUES ('u3', 'dana', 'phc', 'member', 0, 1)",
-                [],
-            )
-            .is_err());
-
-        // And the cascade still fires, so the FKs point at the new table.
-        conn.execute("DELETE FROM users WHERE id = 'u2'", [])
-            .unwrap();
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sessions"), 0);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM api_keys"), 0);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM user_identities"), 0);
-    }
-
-    #[test]
-    fn migration_14_admits_viewer_and_still_rejects_unknown_roles() {
-        let conn = latest_conn();
-        seed_user(&conn, "u1", "reader", "viewer");
-        assert_eq!(
-            count(&conn, "SELECT COUNT(*) FROM users WHERE role = 'viewer'"),
-            1
-        );
-        assert!(conn
-            .execute(
-                "INSERT INTO users (id, username, password_hash, role, disabled, created_at)
-                 VALUES ('u2', 'sneaky', 'phc', 'superadmin', 0, 1)",
-                [],
-            )
-            .is_err());
-    }
-
-    /// A project-level restriction is one row, not many: plain `UNIQUE` would
-    /// treat every NULL suite as distinct and let duplicates through.
-    #[test]
-    fn a_project_level_restriction_can_only_be_recorded_once() {
-        let conn = latest_conn();
-        let insert = |suite: Option<&str>| {
-            conn.execute(
-                "INSERT INTO run_set_restrictions (project, suite, created_at, created_by)
-                 VALUES ('checkout', ?1, 1, 'root')",
-                params![suite],
-            )
-        };
-        assert!(insert(None).is_ok());
-        assert!(insert(None).is_err(), "NULL suites must collide");
-        assert!(insert(Some("smoke")).is_ok());
-        assert!(insert(Some("smoke")).is_err());
-    }
-
-    #[test]
-    fn a_grant_is_unique_per_scope_and_dies_with_its_user() {
-        let conn = latest_conn();
-        seed_user(&conn, "u1", "reader", "viewer");
-        let insert = |id: &str, suite: Option<&str>, level: &str| {
-            conn.execute(
-                "INSERT INTO run_set_grants
-                     (id, project, suite, user_id, level, created_at, created_by)
-                 VALUES (?1, 'checkout', ?2, 'u1', ?3, 1, 'root')",
-                params![id, suite, level],
-            )
-        };
-        assert!(insert("g1", None, "view").is_ok());
-        assert!(
-            insert("g2", None, "manage").is_err(),
-            "one grant per project/suite/user, whatever its level"
-        );
-        assert!(insert("g3", Some("smoke"), "upload").is_ok());
-        assert!(insert("g4", Some("smoke"), "upload").is_err());
-        assert!(
-            insert("g5", Some("other"), "owner").is_err(),
-            "unknown level"
-        );
-
-        conn.execute("DELETE FROM users WHERE id = 'u1'", [])
-            .unwrap();
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM run_set_grants"), 0);
-    }
-}
+#[path = "schema_tests.rs"]
+mod tests;

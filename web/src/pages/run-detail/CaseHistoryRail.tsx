@@ -142,6 +142,8 @@ const STATUS_SQUARE: Record<CaseStatus, string> = {
   fail: "bg-fail/70 border-fail/50",
   error: "bg-error/70 border-error/50",
   skip: "bg-skip/70 border-skip/50",
+  xfail: "bg-xfail/70 border-xfail/50",
+  xpass: "bg-xpass/70 border-xpass/50",
 };
 
 const STATUS_LABEL: Record<CaseStatus, string> = {
@@ -149,6 +151,8 @@ const STATUS_LABEL: Record<CaseStatus, string> = {
   fail: "fail",
   error: "error",
   skip: "skip",
+  xfail: "xfail",
+  xpass: "xpass",
 };
 
 /** Hit-target pitch: a 24px target (WCAG 2.2 minimum) plus a 4px gap. */

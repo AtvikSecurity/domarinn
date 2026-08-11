@@ -29,6 +29,41 @@ tests:
       - {type: contains, value: "hello"}
 "#;
 
+/// One passing case plus one annotated known failure — the green shape.
+const XFAIL_SUITE: &str = r#"
+version: 1
+project: cli-test
+suite: smoke
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"hello world\"}'"]
+tests:
+  - id: greet
+    assert:
+      - {type: contains, value: "hello"}
+  - id: known-bad
+    expect_fail: "known bug: never says goodbye"
+    assert:
+      - {type: contains, value: "goodbye"}
+"#;
+
+/// The marker gone stale: the annotated case passes.
+const XPASS_SUITE: &str = r#"
+version: 1
+project: cli-test
+suite: smoke
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"hello world\"}'"]
+tests:
+  - id: fixed
+    expect_fail: true
+    assert:
+      - {type: contains, value: "hello"}
+"#;
+
 const FAILING_SUITE: &str = r#"
 version: 1
 suite: smoke
@@ -132,6 +167,36 @@ fn run_failing_suite_exits_one() {
         .assert()
         .code(1)
         .stdout(predicate::str::contains("FAIL"));
+}
+
+/// A suite whose only failure is `expect_fail`-annotated is green: the
+/// failure is the documented state of a known bug, not news.
+#[test]
+fn run_with_only_expected_failures_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), XFAIL_SUITE);
+    bin()
+        .arg("run")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("XFAIL"))
+        .stdout(predicate::str::contains("1 xfailed"));
+}
+
+/// Strict xfail: a case that passes despite its `expect_fail` marker fails
+/// the run — the marker is stale and must be removed.
+#[test]
+fn run_with_an_unexpected_pass_exits_one() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), XPASS_SUITE);
+    bin()
+        .arg("run")
+        .current_dir(dir.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("XPASS"))
+        .stdout(predicate::str::contains("1 xpassed"));
 }
 
 /// A run whose every case was skipped graded nothing, and a green gate there

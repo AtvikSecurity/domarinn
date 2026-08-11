@@ -74,4 +74,16 @@ empty_counts?: { [key in string]: number },
  * Absent at zero, for the byte-stability reason documented on
  * `cache_read_tokens` above.
  */
-fallback_cases: number, };
+fallback_cases: number, 
+/**
+ * Cases that failed while annotated `expect_fail` ([`CaseStatus::XFail`]).
+ * Not folded into `failed` — an expected failure never fails the gate.
+ * Absent at zero, per the byte-stability rule on `cache_read_tokens`.
+ */
+xfailed: number, 
+/**
+ * Cases that passed while annotated `expect_fail` ([`CaseStatus::XPass`]).
+ * Fails the gate exactly like `failed` (strict xfail), but counted apart
+ * so the report can say *why*. Absent at zero, same rule.
+ */
+xpassed: number, };

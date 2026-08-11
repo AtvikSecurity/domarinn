@@ -284,10 +284,12 @@ fn parse_jsonl_tests(text: &str, path: &Path) -> Result<Vec<TestCase>, ResolveEr
 
 /// Delimited tables (CSV with `,`, TSV with `\t`): header names become var keys.
 /// Reserved columns: `id`, `description`, `tags` (comma-separated), `threshold`,
-/// `cache_salt`, `__assert` (a JSON assert list), `__history` (a `file://` path
-/// or a JSON list of `{role, content}` turns). `cache_salt` is reserved so a
-/// digest column keys the cache instead of silently becoming a var (which would
-/// both mis-key the entry and leak the digest to the provider).
+/// `cache_salt`, `expect_fail` (`true`/`false`, or a reason string that implies
+/// `true`; empty is unset), `__assert` (a JSON assert list), `__history` (a
+/// `file://` path or a JSON list of `{role, content}` turns). `cache_salt` is
+/// reserved so a digest column keys the cache instead of silently becoming a
+/// var (which would both mis-key the entry and leak the digest to the
+/// provider); `expect_fail` for the same leak reason.
 fn parse_delimited_tests(
     text: &str,
     path: &Path,
@@ -308,6 +310,16 @@ fn parse_delimited_tests(
                 "description" => tc.description = Some(field.to_string()),
                 "threshold" => tc.threshold = field.trim().parse().ok(),
                 "cache_salt" => tc.cache_salt = Some(field.to_string()),
+                "expect_fail" => {
+                    use crate::config::ExpectFail;
+                    let cell = field.trim();
+                    tc.expect_fail = match cell {
+                        "" => None,
+                        flag if flag.eq_ignore_ascii_case("true") => Some(ExpectFail::Flag(true)),
+                        flag if flag.eq_ignore_ascii_case("false") => Some(ExpectFail::Flag(false)),
+                        reason => Some(ExpectFail::Reason(reason.to_string())),
+                    };
+                }
                 "tags" => {
                     tc.tags = field
                         .split(',')
@@ -451,6 +463,45 @@ tests: ["file://cases.csv"]
         assert_eq!(tc.cache_salt.as_deref(), Some("digest-1"));
         assert!(!tc.vars.contains_key("cache_salt"));
         assert!(tc.vars.contains_key("question"));
+    }
+
+    /// `expect_fail` must annotate the case, not become a var — a var would
+    /// leak the marker (and any reason text) to the provider. `true`/`false`
+    /// parse as the flag, anything else non-empty is a reason, empty is unset.
+    #[test]
+    fn csv_expect_fail_is_a_reserved_column() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "cases.csv",
+            "id,expect_fail,question\n\
+             q1,true,what is 2+2\n\
+             q2,known bug (#123),what is 3+3\n\
+             q3,,what is 4+4\n\
+             q4,FALSE,what is 5+5\n",
+        );
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers: [{id: p, type: exec, command: ["x"]}]
+tests: ["file://cases.csv"]
+"#,
+        )
+        .unwrap();
+        let expanded = expand_tests(&suite, dir.path()).unwrap();
+        assert!(expanded.tests[0].expect_fail_enabled());
+        assert_eq!(expanded.tests[0].expect_fail_reason(), None);
+        assert!(expanded.tests[1].expect_fail_enabled());
+        assert_eq!(
+            expanded.tests[1].expect_fail_reason(),
+            Some("known bug (#123)")
+        );
+        assert!(!expanded.tests[2].expect_fail_enabled());
+        assert!(!expanded.tests[3].expect_fail_enabled());
+        for tc in &expanded.tests {
+            assert!(!tc.vars.contains_key("expect_fail"));
+            assert!(tc.vars.contains_key("question"));
+        }
     }
 
     #[test]

@@ -212,6 +212,15 @@ fn is_failing(status: CaseStatus) -> bool {
     matches!(status, CaseStatus::Fail | CaseStatus::Error)
 }
 
+/// The compare axis measures the model, like the CLI's diff: an `XPass` is the
+/// model genuinely passing (the red gate is the stale `expect_fail` marker,
+/// which the run's own exit code already reported), and an `XFail` is neither
+/// passing nor failing *movement* — it falls through to `Unchanged` exactly as
+/// `Skip` does.
+fn is_passing(status: CaseStatus) -> bool {
+    matches!(status, CaseStatus::Pass | CaseStatus::XPass)
+}
+
 /// Classify one case's transition from `b` (base, if present) to `h` (head,
 /// if present). Mirrors today's endpoint behavior exactly (see the module
 /// doc): pass/pass is its own `StillPassing` variant, and anything else with
@@ -220,13 +229,13 @@ fn is_failing(status: CaseStatus) -> bool {
 fn classify(b: Option<&CmpCase>, h: Option<&CmpCase>) -> CompareDelta {
     match (b, h) {
         (Some(b), Some(h)) => {
-            if b.status == CaseStatus::Pass && is_failing(h.status) {
+            if is_passing(b.status) && is_failing(h.status) {
                 CompareDelta::NewlyFailing
-            } else if is_failing(b.status) && h.status == CaseStatus::Pass {
+            } else if is_failing(b.status) && is_passing(h.status) {
                 CompareDelta::NewlyPassing
             } else if is_failing(b.status) && is_failing(h.status) {
                 CompareDelta::StillFailing
-            } else if b.status == CaseStatus::Pass && h.status == CaseStatus::Pass {
+            } else if is_passing(b.status) && is_passing(h.status) {
                 CompareDelta::StillPassing
             } else {
                 CompareDelta::Unchanged
@@ -415,4 +424,49 @@ fn compare_runs(
         totals,
         config,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cmp_case(status: CaseStatus) -> CmpCase {
+        CmpCase {
+            name: None,
+            status,
+            output_hash: None,
+            score: None,
+            asserts: Vec::new(),
+            prompt_digest: None,
+            provider_digest: None,
+            assert_digest: None,
+        }
+    }
+
+    /// The compare axis measures the model, like the CLI diff: an XPass is
+    /// the model genuinely passing (the red gate is the stale marker), an
+    /// XFail is a stable known failure, and XFail↔XFail is not movement.
+    #[test]
+    fn classify_measures_the_model_across_expected_failure_statuses() {
+        use CaseStatus::*;
+        use CompareDelta::*;
+        for (base, head, want) in [
+            // An XFail on either side falls through to Unchanged exactly as
+            // Skip does (see the module doc): it is an *annotated* state, and
+            // this endpoint's classification deliberately does not raise
+            // alarms for transitions the author has already documented. The
+            // CLI's `diff` gate is the strict surface.
+            (XFail, XFail, Unchanged),
+            (Pass, XFail, Unchanged),
+            (XFail, Pass, Unchanged),
+            (Skip, XFail, Unchanged),
+            // An XPass is the model genuinely passing.
+            (Fail, XPass, NewlyPassing),
+            (XPass, Fail, NewlyFailing),
+            (XPass, XPass, StillPassing),
+        ] {
+            let got = classify(Some(&cmp_case(base)), Some(&cmp_case(head)));
+            assert_eq!(got, want, "{base:?} -> {head:?}");
+        }
+    }
 }

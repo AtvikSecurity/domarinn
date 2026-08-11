@@ -74,6 +74,20 @@ The third case demonstrates **short-circuiting**. Its deterministic `icontains` 
 
 ---
 
+## Example 46 — Expected failures
+
+A mature suite almost always has a stable failing subset: cases that fail every run for reasons everyone already knows. Left unmarked they make every run exit 1, and the gate stops carrying signal. `expect_fail` marks such a case as *expected to fail* — `true`, or a reason string that implies it and travels onto every result.
+
+```yaml
+--8<-- "examples/46-expected-failures/domarinn.yaml"
+```
+
+`domarinn run examples/46-expected-failures --tag stable` exits **0**: the documented bug fails as expected and reports **`xfail`**, counted apart from `failed` and excluded from the gate. The full run exits **1**: the third case's marker has gone stale — the bug it documented was fixed — so the case passes and reports **`xpass`**, which fails the run. That strictness is the contract that keeps markers honest: an `expect_fail` either documents a live bug or it must be removed. In JUnit output an `xfail` maps to `<skipped>` (with the reason) and an `xpass` to `<failure>`.
+
+Marking a case never touches the cache. The annotation is applied when the verdict is classified, so toggling it re-interprets responses that are already cached instead of re-spending them — the second run above replays its first two cases from cache while classifying them exactly the same way.
+
+---
+
 ## Example 19 — Errors and retries
 
 A failed assertion means the system under test got worse. An **error** means you learned nothing — the call never produced a gradeable answer. Conflating the two is how a gate starts lying, so domarinn keeps them apart end to end: separate case status, separate tally, separate exit code.

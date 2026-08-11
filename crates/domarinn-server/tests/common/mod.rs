@@ -388,7 +388,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         tags: spec.tags.iter().map(|t| t.to_string()).collect(),
         vars: Default::default(),
         status: spec.status,
-        score: if matches!(spec.status, CaseStatus::Pass) {
+        score: if matches!(spec.status, CaseStatus::Pass | CaseStatus::XPass) {
             1.0
         } else {
             0.0
@@ -424,6 +424,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
         error_class: spec
             .error_class
             .map(domarinn_core::error_class::ErrorClass::new),
+        expect_fail_reason: None,
     }
 }
 
@@ -462,6 +463,8 @@ pub fn make_run(
             CaseStatus::Fail => summary.failed += 1,
             CaseStatus::Error => summary.errored += 1,
             CaseStatus::Skip => summary.skipped += 1,
+            CaseStatus::XFail => summary.xfailed += 1,
+            CaseStatus::XPass => summary.xpassed += 1,
         }
         if let Some(u) = &c.usage {
             summary.prompt_tokens += u.input_tokens;

@@ -74,6 +74,7 @@ The examples below are grouped into six pages, roughly in the order you would re
 | 43  | [Reaching a model through a gateway](models-grading-and-budgets.md#example-43--reaching-a-model-through-a-gateway) | `request:` — the auth scheme, headers, query and body overlay a gateway needs. |
 | 44  | [A second provider answers when the first refuses](models-grading-and-budgets.md#example-44--a-second-provider-answers-when-the-first-refuses) | `fallback:` — resilience without changing which provider the case belongs to. |
 | 45  | [A reserve provider that never forms a cell](models-grading-and-budgets.md#example-45--a-reserve-provider-that-never-forms-a-cell) | `fallback_only:` — reachable as a handoff, absent from the matrix, so adopting a backup does not double the bill. |
+| 46  | [Expected failures](running-and-reporting.md#example-46--expected-failures) | `expect_fail` — a known bug reports `xfail` and stays green; a stale marker `xpass`es and goes red. |
 
 ## See also
 

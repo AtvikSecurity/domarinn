@@ -17,6 +17,8 @@ function run(overrides: Partial<RunListItem> = {}): RunListItem {
     pass_count: 1,
     fail_count: 0,
     error_count: 0,
+    xfail_count: 0,
+    xpass_count: 0,
     pass_rate: 1,
     prompt_tokens: 0,
     completion_tokens: 0,

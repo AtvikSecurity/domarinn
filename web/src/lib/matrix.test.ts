@@ -22,6 +22,8 @@ function cell(partial: Partial<MatrixCell>): MatrixCell {
     failed: 0,
     errored: 0,
     skipped: 0,
+    xfailed: 0,
+    xpassed: 0,
     score_mean: null,
     pass_fraction: 0,
     distinct_outputs: 1,

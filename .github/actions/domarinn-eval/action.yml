@@ -158,6 +158,17 @@ outputs:
   total:
     description: Total number of test cases.
     value: ${{ steps.summary.outputs.total }}
+  xfailed:
+    description: >-
+      Number of `expect_fail` cases that failed as expected. Not part of
+      `failed` — an expected failure never fails the gate.
+    value: ${{ steps.summary.outputs.xfailed }}
+  xpassed:
+    description: >-
+      Number of `expect_fail` cases that passed unexpectedly. Not folded into
+      `failed` (that output's meaning predates the statuses), but the run's
+      exit code is 1 whenever this is nonzero — strict expect_fail.
+    value: ${{ steps.summary.outputs.xpassed }}
   pass-rate:
     description: Percentage of cases that passed, one decimal place (e.g. "91.7").
     value: ${{ steps.summary.outputs.pass-rate }}

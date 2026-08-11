@@ -20,6 +20,8 @@ const STATUS_TONE: Record<BadgeStatus, OutlineTone> = {
   error: "error",
   skip: "skip",
   skipped: "skip",
+  xfail: "xfail",
+  xpass: "xpass",
 };
 
 const STATUS_LABEL: Record<BadgeStatus, string> = {
@@ -28,6 +30,8 @@ const STATUS_LABEL: Record<BadgeStatus, string> = {
   error: "Error",
   skip: "Skip",
   skipped: "Skip",
+  xfail: "XFail",
+  xpass: "XPass",
 };
 
 export function StatusBadge({

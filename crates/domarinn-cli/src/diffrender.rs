@@ -524,6 +524,7 @@ mod diff_tests {
             error: None,
             error_details: None,
             error_class: None,
+            expect_fail_reason: None,
         }
     }
 

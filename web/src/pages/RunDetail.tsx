@@ -52,6 +52,8 @@ const STATUS_CHIPS: { value: string; label: string }[] = [
   { value: "fail", label: "Fail" },
   { value: "error", label: "Error" },
   { value: "skip", label: "Skip" },
+  { value: "xfail", label: "XFail" },
+  { value: "xpass", label: "XPass" },
 ];
 
 /** Header stat-row widths, keyed by how many stats the run actually has.
@@ -391,6 +393,7 @@ export function RunDetail() {
               pass={r.pass_count}
               fail={r.fail_count}
               error={r.error_count}
+              xpass={r.xpass_count}
               className="text-sm"
             />
           </StatBlock>

@@ -39,6 +39,13 @@ pub struct RunListItem {
     pub pass_count: i64,
     pub fail_count: i64,
     pub error_count: i64,
+    /// Expected-failure tallies (migration-19 columns). `0` for runs stored
+    /// before the statuses existed — honestly so, since no historical blob
+    /// can contain one.
+    pub xfail_count: i64,
+    /// Cases that passed despite `expect_fail` — the gate-failing count; a
+    /// run listing red with `fail_count == 0` is explained by this.
+    pub xpass_count: i64,
     pub pass_rate: f64,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
@@ -119,6 +126,10 @@ pub struct RunDetailResponse {
     pub pass_count: i64,
     pub fail_count: i64,
     pub error_count: i64,
+    /// Expected-failure tallies (migration-19 columns); `0` on pre-migration
+    /// rows, same reading as [`RunListItem::xfail_count`].
+    pub xfail_count: i64,
+    pub xpass_count: i64,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
     pub cost_usd: Option<f64>,
@@ -213,6 +224,8 @@ mod tests {
             pass_count: 1,
             fail_count: 1,
             error_count: 0,
+            xfail_count: 0,
+            xpass_count: 1,
             pass_rate: 0.5,
             prompt_tokens: 10,
             completion_tokens: 20,
@@ -244,6 +257,8 @@ mod tests {
                 "pass_count": 1,
                 "fail_count": 1,
                 "error_count": 0,
+                "xfail_count": 0,
+                "xpass_count": 1,
                 "pass_rate": 0.5,
                 "prompt_tokens": 10,
                 "completion_tokens": 20,
@@ -280,6 +295,8 @@ mod tests {
             pass_count: 0,
             fail_count: 0,
             error_count: 0,
+            xfail_count: 0,
+            xpass_count: 0,
             pass_rate: 0.0,
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -349,6 +366,8 @@ mod tests {
             pass_count: 1,
             fail_count: 0,
             error_count: 0,
+            xfail_count: 2,
+            xpass_count: 1,
             prompt_tokens: 10,
             completion_tokens: 20,
             cost_usd: Some(0.0025),
@@ -391,6 +410,8 @@ mod tests {
                 "pass_count": 1,
                 "fail_count": 0,
                 "error_count": 0,
+                "xfail_count": 2,
+                "xpass_count": 1,
                 "prompt_tokens": 10,
                 "completion_tokens": 20,
                 "cost_usd": 0.0025,
@@ -435,6 +456,8 @@ mod tests {
             pass_count: 0,
             fail_count: 0,
             error_count: 0,
+            xfail_count: 0,
+            xpass_count: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
             cost_usd: None,

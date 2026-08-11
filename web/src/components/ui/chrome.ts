@@ -9,7 +9,9 @@ export type OutlineTone =
   | "fail"
   | "error"
   | "amber"
-  | "skip";
+  | "skip"
+  | "xfail"
+  | "xpass";
 
 export const OUTLINE_LABEL_BASE =
   "inline-flex items-center gap-1 rounded-[8px] border bg-transparent font-medium leading-none transition-colors";
@@ -23,6 +25,8 @@ export const OUTLINE_LABEL_TONE: Record<OutlineTone, string> = {
   error: "border-error text-error",
   amber: "border-amber text-amber",
   skip: "border-skip text-skip",
+  xfail: "border-xfail text-xfail",
+  xpass: "border-xpass text-xpass",
 };
 
 /**
@@ -55,4 +59,6 @@ export const INTERACTIVE_OUTLINE_TONE: Record<OutlineTone, string> = {
   error: "border-error text-error hover:bg-error/8 data-[pressed=true]:bg-error/8",
   amber: "border-amber text-amber hover:bg-amber/8 data-[pressed=true]:bg-amber/8",
   skip: "border-skip text-skip hover:bg-skip/8 data-[pressed=true]:bg-skip/8",
+  xfail: "border-xfail text-xfail hover:bg-xfail/8 data-[pressed=true]:bg-xfail/8",
+  xpass: "border-xpass text-xpass hover:bg-xpass/8 data-[pressed=true]:bg-xpass/8",
 };

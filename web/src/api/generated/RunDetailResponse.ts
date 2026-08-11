@@ -14,7 +14,12 @@ created_at: string,
 /**
  * RFC3339.
  */
-uploaded_at: string, schema_version: number, git_branch: string | null, git_commit: string | null, git_dirty: boolean | null, ci_provider: string | null, ci_run_url: string | null, case_count: number, pass_count: number, fail_count: number, error_count: number, prompt_tokens: number, completion_tokens: number, cost_usd: number | null, duration_ms: number, content_hash: string, uploaded_by: string | null, 
+uploaded_at: string, schema_version: number, git_branch: string | null, git_commit: string | null, git_dirty: boolean | null, ci_provider: string | null, ci_run_url: string | null, case_count: number, pass_count: number, fail_count: number, error_count: number, 
+/**
+ * Expected-failure tallies (migration-19 columns); `0` on pre-migration
+ * rows, same reading as [`RunListItem::xfail_count`].
+ */
+xfail_count: number, xpass_count: number, prompt_tokens: number, completion_tokens: number, cost_usd: number | null, duration_ms: number, content_hash: string, uploaded_by: string | null, 
 /**
  * The run's config digest (migration-3 `runs.config_digest` column).
  * `None` for legacy rows with no digest and for failed-backfill rows that

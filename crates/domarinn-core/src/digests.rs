@@ -80,10 +80,23 @@ fn split_tests(tests: &[TestCase]) -> (Json, Json) {
     for test in tests {
         let id = test.id.clone().unwrap_or_default();
         let mut value = to_value(test);
+        // `expect_fail` is a grading-policy field, not part of "what is
+        // asked", so it moves the asserts half, never the tests half — a pure
+        // annotation must not read as a prompt change. Removed from the body
+        // unconditionally; folded into the assert half only when enabled, so
+        // every pre-`expect_fail` suite keeps its exact digests (the same
+        // conditional-insert reasoning as the cache key). The bool only: the
+        // reason is documentation.
+        value.as_object_mut().and_then(|o| o.remove("expect_fail"));
         let assert = value
             .as_object_mut()
             .and_then(|o| o.remove("assert"))
             .unwrap_or(Json::Null);
+        let assert = if test.expect_fail_enabled() {
+            serde_json::json!({ "assert": assert, "expect_fail": true })
+        } else {
+            assert
+        };
         bodies.push((id.clone(), value));
         asserts.push((id, assert));
     }
@@ -157,7 +170,11 @@ pub fn provider_digest(fingerprint: &Json) -> String {
 /// Member digests are sorted, so a pure reorder is not a change: local asserts
 /// always evaluate before deferred ones regardless of authored order, and the
 /// verdict is a weighted mean, so order carries no meaning to preserve.
-pub fn assert_digest(asserts: &[AssertResult], threshold: Option<f64>) -> Option<String> {
+pub fn assert_digest(
+    asserts: &[AssertResult],
+    threshold: Option<f64>,
+    expect_fail: bool,
+) -> Option<String> {
     let mut members: Vec<String> = Vec::with_capacity(asserts.len());
     for a in asserts {
         // `criteria` omits `weight` (it is a sibling field), but weight moves
@@ -170,10 +187,21 @@ pub fn assert_digest(asserts: &[AssertResult], threshold: Option<f64>) -> Option
         })));
     }
     members.sort();
-    Some(digest(&serde_json::json!({
+    let mut top = serde_json::json!({
         "asserts": members,
         "threshold": threshold,
-    })))
+    });
+    // Like `threshold`, `expect_fail` decides the verdict, so enabling it is a
+    // change to the grading definition. Inserted only when set — the cache
+    // key's conditional-insert doctrine — so every digest stored before the
+    // field existed stays valid. The reason is deliberately not hashed:
+    // editing documentation must not read as "the goalposts moved".
+    if expect_fail {
+        top.as_object_mut()
+            .expect("literal object")
+            .insert("expect_fail".into(), Json::Bool(true));
+    }
+    Some(digest(&top))
 }
 
 #[cfg(test)]
@@ -276,14 +304,14 @@ prompts:
         let a = assert_result(AssertName::Contains, 1.0, serde_json::json!({"value": "x"}));
         let b = assert_result(AssertName::Regex, 1.0, serde_json::json!({"value": "y"}));
         assert_eq!(
-            assert_digest(&[a.clone(), b.clone()], None),
-            assert_digest(&[b.clone(), a.clone()], None)
+            assert_digest(&[a.clone(), b.clone()], None, false),
+            assert_digest(&[b.clone(), a.clone()], None, false)
         );
 
         let c = assert_result(AssertName::Regex, 1.0, serde_json::json!({"value": "z"}));
         assert_ne!(
-            assert_digest(&[a.clone(), b], None),
-            assert_digest(&[a, c], None)
+            assert_digest(&[a.clone(), b], None, false),
+            assert_digest(&[a, c], None, false)
         );
     }
 
@@ -293,7 +321,10 @@ prompts:
     fn assert_digest_covers_weight() {
         let light = assert_result(AssertName::Contains, 1.0, serde_json::json!({"value": "x"}));
         let heavy = assert_result(AssertName::Contains, 3.0, serde_json::json!({"value": "x"}));
-        assert_ne!(assert_digest(&[light], None), assert_digest(&[heavy], None));
+        assert_ne!(
+            assert_digest(&[light], None, false),
+            assert_digest(&[heavy], None, false)
+        );
     }
 
     /// A partial definition must not produce a digest that looks authoritative.
@@ -301,7 +332,7 @@ prompts:
     fn assert_digest_is_none_when_criteria_are_missing() {
         let mut bare = assert_result(AssertName::Contains, 1.0, Json::Null);
         bare.criteria = None;
-        assert_eq!(assert_digest(&[bare], None), None);
+        assert_eq!(assert_digest(&[bare], None, false), None);
     }
 
     /// The threshold decides the verdict, so editing it is a change to the
@@ -311,14 +342,83 @@ prompts:
     fn assert_digest_covers_the_pass_threshold() {
         let a = assert_result(AssertName::Contains, 1.0, serde_json::json!({"value": "x"}));
         assert_ne!(
-            assert_digest(std::slice::from_ref(&a), Some(0.8)),
-            assert_digest(&[a], Some(0.5))
+            assert_digest(std::slice::from_ref(&a), Some(0.8), false),
+            assert_digest(&[a], Some(0.5), false)
         );
     }
 
     #[test]
     fn assert_digest_of_no_asserts_is_stable() {
-        assert_eq!(assert_digest(&[], None), assert_digest(&[], None));
-        assert!(assert_digest(&[], None).is_some());
+        assert_eq!(
+            assert_digest(&[], None, false),
+            assert_digest(&[], None, false)
+        );
+        assert!(assert_digest(&[], None, false).is_some());
+    }
+
+    /// Compatibility pin: without `expect_fail` the hashed object is exactly
+    /// the pre-`expect_fail` shape, so no stored digest moves on upgrade. The
+    /// literal below mirrors the old construction verbatim.
+    #[test]
+    fn assert_digest_without_expect_fail_hashes_the_pre_expect_fail_shape() {
+        let expected = digest(&serde_json::json!({
+            "asserts": Vec::<String>::new(),
+            "threshold": Json::Null,
+        }));
+        assert_eq!(assert_digest(&[], None, false), Some(expected));
+    }
+
+    /// `expect_fail` decides the verdict, so — like `threshold` — enabling it
+    /// is a change to the grading definition.
+    #[test]
+    fn assert_digest_covers_expect_fail() {
+        let a = assert_result(AssertName::Contains, 1.0, serde_json::json!({"value": "x"}));
+        assert_ne!(
+            assert_digest(std::slice::from_ref(&a), None, true),
+            assert_digest(&[a], None, false)
+        );
+    }
+
+    /// A pure annotation is a grading change, not a prompt change: the tests
+    /// digest must stand still while the asserts digest moves. And the reason
+    /// string is documentation — editing it moves neither.
+    #[test]
+    fn expect_fail_moves_the_asserts_digest_and_not_the_tests_digest() {
+        use crate::config::ExpectFail;
+        let plain = tests_of(&["t1"]);
+        let mut marked = tests_of(&["t1"]);
+        marked[0].expect_fail = Some(ExpectFail::Flag(true));
+        let mut reasoned = tests_of(&["t1"]);
+        reasoned[0].expect_fail = Some(ExpectFail::Reason("known bug".into()));
+
+        let suite = suite_of(BASE);
+        let before = config_digests(&suite, &plain);
+        let after = config_digests(&suite, &marked);
+        assert_eq!(before.tests, after.tests, "annotation is not a test edit");
+        assert_ne!(
+            before.asserts, after.asserts,
+            "annotation moves the goalposts"
+        );
+
+        let with_reason = config_digests(&suite, &reasoned);
+        assert_eq!(after.tests, with_reason.tests);
+        assert_eq!(
+            after.asserts, with_reason.asserts,
+            "the reason is documentation"
+        );
+    }
+
+    /// `expect_fail: false` digests identically to an absent key — off is off.
+    #[test]
+    fn an_explicit_expect_fail_false_digests_like_an_absent_one() {
+        use crate::config::ExpectFail;
+        let plain = tests_of(&["t1"]);
+        let mut off = tests_of(&["t1"]);
+        off[0].expect_fail = Some(ExpectFail::Flag(false));
+        let suite = suite_of(BASE);
+        let a = config_digests(&suite, &plain);
+        let b = config_digests(&suite, &off);
+        assert_eq!(a.tests, b.tests);
+        assert_eq!(a.asserts, b.asserts);
     }
 }

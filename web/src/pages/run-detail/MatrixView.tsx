@@ -27,6 +27,8 @@ const STATUS_DOT: Record<CaseStatus, string> = {
   fail: "bg-fail",
   error: "bg-error",
   skip: "bg-skip",
+  xfail: "bg-xfail",
+  xpass: "bg-xpass",
 };
 
 const MATRIX_TABLE_ID = "matrix";

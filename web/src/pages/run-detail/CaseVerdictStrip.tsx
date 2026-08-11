@@ -12,6 +12,8 @@ const STATUS_TONE: Record<string, string> = {
   fail: "text-fail",
   error: "text-error",
   skip: "text-skip",
+  xfail: "text-xfail",
+  xpass: "text-xpass",
 };
 
 /**
@@ -118,6 +120,19 @@ export function CaseVerdictStrip({
           ) : null}
         </div>
       </div>
+
+      {/* The `expect_fail` annotation, shown whatever the outcome: it is why
+          an XFail badge is calm and an XPass one is alarming. The reason is
+          the author's own words; a reasonless marker still gets the sentence,
+          because the annotation itself is the explanation. */}
+      {detail.status === "xfail" ||
+      detail.status === "xpass" ||
+      detail.expect_fail_reason ? (
+        <p className="text-xs text-muted">
+          expected to fail
+          {detail.expect_fail_reason ? `: ${detail.expect_fail_reason}` : ""}
+        </p>
+      ) : null}
 
       {/* Who really answered. Sits in the verdict band rather than among the
           chips above because the sentence is the point: a chip reading

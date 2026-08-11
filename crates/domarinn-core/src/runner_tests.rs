@@ -540,6 +540,115 @@ fn a_reason_this_build_has_never_heard_of_can_still_be_skipped() {
     ));
 }
 
+// ── expect_fail: XFail and XPass ─────────────────────────────────────────────
+
+/// A provider that answers the same text every time — the minimal way to make
+/// a `contains` assert deterministically pass or fail.
+struct FixedProvider(&'static str);
+
+#[async_trait]
+impl Provider for FixedProvider {
+    fn id(&self) -> &str {
+        "fixed"
+    }
+    fn fingerprint(&self) -> Json {
+        serde_json::json!({ "type": "fixed" })
+    }
+    async fn call(
+        &self,
+        _req: &ProviderRequest,
+        _ctx: &CallCtx,
+    ) -> Result<ProviderResponse, ProviderError> {
+        Ok(ProviderResponse::text(self.0))
+    }
+}
+
+/// Run one cell of a case asserting `contains: "ok"` with the given
+/// `expect_fail` annotation against a provider that answers `output`.
+async fn annotated_case(
+    output: &'static str,
+    expect_fail: crate::config::ExpectFail,
+) -> CaseResult {
+    let provider = FixedProvider(output);
+    let engine = TemplateEngine::new();
+    let cache = NoopCache;
+    let schemas = crate::jsonschema_cache::SchemaCache::new();
+    let aborted = AbortFlag::default();
+    let cache_state = crate::runner::runner_cache::CacheRunState::default();
+    let test = crate::config::TestCase {
+        id: Some("t1".into()),
+        expect_fail: Some(expect_fail),
+        assert: vec![crate::config::Assert {
+            weight: 1.0,
+            negate: false,
+            kind: crate::config::AssertKind::Contains { value: "ok".into() },
+        }],
+        ..Default::default()
+    };
+    run_cell(
+        &provider,
+        &[],
+        None,
+        &test,
+        0,
+        &engine,
+        &cache,
+        Some(&FailingGrader),
+        &CallCtx::default(),
+        Path::new("."),
+        CacheMode::Disabled,
+        false,
+        &RetryPolicy::default(),
+        &schemas,
+        false,
+        &aborted,
+        &[],
+        &[],
+        &cache_state,
+        &crate::empty_policy::EmptyPolicy::default(),
+        &crate::runner::runner_fallback::FallbackPolicy::default(),
+    )
+    .await
+}
+
+/// The feature: a failing case under `expect_fail` is `XFail`, not `Fail`.
+#[tokio::test]
+async fn a_failing_case_under_expect_fail_is_xfail() {
+    let case = annotated_case("nope", crate::config::ExpectFail::Flag(true)).await;
+    assert_eq!(case.status, CaseStatus::XFail, "{:?}", case.asserts);
+    assert_eq!(case.expect_fail_reason, None);
+}
+
+/// Strict xfail: a passing case under `expect_fail` is `XPass` — the marker
+/// is stale and the gate must say so.
+#[tokio::test]
+async fn a_passing_case_under_expect_fail_is_xpass() {
+    let case = annotated_case("ok", crate::config::ExpectFail::Flag(true)).await;
+    assert_eq!(case.status, CaseStatus::XPass, "{:?}", case.asserts);
+}
+
+/// `expect_fail: false` is equivalently off — the plain verdict stands.
+#[tokio::test]
+async fn expect_fail_false_changes_nothing() {
+    let case = annotated_case("nope", crate::config::ExpectFail::Flag(false)).await;
+    assert_eq!(case.status, CaseStatus::Fail);
+    let case = annotated_case("ok", crate::config::ExpectFail::Flag(false)).await;
+    assert_eq!(case.status, CaseStatus::Pass);
+}
+
+/// The reason rides on the result whatever the outcome — it is a fact about
+/// the case, not about this run.
+#[tokio::test]
+async fn the_expect_fail_reason_is_recorded_on_the_case() {
+    let case = annotated_case(
+        "nope",
+        crate::config::ExpectFail::Reason("known bug (#123)".into()),
+    )
+    .await;
+    assert_eq!(case.status, CaseStatus::XFail);
+    assert_eq!(case.expect_fail_reason.as_deref(), Some("known bug (#123)"));
+}
+
 // ── The vacuous-pass guard, end to end ───────────────────────────────────────
 
 /// A provider that produces nothing gradeable: an empty output, whatever

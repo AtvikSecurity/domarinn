@@ -37,6 +37,7 @@ pub struct RunProgressBar {
     passed: AtomicU64,
     failed: AtomicU64,
     errored: AtomicU64,
+    xpassed: AtomicU64,
 }
 
 impl RunProgressBar {
@@ -57,6 +58,7 @@ impl RunProgressBar {
             passed: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             errored: AtomicU64::new(0),
+            xpassed: AtomicU64::new(0),
         }
     }
 
@@ -82,7 +84,15 @@ impl RunProgressBar {
             fail_text
         };
 
-        let head = format!("{passed} pass · {fail_seg} · {errored} err");
+        // xpasses are gate failures in progress; they render like fails, and
+        // only when present. xfails are expected — not news — and join Skip
+        // in leaving the bar untouched.
+        let xpassed = self.xpassed.load(Ordering::Relaxed);
+        let mut head = format!("{passed} pass · {fail_seg} · {errored} err");
+        if xpassed > 0 {
+            let xpass_text = format!("{xpassed} xpass");
+            head.push_str(&format!(" · {}", self.palette.fail(&xpass_text)));
+        }
         if running.is_empty() {
             head
         } else {
@@ -119,6 +129,10 @@ impl ProgressSink for RunProgressBar {
                         self.errored.fetch_add(1, Ordering::Relaxed);
                     }
                     CaseStatus::Skip => {}
+                    CaseStatus::XFail => {}
+                    CaseStatus::XPass => {
+                        self.xpassed.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 self.bar.inc(1);
                 self.update_msg(name);
@@ -169,5 +183,17 @@ mod tests {
         );
         // No running name → the segment is dropped.
         assert_eq!(bar.render_msg(""), "12 pass · 1 fail · 0 err");
+    }
+
+    /// An operator watching a run wants gate-failing states as they happen:
+    /// xpasses get a live segment (only when nonzero — most runs never have
+    /// one). Expected failures are not news and stay out of the bar.
+    #[test]
+    fn render_msg_surfaces_xpasses_only_when_nonzero() {
+        let bar = RunProgressBar::new(Palette::disabled());
+        bar.passed.store(3, Ordering::Relaxed);
+        assert_eq!(bar.render_msg(""), "3 pass · 0 fail · 0 err");
+        bar.xpassed.store(2, Ordering::Relaxed);
+        assert_eq!(bar.render_msg(""), "3 pass · 0 fail · 0 err · 2 xpass");
     }
 }

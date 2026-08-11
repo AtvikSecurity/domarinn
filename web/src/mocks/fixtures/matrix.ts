@@ -202,6 +202,8 @@ function finalizeCell(acc: CellAcc): MatrixCell {
     failed: acc.failed,
     errored: acc.errored,
     skipped: acc.skipped,
+    xfailed: 0,
+    xpassed: 0,
     score_mean: acc.scoreCount > 0 ? round4(acc.scoreSum / acc.scoreCount) : null,
     pass_fraction: round4(acc.passed / acc.total),
     distinct_outputs: acc.outputHashes.size,

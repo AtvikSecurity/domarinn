@@ -7,6 +7,16 @@ import type { CaseKey } from "./CaseKey";
  */
 export type MatrixCell = { total: number, passed: number, failed: number, errored: number, skipped: number, 
 /**
+ * Repeats that failed under an `expect_fail` annotation. Not in `failed`,
+ * and not in `pass_fraction`'s numerator — like `skipped`, they depress
+ * the fraction, which these counts let the UI qualify.
+ */
+xfailed: number, 
+/**
+ * Repeats that passed *despite* an `expect_fail` annotation (gate-failing).
+ */
+xpassed: number, 
+/**
  * Mean of the non-null scores; `None` when no repeat carried a score.
  */
 score_mean: number | null, 

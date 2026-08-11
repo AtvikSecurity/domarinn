@@ -131,6 +131,7 @@ export function SuiteHealthCard({
               pass={canonical.pass_count}
               fail={canonical.fail_count}
               error={canonical.error_count}
+              xpass={canonical.xpass_count}
             />
             <DeltaLabel points={canonicalDelta(runs)} />
           </div>

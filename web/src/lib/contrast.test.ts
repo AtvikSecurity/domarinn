@@ -20,7 +20,15 @@ import { describe, expect, it } from "vitest";
 // vitest's root is `web/`.
 const CSS = readFileSync(resolve(process.cwd(), "src/index.css"), "utf8");
 
-const SEMANTIC_TONES = ["pass", "fail", "error", "skip", "amber"] as const;
+const SEMANTIC_TONES = [
+  "pass",
+  "fail",
+  "error",
+  "skip",
+  "amber",
+  "xfail",
+  "xpass",
+] as const;
 const OUTLINE_TONES = [...SEMANTIC_TONES, "info"] as const;
 const AA_TEXT = 4.5;
 

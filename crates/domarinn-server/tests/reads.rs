@@ -216,6 +216,56 @@ async fn list_runs_orders_newest_first_and_filters_by_project() {
     assert_eq!(fail_ids, vec!["r-alpha-2"]);
 }
 
+/// The expected-failure statuses, end to end: a v4 run carrying them ingests
+/// (the widened CHECK admits the rows), the run row promotes the counters,
+/// `?status=xfail|xpass` filters cases, re-upload stays idempotent, and the
+/// run-level `status` filter treats an xpass-only run as failing — strict
+/// expect_fail is a property of the data, not just of the CLI's exit code.
+#[tokio::test]
+async fn expected_failure_statuses_ingest_filter_and_fail_the_run_level_filter() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let run = make_run(
+        "r-xf",
+        Some("alpha"),
+        Some("suiteA"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Pass),
+            CaseSpec::new("openai", "t2", CaseStatus::XFail),
+            CaseSpec::new("openai", "t3", CaseStatus::XPass),
+        ],
+    );
+    let reply = post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    // Idempotent re-upload: same content, same outcome, no 409.
+    let again = post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.json());
+
+    // The list row carries the promoted counters.
+    let list = get(&app, "/api/v1/runs").await;
+    let row = &list.json()["runs"][0];
+    assert_eq!(row["xfail_count"], 1, "{row}");
+    assert_eq!(row["xpass_count"], 1, "{row}");
+
+    // Case-level status filters, for free via the widened FromStr/CHECK.
+    let xfails = get(&app, "/api/v1/runs/r-xf/cases?status=xfail").await;
+    let cases = xfails.json()["cases"].as_array().unwrap().clone();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0]["status"], "xfail");
+    let xpasses = get(&app, "/api/v1/runs/r-xf/cases?status=xpass").await;
+    assert_eq!(xpasses.json()["cases"].as_array().unwrap().len(), 1);
+
+    // Run-level: an xpass makes the run failing, never passing — even though
+    // its fail_count is 0.
+    assert_eq!(row["fail_count"], 0, "{row}");
+    let failing = get(&app, "/api/v1/runs?status=fail").await;
+    assert_eq!(run_ids(&failing.json()), vec!["r-xf"]);
+    let passing = get(&app, "/api/v1/runs?status=pass").await;
+    assert!(run_ids(&passing.json()).is_empty());
+}
+
 #[tokio::test]
 async fn invalid_status_query_is_400_with_json_error() {
     let (app, _dir) = test_app(Settings::default()).await;
