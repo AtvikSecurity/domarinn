@@ -109,6 +109,55 @@ describe.each([
   );
 });
 
+/**
+ * Buttons carry their own opaque fill, so their labels are not covered by the
+ * page/surface assertions above — a label only ever has to read against the
+ * fill directly beneath it.
+ *
+ * This matters most in light mode. The design system's buttons are near-black
+ * in both themes; the light values here were derived rather than copied, which
+ * makes them the one part of the recipe nobody upstream has already looked at.
+ * Hover is checked too, since it moves the fill but not the label.
+ */
+describe.each([
+  ["light", ":root"],
+  ["dark", ".dark"],
+])("%s mode button labels", (_mode, scope) => {
+  it.each([
+    ["primary", "btn-primary-fg", "btn-primary-bg", "btn-primary-bg-hover"],
+    ["danger", "fail", "btn-danger-bg", "btn-danger-bg-hover"],
+  ])("--%s label reads on its own fill, at rest and on hover", (_v, fg, bg, hover) => {
+    const label = token(scope, fg);
+    expect(contrast(label, token(scope, bg))).toBeGreaterThanOrEqual(AA_TEXT);
+    expect(contrast(label, token(scope, hover))).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+
+  it("keeps the neutral variants readable on the page", () => {
+    // Outline and ghost have no fill of their own worth speaking of — a 2.5%
+    // foreground tint — so their labels are effectively on the page.
+    expect(contrast(token(scope, "fg"), token(scope, "bg"))).toBeGreaterThanOrEqual(
+      AA_TEXT,
+    );
+    expect(
+      contrast(token(scope, "fg-muted"), token(scope, "bg")),
+    ).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+});
+
+it("keeps the channel forms in step with the hex they mirror", () => {
+  // `--fail-rgb` and `--fg-rgb` exist so the button hairlines can be alpha
+  // tints. Nothing forces them to agree with `--fail` / `--fg`, and a drift
+  // would show as a border in a subtly different hue from its own label.
+  for (const scope of [":root", ".dark"]) {
+    for (const name of ["fail", "fg"]) {
+      const m = new RegExp(`--${name}-rgb:\\s*(\\d+) (\\d+) (\\d+)`).exec(block(scope));
+      expect(m, `--${name}-rgb missing in ${scope}`).not.toBeNull();
+      const triple = m!.slice(1, 4).map(Number);
+      expect(triple).toEqual(channels(token(scope, name)));
+    }
+  }
+});
+
 it("keeps --error distinct from --amber in both themes", () => {
   // They were the same hex in dark mode, which made an `error` status badge
   // indistinguishable from a truncation / flake marker.

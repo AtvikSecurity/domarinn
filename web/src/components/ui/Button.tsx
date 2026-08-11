@@ -5,14 +5,18 @@ import { cn } from "@/lib/cn";
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 type Size = "sm" | "md";
 
+/**
+ * Colour comes from the `.btn-*` recipe in index.css — a flat fill, a coloured
+ * hairline and a matching label, per the Atvik design system. It lives in CSS
+ * because each variant needs a different value in each theme; only the weight
+ * differs here, since the spec sets the two filled variants a step heavier than
+ * the two quiet ones.
+ */
 const VARIANT: Record<Variant, string> = {
-  primary:
-    "bg-accent text-accent-fg hover:opacity-90 disabled:opacity-50 shadow-sm",
-  secondary:
-    "bg-surface text-fg ring-1 ring-inset ring-border hover:bg-surface-2 disabled:opacity-50",
-  ghost: "text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50",
-  danger:
-    "bg-fail/10 text-fail ring-1 ring-inset ring-fail/30 hover:bg-fail/15 disabled:opacity-50",
+  primary: "btn-primary font-semibold",
+  secondary: "btn-outline",
+  ghost: "btn-ghost",
+  danger: "btn-danger font-semibold",
 };
 
 const SIZE: Record<Size, string> = {
@@ -30,9 +34,16 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     <button
       ref={ref}
       className={cn(
-        "inline-flex select-none items-center justify-center rounded-md font-medium transition-colors",
+        // `border` with no colour: every variant sets its own `border-color`,
+        // and a width has to exist for that to paint. Ghost's is transparent,
+        // so switching variants never shifts a button by a pixel.
+        //
+        // `transition` and not `transition-colors`: the recipe animates the
+        // inset highlight and a half-pixel press, and the -colors shorthand
+        // covers neither box-shadow nor transform, so both would jump.
+        "inline-flex select-none items-center justify-center rounded-md border font-medium transition",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-bg",
-        "disabled:cursor-not-allowed",
+        "disabled:cursor-not-allowed disabled:opacity-50",
         VARIANT[variant],
         SIZE[size],
         className,
