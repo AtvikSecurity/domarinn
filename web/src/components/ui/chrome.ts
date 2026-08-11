@@ -25,6 +25,27 @@ export const OUTLINE_LABEL_TONE: Record<OutlineTone, string> = {
   skip: "border-skip text-skip",
 };
 
+/**
+ * Tab strip item, per the Atvik design system's tab treatment: no container
+ * chrome at all, with the selection carried by a rule under the active label.
+ *
+ * The rule is a transparent border present on *every* item rather than one
+ * added to the selected item. Colouring a border that is already there keeps
+ * all the labels on a common baseline; adding one only to the active item
+ * shunts it 2px down as the selection moves.
+ *
+ * Size stays with the caller — a page-level filter strip and a dense toolbar
+ * toggle want different padding — so only the frame and the two states live
+ * here. Guarded by chrome.drift.test.ts so the recipe keeps one home.
+ */
+export const TAB_ITEM_BASE =
+  "border-b-2 border-transparent font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+export const TAB_ITEM_SELECTED = "border-info text-fg";
+export const TAB_ITEM_IDLE = "text-muted hover:border-border-strong hover:text-fg";
+/** Disabled sits on top of `TAB_ITEM_IDLE`, so it has to undo its hover. */
+export const TAB_ITEM_DISABLED =
+  "cursor-not-allowed opacity-40 hover:border-transparent hover:text-muted";
+
 export const INTERACTIVE_OUTLINE_TONE: Record<OutlineTone, string> = {
   neutral: "border-border-strong text-muted hover:bg-fg/5 data-[pressed=true]:bg-fg/5",
   info: "border-info text-info hover:bg-info/8 data-[pressed=true]:bg-info/8",

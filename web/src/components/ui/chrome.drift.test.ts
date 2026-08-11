@@ -7,6 +7,11 @@ const RECIPE = resolve(SRC, "components/ui/chrome.ts");
 const RECIPE_MARKERS = [
   "border-chrome-border",
   "shadow-[inset_0_1px_0_0_var(--color-chrome-highlight)]",
+  // The tab rule. Two components carry it now — the segmented control and run
+  // detail's filter group — and they differ in size and in the role they
+  // claim, which makes re-inlining the states the tempting shortcut.
+  "border-b-2 border-transparent",
+  "hover:border-border-strong hover:text-fg",
 ] as const;
 
 function sourceFiles(dir: string): string[] {

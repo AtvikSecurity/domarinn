@@ -34,6 +34,11 @@ import { Breadcrumb } from "@/components/ui/Breadcrumb";
 import { useAuthView } from "@/auth/AuthProvider";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Tooltip } from "@/components/ui/Tooltip";
+import {
+  TAB_ITEM_BASE,
+  TAB_ITEM_IDLE,
+  TAB_ITEM_SELECTED,
+} from "@/components/ui/chrome";
 import { cn } from "@/lib/cn";
 import { useFillViewport } from "@/components/AppShell";
 import { CaseGrid } from "./run-detail/CaseGrid";
@@ -503,7 +508,12 @@ export function RunDetail() {
       ) : null}
 
       {/* Filters */}
-      <div className="flex shrink-0 flex-wrap items-center gap-3">
+      {/* `gap-6` between groups against `gap-1` inside one: the filter groups
+          used to be told apart by their own borders, and once those went the
+          only thing separating "Skip" from the next group's "All" was 4px more
+          than separates it from "Error". Spacing is what carries the grouping
+          now, so it has to be unambiguous. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-6">
         {/* List | Matrix toggle — only for matrix-shaped runs. Stays visible in
             both modes so the user can switch back. */}
         {matrixShaped ? (
@@ -684,11 +694,7 @@ function ChipGroup({
   onSelect: (value: string) => void;
 }) {
   return (
-    <div
-      role="group"
-      aria-label={label}
-      className="flex items-center gap-1 rounded-lg border border-border bg-surface p-0.5"
-    >
+    <div role="group" aria-label={label} className="flex items-center gap-1">
       {chips.map((chip) => {
         const selected = active === chip.value;
         return (
@@ -696,14 +702,16 @@ function ChipGroup({
             key={chip.value}
             // Selection was conveyed by background colour alone: nothing in the
             // accessibility tree, and nothing that survives grayscale or
-            // forced-colors. `role="group"` stays — several specs scope to it.
+            // forced-colors. `role="group"` stays — several specs scope to it,
+            // and these are independent filters rather than a single choice, so
+            // the radiogroup `SegmentedControl` claims would be wrong here even
+            // though the two now look alike.
             aria-pressed={selected}
             onClick={() => onSelect(chip.value)}
             className={cn(
-              "rounded-md px-2.5 py-1 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              selected
-                ? "bg-surface-2 text-fg ring-1 ring-inset ring-border-strong"
-                : "text-muted hover:text-fg",
+              TAB_ITEM_BASE,
+              "px-2.5 pb-1 text-sm",
+              selected ? TAB_ITEM_SELECTED : TAB_ITEM_IDLE,
             )}
           >
             {chip.label}

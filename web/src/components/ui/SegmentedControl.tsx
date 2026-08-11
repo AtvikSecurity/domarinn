@@ -1,5 +1,11 @@
 import { useRef } from "react";
 import { cn } from "@/lib/cn";
+import {
+  TAB_ITEM_BASE,
+  TAB_ITEM_DISABLED,
+  TAB_ITEM_IDLE,
+  TAB_ITEM_SELECTED,
+} from "./chrome";
 
 export interface SegmentedOption<T extends string> {
   value: T;
@@ -110,17 +116,10 @@ export function SegmentedControl<T extends string>({
             tabIndex={opt.value === tabbableValue ? 0 : -1}
             onClick={() => onChange(opt.value)}
             className={cn(
-              // The rule is a transparent border on every option, not one added
-              // to the active one: colouring an existing border keeps all the
-              // labels on the same baseline, where adding a border to the
-              // selected option alone would shunt it 2px down as you switch.
-              "border-b-2 border-transparent font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              TAB_ITEM_BASE,
               size === "xs" ? "px-1.5 pb-1 text-[11px]" : "px-2 pb-1 text-xs",
-              active
-                ? "border-info text-fg"
-                : "text-muted hover:border-border-strong hover:text-fg",
-              opt.disabled &&
-                "cursor-not-allowed opacity-40 hover:border-transparent hover:text-muted",
+              active ? TAB_ITEM_SELECTED : TAB_ITEM_IDLE,
+              opt.disabled && TAB_ITEM_DISABLED,
             )}
           >
             {opt.label}
