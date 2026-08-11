@@ -19,10 +19,21 @@ test.describe("OutputViewer", () => {
     await expect(expandAll).toBeVisible();
     await expect(drawer.getByText(/"intent"/)).toBeVisible();
 
-    // Toggle to Raw: the tree controls vanish, the raw JSON <pre> remains.
+    // Toggle to Raw: the tree controls vanish and the source shows through the
+    // code block, syntax-highlighted and numbered rather than a bare <pre>.
     await drawer.getByRole("radio", { name: "Raw" }).click();
     await expect(expandAll).toHaveCount(0);
-    await expect(drawer.locator("pre")).toBeVisible();
+    const block = drawer.getByTestId("code-block");
+    await expect(block).toBeVisible();
+    await expect(block.getByTestId("code-block-line-num").first()).toBeVisible();
+
+    // Highlighting is deferred until the block nears the viewport, and the
+    // Output section sits well below the fold in a full case drawer — so this
+    // scroll is not incidental, it is the thing being tested. Asserting the
+    // tokens without it passed only by accident of where the drawer happened to
+    // be scrolled.
+    await block.scrollIntoViewIfNeeded();
+    await expect(block.locator(".hljs-attr").first()).toBeVisible();
     await expect(drawer.getByText(/"explanation"/)).toBeVisible();
 
     // Toggling back restores the tree.
@@ -66,7 +77,7 @@ test.describe("OutputViewer", () => {
     await wrap.click();
     await expect(wrap).toHaveAttribute("aria-pressed", "false");
 
-    await block.getByRole("button", { name: "Copy code" }).click();
+    await block.getByRole("button", { name: "Copy" }).click();
   });
 
   test("the wrap toggle flips its pressed state on a text output", async ({
@@ -76,9 +87,15 @@ test.describe("OutputViewer", () => {
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
 
-    // Plain text has no rendered view — just the raw <pre> and a Wrap toggle.
-    await expect(drawer.getByText("text", { exact: true })).toBeVisible();
-    const wrap = drawer.getByRole("button", { name: "Wrap" });
+    // Plain text has no rendered view. It goes through the block so it gains a
+    // header and copy, but stays unhighlighted — auto-detecting a grammar for a
+    // prose sentence would colour ordinary words as keywords.
+    const block = drawer.getByTestId("code-block");
+    await expect(block.getByText("text", { exact: true })).toBeVisible();
+    await expect(block.locator(".hljs-keyword")).toHaveCount(0);
+
+    await block.hover();
+    const wrap = block.getByTestId("code-block-wrap-toggle");
     await expect(wrap).toHaveAttribute("aria-pressed", "true");
     await wrap.click();
     await expect(wrap).toHaveAttribute("aria-pressed", "false");

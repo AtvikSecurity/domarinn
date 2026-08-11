@@ -79,7 +79,7 @@ describe("CodeBlock header", () => {
     });
 
     render(<CodeBlock code={PY} language="python" />);
-    await user.click(screen.getByRole("button", { name: "Copy code" }));
+    await user.click(screen.getByRole("button", { name: "Copy" }));
 
     expect(writeText).toHaveBeenCalledWith(PY);
   });

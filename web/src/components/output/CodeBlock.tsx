@@ -11,11 +11,9 @@ import sql from "highlight.js/lib/languages/sql";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
-import { Chip } from "@/components/ui/Chip";
-import { CopyButton } from "@/components/ui/CopyButton";
-import { PillButton } from "@/components/ui/PillButton";
 import { cn } from "@/lib/cn";
 import { useInView } from "@/lib/useInView";
+import { CodeSurface } from "./CodeSurface";
 import { splitHighlightedLines } from "./highlightLines";
 
 // Only the languages we register are ever highlighted — keeps the lazy chunk
@@ -149,9 +147,9 @@ function CodeBlockImpl({
   const [localWrap, setLocalWrap] = useState(defaultWrap);
   const wrap = wrapProp ?? localWrap;
 
-  function toggleWrap() {
-    if (onWrapChange) onWrapChange(!wrap);
-    else setLocalWrap(!wrap);
+  function handleWrapChange(next: boolean) {
+    if (onWrapChange) onWrapChange(next);
+    else setLocalWrap(next);
   }
 
   // Wait until the block is near the viewport. A cached markdown entry can hold
@@ -197,65 +195,39 @@ function CodeBlockImpl({
   );
 
   return (
-    <div
+    <CodeSurface
       ref={ref}
-      data-testid="code-block"
-      className={cn(
-        "group/codeblock overflow-hidden rounded-lg border border-border bg-bg",
-        className,
-      )}
+      testId="code-block"
+      label={label}
+      copyValue={code}
+      wrap={wrap}
+      onWrapChange={handleWrapChange}
+      maxHeight={maxHeight}
+      className={className}
+      // `hljs` sets the default token colour for anything the grammar left
+      // untyped, so the highlighted output blends with the plain path.
+      bodyClassName="hljs"
     >
-      <div className="flex items-center gap-2 border-b border-border bg-surface-2 px-2 py-1">
-        <Chip size="xs">{label}</Chip>
-        {/* Revealed on hover *and* focus-within: hover alone leaves these
-            focusable but invisible to anyone driving the page from the
-            keyboard, and a permanent toolbar on every markdown fence is a lot
-            of chrome for a document with a dozen of them. */}
-        <div className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-focus-within/codeblock:opacity-100 group-hover/codeblock:opacity-100">
-          <PillButton
-            size="xs"
-            pressed={wrap}
-            onClick={toggleWrap}
-            title="Toggle soft wrap"
-            data-testid="code-block-wrap-toggle"
-          >
-            Wrap
-          </PillButton>
-          <CopyButton value={code} iconOnly label="Copy code" />
-        </div>
-      </div>
-      {/* Owns both scroll axes: vertical only when a cap was asked for,
-          horizontal only when wrap is off. */}
-      <div
-        data-testid="code-block-body"
-        style={maxHeight ? { maxHeight } : undefined}
-        className={cn(
-          "hljs py-2 font-mono text-xs leading-relaxed",
-          maxHeight ? "overflow-y-auto" : "",
-          wrap ? "" : "overflow-x-auto",
-        )}
+      <pre
+        className="m-0 grid"
+        style={{ gridTemplateColumns: showNums ? "auto 1fr" : "1fr" }}
       >
-        <pre
-          className="m-0 grid"
-          style={{ gridTemplateColumns: showNums ? "auto 1fr" : "1fr" }}
-        >
-          {highlighted
-            ? highlighted.lines.map((html, i) =>
-                renderRow(
-                  i,
-                  // A zero-width space keeps an empty line's row height, so the
-                  // gutter never collapses against a blank source line.
-                  html === "" ? (
-                    "​"
-                  ) : (
-                    <span dangerouslySetInnerHTML={{ __html: html }} />
-                  ),
+        {highlighted
+          ? highlighted.lines.map((html, i) =>
+              renderRow(
+                i,
+                // A zero-width space keeps an empty line's row height, so the
+                // gutter never collapses against a blank source line.
+                html === "" ? (
+                  "​"
+                ) : (
+                  <span dangerouslySetInnerHTML={{ __html: html }} />
                 ),
-              )
-            : plainLines.map((line, i) => renderRow(i, line === "" ? "​" : line))}
-        </pre>
-      </div>
-    </div>
+              ),
+            )
+          : plainLines.map((line, i) => renderRow(i, line === "" ? "​" : line))}
+      </pre>
+    </CodeSurface>
   );
 }
 

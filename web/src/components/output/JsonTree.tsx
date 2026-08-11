@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { cn } from "@/lib/cn";
+import { CodeSurface } from "./CodeSurface";
+import { outputToString } from "./detect";
 
 /**
  * A bespoke, dependency-free collapsible JSON viewer. Objects and arrays are
@@ -7,6 +9,11 @@ import { cn } from "@/lib/cn";
  * collapsed. Expand-all / collapse-all is broadcast to every node through a
  * generation counter (bumping it re-syncs each node's open state during render,
  * never in an effect). Long strings truncate with an inline expander.
+ *
+ * The tree sits inside the shared {@link CodeSurface}, so a payload here reads
+ * like one anywhere else in the app and picks up copy and soft wrap. The tree
+ * body itself is unchanged: collapsing beats a flat code block for finding your
+ * way around a deep object, which is why this is not simply a highlighted dump.
  */
 
 const COLLAPSE_THRESHOLD = 20;
@@ -24,53 +31,74 @@ function entriesOf(value: unknown): { entries: Entry[]; isArray: boolean } {
 
 export function JsonTree({
   data,
+  wrap: wrapProp,
+  onWrapChange,
+  defaultWrap = true,
+  maxHeight,
   className,
 }: {
   data: unknown;
+  /** Controlled soft wrap. Pair with `onWrapChange`; omit both to own the state. */
+  wrap?: boolean;
+  onWrapChange?: (wrap: boolean) => void;
+  defaultWrap?: boolean;
+  maxHeight?: string;
   className?: string;
 }) {
   // `gen` increments on expand/collapse-all; `genOpen` is the state that change
   // forces onto every node.
   const [gen, setGen] = useState(0);
   const [genOpen, setGenOpen] = useState(true);
+  const [localWrap, setLocalWrap] = useState(defaultWrap);
+  const wrap = wrapProp ?? localWrap;
 
   const isContainer = data !== null && typeof data === "object";
 
   return (
-    <div
-      className={cn(
-        "rounded-lg border border-border bg-bg p-3 font-mono text-xs leading-relaxed",
-        className,
+    <CodeSurface
+      testId="json-tree"
+      label="json"
+      copyValue={outputToString(data)}
+      wrap={wrap}
+      onWrapChange={(next) => {
+        if (onWrapChange) onWrapChange(next);
+        else setLocalWrap(next);
+      }}
+      maxHeight={maxHeight}
+      className={className}
+      // Soft wrap is applied once, here, and reaches every node by inheritance —
+      // `white-space`, `word-break` and `overflow-wrap` are all inherited
+      // properties. The alternative was threading a `wrap` prop down a recursive
+      // component that already drills two.
+      bodyClassName={cn(
+        "px-3",
+        wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
       )}
+      actions={
+        isContainer ? (
+          <div className="flex items-center gap-1">
+            <TreeButton
+              onClick={() => {
+                setGenOpen(true);
+                setGen((g) => g + 1);
+              }}
+            >
+              Expand all
+            </TreeButton>
+            <TreeButton
+              onClick={() => {
+                setGenOpen(false);
+                setGen((g) => g + 1);
+              }}
+            >
+              Collapse all
+            </TreeButton>
+          </div>
+        ) : null
+      }
     >
-      {isContainer ? (
-        <div className="mb-2 flex items-center gap-2">
-          <TreeButton
-            onClick={() => {
-              setGenOpen(true);
-              setGen((g) => g + 1);
-            }}
-          >
-            Expand all
-          </TreeButton>
-          <TreeButton
-            onClick={() => {
-              setGenOpen(false);
-              setGen((g) => g + 1);
-            }}
-          >
-            Collapse all
-          </TreeButton>
-        </div>
-      ) : null}
-      <Node
-        value={data}
-        depth={0}
-        isRoot
-        gen={gen}
-        genOpen={genOpen}
-      />
-    </div>
+      <Node value={data} depth={0} isRoot gen={gen} genOpen={genOpen} />
+    </CodeSurface>
   );
 }
 
@@ -124,8 +152,10 @@ function Node({ label, quotedKey, value, depth, isRoot, gen, genOpen }: NodeProp
   const keyEl = label !== undefined ? <Key label={label} quoted={quotedKey} /> : null;
 
   if (!isContainer) {
+    // No wrap classes here: the surface body sets them once and they inherit,
+    // so the whole tree switches together when the toggle flips.
     return (
-      <div className="whitespace-pre-wrap break-words">
+      <div>
         {keyEl}
         <Primitive value={value} />
       </div>
@@ -231,7 +261,7 @@ function StringValue({ text }: { text: string }) {
   const long = text.length > STRING_LIMIT;
   const shown = long && !expanded ? `${text.slice(0, STRING_LIMIT)}…` : text;
   return (
-    <span className="break-words text-pass">
+    <span className="text-pass">
       {`"${shown}"`}
       {long ? (
         <button
