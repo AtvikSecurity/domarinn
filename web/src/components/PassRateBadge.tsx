@@ -33,6 +33,18 @@ export function PassRateBadge({
  * The run-set browser is the one such caller: its `latest_pass_rate` is the
  * newest run's, while the counts beside it are the set's lifetime totals.
  */
+/** The meter fill, in the same hue the outline is already using. */
+const METER: Record<OutlineTone, string> = {
+  neutral: "bg-skip",
+  info: "bg-info",
+  accent: "bg-accent",
+  pass: "bg-pass",
+  fail: "bg-fail",
+  error: "bg-error",
+  amber: "bg-amber",
+  skip: "bg-skip",
+};
+
 export function RateBadge({
   rate,
   title,
@@ -50,13 +62,27 @@ export function RateBadge({
     <span
       className={cn(
         OUTLINE_LABEL_BASE,
-        "min-w-[3.75rem] justify-center px-[7px] py-[3px] text-[11px] font-semibold tabular-nums",
+        // `relative` + `overflow-hidden` for the meter: it is absolutely
+        // positioned against this box and clipped to the pill's corner radius.
+        "relative min-w-[3.75rem] justify-center overflow-hidden px-[7px] py-[3px] text-[11px] font-semibold tabular-nums",
         OUTLINE_LABEL_TONE[tone],
         className,
       )}
       title={title}
     >
-      <span>{formatPercent(rate)}</span>
+      {/* The rate, read as a bar as well as a number — the width is the value.
+          Kept faint enough that the percentage stays the thing you read first,
+          and the outline recipe's own fill is transparent, so this is the only
+          thing painting inside the border. */}
+      <span
+        className={cn("absolute inset-y-0 left-0 opacity-[0.14]", METER[tone])}
+        style={{ width: `${pct}%` }}
+        aria-hidden
+      />
+      {/* `relative` so the label paints above the meter: both sit in this
+          stacking context, and a positioned box otherwise covers static
+          in-flow content whatever the DOM order. */}
+      <span className="relative">{formatPercent(rate)}</span>
     </span>
   );
 }
