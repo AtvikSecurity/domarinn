@@ -127,13 +127,29 @@ body {
  *
  * Painted as the element's background, i.e. behind the rows — which are
  * transparent apart from their hover tint — so it reads as a soft edge rather
- * than an overlay. */
+ * than an overlay.
+ *
+ * Each cover holds its colour SOLID across the shadow's full 14px before it
+ * starts fading. A cover that faded from 0 — which is what this was — only
+ * partly cancels the shadow it is meant to hide: cover alpha falls off over
+ * 28px while the shadow's falls off over 14px, so the shadow leaks through at
+ * `(1 - x/14) * (x/28)`, peaking at 12.5% seven pixels in. That painted a faint
+ * grey band down both edges of every table, permanently, including tables with
+ * nothing to scroll — the exact opposite of the claim above. */
 .scroll-hint {
   background:
-    linear-gradient(to right, var(--scroll-hint-bg, var(--surface)), transparent) 0 0 / 28px 100%
-      no-repeat local,
-    linear-gradient(to left, var(--scroll-hint-bg, var(--surface)), transparent) 100% 0 / 28px 100%
-      no-repeat local,
+    linear-gradient(
+        to right,
+        var(--scroll-hint-bg, var(--surface)) 0 14px,
+        transparent 28px
+      )
+      0 0 / 28px 100% no-repeat local,
+    linear-gradient(
+        to left,
+        var(--scroll-hint-bg, var(--surface)) 0 14px,
+        transparent 28px
+      )
+      100% 0 / 28px 100% no-repeat local,
     linear-gradient(to right, var(--border-strong), transparent) 0 0 / 14px 100%
       no-repeat scroll,
     linear-gradient(to left, var(--border-strong), transparent) 100% 0 / 14px
