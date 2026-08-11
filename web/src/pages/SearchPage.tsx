@@ -111,7 +111,7 @@ export function SearchPage() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h2 className="mb-2 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+      <h2 className="mb-2 text-[10px] font-medium uppercase tracking-wide text-muted">
         {title}
       </h2>
       <div className={cn(CHROME_FRAME, "divide-y divide-border overflow-hidden")}>

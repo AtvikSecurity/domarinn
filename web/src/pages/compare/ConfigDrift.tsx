@@ -79,7 +79,7 @@ export function ConfigDrift({
       className={cn(CHROME_FRAME, "space-y-3 p-4")}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+        <h2 className="text-[10px] font-medium uppercase tracking-wide text-muted">
           Config drift
         </h2>
         <SegmentedControl

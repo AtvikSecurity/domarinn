@@ -344,7 +344,7 @@ function CreateUserForm({ onError }: { onError: (message: string) => void }) {
 
   return (
     <Card as="section">
-      <h2 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+      <h2 className="text-[10px] font-medium uppercase tracking-wide text-muted">
         Create user
       </h2>
       <form onSubmit={onSubmit} className="mt-3 flex flex-wrap items-end gap-3">

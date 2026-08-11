@@ -42,7 +42,7 @@ export function StatBlock({
       )}
       title={title}
     >
-      <div className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-muted">
         {label}
       </div>
       <div className={cn("mt-0.5 text-sm font-medium tabular-nums", tone)}>

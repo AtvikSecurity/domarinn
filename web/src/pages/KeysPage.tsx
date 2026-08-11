@@ -100,7 +100,7 @@ export function KeysPage() {
       <PageHeader />
 
       <Card as="section">
-        <h2 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+        <h2 className="text-[10px] font-medium uppercase tracking-wide text-muted">
           Create a key
         </h2>
         <p className="mt-1 text-sm text-muted">

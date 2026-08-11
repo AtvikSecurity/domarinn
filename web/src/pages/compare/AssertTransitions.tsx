@@ -21,7 +21,7 @@ export function AssertTransitions({ flips }: { flips: AssertFlip[] }) {
       data-testid="assert-transitions"
       className={cn(CHROME_FRAME, "px-3 py-2")}
     >
-      <div className="mb-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted">
         Assertion changes
       </div>
       <ul className="space-y-1.5">

@@ -161,7 +161,7 @@ export function SettingsPage() {
 function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
     <ChromeCard as="section">
-      <h2 className="mb-3 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+      <h2 className="mb-3 text-[10px] font-medium uppercase tracking-wide text-muted">
         {title}
       </h2>
       {children}

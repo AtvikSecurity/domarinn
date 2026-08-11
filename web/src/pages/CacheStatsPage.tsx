@@ -72,7 +72,7 @@ export function CacheStatsPage() {
       </Card>
 
       <Card>
-        <h2 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+        <h2 className="text-[10px] font-medium uppercase tracking-wide text-muted">
           Prune cache
         </h2>
         <p className="mt-1 text-sm text-muted">

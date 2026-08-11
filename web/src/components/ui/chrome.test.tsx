@@ -32,15 +32,17 @@ describe("Chip", () => {
       "border-fail",
       "text-fail",
       "bg-transparent",
-      "font-mono",
-      "uppercase",
     );
   });
 
-  it("allows case-sensitive labels to opt out of visual uppercasing", () => {
-    render(<Chip className="normal-case">shaAbC</Chip>);
-    expect(screen.getByText("shaAbC")).toHaveClass("normal-case");
-    expect(screen.getByText("shaAbC")).not.toHaveClass("uppercase");
+  it("shows its label in the page font, exactly as authored", () => {
+    // Chips carry content — tags, branches, digests, provider ids — so the
+    // label has to survive verbatim. Recasing it in the stylesheet made a
+    // handful of call sites opt back out one at a time to stay truthful.
+    render(<Chip tone="info">shaAbC</Chip>);
+    const chip = screen.getByText("shaAbC");
+    expect(chip).not.toHaveClass("uppercase");
+    expect(chip).not.toHaveClass("font-mono");
   });
 });
 
@@ -61,14 +63,14 @@ describe("StatBlock", () => {
     expect(screen.getByText("$1.00").parentElement).not.toHaveClass("rounded-lg");
   });
 
-  it("renders its existing label as an operator eyebrow", () => {
+  it("renders its existing label as a small-caps eyebrow", () => {
+    // The eyebrow keeps its label role — small, tracked, uppercased — but in
+    // the page font. Unlike a chip it names a field rather than carrying a
+    // value, so recasing it invents nothing.
     render(<StatBlock label="Tokens">123</StatBlock>);
-    expect(screen.getByText("Tokens")).toHaveClass(
-      "font-mono",
-      "text-[10px]",
-      "uppercase",
-      "tracking-[0.12em]",
-    );
+    const eyebrow = screen.getByText("Tokens");
+    expect(eyebrow).toHaveClass("text-[10px]", "uppercase", "tracking-wide");
+    expect(eyebrow).not.toHaveClass("font-mono");
   });
 });
 

@@ -95,7 +95,7 @@ export function McNemarPanel({ stats }: { stats: CompareStats }) {
     >
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-1.5">
-          <h2 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+          <h2 className="text-[10px] font-medium uppercase tracking-wide text-muted">
             Significance
           </h2>
           <Tooltip
