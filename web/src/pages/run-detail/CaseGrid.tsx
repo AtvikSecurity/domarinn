@@ -628,9 +628,15 @@ export function CaseGrid({
                   }}
                   className={cn(
                     "absolute left-0 grid cursor-pointer items-center border-b border-border/50 px-3 text-sm outline-none",
-                    // An explicit base background is what lets the pinned cell
-                    // inherit something opaque.
-                    "bg-surface hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    // Reads as transparent — `--bg` is exactly what sits behind
+                    // this grid, which hangs directly off the page with no
+                    // surface between (the run detail frame is a chrome outline).
+                    //
+                    // Painted rather than actually `bg-transparent`, because the
+                    // pinned status cell below inherits this colour to stay
+                    // opaque; leave it see-through and the other columns slide
+                    // visibly underneath it as the grid scrolls right.
+                    "bg-bg hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                     selected && "bg-accent/8 hover:bg-accent/10",
                   )}
                   style={{
