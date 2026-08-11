@@ -29,7 +29,10 @@
 }
 
 .dark {
-  --bg: #0b0d11;
+  /* The Atvik design system's canonical base canvas. Lighter and a step
+   * bluer than the near-neutral #0b0d11 this replaces, which read as flat
+   * black beside the blue-tinted chrome frames and info accents. */
+  --bg: #0d1117;
   --surface: #14171d;
   --surface-2: #1c2027;
   --fg: #e7e9ee;
