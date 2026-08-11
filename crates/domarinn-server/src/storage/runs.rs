@@ -164,6 +164,13 @@ struct PreparedCase {
     /// reserved for "not yet backfilled" — ingest writes `''` for "no reason"
     /// (see `storage::backfill`).
     empty_reason: String,
+    /// Migration-17 column: the provider that actually answered, when a
+    /// fallback stood in for the configured one. `provider_id` above stays the
+    /// configured provider (matrix columns and `case_key` joins depend on it),
+    /// so this is the only record of who spent the tokens. `String` for the
+    /// same tri-state reason as `empty_reason`: `''` means "the configured
+    /// provider answered", NULL is reserved for "not yet backfilled".
+    answered_by_provider_id: String,
 }
 
 struct PreparedRun {
@@ -228,6 +235,13 @@ struct PreparedRun {
     /// document) does not count: it stores as the `''` "known: not empty"
     /// sentinel, which the detail `GROUP BY` and the case grid both exclude.
     empty_count: i64,
+    /// Migration-18 column: how many of this run's cases a fallback answered.
+    /// Counted over the cases (not read from `summary.fallback_cases`) and over
+    /// **all** of them, skipped included — it exists to tell the case backfill
+    /// whether any blob in this run can hold an answerer, and a skipped case
+    /// can. The client's summary counts graded cases only, so reading it here
+    /// would let a skip-only fallback run look like it never fell back.
+    fallback_count: i64,
     tags: Vec<String>,
     blob: Vec<u8>,
     cases: Vec<PreparedCase>,
@@ -303,6 +317,7 @@ impl PreparedRun {
                     .as_ref()
                     .map(|r| r.as_str().to_string())
                     .unwrap_or_default(),
+                answered_by_provider_id: case.answered_by_provider_id.clone().unwrap_or_default(),
             });
         }
 
@@ -364,6 +379,15 @@ impl PreparedRun {
                         .is_some_and(|r| !r.as_str().is_empty())
                 })
                 .count() as i64,
+            fallback_count: run
+                .cases
+                .iter()
+                .filter(|c| {
+                    c.answered_by_provider_id
+                        .as_deref()
+                        .is_some_and(|p| !p.is_empty())
+                })
+                .count() as i64,
             tags: run.filters.tags.clone(),
             blob,
             cases,
@@ -397,7 +421,7 @@ impl PreparedRun {
                 actor, host, domarinn_version,
                 prompts_digest, providers_digest, tests_digest, asserts_digest, grader_digest,
                 cache_read_tokens, cache_write_tokens, cache_savings_microusd, grader_cost_microusd,
-                empty_count
+                empty_count, fallback_count
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
@@ -407,7 +431,7 @@ impl PreparedRun {
                 ?26, ?27, ?28,
                 ?29, ?30, ?31, ?32, ?33,
                 ?34, ?35, ?36, ?37,
-                ?38
+                ?38, ?39
             )",
             params![
                 self.id,
@@ -448,6 +472,7 @@ impl PreparedRun {
                 self.cache_savings_microusd,
                 self.grader_cost_microusd,
                 self.empty_count,
+                self.fallback_count,
             ],
         )?;
 
@@ -471,11 +496,11 @@ impl PreparedRun {
                     latency_ms, detail,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason, cached,
                     error, prompt_digest, provider_digest, assert_digest, error_class,
-                    cache_key, empty_reason
+                    cache_key, empty_reason, answered_by_provider_id
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                     ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27,
-                    ?28
+                    ?28, ?29
                 )",
                 params![
                     self.id,
@@ -514,6 +539,9 @@ impl PreparedRun {
                     // Already `''` rather than NULL for "no reason", for the
                     // same reason `error` above is (see storage::backfill).
                     case.empty_reason,
+                    // Same again: `''` means "the configured provider answered",
+                    // NULL means "not yet backfilled".
+                    case.answered_by_provider_id,
                 ],
             )?;
             for tag in &case.tags {

@@ -48,4 +48,13 @@ error_class: string | null,
  * stored verbatim, so never match on a closed list. Omitted, not null,
  * when the case was not empty and for legacy pre-backfill rows.
  */
-empty_reason?: string, };
+empty_reason?: string, 
+/**
+ * The provider that actually answered, when a fallback stood in for the
+ * configured one (migration-17 `cases` column). `provider_id` above stays
+ * the *configured* provider — the matrix column and every `case_key` join
+ * depend on that — so this is the only place a handoff is visible in the
+ * grid. Omitted, not null, when the configured provider answered and for
+ * legacy pre-backfill rows.
+ */
+answered_by_provider_id?: string, };

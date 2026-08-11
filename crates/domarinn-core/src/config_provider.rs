@@ -40,16 +40,48 @@ pub struct Provider {
     /// and a cell that runs is entitled to its whole chain.
     //
     // Deliberately on the outer struct rather than inside the flattened
-    // `ProviderKind`. Two things depend on that: `check_unknown_flatten_keys`
-    // picks it up as a common key, and — load-bearing — `build_provider`
-    // destructures only `kind` and `id`, so an outer field cannot reach
-    // `fingerprint()` or `canonical_request()` and therefore cannot move a
-    // single cache key. Moving it inside a variant would invalidate every
-    // entry in every store at once.
+    // `ProviderKind`, and `fallback_only` below sits here for the same reason.
+    // Two things depend on that: `check_unknown_flatten_keys` picks them up as
+    // common keys, and — load-bearing — `build_provider` destructures only
+    // `kind` and `id`, so an outer field cannot reach `fingerprint()` or
+    // `canonical_request()` and therefore cannot move a single cache key.
+    // Moving either inside a variant would invalidate every entry in every
+    // store at once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallback: Vec<String>,
+    /// Exclude this provider from the run matrix. It expands into no cells and
+    /// never faces the credential preflight; it exists only to be reached as
+    /// another provider's `fallback:` target.
+    ///
+    /// This is the third selection axis, independent of the other two: a test's
+    /// `only_providers` / `skip_providers` still governs whether a chain may
+    /// reach it, and `--provider` cannot name it (that is a usage error — the
+    /// flag chooses among cells, and a `fallback_only` provider has none).
+    /// `--no-fallback` does not readmit it either: that flag disables chain
+    /// *walking*, while matrix membership is static suite configuration.
+    //
+    // `skip_serializing_if` is load-bearing, not cosmetic: `Provider` is
+    // serialized whole into `config_snapshot`, `config_digest` and
+    // `digests.providers`, so a bool that always emits `false` would flip
+    // every pre-existing suite to `ConfigChanged` under `--against`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fallback_only: bool,
     #[serde(flatten)]
     pub kind: ProviderKind,
+}
+
+impl Provider {
+    /// Whether this provider expands into matrix cells: not an embeddings
+    /// provider (a grader helper, never a system under test) and not
+    /// `fallback_only`.
+    ///
+    /// The one definition of the predicate. The runner's selection, the
+    /// empty-run diagnoses, and `validate` all go through here — three sites
+    /// that re-derived it independently is how a diagnosis ends up describing
+    /// a filter the runner never applied.
+    pub fn forms_cells(&self) -> bool {
+        !matches!(self.kind, ProviderKind::Embeddings { .. }) && !self.fallback_only
+    }
 }
 
 /// The HTTP method for a `type: http` provider. Authors may write either case

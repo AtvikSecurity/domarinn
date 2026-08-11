@@ -98,7 +98,7 @@ services:
   # See docs/guides/local-llms.md for the full walkthrough (remote GPU hosts,
   # which examples run locally, and the model recommendations).
   ollama:
-    image: ollama/ollama:0.32.5
+    image: ollama/ollama:0.32.6
     profiles: ["ollama"]
     restart: unless-stopped
     ports:

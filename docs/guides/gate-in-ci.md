@@ -63,6 +63,7 @@ jobs:
 | `server-url`         | `""`                | Results server base URL. When set, the run is uploaded with `--share` (exported as `DOMARINN_SERVER_URL`). |
 | `token`              | `""`                | Bearer token for the results server (exported as `DOMARINN_TOKEN`). Pass a **secret**, never a literal. |
 | `allow-share-failure` | `"false"`          | If `true`, a failed upload no longer fails the job (becomes `--allow-share-failure`). Off by default: with `server-url` set, publishing the run is the point of the step. Ignored without `server-url`. See [Uploading CI runs](#uploading-ci-runs-to-a-shared-server). |
+| `provider`           | `""`                | Provider id(s) to run, comma- or space-separated; each becomes a repeated `--provider`. Selection only — a selected cell keeps its whole `fallback:` chain. Empty runs the full matrix. Where the intent is "this provider exists only as a fallback target", prefer `fallback_only: true` in the suite, which keeps the cost model reviewable in the file. |
 | `against`            | `""`                | Baseline to diff against. Use `server:baseline` in CI (the suite's pinned baseline on the server); `latest` reads the local run store, which a fresh checkout does not have. Also accepts a run id or a `result.json` path. Empty disables the diff. A regression makes the CLI exit 1; a baseline that cannot be resolved makes it exit 2. |
 | `fail-on-regression` | `"true"`            | If `true`, exit 1 (assertion/regression) fails the check. If `false`, exit 1 is a warning only. Exit 2 and 3 **always** fail. |
 | `comment`            | `"true"`            | Post/update the summary comment on the PR. |
@@ -89,6 +90,7 @@ Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command), w
 | `cache-read-tokens` | Input tokens served from a provider-side prompt cache. |
 | `cache-write-tokens` | Input tokens written into that cache. |
 | `cache-hit-rate` | Percentage of cases served from the cache, one decimal. |
+| `fallback-cases` | Number of graded cases answered by a `fallback:` provider rather than the one the cell names (`0` when nothing fell back). |
 | `regressed`      | Number of tests newly regressed vs the baseline (`0` without `against`). |
 | `run-url`        | URL of the uploaded run on the results server (empty without `server-url`). |
 | `summary-path`   | Path to the Markdown summary (`summary.md`). |
@@ -99,7 +101,7 @@ Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command), w
 ### What it does, step by step
 
 1. **Resolve the binary.** Provided `binary-path` → download `domarinn-<target>` from the repo's GitHub Releases (`version` or `latest`, arch auto-detected) → **fallback** to building from source with `cargo` (`cargo install --path crates/domarinn-cli` if this repo is checked out, else `cargo install --git …`). The cargo fallback requires a Rust toolchain on the runner — add `dtolnay/rust-toolchain` before this action if you rely on it.
-2. **Run the suite:** `domarinn run <config> --format junit --out results.xml`, appending `--against <against>`, `--cache-dir <cache-dir>`, `--allow-empty` and `--share` when those inputs are set — plus `--allow-share-failure` when that input is `true` *and* a `server-url` made it a shared run, since the CLI rejects the flag on its own. It captures the exit code without aborting so the later steps still run.
+2. **Run the suite:** `domarinn run <config> --format junit --out results.xml`, appending a `--provider <id>` per `provider:` entry, `--against <against>`, `--cache-dir <cache-dir>`, `--allow-empty` and `--share` when those inputs are set — plus `--allow-share-failure` when that input is `true` *and* a `server-url` made it a shared run, since the CLI rejects the flag on its own. It captures the exit code without aborting so the later steps still run.
 3. **Summarize** — `domarinn ci-summary latest --out summary.md` writes the Markdown and appends the headline numbers to `$GITHUB_OUTPUT` itself. If the suite never produced a run (a config error, say), the step warns and writes a placeholder summary rather than leaving the PR comment blank.
 4. **Upload** `results.xml` + `summary.md` as an artifact (**always**, even on failure), and append the summary to the job's step summary.
 5. **Comment on the PR** — creates or updates one comment (matched by a hidden `<!-- domarinn-eval -->` marker) so repeated pushes don't spam the thread. Skipped unless `comment: true` and the event is a `pull_request`.
@@ -111,6 +113,7 @@ Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command), w
 - uses: AtvikSecurity/domarinn/.github/actions/domarinn-eval@0.1.0
   with:
     config: eval/
+    provider: primary            # optional: run only these cells (comma-separated for several)
     against: server:baseline
     fail-on-regression: "true"
     server-url: https://domarinn.example.com   # enables --share

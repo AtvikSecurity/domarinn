@@ -353,9 +353,11 @@ This is an explicit list rather than "any infrastructure error", for two reasons
 1. **Never under `--cache-only`.** Offline there is no live answer to go and get, so a handoff could only replace a usable — if refused — replay with a cache miss. This is a mode check, not a property of the trigger list, so no future trigger can weaken it.
 2. **Never for a cell carrying a `latency` assert.** Such a cell is forced to cache-disabled rather than cache-only, so rule 1 does not cover it, and `latency_ms` is the *answering* link's time in flight. Since `provider_timeout` is a trigger, primary-times-out then fallback-answers-fast would make `{latency, max: 2000}` **pass**. "Never worse" needs a matching "never falsely better".
 3. **The primary is reported when nothing improved on it.** If every link is also a trigger, the case settles on the primary's own outcome rather than the last link's — so a configured `fallback:` can never make a case different from one with no fallback at all. Without this, `provider_digest` would churn for zero gain and the run document would diverge from a no-fallback run, which breaks the server's re-upload idempotency.
-4. **Chains are not followed.** A fallback's own `fallback:` is ignored when it is reached as one, which makes a cycle unconstructible rather than something to detect mid-run. `domarinn validate` **warns** when a target declares one, so the rule is discoverable while you are writing the suite. It also errors on an unknown id, a self-reference, and any `fallback:` naming — or living on — an `embeddings` provider, which is a grader helper and never a system under test.
+4. **Chains are not followed.** A fallback's own `fallback:` is ignored when it is reached as one, which makes a cycle unconstructible rather than something to detect mid-run. `domarinn validate` **warns** when a target declares one, so the rule is discoverable while you are writing the suite. It also errors on an unknown id, a self-reference, and any `fallback:` naming — or living on — an `embeddings` provider, which is a grader helper and never a system under test. Three checks cover [`fallback_only:`](#fallback_only-a-provider-that-is-reachable-but-never-a-cell): it is an **error** on an `embeddings` provider (which forms no cells anyway) and an **error** when *every* provider carries it (a matrix that can never grade anything), and a **warning** when no other provider's `fallback:` names a `fallback_only` provider, since it can then never run as a cell or as a handoff.
 
-A fallback that fails to build — no credential in the environment, say — is warned about and dropped, not fatal. Fallback providers are excluded from the credential preflight for the same reason: failing a whole run over a provider nothing selected would make `fallback:` a liability to configure rather than cheap insurance.
+Two of the guarantees are re-checked at run time rather than trusted from `validate`, because the library is callable without it: **duplicate provider ids are refused** outright — the last one silently winning would hand cells the wrong provider — and a chain link naming its own provider is **dropped** as the walk builds, so `fallback: [self]` is an error you are told about *and* a loop that cannot form.
+
+A fallback that fails to build — no credential in the environment, say — is warned about and dropped, not fatal. Fallback providers are excluded from the credential preflight for the same reason: failing a whole run over a provider nothing selected would make `fallback:` a liability to configure rather than cheap insurance. `fallback_only:` providers are excluded on the same argument and more strongly — they are *never* a cell, so a run can only ever reach one through a chain that may not fire.
 
 ### What the results say
 
@@ -372,23 +374,62 @@ What actually happened is recorded rather than hidden:
 
 All four are omitted at their defaults, so a run that never fell back serializes byte-identically to one written before the feature existed. A **server older than this feature** accepts such a run and then drops the fields permanently, because it re-serializes its own typed struct on ingest.
 
+Where they surface, so a handoff is not something you have to go looking for in JSON:
+
+| Surface | |
+|---|---|
+| `domarinn case <id>` | `· answered by <id> (fallback)` on the header, plus a `fallback: tried …` line naming each link passed over and why |
+| the run Markdown (`--summary-md`, [`ci-summary`](cli.md#domarinn-ci-summary-run-flags)) | an **Answered by fallback** row reading `N of G cases`, where `G` is the **graded** total |
+| [`ci-summary`](cli.md#domarinn-ci-summary-run-flags) step outputs | a `fallback-cases` output, for a job that wants to branch on it |
+| `--against` diff | a `fallback cases: N → M` headline when the count moved |
+| the [web UI](web-ui.md) | the case drawer and the matrix cell's popover |
+
+/// warning | An `exec` assert's cache key includes the **answering** provider's id
+
+The assert context carries whoever actually replied, not the configured provider — the same truthfulness rule `provider_digest` follows. An `exec` assert sends that id to its child as `provider.id`, and the request it sends *is* the cache key, so **the same output can grade under two different cache entries depending on who answered it.**
+
+That is deliberate. A child is entitled to judge differently based on which system produced the text, and a key that hid the difference would replay one provider's verdict for another's answer. The cost is that a suite whose primary hiccups occasionally will hold two entries per graded `exec` assert. `llm-rubric` is unaffected: its key is the judge's own call, and the provider id reaches only the legacy-adoption probe.
+
+///
+
 Because the digest moves, the server's [compare view](web-ui.md#compare--mcnemar) classifies such a pair as `ProviderChanged` — which is what it is, and it does so whether the case passed or failed. The CLI's `--against` is coarser: it reports a delta (newly failing, newly passing, unchanged) and does not carry that axis, so **a case answered by a fallback on both sides reads as `Unchanged`** even though two different models produced it. When a comparison matters, read `fallback_cases` on both runs before reading the delta.
 
 **A run where every graded case fell back exits `2`.** The suite ran, but not against the system it names, and a green gate would say otherwise. A partial fallback stays green — that is the feature working. [`--no-fallback`](cli.md#domarinn-run-path-flags) is the recommended posture for a gate that would rather fail on its primary directly.
 
 ### Filters, and which one applies
 
-A test's `only_providers` / `skip_providers` **is** honoured for fallback candidates: a test that excludes a provider must not reach it through another provider's back door.
+Three mechanisms narrow which providers a run touches, and they are three different questions. Confusing them is how a suite ends up either paying for a backup it never wanted in the matrix or losing the resilience it thought it configured.
 
-`--provider` is **not**. It chooses which *cells* run, and a cell that runs is entitled to its whole chain — a run that silently lost the resilience you configured would look exactly like fallback not working. So `domarinn run --provider primary` runs only `primary`'s cells, and each of them may still reach `backup`.
+**1. A test's `only_providers` / `skip_providers` — cells *and* chain candidates.** The only one that reaches both. A test that excludes a provider must not reach it through another provider's back door, so the exclusion is re-applied to every link before the walk considers it.
 
-### Cost attribution is per-case correct and per-provider wrong
+**2. `--provider` — cells only.** It chooses which cells run, and a cell that runs is entitled to its whole chain: a run that silently lost the resilience you configured would look exactly like fallback not working. So `domarinn run --provider primary` runs only `primary`'s cells, and each of them may still reach `backup`. Naming a `fallback_only` provider is a **usage error** (exit `2`) with its own message rather than a silent empty run — the id *is* in the suite, so "no such provider" would be a lie; it simply has no cells to select among. The whole list is vetted: an unknown, `fallback_only`, or embeddings id refuses the run **even beside valid ids**, because a half-right list that silently shrank the matrix would green-gate a provider the job never measured. [`DOMARINN_PROVIDER`](cli.md#domarinn-run-path-flags) sets the same thing when the flag is absent.
 
-Worth stating plainly, because the failure mode is a number that looks right.
+**3. `fallback_only:` — matrix membership.** Not a filter at all: a property of the suite, set where the suite is reviewed rather than at the invocation, and therefore the same for every caller. It applies *before* `--provider`, because a flag can choose among cells but cannot conjure one for a provider that declared it has none. It is also deliberately unaffected by `--no-fallback`, which disables chain **walking** — a flag about resilience must not change which systems a suite is measuring.
 
-A case's `cost_usd` is **correct**: it is re-priced at the answering provider's rate. But the results server promotes `cell.provider_id` — the configured provider — into its `cases` table, so **a per-provider cost rollup bills the primary for the fallback's tokens.** A dashboard slicing spend by provider will under-report the fallback and over-report the primary by exactly the cases that handed off; `fallback_cases` is how you tell whether that is a rounding error or the whole picture.
+### `fallback_only`: a provider that is reachable but never a cell
 
-Two smaller gaps in the same direction, since only the answering link is summarized: the primary's own spend on a handoff is not counted at all, a retry on the primary does not reach `retried_cases`, and a hit-then-handoff counts as a miss. Per-case dollars stay right; it is attribution that is lost.
+Adding a backup to `fallback:` is cheap; adding the provider it names is not automatically cheap. A second entry under `providers:` is a second column of the matrix, so a suite that graded N cells now grades 2N and a nightly job's bill doubles to buy insurance it hopes never to use.
+
+```yaml
+--8<-- "examples/45-fallback-only/domarinn.yaml:provider"
+```
+
+`fallback_only: true` keeps the provider in the suite — built, reachable, ready the moment `primary` will not answer — and out of the matrix, where it would cost something every run. The flag sits on the provider's outer struct, so it is common to every `type:` and, like `fallback:` itself, cannot move a cache key.
+
+[Example 45](../examples/models-grading-and-budgets.md#example-45--a-reserve-provider-that-never-forms-a-cell) is the runnable version, and contrasts it with example 44's `--provider`: selection at the invocation versus membership in the suite.
+
+### Cost attribution, and what it still cannot see
+
+A case's `cost_usd` is **correct**: it is re-priced at the answering provider's rate.
+
+Per-*provider* rollups used to bill the primary for the fallback's tokens, because the server promoted `cell.provider_id` into its `cases` table and nothing else recorded who answered. At the current migration they are answerer-correct: a case stores `answered_by_provider_id`, the matrix response carries run-level **`provider_costs` keyed by the answering provider**, and each `MatrixCell` counts how many of its cases were `fallback_answered`. So spend attributes to the model that actually produced the tokens.
+
+Two things stay keyed on the *configured* provider, and both on purpose:
+
+- **Matrix columns.** A column is the system under test, and re-pointing one because a gateway hiccupped would re-partition a suite's history exactly when you most want it stable — the same argument that keeps `case_key` fixed. `fallback_answered` is how a column says "some of this was not me". A consequence to expect rather than debug: `provider_costs` may name a provider with **no column at all** — a `fallback_only` reserve has spend and no cells, which is precisely what it was configured to be.
+- **Rows ingested before the migration**, or by an older server, which never recorded an answerer and therefore attribute to the configured provider. A mixed history under-reports the fallback for the older span; read `fallback_cases` on the runs involved before treating a trend as real.
+
+Residual gaps, all in the same direction and none fixed by the above, since only the *answering* link is summarized: the primary's own spend on a call it handed off is not counted at all, a retry on the primary does not reach `retried_cases`, and a cache hit followed by a handoff counts as a miss.
 
 ### Prose refusals: `runner.refusal_patterns`
 
@@ -412,7 +453,7 @@ Patterns compile once per run, and matching a JSON output uses its rendered form
 
 ### `${env:VAR}` works here, and is not a secret channel
 
-Interpolation runs over the raw document before anything is parsed, so `fallback: ["${env:FALLBACK_PROVIDER}"]` works like any other config string, with the usual `:-default` rules. `fallback:` itself sits on the provider's outer struct and never reaches a fingerprint or a canonical request, so no value of it can move a single cache key — turning it on for an existing suite invalidates nothing.
+Interpolation runs over the raw document before anything is parsed, so `fallback: ["${env:FALLBACK_PROVIDER}"]` works like any other config string, with the usual `:-default` rules. `fallback:` itself — and `fallback_only:` beside it — sits on the provider's outer struct and never reaches a fingerprint or a canonical request, so no value of either can move a single cache key. Turning on a chain, or excusing its target from the matrix, invalidates nothing in an existing suite.
 
 /// danger | Do not read that as "so environment values are safe to put anywhere"
 

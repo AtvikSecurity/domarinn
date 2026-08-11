@@ -46,6 +46,7 @@ function cell(partial: Partial<MatrixCell>): MatrixCell {
     distinct_outputs: 1,
     latency_ms_mean: null,
     cost_usd: null,
+    fallback_answered: 0,
     case_keys: [],
     ...partial,
   };
@@ -93,6 +94,52 @@ function singlePromptMatrix(): MatrixResponse {
         ],
       },
     ],
+    // The common case: one entry per column provider, all of them columns.
+    provider_costs: [
+      { provider_id: "prov-a", cases: 3, cost_usd: 0.42 },
+      { provider_id: "prov-b", cases: 3, cost_usd: 0.11 },
+    ],
+    next_cursor: null,
+  };
+}
+
+/**
+ * The same matrix with a `fallback_only` answerer: `reserve` spent tokens on
+ * two of prov-a's repeats, so it appears in `provider_costs` while forming no
+ * column of its own.
+ */
+function fallbackMatrix(): MatrixResponse {
+  const m = singlePromptMatrix();
+  m.rows[0]!.cells[0] = cell({
+    total: 2,
+    passed: 1,
+    failed: 1,
+    pass_fraction: 0.5,
+    score_mean: 0.6,
+    fallback_answered: 1,
+    case_keys: ["ca0", "ca1"],
+  });
+  m.provider_costs = [
+    { provider_id: "prov-a", cases: 2, cost_usd: 0.4 },
+    { provider_id: "prov-b", cases: 3, cost_usd: 0.11 },
+    { provider_id: "reserve", cases: 1, cost_usd: 0.02 },
+  ];
+  return m;
+}
+
+/** A single-provider run: one column, one cost entry naming it. */
+function singleProviderMatrix(): MatrixResponse {
+  return {
+    run_id: RUN,
+    columns: [{ provider_id: "prov-a", prompt_id: null }],
+    rows: [
+      {
+        test_id: "test-a",
+        name: "Alpha case",
+        cells: [cell({ total: 1, passed: 1, pass_fraction: 1, case_keys: ["cx0"] })],
+      },
+    ],
+    provider_costs: [{ provider_id: "prov-a", cases: 1, cost_usd: 0.42 }],
     next_cursor: null,
   };
 }
@@ -119,6 +166,10 @@ function twoPromptMatrix(): MatrixResponse {
         ],
       },
     ],
+    provider_costs: [
+      { provider_id: "prov-a", cases: 4, cost_usd: 0.4 },
+      { provider_id: "prov-b", cases: 4, cost_usd: 0.1 },
+    ],
     next_cursor: null,
   };
 }
@@ -136,8 +187,18 @@ function setMatrix(m: MatrixResponse) {
   } as unknown as ReturnType<typeof useMatrixAll>);
 }
 
-const OUTPUTS: Record<string, { status: string; score: number; output: string; latency: number }> = {
-  ca0: { status: "fail", score: 0.4, output: "alpha output from provider A", latency: 100 },
+const OUTPUTS: Record<
+  string,
+  { status: string; score: number; output: string; latency: number; answeredBy?: string }
+> = {
+  // Repeat #0 of prov-a's cell is the one a fallback answered.
+  ca0: {
+    status: "fail",
+    score: 0.4,
+    output: "alpha output from provider A",
+    latency: 100,
+    answeredBy: "reserve",
+  },
   ca1: { status: "pass", score: 0.9, output: "second repeat A", latency: 120 },
   cb0: { status: "pass", score: 0.95, output: "alpha output from provider B", latency: 90 },
   cb1: { status: "pass", score: 0.9, output: "second repeat B", latency: 95 },
@@ -170,6 +231,7 @@ function setCaseDetail() {
         latency_ms: o.latency,
         cached: false,
         attempts: 1,
+        ...(o.answeredBy ? { answered_by_provider_id: o.answeredBy } : {}),
       },
     } as unknown as ReturnType<typeof useCaseDetail>;
   });
@@ -261,5 +323,84 @@ describe("MatrixView", () => {
     await waitFor(() =>
       expect(dialog.querySelector("[data-diff-mode]")).toBeInTheDocument(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fallback attribution. `provider_costs` is keyed by the provider that
+// ANSWERED, not by the column's configured one, so an entry can name a provider
+// the grid never shows — and a cell can be filled by someone else's answers
+// while still reading as its column's score.
+// ---------------------------------------------------------------------------
+
+describe("MatrixView fallback attribution", () => {
+  beforeEach(() => {
+    mockUseMatrixAll.mockReset();
+    mockUseCaseDetail.mockReset();
+    setCaseDetail();
+  });
+
+  it("lists per-provider spend and marks an answerer that is not a column", () => {
+    setMatrix(fallbackMatrix());
+    render(<MatrixView runId={RUN} onSelectCase={() => {}} />);
+
+    expect(screen.getByText("Spend")).toBeInTheDocument();
+    expect(screen.getByText("prov-a $0.40")).toBeInTheDocument();
+    expect(screen.getByText("prov-b $0.11")).toBeInTheDocument();
+    // The fallback-only provider is named AND marked: without the suffix the
+    // line reads as a column total matching no column above it.
+    expect(screen.getByText("reserve $0.02 (fallback)")).toBeInTheDocument();
+    expect(
+      screen.getByTitle("cost attributed to the provider that answered"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the legend for a multi-provider run even with no fallback", () => {
+    setMatrix(singlePromptMatrix());
+    render(<MatrixView runId={RUN} onSelectCase={() => {}} />);
+
+    expect(screen.getByText("prov-a $0.42")).toBeInTheDocument();
+    expect(screen.queryByText(/\(fallback\)/)).not.toBeInTheDocument();
+  });
+
+  it("renders no legend for a single configured provider with a cost", () => {
+    // The common case. One provider, one column, one bill — the legend would
+    // only restate the column header above it.
+    setMatrix(singleProviderMatrix());
+    render(<MatrixView runId={RUN} onSelectCase={() => {}} />);
+
+    expect(screen.queryByText("Spend")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$0\.42/)).not.toBeInTheDocument();
+  });
+
+  it("counts a cell's fallback repeats in its popover and names the answerer", async () => {
+    const user = userEvent.setup();
+    setMatrix(fallbackMatrix());
+    render(<MatrixView runId={RUN} onSelectCase={() => {}} />);
+
+    await user.click(cellButton("test-a", 0));
+
+    expect(
+      await screen.findByText("1 of 2 answered by a fallback"),
+    ).toBeInTheDocument();
+    // ...and the repeat row that it refers to says who answered it.
+    const row0 = screen.getByRole("button", { name: /#0/ });
+    expect(within(row0).getByText("reserve")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("button", { name: /#1/ })).queryByText("reserve"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says nothing about fallback on a cell no fallback answered", async () => {
+    const user = userEvent.setup();
+    setMatrix(singlePromptMatrix());
+    render(<MatrixView runId={RUN} onSelectCase={() => {}} />);
+
+    await user.click(cellButton("test-a", 1));
+
+    expect(await screen.findByRole("button", { name: /#0/ })).toBeInTheDocument();
+    expect(
+      screen.queryByText(/answered by a fallback/),
+    ).not.toBeInTheDocument();
   });
 });

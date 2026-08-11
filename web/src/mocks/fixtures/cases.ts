@@ -50,6 +50,12 @@ export interface MockCaseRow {
   repeat: number;
   /** Whether the provider response was a cache hit (migration-6 column). */
   cached: boolean;
+  /** The provider that actually *answered*, when a `fallback:` chain stood in
+   *  for the configured one (migration-17 column); null when the configured
+   *  provider answered. `provider_id` above stays the configured provider — the
+   *  matrix column and every `case_key` join depend on that — so this is the
+   *  only place a handoff is visible. */
+  answered_by_provider_id: string | null;
   /** Stable per-case RNG seed (the numeric idx for flat suites, a composite for
    *  matrix ones) so the full case-detail output stays coherent with the row. */
   seed: string | number;
@@ -154,6 +160,35 @@ function caseCached(regime: CacheRegime, meta: RunMeta, seed: string | number): 
   return rand(meta.suiteKey, seed, "hit") < regime.hitRate;
 }
 
+/**
+ * The provider the matrix suite's `fallback:` chains hand off to.
+ *
+ * Deliberately **not** one of the suite's configured providers: a
+ * `fallback_only` provider forms no matrix column of its own, so it is the
+ * shape that proves the per-provider spend legend can name a provider the grid
+ * never shows — and that a fallback's tokens are billed to it rather than to
+ * the primary it stood in for.
+ */
+export const FALLBACK_PROVIDER = "reserve-mini";
+
+/**
+ * Whether a fallback stood in for this case's configured provider.
+ *
+ * Kept to matrix suites, and to a small deterministic slice of them: a walked
+ * chain is rare in practice, and a fixture where it were common would make the
+ * amber handoff callouts read as the norm rather than the exception. Skipped
+ * cases are excluded — nothing was ever sent to a provider for one.
+ */
+function caseAnsweredBy(
+  meta: RunMeta,
+  seed: string | number,
+  status: CaseStatus,
+): string | null {
+  if (!meta.suiteDef.matrix) return null;
+  if (status === "skip") return null;
+  return rand(meta.suiteKey, seed, "fallback") < 0.07 ? FALLBACK_PROVIDER : null;
+}
+
 export function generateCases(runId: string): MockCaseRow[] {
   const cached = CASE_CACHE.get(runId);
   if (cached) return cached;
@@ -203,6 +238,8 @@ function generateFlatCases(meta: RunMeta): MockCaseRow[] {
       test_id: caseKey,
       repeat: 0,
       cached: caseCached(regime, meta, i),
+      // Flat suites configure a single provider and no chain behind it.
+      answered_by_provider_id: null,
       seed: i,
       output_hash: hash(
         meta.suiteKey,
@@ -272,6 +309,7 @@ function generateMatrixCases(meta: RunMeta, spec: MatrixSpec): MockCaseRow[] {
             test_id: testId,
             repeat: rep,
             cached: caseCached(regime, meta, seed),
+            answered_by_provider_id: caseAnsweredBy(meta, seed, status),
             seed,
             output_hash: hash(meta.suiteKey, testId, provider, prompt, "out", rev).toString(16),
           });
@@ -550,5 +588,11 @@ export function toCaseListItem(c: MockCaseRow): CaseListItem {
     // the field is `#[ts(optional)]`, and a reader must not read `null` as a
     // recorded "not empty".
     ...(c.empty_reason != null ? { empty_reason: c.empty_reason } : {}),
+    // Same `#[ts(optional)]` treatment: omitted, not null, when the configured
+    // provider answered — a reader must not read `null` as "no fallback was
+    // configured", only as "this row never said".
+    ...(c.answered_by_provider_id != null
+      ? { answered_by_provider_id: c.answered_by_provider_id }
+      : {}),
   };
 }

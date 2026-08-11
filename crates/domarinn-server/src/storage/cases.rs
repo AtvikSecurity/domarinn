@@ -71,7 +71,7 @@ impl CaseListFilter {
             "SELECT case_key, idx, name, status, output_preview, asserts,
                     prompt_tokens, completion_tokens, cost_microusd, latency_ms,
                     provider_id, prompt_id, test_id, repeat_idx, score, stop_reason,
-                    cached, error, error_class, empty_reason
+                    cached, error, error_class, empty_reason, answered_by_provider_id
              FROM cases WHERE run_id = ?1",
         );
         let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
@@ -199,6 +199,9 @@ impl CaseListFilter {
                     // Same tri-state as `error`: '' is "known: not empty",
                     // NULL is "not backfilled yet".
                     empty_reason: empty_to_none(row.get::<_, Option<String>>(19)?),
+                    // And once more: '' is "the configured provider answered",
+                    // NULL is "not backfilled yet".
+                    answered_by_provider_id: empty_to_none(row.get::<_, Option<String>>(20)?),
                 },
             ))
         })?;

@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import type { CaseResult } from "@/api";
+import type { CaseResult, FallbackAttempt } from "@/api";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Chip } from "@/components/ui/Chip";
 import { StatBlock } from "@/components/ui/StatBlock";
@@ -119,6 +119,18 @@ export function CaseVerdictStrip({
         </div>
       </div>
 
+      {/* Who really answered. Sits in the verdict band rather than among the
+          chips above because the sentence is the point: a chip reading
+          `reserve-mini` beside a drawer titled with the configured provider is
+          exactly the ambiguity this exists to remove. */}
+      {detail.answered_by_provider_id ? (
+        <FallbackNotice
+          answeredBy={detail.answered_by_provider_id}
+          configured={detail.cell.provider_id}
+          attempts={detail.fallback_attempts}
+        />
+      ) : null}
+
       <div className="grid grid-cols-3 gap-3">
         <StatBlock
           label="Tokens"
@@ -150,6 +162,58 @@ export function CaseVerdictStrip({
         runId={runId}
         caseKey={caseKey}
       />
+    </div>
+  );
+}
+
+/**
+ * The handoff: a `fallback:` chain answered this case, and the model that
+ * produced the output below is not the one the suite configured.
+ *
+ * `cell.provider_id` stays the *configured* provider so `case_key` is stable
+ * and an `--against` baseline still joins the same row, which means every other
+ * surface in this drawer names the primary. Without this the output, the cost
+ * and the verdict are all silently attributed to a provider that never ran.
+ *
+ * Amber, in the same border/tint treatment as the reasoning notice and the
+ * `empty_reason` chip: a walked chain is the configuration working as asked,
+ * not a failure — but it is not the thing you asked to measure either.
+ *
+ * `attempts` are the links tried and passed over *before* the answerer, in
+ * configured order, and the first of them is the configured provider itself.
+ * Absent (not empty) on the overwhelming majority of cases, so its own presence
+ * is the render condition — never a length compared against a chain we cannot
+ * see.
+ */
+function FallbackNotice({
+  answeredBy,
+  configured,
+  attempts,
+}: {
+  answeredBy: string;
+  configured: string;
+  attempts: FallbackAttempt[] | undefined;
+}) {
+  return (
+    <div className="rounded-lg border border-amber/25 bg-amber/5 p-2.5">
+      <p className="text-xs font-medium text-amber">
+        Answered by {answeredBy} — fallback for {configured}
+      </p>
+      {attempts && attempts.length > 0 ? (
+        <ul className="mt-1.5 space-y-0.5">
+          {attempts.map((a, i) => (
+            <li
+              key={`${a.provider_id}-${i}`}
+              className="font-mono text-[11px] text-amber/80"
+            >
+              {/* Exactly one of the two is set per link (see `FallbackAttempt`);
+                  the third branch is unreachable by contract and says so
+                  plainly rather than rendering an empty reason. */}
+              {a.provider_id}: {a.empty_reason ?? a.error_class ?? "did not answer"}
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

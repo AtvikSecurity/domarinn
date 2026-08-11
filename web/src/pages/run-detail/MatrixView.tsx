@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { CaseStatus, MatrixCell } from "@/api";
+import type { CaseStatus, MatrixCell, MatrixColumn, ProviderCost } from "@/api";
 import { useMatrixAll } from "@/api/queries";
 import {
   cellBucketClass,
@@ -11,6 +11,7 @@ import { CenteredSpinner } from "@/components/ui/Spinner";
 import { CHROME_FRAME } from "@/components/ui/chrome";
 import { ErrorState, EmptyState } from "@/components/States";
 import { cn } from "@/lib/cn";
+import { formatCost } from "@/lib/format";
 import { ColumnResizer } from "@/components/ui/ColumnResizer";
 import { type ColumnDef, effectiveWidth } from "@/lib/tableColumns";
 import {
@@ -53,6 +54,51 @@ const TEST_COLUMN: ColumnDef = {
   alwaysVisible: true,
 };
 
+/** One entry of the spend legend: a provider that answered, what it spent, and
+ *  whether the grid above has a column for it at all. */
+interface SpendEntry {
+  providerId: string;
+  costUsd: number | null;
+  /** False for a `fallback_only` provider: it answered for someone else and
+   *  formed no column of its own. */
+  isColumn: boolean;
+}
+
+/**
+ * The per-provider spend legend, or `[]` when there is nothing worth saying.
+ *
+ * `provider_costs` is keyed by the provider that **answered**, which is the
+ * whole reason this exists: a fallback spends its own tokens, and attributing
+ * them to the column it stood in for would bill the primary for calls it
+ * refused to make. That also means an entry can name a provider with no column
+ * in the grid, which is what `isColumn` marks.
+ *
+ * Suppressed for the common case — one provider, one column, one bill — where
+ * the legend would only restate the single column header above it. A run whose
+ * costs are all NULL (`--no-raw`, a provider with no pricing) says nothing
+ * either, unless a non-column answerer makes *who* ran it the news.
+ */
+function spendLegend(
+  providerCosts: ProviderCost[],
+  columns: MatrixColumn[],
+): SpendEntry[] {
+  if (providerCosts.length === 0) return [];
+  const columnProviders = new Set(columns.map((c) => c.provider_id));
+  const entries: SpendEntry[] = providerCosts.map((p) => ({
+    providerId: p.provider_id,
+    costUsd: p.cost_usd,
+    isColumn: columnProviders.has(p.provider_id),
+  }));
+  // The single-configured-provider run: nothing here that the grid does not
+  // already say.
+  if (entries.length === 1 && entries[0]!.isColumn && columnProviders.size === 1) {
+    return [];
+  }
+  const worthShowing =
+    entries.some((e) => e.costUsd != null) || entries.some((e) => !e.isColumn);
+  return worthShowing ? entries : [];
+}
+
 /**
  * The prompt × provider matrix: rows are tests, columns are providers (grouped
  * under prompt-section headers when the run has more than one prompt). Each cell
@@ -80,6 +126,10 @@ export function MatrixView({
   const rows = useMemo(
     () => q.data?.pages.flatMap((p) => p.rows) ?? [],
     [q.data],
+  );
+  const spend = useMemo(
+    () => spendLegend(q.data?.pages[0]?.provider_costs ?? [], columns),
+    [q.data, columns],
   );
   const groups = useMemo(() => columnGroups(columns), [columns]);
   const displayCols = useMemo(() => groups.flatMap((g) => g.columns), [groups]);
@@ -110,13 +160,19 @@ export function MatrixView({
   //
   // `border-collapse` stays: the row separators are declared on `<tr>`, which
   // does not paint under `border-separate`.
+  //
+  // The legend is a sibling of the scrollport, not a row inside the table: it
+  // is a property of the whole run, and a `position: sticky` header resolving
+  // against a container it shared would have to account for it.
   return (
-    <div
-      className={cn(
-        CHROME_FRAME,
-        "max-h-[70vh] overflow-auto overscroll-contain lg:max-h-none lg:min-h-0 lg:flex-1",
-      )}
-    >
+    <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1">
+      {spend.length > 0 ? <SpendLegend entries={spend} /> : null}
+      <div
+        className={cn(
+          CHROME_FRAME,
+          "max-h-[70vh] overflow-auto overscroll-contain lg:max-h-none lg:min-h-0 lg:flex-1",
+        )}
+      >
       <table
         className="w-full border-collapse text-sm"
         aria-label="Prompt by provider matrix"
@@ -247,7 +303,41 @@ export function MatrixView({
           setCompare((c) => (c ? { ...c, testId } : c))
         }
       />
+      </div>
     </div>
+  );
+}
+
+/**
+ * `Spend  primary $0.42 · reserve-mini $0.02 (fallback)` — what each provider
+ * that answered cost, in first-seen order.
+ *
+ * The `(fallback)` marker is not decoration: an entry with no column is a
+ * provider the grid above never mentions, so without it the line reads as a
+ * column total that does not match any column. Real text, not a tint, for the
+ * same reason.
+ */
+function SpendLegend({ entries }: { entries: SpendEntry[] }) {
+  return (
+    <p
+      className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted"
+      title="cost attributed to the provider that answered"
+    >
+      <span className="font-medium text-fg">Spend</span>
+      {entries.map((e, i) => (
+        <span key={e.providerId} className="flex items-center gap-x-2">
+          {i > 0 ? (
+            <span className="text-muted/50" aria-hidden>
+              ·
+            </span>
+          ) : null}
+          <span className={cn("tabular-nums", !e.isColumn && "text-amber")}>
+            {e.providerId} {formatCost(e.costUsd)}
+            {e.isColumn ? "" : " (fallback)"}
+          </span>
+        </span>
+      ))}
+    </p>
   );
 }
 

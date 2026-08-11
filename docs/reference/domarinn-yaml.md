@@ -91,6 +91,7 @@ Each provider is one system under test. Every provider has an `id` (unique withi
 | `label` | string | no | Display name in output. |
 | `type` | enum | **yes** | One of the five kinds below. |
 | `fallback` | list of provider ids | no | Providers to try, in order, when this one refuses or cannot be reached. Not chained — a target's own `fallback:` is ignored when it is reached as one. The cell still belongs to *this* provider. See [providers.md](providers.md#falling-back-to-another-provider). |
+| `fallback_only` | bool | no (default `false`) | Keep this provider out of the run matrix: it forms no cells and faces no credential preflight, and exists only to be reached as another provider's `fallback:` target. `--provider` cannot name it, and `--no-fallback` does not re-admit it. See [providers.md](providers.md#fallback_only-a-provider-that-is-reachable-but-never-a-cell). |
 
 | `type` | Selects |
 |--------|---------|

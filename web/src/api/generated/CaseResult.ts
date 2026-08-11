@@ -167,9 +167,9 @@ empty_reason?: EmptyReason,
  * provider, so a fallback classifies as `ProviderChanged` in a diff —
  * honest, because a different model answered.
  *
- * Note what this does *not* fix: the server keys its `cases` table on the
- * configured provider, so a per-provider cost rollup bills the primary for
- * the fallback's tokens. Per-case `cost_usd` is still correct.
+ * The server promotes this onto its `cases` table and attributes
+ * per-provider cost rollups to the answering provider; only rows ingested
+ * before that column existed degrade to configured-provider attribution.
  */
 answered_by_provider_id?: string, 
 /**

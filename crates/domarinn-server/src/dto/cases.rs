@@ -57,6 +57,15 @@ pub struct CaseListItem {
     #[ts(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_reason: Option<String>,
+    /// The provider that actually answered, when a fallback stood in for the
+    /// configured one (migration-17 `cases` column). `provider_id` above stays
+    /// the *configured* provider — the matrix column and every `case_key` join
+    /// depend on that — so this is the only place a handoff is visible in the
+    /// grid. Omitted, not null, when the configured provider answered and for
+    /// legacy pre-backfill rows.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answered_by_provider_id: Option<String>,
 }
 
 /// `GET /runs/{id}/cases` response.
@@ -107,6 +116,7 @@ mod tests {
             error: None,
             error_class: None,
             empty_reason: Some("refusal".to_string()),
+            answered_by_provider_id: Some("reserve".to_string()),
         };
         assert_eq!(
             serde_json::to_value(&dto).unwrap(),
@@ -133,6 +143,7 @@ mod tests {
                 "error": null,
                 "error_class": null,
                 "empty_reason": "refusal",
+                "answered_by_provider_id": "reserve",
             })
         );
     }
@@ -160,6 +171,7 @@ mod tests {
             error: None,
             error_class: None,
             empty_reason: None,
+            answered_by_provider_id: None,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["asserts"], json!([]));
@@ -184,11 +196,16 @@ mod tests {
                 v[key]
             );
         }
-        // `empty_reason` is the exception: it is `#[ts(optional)]`, so "this
-        // case was not empty" is the key being absent, not a null.
+        // `empty_reason` and `answered_by_provider_id` are the exceptions: both
+        // are `#[ts(optional)]`, so "this case was not empty" / "the configured
+        // provider answered" is the key being absent, not a null.
         assert!(
             v.get("empty_reason").is_none(),
             "empty_reason must be omitted, not null: {v}"
+        );
+        assert!(
+            v.get("answered_by_provider_id").is_none(),
+            "answered_by_provider_id must be omitted, not null: {v}"
         );
     }
 

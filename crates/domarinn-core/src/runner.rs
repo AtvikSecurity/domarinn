@@ -396,6 +396,20 @@ pub async fn run_with_progress(
         })
     })?;
 
+    // `validate` refuses duplicate ids, but only on the CLI path. Everything
+    // below indexes providers by id (`by_id`, `fallback_ids`), where a
+    // duplicate would silently let the last one win — handing cells the wrong
+    // provider's chain — so a library caller gets the refusal here instead.
+    {
+        let mut seen = std::collections::HashSet::new();
+        if let Some(dup) = suite.providers.iter().find(|p| !seen.insert(p.id.as_str())) {
+            return Err(RunError::Resolve(crate::resolve::ResolveError::Parse {
+                path: "providers".into(),
+                message: format!("duplicate provider id '{}'; ids must be unique", dup.id),
+            }));
+        }
+    }
+
     // Providers (embeddings providers are grader helpers, not systems under test).
     //
     // Two passes into two lists, and the separation is load-bearing. `providers`
@@ -405,10 +419,26 @@ pub async fn run_with_progress(
     // would expand cells for the fallback as well, and a fallback's missing
     // credential would fail the whole run at the preflight — which is exactly
     // backwards, since a fallback may never be reached at all.
+    // Vetted before the selection filters run, and even when other requested
+    // ids would form cells: a `--provider` list naming an unknown,
+    // `fallback_only`, or embeddings id must refuse rather than silently
+    // shrink the matrix — a CI job that believes it measured the dropped
+    // provider gets a green gate that measured nothing of it.
+    if let Some(reason) =
+        crate::empty_run::EmptyRun::check_provider_filter(&suite.providers, &opts.filter.providers)
+    {
+        return Err(RunError::NothingToRun(reason));
+    }
+
+    // `forms_cells` is the third selection axis (`fallback_only` = matrix
+    // membership), applied before `--provider` — a filter chooses among cells,
+    // it cannot conjure cells for a provider that declared it has none. It is
+    // deliberately independent of `opts.fallback` (`--no-fallback` disables
+    // chain walking, not membership).
     let selected: Vec<&crate::config::Provider> = suite
         .providers
         .iter()
-        .filter(|p| !matches!(p.kind, crate::config::ProviderKind::Embeddings { .. }))
+        .filter(|p| p.forms_cells())
         .filter(|p| opts.filter.providers.is_empty() || opts.filter.providers.contains(&p.id))
         .collect();
     let providers: Vec<Box<dyn Provider>> = selected
@@ -418,7 +448,9 @@ pub async fn run_with_progress(
 
     // The fallback targets of the selected providers that pass 1 did not build.
     // Built even when `--provider` excluded them: that flag says which cells
-    // run, not which providers may answer them.
+    // run, not which providers may answer them. `fallback_only` providers land
+    // here through the same door — being out of `selected` is exactly what puts
+    // a referenced provider into `wanted`.
     //
     // One level only — a fallback's own `fallback:` is never followed — so this
     // needs no fixpoint and can contain no cycle.
@@ -543,22 +575,43 @@ pub async fn run_with_progress(
         .collect();
     let mut cells: Vec<Cell> = Vec::new();
     for provider in &providers {
+        // Per `(provider, test)`, because the test's own `only_providers` /
+        // `skip_providers` narrows the chain — but *not* per prompt, so it is
+        // resolved once out here and indexed inside the prompt loop rather
+        // than recomputed for every slot. `None` marks a test the filters
+        // exclude for this provider; the loop below re-checks the same
+        // predicate, and the two must stay in step.
+        let chains: Vec<Option<Vec<&dyn Provider>>> = tests
+            .iter()
+            .map(|test| {
+                (filter.matches_test(test) && filter.provider_included(provider.id(), test)).then(
+                    || {
+                        fallback_ids
+                            .get(provider.id())
+                            .map(|ids| {
+                                runner_fallback::resolve_chain(
+                                    provider.id(),
+                                    ids,
+                                    &by_id,
+                                    &filter,
+                                    test,
+                                )
+                            })
+                            .unwrap_or_default()
+                    },
+                )
+            })
+            .collect();
         for prompt in &prompt_slots {
             if let Some(p) = prompt {
                 if !filter.prompt_included(&p.id) {
                     continue;
                 }
             }
-            for test in &tests {
-                if !filter.matches_test(test) || !filter.provider_included(provider.id(), test) {
+            for (test, chain) in tests.iter().zip(&chains) {
+                let Some(chain) = chain else {
                     continue;
-                }
-                // Per `(provider, test)`, because the test's own
-                // `only_providers` / `skip_providers` narrows the chain.
-                let chain = fallback_ids
-                    .get(provider.id())
-                    .map(|ids| runner_fallback::resolve_chain(ids, &by_id, &filter, test))
-                    .unwrap_or_default();
+                };
                 for repeat_idx in 0..repeat {
                     cells.push(Cell {
                         provider: provider.as_ref(),
@@ -579,10 +632,7 @@ pub async fn run_with_progress(
         let available_providers: Vec<String> =
             providers.iter().map(|p| p.id().to_string()).collect();
         let reason = if providers.is_empty() {
-            crate::empty_run::EmptyRun::NoProvidersSelected {
-                requested: opts.filter.providers.clone(),
-                available: suite.providers.iter().map(|p| p.id.clone()).collect(),
-            }
+            crate::empty_run::EmptyRun::no_providers(&suite.providers, &opts.filter.providers)
         } else if prompt_slots.iter().flatten().count() == 0 && !suite.prompts.is_empty() {
             crate::empty_run::EmptyRun::NoPromptsSelected {
                 requested: opts.filter.prompts.clone(),

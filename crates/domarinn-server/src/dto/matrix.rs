@@ -25,7 +25,46 @@ pub struct MatrixResponse {
     pub run_id: RunId,
     pub columns: Vec<MatrixColumn>,
     pub rows: Vec<MatrixRow>,
+    /// Per-provider cost for the whole run, attributed to the provider that
+    /// **answered** — not the one the cell was configured with. Computed over
+    /// every case in the run, so it does not move as `rows` paginate.
+    ///
+    /// A cell whose configured provider refused or failed can be answered by a
+    /// fallback, and the fallback is what spent the tokens. Two consequences
+    /// worth reading before using this: an entry can name a provider that
+    /// forms no [`MatrixColumn`] at all (it only ever answered for someone
+    /// else), and rows stored before this attribution existed carry no answerer
+    /// and so degrade to being billed to their configured provider.
+    ///
+    /// **This is a spend view.** Attribution counts every case the provider
+    /// answered, including skipped ones — money was spent regardless of
+    /// whether a verdict came out. [`MatrixCell::fallback_answered`] counts
+    /// only graded repeats, so the two will not add up on a run with skipped
+    /// fallback answers, and that is deliberate.
+    ///
+    /// In first-seen order, matching `columns`.
+    pub provider_costs: Vec<ProviderCost>,
     pub next_cursor: Option<String>,
+}
+
+/// What one provider spent across a whole run, keyed by who *answered*.
+///
+/// Deliberately not keyed the way [`MatrixColumn`] is: columns stay keyed on
+/// the configured provider so a cell's identity is stable across runs, while
+/// cost follows the provider that actually made the call.
+///
+/// Spend attribution counts every case the provider answered, **including
+/// skipped ones** — money was spent; [`MatrixCell::fallback_answered`] on cells
+/// counts only graded repeats.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ProviderCost {
+    pub provider_id: String,
+    /// How many of the run's cases this provider answered, skipped cases
+    /// included: this counts what was billed, not what was graded.
+    pub cases: i64,
+    /// Summed cost across those cases; `None` when every one of them recorded
+    /// a NULL cost.
+    pub cost_usd: Option<f64>,
 }
 
 /// One matrix column: a distinct `(provider, prompt)` pair. `prompt_id` is
@@ -67,6 +106,17 @@ pub struct MatrixCell {
     pub latency_ms_mean: Option<f64>,
     /// Summed cost across repeats; `None` when every repeat's cost was NULL.
     pub cost_usd: Option<f64>,
+    /// How many of this cell's **graded** repeats were answered by a provider
+    /// other than the column's configured one (a fallback stood in). `0` for a
+    /// run stored before the attribution existed — honestly so: fallback did
+    /// not exist then, so no repeat in it had one.
+    ///
+    /// Skipped repeats are excluded even when a fallback answered them, so this
+    /// matches the CLI's `RunSummary.fallback_cases` (also graded-only) and can
+    /// be rendered as "N answered by a fallback" without contradicting it.
+    /// [`ProviderCost`] draws the line in the other place: it is a spend view
+    /// and counts every answered case, skipped ones included.
+    pub fallback_answered: i64,
     /// The cell's case keys, ordered by `repeat_idx` (ties broken by `idx`).
     pub case_keys: Vec<CaseKey>,
 }
@@ -105,11 +155,26 @@ mod tests {
                         distinct_outputs: 2,
                         latency_ms_mean: Some(42.0),
                         cost_usd: Some(0.005),
+                        fallback_answered: 1,
                         case_keys: vec![CaseKey::new("aaaa"), CaseKey::new("bbbb")],
                     }),
                     None,
                 ],
             }],
+            provider_costs: vec![
+                ProviderCost {
+                    provider_id: "openai".to_string(),
+                    cases: 1,
+                    cost_usd: Some(0.001),
+                },
+                // An answerer that formed no column of its own: it only ever
+                // stood in for a configured provider that refused.
+                ProviderCost {
+                    provider_id: "reserve".to_string(),
+                    cases: 1,
+                    cost_usd: None,
+                },
+            ],
             next_cursor: Some("0".to_string()),
         };
         assert_eq!(
@@ -136,11 +201,16 @@ mod tests {
                                 "distinct_outputs": 2,
                                 "latency_ms_mean": 42.0,
                                 "cost_usd": 0.005,
+                                "fallback_answered": 1,
                                 "case_keys": ["aaaa", "bbbb"],
                             },
                             null,
                         ],
                     }
+                ],
+                "provider_costs": [
+                    { "provider_id": "openai", "cases": 1, "cost_usd": 0.001 },
+                    { "provider_id": "reserve", "cases": 1, "cost_usd": null },
                 ],
                 "next_cursor": "0",
             })
@@ -156,11 +226,13 @@ mod tests {
             run_id: RunId::new("r-2"),
             columns: vec![],
             rows: vec![],
+            provider_costs: vec![],
             next_cursor: None,
         };
         let v = serde_json::to_value(&empty).unwrap();
         assert_eq!(v["columns"], json!([]));
         assert_eq!(v["rows"], json!([]));
+        assert_eq!(v["provider_costs"], json!([]));
         assert!(v.get("next_cursor").is_some());
         assert!(v["next_cursor"].is_null());
 
@@ -175,10 +247,12 @@ mod tests {
             distinct_outputs: 0,
             latency_ms_mean: None,
             cost_usd: None,
+            fallback_answered: 0,
             case_keys: vec![],
         };
         let cv = serde_json::to_value(&cell).unwrap();
         assert_eq!(cv["case_keys"], json!([]));
+        assert_eq!(cv["fallback_answered"], json!(0));
         for key in ["score_mean", "latency_ms_mean", "cost_usd"] {
             assert!(cv.get(key).is_some(), "missing key {key}");
             assert!(cv[key].is_null(), "expected {key} null, got {:?}", cv[key]);

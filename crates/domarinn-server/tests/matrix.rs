@@ -266,6 +266,205 @@ async fn matrix_paginates_rows_while_columns_stay_complete() {
     assert_eq!(seen, vec!["t1", "t2", "t3", "t4"]);
 }
 
+/// A three-case run that exercises answerer attribution: `openai/p-a/t1` runs
+/// twice, and its second repeat was answered by `reserve` — a provider that
+/// forms no column of its own, because nothing was ever configured to it.
+fn fallback_run(id: &str) -> RunResult {
+    let specs = vec![
+        CaseSpec::new("openai", "t1", CaseStatus::Pass)
+            .prompt("p-a")
+            .repeat(0)
+            .cost(Some(0.001)),
+        CaseSpec::new("openai", "t1", CaseStatus::Pass)
+            .prompt("p-a")
+            .repeat(1)
+            .cost(Some(0.002))
+            .answered_by("reserve"),
+        CaseSpec::new("anthropic", "t1", CaseStatus::Pass)
+            .prompt("p-a")
+            .repeat(0)
+            .cost(Some(0.004)),
+    ];
+    make_run(
+        id,
+        Some("proj"),
+        Some("suite"),
+        vec![],
+        Some("main"),
+        0,
+        &specs,
+    )
+}
+
+/// `(provider_id, cases, cost_usd)` from a matrix body, in wire order.
+fn provider_costs(body: &serde_json::Value) -> Vec<(String, i64, Option<f64>)> {
+    body["provider_costs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["provider_id"].as_str().unwrap().to_string(),
+                p["cases"].as_i64().unwrap(),
+                p["cost_usd"].as_f64(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn matrix_counts_fallback_answers_and_bills_the_answering_provider() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    ingest(&app, &fallback_run("r-fb")).await;
+
+    let body = get(&app, "/api/v1/runs/r-fb/matrix").await.json();
+
+    // Columns stay keyed on the CONFIGURED provider: `reserve` answered a case
+    // but was never configured for one, so it forms no column.
+    let cols: Vec<(&str, Option<&str>)> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["provider_id"].as_str().unwrap(), c["prompt_id"].as_str()))
+        .collect();
+    assert_eq!(
+        cols,
+        vec![("openai", Some("p-a")), ("anthropic", Some("p-a"))]
+    );
+
+    // The openai cell keeps both repeats and reports that one was handed off.
+    let cell = &body["rows"][0]["cells"][0];
+    assert_eq!(cell["total"], 2);
+    assert_eq!(cell["fallback_answered"], 1);
+    assert_eq!(cell["cost_usd"], 0.003);
+    // The anthropic cell answered itself.
+    assert_eq!(body["rows"][0]["cells"][1]["fallback_answered"], 0);
+
+    // Cost follows whoever made the call, in first-seen order — including
+    // `reserve`, which appears here and nowhere else in the matrix.
+    assert_eq!(
+        provider_costs(&body),
+        vec![
+            ("openai".to_string(), 1, Some(0.001)),
+            ("reserve".to_string(), 1, Some(0.002)),
+            ("anthropic".to_string(), 1, Some(0.004)),
+        ],
+        "billing the primary for the fallback's tokens is the bug this rollup \
+         exists to prevent"
+    );
+}
+
+/// The rollup describes the run, not the page: it is accumulated in the full
+/// scan that precedes row pagination, so asking for one row at a time must not
+/// shrink it.
+#[tokio::test]
+async fn matrix_provider_costs_do_not_move_with_row_pagination() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    ingest(&app, &matrix_run("r-mtx")).await;
+
+    let full = get(&app, "/api/v1/runs/r-mtx/matrix").await.json();
+    let paged = get(&app, "/api/v1/runs/r-mtx/matrix?limit=1").await.json();
+
+    assert_eq!(paged["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(full["rows"].as_array().unwrap().len(), 4);
+    assert_eq!(provider_costs(&paged), provider_costs(&full));
+}
+
+/// The same shape as [`fallback_run`], except the fallback's answer was
+/// *skipped*: `reserve` replied, the reply matched the suite's
+/// `skip_on_empty_reason`, and nothing was graded. The tokens were still spent.
+fn skipped_fallback_run(id: &str) -> RunResult {
+    let specs = vec![
+        CaseSpec::new("openai", "t1", CaseStatus::Pass)
+            .prompt("p-a")
+            .repeat(0)
+            .cost(Some(0.001)),
+        CaseSpec::new("openai", "t1", CaseStatus::Skip)
+            .prompt("p-a")
+            .repeat(1)
+            .cost(Some(0.002))
+            .output(Some(""))
+            .empty_reason("refusal")
+            .answered_by("reserve"),
+    ];
+    make_run(
+        id,
+        Some("proj"),
+        Some("suite"),
+        vec![],
+        Some("main"),
+        0,
+        &specs,
+    )
+}
+
+/// The two rollups draw the "a fallback answered" line in different places on
+/// purpose, and this is the one row shape where they differ.
+///
+/// `fallback_answered` is a grading view: the CLI's `RunSummary.fallback_cases`
+/// counts non-`Skip` cases only, and the popover renders this number next to
+/// the cell's verdicts, so counting a skip here is exactly how web and CLI came
+/// to report different totals for the same run. `provider_costs` is a spend
+/// view and must keep the skipped row: the call was made and billed.
+#[tokio::test]
+async fn a_skipped_fallback_answer_is_billed_but_not_counted_as_a_handoff() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    ingest(&app, &skipped_fallback_run("r-fb-skip")).await;
+
+    let body = get(&app, "/api/v1/runs/r-fb-skip/matrix").await.json();
+
+    let cell = &body["rows"][0]["cells"][0];
+    assert_eq!(cell["total"], 2);
+    assert_eq!(cell["skipped"], 1);
+    assert_eq!(
+        cell["fallback_answered"], 0,
+        "the only handoff in this cell was skipped, so no graded repeat was \
+         answered by a fallback — claiming one contradicts the CLI"
+    );
+
+    assert_eq!(
+        provider_costs(&body),
+        vec![
+            ("openai".to_string(), 1, Some(0.001)),
+            ("reserve".to_string(), 1, Some(0.002)),
+        ],
+        "spend attribution keeps the skipped row: the tokens were paid for \
+         whether or not a verdict came out of them"
+    );
+}
+
+/// A row stored before answerer attribution existed carries NULL, which is not
+/// evidence of a handoff — it degrades to billing the configured provider
+/// rather than inventing an answerer or dropping the cost entirely.
+#[tokio::test]
+async fn matrix_attributes_a_legacy_null_row_to_its_configured_provider() {
+    let (app, dir) = test_app(Settings::default()).await;
+    ingest(&app, &fallback_run("r-legacy")).await;
+
+    {
+        let conn = raw(dir.path());
+        conn.execute(
+            "UPDATE cases SET answered_by_provider_id = NULL WHERE run_id='r-legacy'",
+            [],
+        )
+        .unwrap();
+    }
+
+    let body = get(&app, "/api/v1/runs/r-legacy/matrix").await.json();
+    assert_eq!(
+        provider_costs(&body),
+        vec![
+            ("openai".to_string(), 2, Some(0.003)),
+            ("anthropic".to_string(), 1, Some(0.004)),
+        ],
+        "with no answerer recorded, both openai repeats bill openai"
+    );
+    assert_eq!(
+        body["rows"][0]["cells"][0]["fallback_answered"], 0,
+        "a NULL is not a handoff"
+    );
+}
+
 #[tokio::test]
 async fn matrix_404s_for_unknown_run() {
     let (app, _dir) = test_app(Settings::default()).await;

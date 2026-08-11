@@ -1,4 +1,10 @@
-import type { MatrixCell, MatrixColumn, MatrixResponse, MatrixRow } from "@/api";
+import type {
+  MatrixCell,
+  MatrixColumn,
+  MatrixResponse,
+  MatrixRow,
+  ProviderCost,
+} from "@/api";
 import { clamp, round2, round4 } from "./rng";
 import { RUN_META_BY_ID } from "./runMeta";
 import { caseScore, generateCases } from "./cases";
@@ -28,8 +34,18 @@ interface CellAcc {
   latencyCount: number;
   costSum: number;
   costAny: boolean;
+  /** Repeats a fallback answered instead of the column's configured provider. */
+  fallbackAnswered: number;
   /** `(repeat, idx, case_key)` — sorted at finalize time. */
   caseKeys: [number, number, string][];
+}
+
+/** Run-level cost accumulator, keyed by the provider that **answered**. */
+interface ProviderCostAcc {
+  provider_id: string;
+  cases: number;
+  costSum: number;
+  costAny: boolean;
 }
 
 interface RowAcc {
@@ -53,6 +69,7 @@ function newCellAcc(): CellAcc {
     latencyCount: 0,
     costSum: 0,
     costAny: false,
+    fallbackAnswered: 0,
     caseKeys: [],
   };
 }
@@ -78,12 +95,34 @@ export function buildMatrix(
   const columns: MatrixColumn[] = [];
   const rowIndex = new Map<string, number>();
   const rowAccs: RowAcc[] = [];
+  // First-seen ordered run-level cost, keyed by the ANSWERING provider.
+  // Accumulated over the whole scan, which covers every case in the run — the
+  // pagination below only slices `rowAccs`, so the rollup is identical on every
+  // page rather than a total of whatever landed on this one.
+  const costIndex = new Map<string, number>();
+  const costAccs: ProviderCostAcc[] = [];
 
   for (const c of cases) {
     // Exclude legacy/failed-backfill rows (no provider) and rows without a test
     // identity — they cannot form a matrix cell (mirrors the server's WHERE).
     if (!c.provider_id) continue;
     if (!c.test_id) continue;
+
+    // Bill the provider that actually made the call. A fallback that never
+    // formed a column of its own still gets an entry here; a row with no
+    // answerer recorded attributes to its configured provider, which is the
+    // only attribution its data supports.
+    const answerer = c.answered_by_provider_id ?? c.provider_id;
+    let costPos = costIndex.get(answerer);
+    if (costPos === undefined) {
+      costPos = costAccs.length;
+      costIndex.set(answerer, costPos);
+      costAccs.push({ provider_id: answerer, cases: 0, costSum: 0, costAny: false });
+    }
+    const costAcc = costAccs[costPos]!;
+    costAcc.cases += 1;
+    costAcc.costSum += c.cost_usd;
+    costAcc.costAny = true;
 
     const colKey = `${c.provider_id}\x00${c.prompt_id ?? "\x01null"}`;
     let col = columnIndex.get(colKey);
@@ -120,6 +159,7 @@ export function buildMatrix(
     cell.latencyCount += 1;
     cell.costSum += c.cost_usd;
     cell.costAny = true;
+    if (c.answered_by_provider_id != null) cell.fallbackAnswered += 1;
     cell.caseKeys.push([c.repeat, c.idx, c.case_key]);
   }
 
@@ -137,7 +177,13 @@ export function buildMatrix(
 
   const rows: MatrixRow[] = page.map((r) => finalizeRow(r, totalColumns));
 
-  return { run_id: runId, columns, rows, next_cursor };
+  const provider_costs: ProviderCost[] = costAccs.map((acc) => ({
+    provider_id: acc.provider_id,
+    cases: acc.cases,
+    cost_usd: acc.costAny ? round4(acc.costSum) : null,
+  }));
+
+  return { run_id: runId, columns, rows, provider_costs, next_cursor };
 }
 
 function finalizeRow(row: RowAcc, totalColumns: number): MatrixRow {
@@ -161,6 +207,7 @@ function finalizeCell(acc: CellAcc): MatrixCell {
     distinct_outputs: acc.outputHashes.size,
     latency_ms_mean: acc.latencyCount > 0 ? round2(acc.latencySum / acc.latencyCount) : null,
     cost_usd: acc.costAny ? round4(acc.costSum) : null,
+    fallback_answered: acc.fallbackAnswered,
     case_keys: caseKeys,
   };
 }

@@ -220,6 +220,19 @@ export function CaseGrid({
                     cached
                   </Chip>
                 ) : null}
+                {/* The Provider column shows the *configured* provider, which
+                    is what the matrix column and every `case_key` join depend
+                    on — so on a row a fallback answered, that column names
+                    someone who did not produce this output. This badge is the
+                    only correction the grid offers. */}
+                {c.answered_by_provider_id ? (
+                  <span
+                    className="shrink-0 rounded bg-amber/12 px-1 py-px text-[10px] text-amber"
+                    title={`Answered by ${c.answered_by_provider_id} — fallback for ${c.provider_id ?? "the configured provider"}`}
+                  >
+                    fallback: {c.answered_by_provider_id}
+                  </span>
+                ) : null}
               </div>
               <div className="truncate font-mono text-[11px] text-muted">
                 {c.case_key}
