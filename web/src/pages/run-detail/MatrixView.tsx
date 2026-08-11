@@ -8,6 +8,7 @@ import {
   singleCellStatus,
 } from "@/lib/matrix";
 import { CenteredSpinner } from "@/components/ui/Spinner";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { ErrorState, EmptyState } from "@/components/States";
 import { cn } from "@/lib/cn";
 import { formatCost } from "@/lib/format";
@@ -166,7 +167,12 @@ export function MatrixView({
   return (
     <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1">
       {spend.length > 0 ? <SpendLegend entries={spend} /> : null}
-      <div className="max-h-[70vh] overflow-auto overscroll-contain rounded-xl border border-border bg-surface lg:max-h-none lg:min-h-0 lg:flex-1">
+      <div
+        className={cn(
+          CHROME_FRAME,
+          "max-h-[70vh] overflow-auto overscroll-contain lg:max-h-none lg:min-h-0 lg:flex-1",
+        )}
+      >
       <table
         className="w-full border-collapse text-sm"
         aria-label="Prompt by provider matrix"

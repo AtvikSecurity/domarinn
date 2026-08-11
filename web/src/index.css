@@ -8,11 +8,16 @@
   --surface: #ffffff;
   --surface-2: #f0f2f5;
   --fg: #171a1f;
+  /* Channel form: the neutral button fills are alpha tints of the foreground,
+   * so they invert with the theme instead of being a fixed white or black. */
+  --fg-rgb: 23 26 31;
   --fg-muted: #5b6472;
   --border: #e2e6ec;
   --border-strong: #cfd5de;
   --accent: #4f46e5;
   --accent-fg: #ffffff;
+  --info: #2563eb;
+  --info-rgb: 37 99 235;
   /* Semantic tones. These are painted as 11-12px TEXT on their own tint
    * (`bg-<tone>/12`, and `/15` in DiffView), not on bare white, so they are
    * chosen to clear WCAG AA 4.5:1 against that mix — one to two steps deeper
@@ -20,30 +25,66 @@
    * self-mix ratios are asserted in `lib/contrast.test.ts`. */
   --pass: #13742f;
   --fail: #b91c1c;
+  /* Channel form, for the same reason `--info-rgb` exists: the danger button
+   * derives its hairline and inset edge as alpha tints of this hue. */
+  --fail-rgb: 185 28 28;
   --error: #b23b0b;
   --skip: #5a6675;
   --amber: #a54c08;
   --ring: #6366f1;
+
+  /* Operator buttons — a flat fill, a hairline at 36% of the hue, and a label
+   * tinted to match. These are the recipe rebuilt for a light canvas, not the
+   * dark values reused: the design system's own buttons are near-black in both
+   * modes, which would put a row of dark slabs on a near-white page. Every
+   * label/fill pair is asserted against WCAG AA in `lib/contrast.test.ts`. */
+  --btn-primary-bg: #ecf7fd;
+  --btn-primary-bg-hover: #ddeffb;
+  --btn-primary-bg-active: #d3e9f8;
+  --btn-primary-fg: #0e5f7d;
+  --btn-primary-rgb: 14 95 125;
+  --btn-danger-bg: #fdecec;
+  --btn-danger-bg-hover: #fbdcdc;
+  --btn-danger-bg-active: #f8d0d0;
 }
 
 .dark {
-  --bg: #0b0d11;
+  /* The Atvik design system's canonical base canvas. Lighter and a step
+   * bluer than the near-neutral #0b0d11 this replaces, which read as flat
+   * black beside the blue-tinted chrome frames and info accents. */
+  --bg: #0d1117;
   --surface: #14171d;
   --surface-2: #1c2027;
   --fg: #e7e9ee;
+  --fg-rgb: 231 233 238;
   --fg-muted: #949dab;
   --border: #262b33;
   --border-strong: #333a45;
   --accent: #6366f1;
   --accent-fg: #ffffff;
+  --info: #6aa6ff;
+  --info-rgb: 106 166 255;
   --pass: #22c55e;
   --fail: #f56a6a;
+  --fail-rgb: 245 106 106;
   /* `--error` was byte-identical to `--amber` (#f59e0b), which made an error
    * status badge indistinguishable from a truncation/flake marker. */
   --error: #fb923c;
   --skip: #8c96a6;
   --amber: #f59e0b;
   --ring: #818cf8;
+
+  /* The design system's own values: a near-black fill carrying a bright,
+   * saturated label. Cyan is the primary hue there by specification, kept
+   * distinct from the indigo used for links and the info blue on card frames. */
+  --btn-primary-bg: #0a141d;
+  --btn-primary-bg-hover: #0f1e2c;
+  --btn-primary-bg-active: #070f17;
+  --btn-primary-fg: #a9eaff;
+  --btn-primary-rgb: 125 211 252;
+  --btn-danger-bg: #170a0a;
+  --btn-danger-bg-hover: #220c0c;
+  --btn-danger-bg-active: #100808;
 }
 
 @theme inline {
@@ -56,6 +97,9 @@
   --color-border-strong: var(--border-strong);
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
+  --color-info: var(--info);
+  --color-chrome-border: rgb(var(--info-rgb) / 0.22);
+  --color-chrome-highlight: rgb(var(--info-rgb) / 0.05);
   --color-pass: var(--pass);
   --color-fail: var(--fail);
   --color-error: var(--error);
@@ -108,6 +152,101 @@ body {
   background-clip: content-box;
 }
 
+/* Operator buttons, per the Atvik design system: a flat fill with a coloured
+ * hairline and a label tinted to the same hue — no gradients, no halos. Hover
+ * steps the fill one notch and saturates the border; active drops it darker and
+ * presses half a pixel down.
+ *
+ * These live here rather than in `Button.tsx` because each variant needs a
+ * different value per theme, and a `.dark` block states that far more plainly
+ * than a `dark:` utility on every one of a dozen properties. Geometry (height,
+ * padding, radius, focus ring) stays in the component, where it composes with
+ * the size scale and stays merge-aware.
+ *
+ * `:not(:disabled)` on the interactive states: a disabled button already drops
+ * to 50% opacity, and without this it would still brighten under the cursor and
+ * sink on click, which reads as "this works" for a control that does not.
+ */
+.btn-primary {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  border-color: rgb(var(--btn-primary-rgb) / 0.36);
+  box-shadow: inset 0 1px 0 0 rgb(var(--btn-primary-rgb) / 0.18);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--btn-primary-bg-hover);
+  border-color: rgb(var(--btn-primary-rgb) / 0.55);
+  box-shadow: inset 0 1px 0 0 rgb(var(--btn-primary-rgb) / 0.26);
+}
+.btn-primary:active:not(:disabled) {
+  background: var(--btn-primary-bg-active);
+  border-color: rgb(var(--btn-primary-rgb) / 0.45);
+  box-shadow: inset 0 1px 2px 0 rgb(0 0 0 / 0.3);
+  transform: translateY(0.5px);
+}
+
+.btn-danger {
+  background: var(--btn-danger-bg);
+  color: var(--fail);
+  border-color: rgb(var(--fail-rgb) / 0.42);
+  box-shadow: inset 0 1px 0 0 rgb(var(--fail-rgb) / 0.18);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--btn-danger-bg-hover);
+  border-color: rgb(var(--fail-rgb) / 0.6);
+  box-shadow: inset 0 1px 0 0 rgb(var(--fail-rgb) / 0.26);
+}
+.btn-danger:active:not(:disabled) {
+  background: var(--btn-danger-bg-active);
+  border-color: rgb(var(--fail-rgb) / 0.5);
+  box-shadow: inset 0 1px 2px 0 rgb(0 0 0 / 0.3);
+  transform: translateY(0.5px);
+}
+
+/* Neutral hairline — the default, and the quietest thing that still reads as a
+ * button. Built from `--fg` so the barely-there fill inverts with the theme;
+ * the design system's own value is a white alpha, which vanishes on a light
+ * page. */
+.btn-outline {
+  background: rgb(var(--fg-rgb) / 0.025);
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+.btn-outline:hover:not(:disabled) {
+  background: rgb(var(--fg-rgb) / 0.05);
+  border-color: rgb(var(--fg-rgb) / 0.22);
+  box-shadow: inset 0 1px 0 0 rgb(var(--fg-rgb) / 0.08);
+}
+.btn-outline:active:not(:disabled) {
+  background: rgb(var(--fg-rgb) / 0.07);
+  border-color: rgb(var(--fg-rgb) / 0.28);
+  transform: translateY(0.5px);
+}
+
+/* Chromeless. */
+.btn-ghost {
+  background: transparent;
+  color: var(--fg-muted);
+  border-color: transparent;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: rgb(var(--fg-rgb) / 0.05);
+  color: var(--fg);
+}
+.btn-ghost:active:not(:disabled) {
+  background: rgb(var(--fg-rgb) / 0.08);
+  transform: translateY(0.5px);
+}
+
+/* An icon inside a button takes the variant's hue rather than the label's
+ * shade, so it reads as the accent of the control. */
+.btn-primary svg {
+  color: rgb(var(--btn-primary-rgb));
+}
+.btn-danger svg {
+  color: var(--fail);
+}
+
 /* Says "there is more this way" on a horizontally scrolling table.
  *
  * The wide tables are readable on a desktop and clipped on a phone, where a
@@ -120,13 +259,29 @@ body {
  *
  * Painted as the element's background, i.e. behind the rows — which are
  * transparent apart from their hover tint — so it reads as a soft edge rather
- * than an overlay. */
+ * than an overlay.
+ *
+ * Each cover holds its colour SOLID across the shadow's full 14px before it
+ * starts fading. A cover that faded from 0 — which is what this was — only
+ * partly cancels the shadow it is meant to hide: cover alpha falls off over
+ * 28px while the shadow's falls off over 14px, so the shadow leaks through at
+ * `(1 - x/14) * (x/28)`, peaking at 12.5% seven pixels in. That painted a faint
+ * grey band down both edges of every table, permanently, including tables with
+ * nothing to scroll — the exact opposite of the claim above. */
 .scroll-hint {
   background:
-    linear-gradient(to right, var(--surface), transparent) 0 0 / 28px 100%
-      no-repeat local,
-    linear-gradient(to left, var(--surface), transparent) 100% 0 / 28px 100%
-      no-repeat local,
+    linear-gradient(
+        to right,
+        var(--scroll-hint-bg, var(--surface)) 0 14px,
+        transparent 28px
+      )
+      0 0 / 28px 100% no-repeat local,
+    linear-gradient(
+        to left,
+        var(--scroll-hint-bg, var(--surface)) 0 14px,
+        transparent 28px
+      )
+      100% 0 / 28px 100% no-repeat local,
     linear-gradient(to right, var(--border-strong), transparent) 0 0 / 14px 100%
       no-repeat scroll,
     linear-gradient(to left, var(--border-strong), transparent) 100% 0 / 14px
@@ -144,10 +299,70 @@ body {
     transform: translateX(100%);
   }
 }
+@keyframes overlay-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes drawer-out {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* The resize tab is the visible affordance; the drawer edge itself supplies the
+ * continuous line. Lighting that existing border avoids drawing a duplicate
+ * hairline inside the hit target. */
+.detail-drawer-panel:has(.drawer-resizer:hover),
+.detail-drawer-panel:has(.drawer-resizer:focus-visible),
+.detail-drawer-panel:has(.drawer-resizer[data-dragging="true"]) {
+  border-left-color: var(--accent);
+}
+
+/* Motion opt-out.
+ *
+ * A panel flying in from the screen edge and a field of pulsing bars are the
+ * vestibular triggers this media query exists for, and neither carries
+ * information the static end state does not — the drawer's position and the
+ * skeleton's shape are the whole message. Everything else in the app is
+ * `transition-colors`, which is not motion.
+ *
+ * Done by redefining the keyframes rather than by selecting the animated
+ * elements: a later `@keyframes` of the same name wins, so this needs no
+ * `!important` and no guess at which Radix node carries the class. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes overlay-in {
+    from {
+      opacity: 1;
+    }
+  }
+  @keyframes drawer-in {
+    from {
+      transform: none;
+    }
+  }
+  @keyframes overlay-out {
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes drawer-out {
+    to {
+      transform: none;
+    }
+  }
+  .detail-drawer-overlay,
+  .detail-drawer-panel {
+    animation-duration: 1ms !important;
+  }
+  .skeleton-bar {
+    animation: none;
+  }
+}
 
 /* highlight.js theme mapped onto the design tokens instead of shipping a stock
  * hljs stylesheet. Because every color is a theme variable, syntax colors
- * follow light/dark automatically (see CodeView.tsx, which emits `.hljs-*`
+ * follow light/dark automatically (see CodeBlock.tsx, which emits `.hljs-*`
  * spans). Accent = keywords, pass(green) = strings, amber = numbers/literals,
  * muted = comments. */
 .hljs {

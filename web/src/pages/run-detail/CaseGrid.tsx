@@ -11,6 +11,8 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { CaseListItem } from "@/api";
 import { AssertDot, StatusBadge } from "@/components/StatusBadge";
+import { Chip } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import {
@@ -210,12 +212,13 @@ export function CaseGrid({
                   </span>
                 ) : null}
                 {c.cached === true ? (
-                  <span
-                    className="shrink-0 rounded bg-surface-2 px-1 py-px text-[10px] text-muted"
+                  <Chip
+                    className="shrink-0"
+                    size="xs"
                     title="Provider response served from cache"
                   >
                     cached
-                  </span>
+                  </Chip>
                 ) : null}
                 {/* The Provider column shows the *configured* provider, which
                     is what the matrix column and every `case_key` join depend
@@ -511,7 +514,7 @@ export function CaseGrid({
         />
       </div>
 
-      <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-surface lg:min-h-0 lg:flex-1">
+      <div className={cn(CHROME_FRAME, "flex flex-col overflow-hidden lg:min-h-0 lg:flex-1")}>
         <div
           ref={parentRef}
           // Sized by the shell rather than by a guessed `vh` fraction: the
@@ -638,9 +641,15 @@ export function CaseGrid({
                   }}
                   className={cn(
                     "absolute left-0 grid cursor-pointer items-center border-b border-border/50 px-3 text-sm outline-none",
-                    // An explicit base background is what lets the pinned cell
-                    // inherit something opaque.
-                    "bg-surface hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    // Reads as transparent — `--bg` is exactly what sits behind
+                    // this grid, which hangs directly off the page with no
+                    // surface between (the run detail frame is a chrome outline).
+                    //
+                    // Painted rather than actually `bg-transparent`, because the
+                    // pinned status cell below inherits this colour to stay
+                    // opaque; leave it see-through and the other columns slide
+                    // visibly underneath it as the grid scrolls right.
+                    "bg-bg hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                     selected && "bg-accent/8 hover:bg-accent/10",
                   )}
                   style={{

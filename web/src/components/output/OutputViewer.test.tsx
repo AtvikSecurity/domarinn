@@ -47,10 +47,29 @@ describe("OutputViewer", () => {
     }
   });
 
-  it("hides the Rendered|Raw toggle for plain text (nothing to render)", () => {
+  it("hides the Rendered|Raw toggle for plain text (nothing to render)", async () => {
     render(<OutputViewer value={"just some plain prose output"} />);
     expect(screen.queryByRole("radio", { name: "Raw" })).toBeNull();
-    expect(screen.getByText("text")).toBeInTheDocument();
+    // The type label moved into the block's own header, which arrives with the
+    // lazy chunk. It still says "text" and not a guessed grammar: prose is not
+    // highlighted, so nothing auto-detects a language for it.
+    expect(await screen.findByText("text")).toBeInTheDocument();
+  });
+
+  it("uses an outline pill for soft wrap and reports its pressed state", async () => {
+    const user = userEvent.setup();
+    __resetOutputPrefs({ raw: false, wrap: false });
+    render(<OutputViewer value={"just some plain prose output"} />);
+
+    // Lives in the block header now rather than the viewer toolbar, but is the
+    // same outline pill driving the same shared preference.
+    const wrap = await screen.findByRole("button", { name: "Wrap" });
+    expect(wrap).toHaveAttribute("aria-pressed", "false");
+    expect(wrap).toHaveClass("rounded-[8px]", "border-border-strong", "bg-transparent");
+
+    await user.click(wrap);
+    expect(wrap).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("domarinn.output.wrap")).toBe("1");
   });
 
   it("toggles to Raw and persists the preference to localStorage", async () => {
@@ -76,16 +95,44 @@ describe("OutputViewer", () => {
     expect(screen.queryByRole("button", { name: "Expand all" })).toBeNull();
   });
 
-  it("shows the RawText fallback while the lazy markdown view loads", async () => {
-    const { container } = render(<OutputViewer value={"# Hello\n\nworld"} />);
-    // Synchronously, the Suspense fallback (RawText <pre> with the raw source)
-    // is on screen so nothing flashes empty.
-    const pre = container.querySelector("pre");
-    expect(pre).not.toBeNull();
-    expect(pre?.textContent).toContain("# Hello");
-
-    // Once the lazy chunk resolves, the rendered heading replaces it.
+  it("renders markdown through the lazy view once it resolves", async () => {
+    render(<OutputViewer value={"# Hello\n\nworld"} />);
     expect(await screen.findByRole("heading", { name: "Hello" })).toBeInTheDocument();
+  });
+
+  /**
+   * Every view except rendered markdown now carries its own header, so the
+   * viewer has to stand its own controls down. Getting this wrong puts two
+   * copy buttons and two wrap toggles a few pixels apart, both driving the same
+   * shared preference — which is exactly what it looked like mid-refactor.
+   */
+  describe("controls are never duplicated", () => {
+    it("hands the toolbar to the json tree when rendered", async () => {
+      render(<OutputViewer value={'{"a":1}'} />);
+      expect(await screen.findByRole("button", { name: "Expand all" })).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: "Wrap" })).toHaveLength(1);
+      expect(screen.getAllByText("json")).toHaveLength(1);
+    });
+
+    it("hands the toolbar to the code block in raw mode", async () => {
+      __resetOutputPrefs({ raw: true, wrap: true });
+      render(<OutputViewer value={'{"a":1}'} />);
+      // Raw json is highlighted and labelled as json, not auto-detected.
+      expect(await screen.findByTestId("code-block")).toHaveTextContent("json");
+      expect(screen.queryByRole("button", { name: "Expand all" })).toBeNull();
+      expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: "Wrap" })).toHaveLength(1);
+    });
+
+    it("keeps its own label and copy for rendered markdown, which has no header", async () => {
+      render(<OutputViewer value={"# Hello\n\nworld"} />);
+      expect(await screen.findByRole("heading", { name: "Hello" })).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
+      // Soft wrap means nothing to rendered prose, so no toggle at all.
+      expect(screen.queryByRole("button", { name: "Wrap" })).toBeNull();
+      expect(screen.getByText("markdown")).toBeInTheDocument();
+    });
   });
 
   it("copies the raw text and shows feedback", async () => {

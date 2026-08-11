@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import Markdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import CodeView from "./CodeView";
+import { CodeBlock } from "./CodeBlock";
+import { setWrap, useOutputPrefs } from "./prefs";
 
 /** Flatten a code node's children to plain text without stringifying elements
  *  (react-markdown hands code content down as strings/arrays of strings). */
@@ -12,10 +13,46 @@ function nodeToText(node: ReactNode): string {
   return "";
 }
 
+/**
+ * Fenced (or any multiline) code delegates to the canonical block; a short
+ * inline span stays a plain `<code>`.
+ *
+ * Soft wrap reads the shared preference rather than being pinned on, so a fence
+ * inside a rendered document agrees with every other monospace surface on
+ * screen — the drawer routinely shows both at once. It is a real component, not
+ * an inline arrow in the map below, because it calls a hook.
+ */
+function CodeRenderer({
+  className,
+  children,
+}: {
+  className?: string;
+  children?: ReactNode;
+}) {
+  const { wrap } = useOutputPrefs();
+  const text = nodeToText(children).replace(/\n$/, "");
+  const match = /language-(\w+)/.exec(className ?? "");
+  if (match || text.includes("\n")) {
+    return (
+      <CodeBlock
+        code={text}
+        language={match?.[1]}
+        wrap={wrap}
+        onWrapChange={setWrap}
+        className="my-2"
+      />
+    );
+  }
+  return (
+    <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.9em]">
+      {children}
+    </code>
+  );
+}
+
 // Token-styled renderers for the subset of markdown providers actually emit.
 // Raw HTML stays disabled (react-markdown's default — no rehype-raw), so
-// untrusted output can't inject markup. Fenced/multiline code delegates to the
-// syntax-highlighted CodeView; short inline spans render as a plain <code>.
+// untrusted output can't inject markup.
 const COMPONENTS: Components = {
   h1: ({ children }) => (
     <h1 className="mb-2 mt-1 text-base font-semibold text-fg">{children}</h1>
@@ -71,19 +108,7 @@ const COMPONENTS: Components = {
   td: ({ children }) => (
     <td className="border border-border px-2 py-1 align-top">{children}</td>
   ),
-  code: ({ className, children }) => {
-    const text = nodeToText(children).replace(/\n$/, "");
-    const match = /language-(\w+)/.exec(className ?? "");
-    // Block code (fenced, or any multiline snippet) → highlighted CodeView.
-    if (match || text.includes("\n")) {
-      return <CodeView code={text} langHint={match?.[1]} wrap />;
-    }
-    return (
-      <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.9em]">
-        {children}
-      </code>
-    );
-  },
+  code: CodeRenderer,
 };
 
 /**

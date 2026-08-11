@@ -8,6 +8,7 @@ import {
 import { ApiError, isMockEnabled } from "@/api/client";
 import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
 import { TextField } from "@/components/ui/TextField";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
 import { buildSsoStartUrl, safeRedirectPath, ssoErrorMessage } from "@/lib/sso";
@@ -96,7 +97,7 @@ export function LoginPage() {
 
   return (
     <div className="mx-auto max-w-sm py-10">
-      <div className="rounded-xl border border-border bg-surface p-6 shadow-sm">
+      <Card className="p-6">
         <h1 className="text-lg font-semibold tracking-tight">Sign in</h1>
         <p className="mt-1 text-sm text-muted">
           Sign in to manage runs, keys, and accounts.
@@ -189,7 +190,7 @@ export function LoginPage() {
             <code className="font-mono">member / member</code>
           </p>
         ) : null}
-      </div>
+      </Card>
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { clearToken, getToken, onAuthChange, setToken } from "@/lib/auth";
 import { isMockEnabled } from "@/api/client";
 import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
+import { Card as ChromeCard } from "@/components/ui/Card";
 import { ThemeSegmented } from "@/components/ThemeToggle";
 import { ProviderBadge } from "@/components/ProviderBadge";
 import { McpSection } from "@/components/McpSection";
@@ -159,9 +160,11 @@ export function SettingsPage() {
 
 function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-xl border border-border bg-surface p-4">
-      <h2 className="mb-3 text-sm font-semibold">{title}</h2>
+    <ChromeCard as="section">
+      <h2 className="mb-3 text-[10px] font-medium uppercase tracking-wide text-muted">
+        {title}
+      </h2>
       {children}
-    </section>
+    </ChromeCard>
   );
 }

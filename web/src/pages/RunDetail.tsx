@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import type { OnChangeFn, SortingState } from "@tanstack/react-table";
 import {
@@ -13,6 +13,7 @@ import { mergeParams, parseCaseFilters } from "@/lib/filters";
 import { parseSort, serializeSort } from "@/lib/sort";
 import { distinctProviders, distinctPrompts } from "@/lib/matrix";
 import { previousRun } from "@/lib/compare";
+import { listNeighbors } from "@/lib/listNeighbors";
 import {
   formatCost,
   formatDate,
@@ -26,11 +27,18 @@ import { PassRateBadge } from "@/components/PassRateBadge";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
 import { Modal, ModalActions } from "@/components/ui/Modal";
+import { StatBlock } from "@/components/ui/StatBlock";
 import { Breadcrumb } from "@/components/ui/Breadcrumb";
 import { useAuthView } from "@/auth/AuthProvider";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Tooltip } from "@/components/ui/Tooltip";
+import {
+  TAB_ITEM_BASE,
+  TAB_ITEM_IDLE,
+  TAB_ITEM_SELECTED,
+} from "@/components/ui/chrome";
 import { cn } from "@/lib/cn";
 import { useFillViewport } from "@/components/AppShell";
 import { CaseGrid } from "./run-detail/CaseGrid";
@@ -123,6 +131,17 @@ export function RunDetail() {
   const cases = useMemo(
     () => casesQ.data?.pages.flatMap((p) => p.cases) ?? [],
     [casesQ.data],
+  );
+
+  // The rows either side of the open case, so the drawer can step without
+  // closing. Scoped to loaded rows — see `lib/listNeighbors`.
+  const {
+    prevKey: prevCaseKey,
+    nextKey: nextCaseKey,
+    position: casePosition,
+  } = useMemo(
+    () => listNeighbors(cases, filters.case, (c) => c.case_key),
+    [cases, filters.case],
   );
 
   // Debounced output search -> ?q=
@@ -250,7 +269,7 @@ export function RunDetail() {
     // viewport rather than to a guessed `vh` fraction.
     <div className="flex flex-col gap-5 lg:min-h-0 lg:flex-1">
       {/* Summary header */}
-      <div className="shrink-0 rounded-xl border border-border bg-surface p-4">
+      <Card className="shrink-0">
         <div className="flex flex-wrap items-start gap-4">
           <div className="min-w-0">
             {/* The run id is the trail's last crumb, and that is a fix rather
@@ -367,15 +386,16 @@ export function RunDetail() {
         </div>
 
         <div className={`mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 ${statColumns}`}>
-          <Stat label="Pass rate">
+          <StatBlock variant="bare" label="Pass rate">
             <PassRateBadge
               pass={r.pass_count}
               fail={r.fail_count}
               error={r.error_count}
               className="text-sm"
             />
-          </Stat>
-          <Stat
+          </StatBlock>
+          <StatBlock
+            variant="bare"
             label="Cases"
             // The breakdown rides in a title rather than the sub-line: a run
             // with four reasons would wrap the stat box, and the count is the
@@ -393,8 +413,9 @@ export function RunDetail() {
             }
           >
             {r.case_count}
-          </Stat>
-          <Stat
+          </StatBlock>
+          <StatBlock
+            variant="bare"
             label="Pass / Fail / Err"
             // The Skip filter chip promised a state the header never counted.
             // It is not a field on the response — it is what is left over.
@@ -405,16 +426,18 @@ export function RunDetail() {
               <span className="text-fail">{r.fail_count}</span> /{" "}
               <span className="text-error">{r.error_count}</span>
             </span>
-          </Stat>
-          <Stat
+          </StatBlock>
+          <StatBlock
+            variant="bare"
             label="Tokens"
             // Prompt-heavy is a cost problem; output-heavy is a truncation
             // risk. Summed, they look identical.
             sub={`${formatTokens(r.prompt_tokens)} in · ${formatTokens(r.completion_tokens)} out`}
           >
             {formatTokens(r.prompt_tokens + r.completion_tokens)}
-          </Stat>
-          <Stat
+          </StatBlock>
+          <StatBlock
+            variant="bare"
             label="Cost"
             // What the run *avoided* only means something beside the number it
             // is a fraction of, so it rides on this stat rather than getting
@@ -426,7 +449,7 @@ export function RunDetail() {
             }
           >
             {formatCost(r.cost_usd)}
-          </Stat>
+          </StatBlock>
           {/* Its own stat, never added to Cost above. Cost is what the systems
               under test cost — the number a `cost:` assertion budgets. This is
               what measuring them cost, and on a suite judged by a bigger model
@@ -435,13 +458,14 @@ export function RunDetail() {
               a run stored before the column existed reports null, which is not
               the same as zero. */}
           {showGraderCost ? (
-            <Stat label="Grading" sub="not included in cost">
+            <StatBlock variant="bare" label="Grading" sub="not included in cost">
               {formatCost(r.grader_cost_usd)}
-            </Stat>
+            </StatBlock>
           ) : null}
-          <Stat label="Duration">{formatDuration(r.duration_ms)}</Stat>
+          <StatBlock variant="bare" label="Duration">{formatDuration(r.duration_ms)}</StatBlock>
           {cacheKnown ? (
-            <Stat
+            <StatBlock
+            variant="bare"
               label="Cache"
               // The raw counts used to live only in a native `title`. They are
               // the actionable part — a percentage doesn't tell you how much
@@ -453,22 +477,23 @@ export function RunDetail() {
                   ? `${Math.round(((r.cache_hits ?? 0) / cacheTotal) * 100)}% cached`
                   : "—"}
               </span>
-            </Stat>
+            </StatBlock>
           ) : null}
           {/* Provider-side prompt caching, which is a different mechanism from
               domarinn's own response cache above and dominates spend on a
               cache-heavy suite. Shown only when the run reported any, so it
               stays absent for suites that never enabled it. */}
           {showPromptCache ? (
-            <Stat
+            <StatBlock
+            variant="bare"
               label="Prompt cache"
               sub={`${formatTokens(r.cache_write_tokens)} written`}
             >
               {formatTokens(r.cache_read_tokens)} read
-            </Stat>
+            </StatBlock>
           ) : null}
         </div>
-      </div>
+      </Card>
 
       {/* Only when there is something to break down, and fetched separately
           from the grid: the grid is filtered and paginated, so counting its
@@ -483,7 +508,12 @@ export function RunDetail() {
       ) : null}
 
       {/* Filters */}
-      <div className="flex shrink-0 flex-wrap items-center gap-3">
+      {/* `gap-6` between groups against `gap-1` inside one: the filter groups
+          used to be told apart by their own borders, and once those went the
+          only thing separating "Skip" from the next group's "All" was 4px more
+          than separates it from "Error". Spacing is what carries the grouping
+          now, so it has to be unambiguous. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-6">
         {/* List | Matrix toggle — only for matrix-shaped runs. Stays visible in
             both modes so the user can switch back. */}
         {matrixShaped ? (
@@ -603,6 +633,9 @@ export function RunDetail() {
         suite={r.suite ?? ""}
         caseKey={filters.case}
         onClose={closeCase}
+        onPrev={prevCaseKey === undefined ? undefined : () => selectCase(prevCaseKey)}
+        onNext={nextCaseKey === undefined ? undefined : () => selectCase(nextCaseKey)}
+        position={casePosition}
       />
 
       <Modal
@@ -661,11 +694,7 @@ function ChipGroup({
   onSelect: (value: string) => void;
 }) {
   return (
-    <div
-      role="group"
-      aria-label={label}
-      className="flex items-center gap-1 rounded-lg border border-border bg-surface p-0.5"
-    >
+    <div role="group" aria-label={label} className="flex items-center gap-1">
       {chips.map((chip) => {
         const selected = active === chip.value;
         return (
@@ -673,42 +702,22 @@ function ChipGroup({
             key={chip.value}
             // Selection was conveyed by background colour alone: nothing in the
             // accessibility tree, and nothing that survives grayscale or
-            // forced-colors. `role="group"` stays — several specs scope to it.
+            // forced-colors. `role="group"` stays — several specs scope to it,
+            // and these are independent filters rather than a single choice, so
+            // the radiogroup `SegmentedControl` claims would be wrong here even
+            // though the two now look alike.
             aria-pressed={selected}
             onClick={() => onSelect(chip.value)}
             className={cn(
-              "rounded-md px-2.5 py-1 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              selected
-                ? "bg-surface-2 text-fg ring-1 ring-inset ring-border-strong"
-                : "text-muted hover:text-fg",
+              TAB_ITEM_BASE,
+              "px-2.5 pb-1 text-sm",
+              selected ? TAB_ITEM_SELECTED : TAB_ITEM_IDLE,
             )}
           >
             {chip.label}
           </button>
         );
       })}
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  children,
-  sub,
-}: {
-  label: string;
-  children: ReactNode;
-  sub?: ReactNode;
-}) {
-  return (
-    <div className="rounded-lg border border-border bg-bg/40 px-3 py-2">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-muted">
-        {label}
-      </div>
-      <div className="mt-0.5 text-sm font-semibold tabular-nums">{children}</div>
-      {sub ? (
-        <div className="mt-0.5 text-[11px] tabular-nums text-muted">{sub}</div>
-      ) : null}
     </div>
   );
 }

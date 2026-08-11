@@ -444,8 +444,15 @@ export function fullOutput(meta: RunMeta, seed: string | number, status: CaseSta
         ``,
         `Confidence landed at \`${confidence}\`. See the [policy reference](https://example.com/policy) for the rubric.`,
         ``,
+        // Pretty-printed rather than one line: a single-line fence never shows
+        // the code block's line-number gutter, so the demo (and the e2e that
+        // guards it) would exercise only half the component.
         "```json",
-        `{ "intent": "${intent}", "revision": ${rev}, "confidence": ${confidence} }`,
+        `{`,
+        `  "intent": "${intent}",`,
+        `  "revision": ${rev},`,
+        `  "confidence": ${confidence}`,
+        `}`,
         "```",
         ``,
       ].join("\n");

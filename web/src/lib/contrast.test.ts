@@ -5,11 +5,11 @@ import { describe, expect, it } from "vitest";
 /**
  * Contrast guard for the semantic colour tokens in `index.css`.
  *
- * These tones are used as 11-12px *text* throughout (StatusBadge, PassRateBadge,
- * the run-header pass/fail/err counts, assert rows, matrix popovers, the chat
- * role chips), and almost never on the bare surface — the project's chip formula
- * paints them on `bg-<tone>/12`, and `DiffView` uses `/15`. A token that clears
- * 4.5:1 on white can still fail on its own tint, so both are asserted here.
+ * These tones are used as 10-12px *text* throughout (StatusBadge, PassRateBadge,
+ * the run-header pass/fail/err counts, assert rows, matrix popovers, and outline
+ * labels). Outline labels sit directly on page/surface backgrounds and use an
+ * 8% tint only while interactive; legacy diff/alert surfaces still use `/12`
+ * and `/15`. Every real rendering context is asserted here.
  *
  * The tokens are parsed out of the stylesheet rather than duplicated, so this
  * fails if someone edits a value without checking it.
@@ -20,7 +20,8 @@ import { describe, expect, it } from "vitest";
 // vitest's root is `web/`.
 const CSS = readFileSync(resolve(process.cwd(), "src/index.css"), "utf8");
 
-const TONES = ["pass", "fail", "error", "skip", "amber"] as const;
+const SEMANTIC_TONES = ["pass", "fail", "error", "skip", "amber"] as const;
+const OUTLINE_TONES = [...SEMANTIC_TONES, "info"] as const;
 const AA_TEXT = 4.5;
 
 function block(selector: string): string {
@@ -76,26 +77,85 @@ describe.each([
   ["light", ":root"],
   ["dark", ".dark"],
 ])("%s mode semantic tones", (_mode, scope) => {
+  const page = token(scope, "bg");
   const surface = token(scope, "surface");
 
-  it.each(TONES)("--%s reads as text on the surface", (name) => {
-    expect(contrast(token(scope, name), surface)).toBeGreaterThanOrEqual(
+  it.each(OUTLINE_TONES)("--%s reads on page and surface backgrounds", (name) => {
+    const tone = token(scope, name);
+    expect(contrast(tone, page)).toBeGreaterThanOrEqual(AA_TEXT);
+    expect(contrast(tone, surface)).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+
+  it.each(OUTLINE_TONES)("--%s reads on its interactive /8 tint", (name) => {
+    const tone = token(scope, name);
+    expect(contrast(tone, tint(tone, surface, 0.08))).toBeGreaterThanOrEqual(
       AA_TEXT,
     );
   });
 
-  // The chip formula (`bg-<tone>/12 text-<tone>`) and DiffView (`/15`) are how
-  // these tones are actually rendered, and are strictly harder than bare
-  // surface — a token that passes above can still fail here.
-  it.each(TONES)("--%s reads as text on its own /12 and /15 tint", (name) => {
-    const tone = token(scope, name);
-    expect(contrast(tone, tint(tone, surface, 0.12))).toBeGreaterThanOrEqual(
-      AA_TEXT,
-    );
-    expect(contrast(tone, tint(tone, surface, 0.15))).toBeGreaterThanOrEqual(
-      AA_TEXT,
-    );
+  // DiffView and semantic alerts retain stronger persistent tints. These are
+  // strictly harder than a bare surface, so keep their separate contract.
+  it.each(SEMANTIC_TONES)(
+    "--%s reads as text on its own /12 and /15 tint",
+    (name) => {
+      const tone = token(scope, name);
+      expect(contrast(tone, tint(tone, surface, 0.12))).toBeGreaterThanOrEqual(
+        AA_TEXT,
+      );
+      expect(contrast(tone, tint(tone, surface, 0.15))).toBeGreaterThanOrEqual(
+        AA_TEXT,
+      );
+    },
+  );
+});
+
+/**
+ * Buttons carry their own opaque fill, so their labels are not covered by the
+ * page/surface assertions above — a label only ever has to read against the
+ * fill directly beneath it.
+ *
+ * This matters most in light mode. The design system's buttons are near-black
+ * in both themes; the light values here were derived rather than copied, which
+ * makes them the one part of the recipe nobody upstream has already looked at.
+ * Hover is checked too, since it moves the fill but not the label.
+ */
+describe.each([
+  ["light", ":root"],
+  ["dark", ".dark"],
+])("%s mode button labels", (_mode, scope) => {
+  it.each([
+    ["primary", "btn-primary-fg", "btn-primary-bg", "btn-primary-bg-hover"],
+    ["danger", "fail", "btn-danger-bg", "btn-danger-bg-hover"],
+  ])("--%s label reads on its own fill, at rest and on hover", (_v, fg, bg, hover) => {
+    const label = token(scope, fg);
+    expect(contrast(label, token(scope, bg))).toBeGreaterThanOrEqual(AA_TEXT);
+    expect(contrast(label, token(scope, hover))).toBeGreaterThanOrEqual(AA_TEXT);
   });
+
+  it("keeps the neutral variants readable on the page", () => {
+    // Outline and ghost have no fill of their own worth speaking of — a 2.5%
+    // foreground tint — so their labels are effectively on the page.
+    expect(contrast(token(scope, "fg"), token(scope, "bg"))).toBeGreaterThanOrEqual(
+      AA_TEXT,
+    );
+    expect(
+      contrast(token(scope, "fg-muted"), token(scope, "bg")),
+    ).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+});
+
+it("keeps the channel forms in step with the hex they mirror", () => {
+  // `--fail-rgb` and `--fg-rgb` exist so the button hairlines can be alpha
+  // tints. Nothing forces them to agree with `--fail` / `--fg`, and a drift
+  // would show as a border in a subtly different hue from its own label.
+  for (const scope of [":root", ".dark"]) {
+    for (const name of ["fail", "fg"]) {
+      const m = new RegExp(`--${name}-rgb:\\s*(\\d+) (\\d+) (\\d+)`).exec(block(scope));
+      expect(m, `--${name}-rgb missing in ${scope}`).not.toBeNull();
+      const triple = m!.slice(1, 4).map(Number);
+      expect(triple).toEqual(channels(token(scope, name)));
+    }
+  }
 });
 
 it("keeps --error distinct from --amber in both themes", () => {

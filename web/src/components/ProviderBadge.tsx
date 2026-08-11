@@ -4,7 +4,12 @@
 
 import type { UserIdentityView } from "@/api";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
+import {
+  OUTLINE_LABEL_BASE,
+  OUTLINE_LABEL_TONE,
+} from "@/components/ui/chrome";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { cn } from "@/lib/cn";
 
 /** "oidc:google" -> "google". */
 function providerLabel(provider: string): string {
@@ -20,7 +25,11 @@ export function ProviderBadge({ identity }: { identity: UserIdentityView }) {
     <Tooltip content={`${identity.kind.toUpperCase()} · ${identity.subject}`}>
       <span
         tabIndex={0}
-        className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted outline-none ring-1 ring-inset ring-border focus-visible:ring-2 focus-visible:ring-ring"
+        className={cn(
+          OUTLINE_LABEL_BASE,
+          OUTLINE_LABEL_TONE.neutral,
+          "px-1 py-0.5 text-[10px] outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        )}
       >
         <ProviderIcon
           provider={{ name: identity.provider, label, kind: identity.kind }}

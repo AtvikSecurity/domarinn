@@ -1,5 +1,8 @@
 import type { AssertFlip } from "@/api";
 import { StatusBadge } from "@/components/StatusBadge";
+import { Chip } from "@/components/ui/Chip";
+import { CHROME_FRAME } from "@/components/ui/chrome";
+import { cn } from "@/lib/cn";
 
 /**
  * The per-assertion flips for one case, taken verbatim from the compare row's
@@ -16,17 +19,17 @@ export function AssertTransitions({ flips }: { flips: AssertFlip[] }) {
   return (
     <div
       data-testid="assert-transitions"
-      className="rounded-lg border border-border bg-bg/60 px-3 py-2"
+      className={cn(CHROME_FRAME, "px-3 py-2")}
     >
-      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted">
         Assertion changes
       </div>
       <ul className="space-y-1.5">
         {flips.map((flip, i) => (
           <li key={`${flip.kind}#${i}`} className="flex flex-wrap items-center gap-2">
-            <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg">
+            <Chip size="xs" className="normal-case">
               {flip.kind}
-            </span>
+            </Chip>
             <StatusBadge status={flip.base_passed ? "pass" : "fail"} size="xs" />
             <span aria-hidden className="text-muted">
               →

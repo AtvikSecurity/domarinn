@@ -92,7 +92,7 @@ export function SetsPage() {
               table, widened the *page* rather than this scroller and gave
               /sets a sideways scrollbar at phone widths. Making the scroll
               container the containing block keeps that overflow in here. */}
-          <div className="relative overflow-x-auto scroll-hint">
+          <div className="relative overflow-x-auto scroll-hint [--scroll-hint-bg:var(--bg)]">
             <table className="w-full min-w-[840px] table-fixed text-sm">
               <ColumnGroup columns={SET_COLUMNS} prefs={colPrefs} />
               <thead>

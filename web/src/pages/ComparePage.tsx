@@ -12,8 +12,12 @@ import { DELTA_LABEL, formatScoreDelta } from "@/lib/compare";
 import { isFullyCached } from "@/lib/cached";
 import { mergeParams } from "@/lib/filters";
 import { StatusBadge } from "@/components/StatusBadge";
+import { Card } from "@/components/ui/Card";
+import { Chip } from "@/components/ui/Chip";
+import { PillButton } from "@/components/ui/PillButton";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { ErrorState, EmptyState } from "@/components/States";
+import { CHROME_FRAME, type OutlineTone } from "@/components/ui/chrome";
 import { cn } from "@/lib/cn";
 import { ColumnPicker } from "@/components/ui/ColumnPicker";
 import { ColumnResizer } from "@/components/ui/ColumnResizer";
@@ -46,13 +50,13 @@ type ChipKey =
   | "added"
   | "removed";
 
-const CHIP_META: { key: ChipKey; label: string; tone: string }[] = [
-  { key: "newly_failing", label: "Newly failing", tone: "text-fail ring-fail/30 bg-fail/8" },
-  { key: "newly_passing", label: "Newly passing", tone: "text-pass ring-pass/30 bg-pass/8" },
-  { key: "output_changed", label: "Output changed", tone: "text-amber ring-amber/30 bg-amber/8" },
-  { key: "still_failing", label: "Still failing", tone: "text-error ring-error/30 bg-error/8" },
-  { key: "added", label: "Added", tone: "text-muted ring-border bg-surface-2" },
-  { key: "removed", label: "Removed", tone: "text-muted ring-border bg-surface-2" },
+const CHIP_META: { key: ChipKey; label: string; tone: OutlineTone }[] = [
+  { key: "newly_failing", label: "Newly failing", tone: "fail" },
+  { key: "newly_passing", label: "Newly passing", tone: "pass" },
+  { key: "output_changed", label: "Output changed", tone: "amber" },
+  { key: "still_failing", label: "Still failing", tone: "error" },
+  { key: "added", label: "Added", tone: "neutral" },
+  { key: "removed", label: "Removed", tone: "neutral" },
 ];
 
 /** `?diff=` is a client-only URL param (never sent to the compare endpoint);
@@ -159,7 +163,7 @@ export function ComparePage() {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-xl border border-border bg-surface p-4">
+      <Card>
         <div className="flex flex-wrap items-center gap-3">
           <Link to={`/runs/${encodeURIComponent(id)}`} className="text-sm text-muted hover:text-fg">
             ← Back to run
@@ -219,17 +223,11 @@ export function ComparePage() {
             </span>
           ) : null}
           {configChanged ? (
-            <button
-              type="button"
+            <PillButton
+              tone="amber"
+              pressed={configOpen}
               onClick={toggleConfig}
-              aria-pressed={configOpen}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition-all",
-                "text-amber ring-amber/30 bg-amber/8",
-                configOpen
-                  ? "ring-2 ring-offset-1 ring-offset-bg"
-                  : "opacity-90 hover:opacity-100",
-              )}
+              className="gap-1.5"
             >
               <svg
                 width="12"
@@ -249,10 +247,10 @@ export function ComparePage() {
                   typo in a description. Falls back to the generic label only
                   when the digests cannot say (one side predates them). */}
               {changedLabel}
-            </button>
+            </PillButton>
           ) : null}
         </div>
-      </div>
+      </Card>
 
       {configOpen ? <ConfigDrift baseId={base.id} headId={head.id} /> : null}
 
@@ -263,30 +261,26 @@ export function ComparePage() {
       {/* Summary chips (filter the grid) */}
       <div className="flex flex-wrap gap-2">
         {CHIP_META.map((chip) => (
-          <button
+          <PillButton
             key={chip.key}
+            tone={chip.tone}
+            pressed={activeDelta === chip.key}
             onClick={() => setDelta(chip.key)}
-            aria-pressed={activeDelta === chip.key}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium ring-1 ring-inset transition-all",
-              chip.tone,
-              activeDelta === chip.key
-                ? "ring-2 ring-offset-1 ring-offset-bg"
-                : "opacity-90 hover:opacity-100",
-              activeDelta && activeDelta !== chip.key ? "opacity-40" : "",
+              "gap-1.5",
+              activeDelta && activeDelta !== chip.key && "opacity-40",
             )}
           >
             {chip.label}
             <span className="tabular-nums">{summaryCount(summary, chip.key)}</span>
-          </button>
+          </PillButton>
         ))}
         {activeDelta ? (
-          <button
+          <PillButton
             onClick={() => setParams(mergeParams(params, { delta: undefined }), { replace: true })}
-            className="rounded-full px-3 py-1 text-sm text-muted hover:text-fg"
           >
             Clear filter
-          </button>
+          </PillButton>
         ) : null}
       </div>
 
@@ -435,7 +429,7 @@ function DeltaTable({
   return (
     <div
       data-testid="delta-table"
-      className="overflow-hidden rounded-xl border border-border bg-surface"
+      className={cn(CHROME_FRAME, "overflow-hidden")}
     >
       <div className="flex justify-end border-b border-border px-4 py-2">
         <ColumnPicker
@@ -531,9 +525,9 @@ function DeltaTable({
                       {DELTA_LABEL[row.delta]}
                     </span>
                     {row.assert_flips.length > 0 ? (
-                      <span className="rounded-full bg-accent/12 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-accent ring-1 ring-inset ring-accent/25">
+                      <Chip tone="accent" size="xs" className="tabular-nums">
                         {row.assert_flips.length} flips
-                      </span>
+                      </Chip>
                     ) : null}
                   </span>
                   {shownIds.has("score_delta") && (
@@ -542,9 +536,7 @@ function DeltaTable({
                   {shownIds.has("output") && (
                     <span className="text-right">
                       {row.output_changed ? (
-                        <span className="rounded-full bg-amber/12 px-2 py-0.5 text-[11px] font-medium text-amber ring-1 ring-inset ring-amber/25">
-                          changed
-                        </span>
+                        <Chip tone="amber">changed</Chip>
                       ) : (
                         <span className="text-[11px] text-muted">same</span>
                       )}

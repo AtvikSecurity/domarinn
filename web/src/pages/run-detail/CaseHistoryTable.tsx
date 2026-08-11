@@ -2,6 +2,10 @@ import { useMemo } from "react";
 import { Link } from "react-router";
 import type { CaseHistoryPoint } from "@/api";
 import { StatusBadge } from "@/components/StatusBadge";
+import {
+  OUTLINE_LABEL_BASE,
+  OUTLINE_LABEL_TONE,
+} from "@/components/ui/chrome";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { ColumnGroup } from "@/components/ui/ColumnGroup";
 import { ColumnPicker } from "@/components/ui/ColumnPicker";
@@ -236,7 +240,13 @@ function ChangeCell({
   }
   return (
     <Tooltip content={`${changedLabel} (${value})`}>
-      <span className="rounded bg-amber/12 px-1 py-px font-mono font-medium text-amber">
+      <span
+        className={cn(
+          OUTLINE_LABEL_BASE,
+          OUTLINE_LABEL_TONE.amber,
+          "px-1 py-0.5 text-[10px] normal-case",
+        )}
+      >
         {short}
       </span>
     </Tooltip>
