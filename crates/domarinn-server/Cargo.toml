@@ -34,6 +34,16 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2"
+# Postgres backend: pure Rust end to end. The sync `postgres` facade fits the
+# blocking closure model in `storage::Db`; TLS is rustls pinned to the `ring`
+# provider (never aws-lc-rs — see the Dockerfile header) with bundled webpki
+# roots, so the musl/static and distroless `ldd` gates are unaffected.
+postgres = "0.19"
+tokio-postgres = "0.7"
+tokio-postgres-rustls = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
+webpki-roots = "1"
 zstd = "0.13"
 sha2 = { workspace = true }
 hex = "0.4"

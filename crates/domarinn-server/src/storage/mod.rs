@@ -1,15 +1,22 @@
-//! Hybrid SQLite storage for runs and the shared cache.
+//! Storage for runs and the shared cache: SQLite by default, Postgres when a
+//! connection URL is configured.
 //!
-//! Two database files live under the data dir:
+//! On SQLite, two database files live under the data dir:
 //! * `domarinn.db` — durable run history. Each run is stored twice: as a
 //!   zstd-compressed blob of the original document (for lossless export) and as
 //!   normalized rows (`runs`, `cases`, tags) for indexed filtering.
 //! * `cache.db` — the content-addressed provider cache. Disposable.
 //!
+//! On Postgres, one database holds both table sets (names are disjoint), but
+//! [`Storage`] keeps two logical handles so cache traffic never queues behind
+//! run ingest. All SQL is written once, against the [`exec`] executor, in
+//! SQLite's `?N` placeholder dialect; genuinely divergent fragments (FTS, the
+//! cache row-id column) branch on [`exec::Dialect`].
+//!
 //! Concurrency: each DB has one writer connection behind a [`tokio::sync::Mutex`]
 //! and a small pool of read connections. Every SQL call runs inside
-//! [`tokio::task::spawn_blocking`]. Connections open in WAL mode and writes use
-//! `BEGIN IMMEDIATE`.
+//! [`tokio::task::spawn_blocking`]. SQLite connections open in WAL mode and
+//! writes use `BEGIN IMMEDIATE`.
 //!
 //! This module is split into focused submodules by concern:
 //! * [`schema`] — migration SQL,
@@ -58,11 +65,13 @@ mod compare;
 pub(crate) mod exec;
 mod history;
 mod matrix;
+mod pg;
 mod projects;
 pub mod retention;
 mod runs;
 mod runsets;
 mod schema;
+mod schema_pg;
 mod search;
 mod sets;
 mod sso;
@@ -122,24 +131,73 @@ fn open_conn(path: &Path) -> anyhow::Result<Connection> {
     Ok(conn)
 }
 
-/// One database file with a writer + a lazily-grown pool of read connections.
+/// One logical database with a writer + a lazily-grown pool of read
+/// connections. SQLite: one file. Postgres: one set of connections to the
+/// shared database (the writer mutex is kept there too — it preserves every
+/// serialized-writes assumption the storage code documents; widening PG to a
+/// true write pool is a later, isolated change to this enum).
 struct Db {
     inner: Arc<DbInner>,
 }
 
-struct DbInner {
-    writer: TokioMutex<Connection>,
-    readers: StdMutex<Vec<Connection>>,
-    path: PathBuf,
+enum DbInner {
+    Sqlite {
+        writer: TokioMutex<Connection>,
+        readers: StdMutex<Vec<Connection>>,
+        path: PathBuf,
+    },
+    Pg {
+        /// `Option` so [`DbInner::drop`] can move the client out — see there.
+        writer: TokioMutex<Option<postgres::Client>>,
+        readers: StdMutex<Vec<postgres::Client>>,
+        connector: pg::PgConnector,
+    },
+}
+
+/// Dropping a sync `postgres::Client` tears down its embedded runtime, which
+/// panics on a tokio worker thread ("cannot drop a runtime…"). `DbInner`
+/// lives in an `Arc` whose last clone can well die on the runtime — a test
+/// teardown or a graceful shutdown — so the clients are shipped to a plain
+/// thread to die there.
+impl Drop for DbInner {
+    fn drop(&mut self) {
+        if let DbInner::Pg {
+            writer, readers, ..
+        } = self
+        {
+            let mut clients: Vec<postgres::Client> =
+                readers.get_mut().map(std::mem::take).unwrap_or_default();
+            if let Some(w) = writer.get_mut().take() {
+                clients.push(w);
+            }
+            if !clients.is_empty() {
+                // Detached: nothing to join on, and a leaked client on
+                // process exit is harmless.
+                let _ = std::thread::Builder::new()
+                    .name("pg-client-drop".into())
+                    .spawn(move || drop(clients));
+            }
+        }
+    }
 }
 
 impl Db {
     fn new(writer: Connection, path: PathBuf) -> Self {
         Db {
-            inner: Arc::new(DbInner {
+            inner: Arc::new(DbInner::Sqlite {
                 writer: TokioMutex::new(writer),
                 readers: StdMutex::new(Vec::new()),
                 path,
+            }),
+        }
+    }
+
+    fn new_pg(writer: postgres::Client, connector: pg::PgConnector) -> Self {
+        Db {
+            inner: Arc::new(DbInner::Pg {
+                writer: TokioMutex::new(Some(writer)),
+                readers: StdMutex::new(Vec::new()),
+                connector,
             }),
         }
     }
@@ -151,9 +209,16 @@ impl Db {
         T: Send + 'static,
     {
         let inner = self.inner.clone();
-        tokio::task::spawn_blocking(move || {
-            let guard = inner.writer.blocking_lock();
-            f(&mut Conn::Sqlite(&guard))
+        tokio::task::spawn_blocking(move || match &*inner {
+            DbInner::Sqlite { writer, .. } => {
+                let guard = writer.blocking_lock();
+                f(&mut Conn::Sqlite(&guard))
+            }
+            DbInner::Pg { writer, .. } => {
+                let mut guard = writer.blocking_lock();
+                let client = guard.as_mut().expect("pg writer present until drop");
+                f(&mut Conn::Pg(client))
+            }
         })
         .await
         .context("write task panicked")?
@@ -166,11 +231,19 @@ impl Db {
         T: Send + 'static,
     {
         let inner = self.inner.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = inner.acquire_reader()?;
-            let result = f(&mut Conn::Sqlite(&conn));
-            inner.release_reader(conn);
-            result
+        tokio::task::spawn_blocking(move || match &*inner {
+            DbInner::Sqlite { .. } => {
+                let conn = inner.acquire_sqlite_reader()?;
+                let result = f(&mut Conn::Sqlite(&conn));
+                inner.release_sqlite_reader(conn);
+                result
+            }
+            DbInner::Pg { .. } => {
+                let mut client = inner.acquire_pg_reader()?;
+                let result = f(&mut Conn::Pg(&mut client));
+                inner.release_pg_reader(client);
+                result
+            }
         })
         .await
         .context("read task panicked")?
@@ -178,17 +251,51 @@ impl Db {
 }
 
 impl DbInner {
-    fn acquire_reader(&self) -> anyhow::Result<Connection> {
-        if let Some(conn) = self.readers.lock().unwrap().pop() {
+    fn acquire_sqlite_reader(&self) -> anyhow::Result<Connection> {
+        let DbInner::Sqlite { readers, path, .. } = self else {
+            unreachable!("sqlite reader requested from a postgres Db");
+        };
+        if let Some(conn) = readers.lock().unwrap().pop() {
             return Ok(conn);
         }
-        open_conn(&self.path)
+        open_conn(path)
     }
 
-    fn release_reader(&self, conn: Connection) {
-        let mut pool = self.readers.lock().unwrap();
+    fn release_sqlite_reader(&self, conn: Connection) {
+        let DbInner::Sqlite { readers, .. } = self else {
+            unreachable!();
+        };
+        let mut pool = readers.lock().unwrap();
         if pool.len() < MAX_READERS {
             pool.push(conn);
+        }
+    }
+
+    fn acquire_pg_reader(&self) -> anyhow::Result<postgres::Client> {
+        let DbInner::Pg {
+            readers, connector, ..
+        } = self
+        else {
+            unreachable!("postgres reader requested from a sqlite Db");
+        };
+        if let Some(client) = readers.lock().unwrap().pop() {
+            return Ok(client);
+        }
+        connector.connect()
+    }
+
+    fn release_pg_reader(&self, client: postgres::Client) {
+        let DbInner::Pg { readers, .. } = self else {
+            unreachable!();
+        };
+        // A client whose connection died mid-query would poison the pool;
+        // `is_closed` catches the common case and a fresh one is cheap.
+        if client.is_closed() {
+            return;
+        }
+        let mut pool = readers.lock().unwrap();
+        if pool.len() < MAX_READERS {
+            pool.push(client);
         }
     }
 }
@@ -216,6 +323,34 @@ impl Storage {
             .context("storage open task panicked")??;
         tracing::info!("storage opened");
         Ok(storage)
+    }
+
+    /// Open the Postgres backend: connect, run both migration ledgers (under
+    /// an advisory lock, so racing replicas serialize), and build the two
+    /// logical handles over the same database. `runs` and `cache` stay
+    /// separate `Db`s so a slow run ingest never queues a cache get behind
+    /// its writer mutex — the same isolation the two SQLite files provide.
+    #[tracing::instrument(skip_all)]
+    pub async fn open_postgres(url: String) -> anyhow::Result<Storage> {
+        let storage = tokio::task::spawn_blocking(move || Storage::open_postgres_blocking(&url))
+            .await
+            .context("storage open task panicked")??;
+        tracing::info!("postgres storage opened");
+        Ok(storage)
+    }
+
+    fn open_postgres_blocking(url: &str) -> anyhow::Result<Storage> {
+        let connector = pg::PgConnector::new(url)?;
+        let mut runs_writer = connector.connect()?;
+        pg::migrate(&mut runs_writer).context("applying postgres migrations")?;
+        // No repair backfills here: a Postgres database is born at the final
+        // schema, so the SQLite-era catch-up passes have nothing to do by
+        // construction (`backfill::run` stays on the SQLite open path).
+        let cache_writer = connector.connect()?;
+        Ok(Storage {
+            runs: Arc::new(Db::new_pg(runs_writer, connector.clone())),
+            cache: Arc::new(Db::new_pg(cache_writer, connector)),
+        })
     }
 
     fn open_blocking(dir: &Path) -> anyhow::Result<Storage> {

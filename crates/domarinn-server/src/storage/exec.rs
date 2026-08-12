@@ -249,6 +249,7 @@ impl FromValue for Value {
 /// One result row, borrowed from whichever driver produced it.
 pub(crate) enum Row<'a> {
     Sqlite(&'a rusqlite::Row<'a>),
+    Pg(&'a tokio_postgres::Row),
 }
 
 impl Row<'_> {
@@ -264,6 +265,9 @@ impl Row<'_> {
                     ValueRef::Blob(b) => Value::Blob(b.to_vec()),
                 }
             }
+            // `FromSql for Value` narrows every wire type to the storage
+            // classes above (bool → 0/1, float4 → f64, …).
+            Row::Pg(row) => row.try_get::<usize, Value>(idx)?,
         };
         T::from_value(value).with_context(|| format!("column {idx}"))
     }
@@ -335,8 +339,6 @@ pub(crate) trait Queryable {
 
     fn execute(&mut self, sql: &str, params: &[Value]) -> anyhow::Result<u64>;
 
-    fn execute_batch(&mut self, sql: &str) -> anyhow::Result<()>;
-
     /// One row or none. This replaces both rusqlite idioms: `.optional()?`
     /// (same semantics) and `.ok()` (which swallowed *every* error as
     /// "absent" — here a real failure propagates).
@@ -368,8 +370,13 @@ pub(crate) trait Queryable {
 }
 
 /// A live connection to whichever backend the [`super::Db`] opened.
+///
+/// The Postgres variant is `&mut` because the sync client's query methods
+/// genuinely take `&mut self`; rusqlite's take `&self`. Both are exclusive
+/// in practice — `Db` hands each closure sole ownership of its connection.
 pub(crate) enum Conn<'c> {
     Sqlite(&'c rusqlite::Connection),
+    Pg(&'c mut postgres::Client),
 }
 
 /// An open transaction. `BEGIN IMMEDIATE` on SQLite (writes must take the
@@ -378,21 +385,24 @@ pub(crate) enum Conn<'c> {
 /// every pattern in this crate.
 pub(crate) enum Tx<'c> {
     Sqlite(rusqlite::Transaction<'c>),
+    Pg(postgres::Transaction<'c>),
 }
 
 impl<'c> Conn<'c> {
-    /// Open a write transaction (`BEGIN IMMEDIATE` on SQLite).
+    /// Open a write transaction (`BEGIN IMMEDIATE` on SQLite, plain `BEGIN`
+    /// on Postgres).
     ///
     /// `new_unchecked` because [`Conn`] holds `&Connection`: the "unchecked"
     /// part is only rusqlite's compile-time guarantee that no *other* alias
     /// runs statements mid-transaction, and the `Db` writer mutex already
     /// guarantees this connection has exactly one user.
-    pub fn immediate_tx(&mut self) -> anyhow::Result<Tx<'c>> {
+    pub fn immediate_tx(&mut self) -> anyhow::Result<Tx<'_>> {
         match self {
             Conn::Sqlite(conn) => Ok(Tx::Sqlite(rusqlite::Transaction::new_unchecked(
                 conn,
                 rusqlite::TransactionBehavior::Immediate,
             )?)),
+            Conn::Pg(client) => Ok(Tx::Pg(client.transaction()?)),
         }
     }
 }
@@ -401,18 +411,14 @@ impl Queryable for Conn<'_> {
     fn dialect(&self) -> Dialect {
         match self {
             Conn::Sqlite(_) => Dialect::Sqlite,
+            Conn::Pg(_) => Dialect::Postgres,
         }
     }
 
     fn execute(&mut self, sql: &str, params: &[Value]) -> anyhow::Result<u64> {
         match self {
             Conn::Sqlite(conn) => sqlite_execute(conn, sql, params),
-        }
-    }
-
-    fn execute_batch(&mut self, sql: &str) -> anyhow::Result<()> {
-        match self {
-            Conn::Sqlite(conn) => Ok(conn.execute_batch(sql)?),
+            Conn::Pg(client) => pg_execute(*client, sql, params),
         }
     }
 
@@ -424,6 +430,7 @@ impl Queryable for Conn<'_> {
     ) -> anyhow::Result<Option<T>> {
         match self {
             Conn::Sqlite(conn) => sqlite_query_row_opt(conn, sql, params, f),
+            Conn::Pg(client) => pg_query_row_opt(*client, sql, params, f),
         }
     }
 
@@ -435,6 +442,7 @@ impl Queryable for Conn<'_> {
     ) -> anyhow::Result<Vec<T>> {
         match self {
             Conn::Sqlite(conn) => sqlite_query_map(conn, sql, params, f),
+            Conn::Pg(client) => pg_query_map(*client, sql, params, f),
         }
     }
 }
@@ -443,6 +451,7 @@ impl Tx<'_> {
     pub fn commit(self) -> anyhow::Result<()> {
         match self {
             Tx::Sqlite(tx) => Ok(tx.commit()?),
+            Tx::Pg(tx) => Ok(tx.commit()?),
         }
     }
 }
@@ -451,18 +460,14 @@ impl Queryable for Tx<'_> {
     fn dialect(&self) -> Dialect {
         match self {
             Tx::Sqlite(_) => Dialect::Sqlite,
+            Tx::Pg(_) => Dialect::Postgres,
         }
     }
 
     fn execute(&mut self, sql: &str, params: &[Value]) -> anyhow::Result<u64> {
         match self {
             Tx::Sqlite(tx) => sqlite_execute(tx, sql, params),
-        }
-    }
-
-    fn execute_batch(&mut self, sql: &str) -> anyhow::Result<()> {
-        match self {
-            Tx::Sqlite(tx) => Ok(tx.execute_batch(sql)?),
+            Tx::Pg(tx) => pg_execute(tx, sql, params),
         }
     }
 
@@ -474,6 +479,7 @@ impl Queryable for Tx<'_> {
     ) -> anyhow::Result<Option<T>> {
         match self {
             Tx::Sqlite(tx) => sqlite_query_row_opt(tx, sql, params, f),
+            Tx::Pg(tx) => pg_query_row_opt(tx, sql, params, f),
         }
     }
 
@@ -485,6 +491,7 @@ impl Queryable for Tx<'_> {
     ) -> anyhow::Result<Vec<T>> {
         match self {
             Tx::Sqlite(tx) => sqlite_query_map(tx, sql, params, f),
+            Tx::Pg(tx) => pg_query_map(tx, sql, params, f),
         }
     }
 }
@@ -524,6 +531,139 @@ fn sqlite_query_map<T>(
         out.push(f(&Row::Sqlite(row))?);
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// postgres helpers
+// ---------------------------------------------------------------------------
+
+fn pg_params(params: &[Value]) -> Vec<&(dyn postgres::types::ToSql + Sync)> {
+    params
+        .iter()
+        .map(|v| v as &(dyn postgres::types::ToSql + Sync))
+        .collect()
+}
+
+fn pg_execute(
+    client: &mut impl postgres::GenericClient,
+    sql: &str,
+    params: &[Value],
+) -> anyhow::Result<u64> {
+    let sql = translate(Dialect::Postgres, sql);
+    Ok(client.execute(sql.as_ref(), &pg_params(params))?)
+}
+
+/// First row of however many, mirroring rusqlite's `query_row` (which never
+/// errored on extra rows) — `Client::query_opt` would.
+fn pg_query_row_opt<T>(
+    client: &mut impl postgres::GenericClient,
+    sql: &str,
+    params: &[Value],
+    f: impl FnOnce(&Row<'_>) -> anyhow::Result<T>,
+) -> anyhow::Result<Option<T>> {
+    let sql = translate(Dialect::Postgres, sql);
+    let rows = client.query(sql.as_ref(), &pg_params(params))?;
+    match rows.first() {
+        Some(row) => Ok(Some(f(&Row::Pg(row))?)),
+        None => Ok(None),
+    }
+}
+
+fn pg_query_map<T>(
+    client: &mut impl postgres::GenericClient,
+    sql: &str,
+    params: &[Value],
+    mut f: impl FnMut(&Row<'_>) -> anyhow::Result<T>,
+) -> anyhow::Result<Vec<T>> {
+    let sql = translate(Dialect::Postgres, sql);
+    let rows = client.query(sql.as_ref(), &pg_params(params))?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        out.push(f(&Row::Pg(row))?);
+    }
+    Ok(out)
+}
+
+/// Bind a [`Value`] against whatever parameter type the server inferred.
+///
+/// This is the half of the dialect gap that placeholder translation can't
+/// cover: Postgres types every parameter at prepare time, while the shared
+/// SQL was written for SQLite's dynamic typing. Encoding by the *server's*
+/// declared type (int8 vs int4 vs bool, text vs varchar) instead of by the
+/// Rust type kills the "type inference tail" at one chokepoint.
+impl postgres::types::ToSql for Value {
+    fn to_sql(
+        &self,
+        ty: &postgres::types::Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        use postgres::types::{IsNull, Type};
+        match self {
+            Value::Null => Ok(IsNull::Yes),
+            Value::Int(i) => match *ty {
+                Type::INT8 => i.to_sql(ty, out),
+                Type::INT4 => i32::try_from(*i)?.to_sql(ty, out),
+                Type::INT2 => i16::try_from(*i)?.to_sql(ty, out),
+                Type::BOOL => (*i != 0).to_sql(ty, out),
+                Type::FLOAT8 => (*i as f64).to_sql(ty, out),
+                Type::OID => u32::try_from(*i)?.to_sql(ty, out),
+                _ => Err(format!("cannot bind integer as {ty}").into()),
+            },
+            Value::Real(f) => match *ty {
+                Type::FLOAT8 => f.to_sql(ty, out),
+                Type::FLOAT4 => (*f as f32).to_sql(ty, out),
+                _ => Err(format!("cannot bind real as {ty}").into()),
+            },
+            Value::Text(s) => s.to_sql(ty, out),
+            Value::Blob(b) => b.as_slice().to_sql(ty, out),
+        }
+    }
+
+    fn accepts(_ty: &postgres::types::Type) -> bool {
+        // Per-value dispatch happens in `to_sql`; a static answer here would
+        // have to be the union anyway.
+        true
+    }
+
+    postgres::types::to_sql_checked!();
+}
+
+/// Decode any supported wire type into the [`Value`] storage classes.
+///
+/// `NUMERIC` is deliberately unsupported: shared SQL must `CAST` aggregates
+/// to `BIGINT`/`DOUBLE PRECISION` instead (see the SUM sites), because a
+/// silent lossy decode here would round money.
+impl<'a> postgres::types::FromSql<'a> for Value {
+    fn from_sql(
+        ty: &postgres::types::Type,
+        raw: &'a [u8],
+    ) -> Result<Value, Box<dyn std::error::Error + Sync + Send>> {
+        use postgres::types::Type;
+        Ok(match *ty {
+            Type::BOOL => Value::Int(bool::from_sql(ty, raw)? as i64),
+            Type::INT2 => Value::Int(i16::from_sql(ty, raw)? as i64),
+            Type::INT4 => Value::Int(i32::from_sql(ty, raw)? as i64),
+            Type::INT8 => Value::Int(i64::from_sql(ty, raw)?),
+            Type::OID => Value::Int(u32::from_sql(ty, raw)? as i64),
+            Type::FLOAT4 => Value::Real(f32::from_sql(ty, raw)? as f64),
+            Type::FLOAT8 => Value::Real(f64::from_sql(ty, raw)?),
+            Type::TEXT | Type::VARCHAR | Type::NAME | Type::BPCHAR | Type::UNKNOWN => {
+                Value::Text(String::from_sql(ty, raw)?)
+            }
+            Type::BYTEA => Value::Blob(<Vec<u8>>::from_sql(ty, raw)?),
+            _ => return Err(format!("unsupported column type {ty}").into()),
+        })
+    }
+
+    fn from_sql_null(
+        _ty: &postgres::types::Type,
+    ) -> Result<Value, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(Value::Null)
+    }
+
+    fn accepts(_ty: &postgres::types::Type) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
