@@ -60,9 +60,14 @@ impl FtsQuery {
     ///
     /// FTS5: `"tok"*` quoted-phrase prefix terms, space-joined (implicit
     /// AND); quoting neutralizes FTS5 operators (`AND`, `NEAR`, parens).
-    /// Postgres: `'tok':*` quoted lexemes joined with ` & `; quoting makes a
-    /// multi-lexeme token a phrase, mirroring FTS5's quoted-phrase behavior,
-    /// and embedded single quotes are doubled per tsquery quoting rules.
+    /// Postgres: `'tok'` quoted lexemes joined with ` & `; quoting makes a
+    /// multi-lexeme token a phrase, mirroring FTS5's quoted-phrase behavior.
+    /// ASCII punctuation inside a token becomes spaces first — the same split
+    /// `schema_pg`'s generated tsvectors apply to the document side — so
+    /// `feature/fts-search` matches as the phrase FTS5's unicode61 tokenizer
+    /// would produce instead of the single glued lexeme Postgres's parser
+    /// makes of it. That substitution also removes every single quote, so no
+    /// tsquery quote-doubling is left to do.
     pub fn match_arg(&self, dialect: Dialect) -> String {
         match dialect {
             Dialect::Sqlite => {
@@ -77,7 +82,22 @@ impl FtsQuery {
                 let star = if self.prefix { ":*" } else { "" };
                 self.tokens
                     .iter()
-                    .map(|t| format!("'{}'{star}", t.replace('\'', "''")))
+                    .map(|t| {
+                        // Never empty after trim: every token kept by the
+                        // sanitizers has an alphanumeric char, and those are
+                        // exactly what this substitution preserves.
+                        let words: String = t
+                            .chars()
+                            .map(|c| {
+                                if c.is_ascii() && !c.is_ascii_alphanumeric() {
+                                    ' '
+                                } else {
+                                    c
+                                }
+                            })
+                            .collect();
+                        format!("'{}'{star}", words.trim())
+                    })
                     .collect::<Vec<_>>()
                     .join(" & ")
             }
@@ -187,10 +207,17 @@ mod tests {
                 .match_arg(Dialect::Postgres),
             "'empty':* & 'cart':*"
         );
-        // Embedded single quote doubled per tsquery quoting.
+        // ASCII punctuation splits into a phrase, exactly as unicode61 splits
+        // the same token on SQLite ("don" + "t", "feature" + "fts" + "search").
         assert_eq!(
             search_query("don't").unwrap().match_arg(Dialect::Postgres),
-            "'don''t':*"
+            "'don t':*"
+        );
+        assert_eq!(
+            search_query("feature/fts-search")
+                .unwrap()
+                .match_arg(Dialect::Postgres),
+            "'feature fts search':*"
         );
         assert_eq!(
             cache_query("refund policy")

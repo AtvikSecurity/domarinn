@@ -76,65 +76,65 @@ impl rusqlite::ToSql for Value {
 /// [`params!`] macro borrows like rusqlite's did — a call site that binds
 /// `key` twice keeps working unchanged.
 pub(crate) trait IntoValue {
-    fn into_value(&self) -> Value;
+    fn to_value(&self) -> Value;
 }
 
 macro_rules! into_value_int {
     ($($t:ty),*) => {$(
         impl IntoValue for $t {
-            fn into_value(&self) -> Value { Value::Int(*self as i64) }
+            fn to_value(&self) -> Value { Value::Int(*self as i64) }
         }
     )*};
 }
 into_value_int!(i64, i32, u32, u64, usize, bool);
 
 impl IntoValue for f64 {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         Value::Real(*self)
     }
 }
 
 impl IntoValue for String {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         Value::Text(self.clone())
     }
 }
 
 impl IntoValue for str {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         Value::Text(self.to_owned())
     }
 }
 
 impl IntoValue for Vec<u8> {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         Value::Blob(self.clone())
     }
 }
 
 impl IntoValue for [u8] {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         Value::Blob(self.to_vec())
     }
 }
 
 impl<T: IntoValue> IntoValue for Option<T> {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         match self {
-            Some(v) => v.into_value(),
+            Some(v) => v.to_value(),
             None => Value::Null,
         }
     }
 }
 
 impl<T: IntoValue + ?Sized> IntoValue for &T {
-    fn into_value(&self) -> Value {
-        (**self).into_value()
+    fn to_value(&self) -> Value {
+        (**self).to_value()
     }
 }
 
 impl IntoValue for Value {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         self.clone()
     }
 }
@@ -142,7 +142,7 @@ impl IntoValue for Value {
 macro_rules! into_value_from {
     ($($t:ty),*) => {$(
         impl From<$t> for Value {
-            fn from(v: $t) -> Value { IntoValue::into_value(&v) }
+            fn from(v: $t) -> Value { IntoValue::to_value(&v) }
         }
     )*};
 }
@@ -160,12 +160,13 @@ where
     }
 }
 
-/// Drop-in for `rusqlite::params!`: builds a `Vec<Value>`, borrowing each
-/// argument.
+/// Drop-in for `rusqlite::params!`: builds a `[Value; N]` array (an array,
+/// not a `Vec` — call sites borrow it immediately, and `&vec![…]` is a
+/// pointless heap allocation clippy rightly flags), borrowing each argument.
 macro_rules! params {
-    () => { Vec::<$crate::storage::exec::Value>::new() };
+    () => { ([] as [$crate::storage::exec::Value; 0]) };
     ($($v:expr),+ $(,)?) => {
-        vec![$($crate::storage::exec::IntoValue::into_value(&$v)),+]
+        [$($crate::storage::exec::IntoValue::to_value(&$v)),+]
     };
 }
 pub(crate) use params;
@@ -700,7 +701,7 @@ mod tests {
         let a = params![key, 7i64, Some(1.5f64), Option::<String>::None];
         assert_eq!(
             a,
-            vec![
+            [
                 Value::Text("k".into()),
                 Value::Int(7),
                 Value::Real(1.5),

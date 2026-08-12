@@ -11,8 +11,26 @@
 //! rest of the request path intact, and asserts the endpoint answers `500`
 //! rather than the `404` it used to. This is the pattern documented on
 //! `project_has_visible_runs` in `storage/sets.rs`.
+//!
+//! **SQLite only.** The fault injection works by opening the app's `.db` file
+//! behind its back and dropping a table — there is no equivalent back door
+//! into the per-test Postgres database, so under
+//! `DOMARINN_TEST_BACKEND=postgres` every test here returns early. The
+//! error-propagation contract itself is backend-neutral (the queries and their
+//! `?`-not-`.ok()` plumbing are shared), so SQLite coverage covers the code
+//! path for both.
 
 mod common;
+
+/// `true` (after logging why) when this binary's sqlite-file fault injection
+/// cannot reach the app because it is Postgres-backed.
+fn skipped_on_postgres() -> bool {
+    if common::pg::backend_is_postgres() {
+        eprintln!("skipping on postgres: exercises sqlite file corruption");
+        return true;
+    }
+    false
+}
 
 use axum::http::StatusCode;
 use axum::Router;
@@ -50,6 +68,9 @@ fn break_table(dir: &TempDir, table: &str) {
 
 #[tokio::test]
 async fn a_broken_runs_table_is_a_500_not_a_missing_run() {
+    if skipped_on_postgres() {
+        return;
+    }
     // `get_run_detail`.
     let (app, dir, _run) = seeded().await;
     break_table(&dir, "runs");
@@ -62,6 +83,9 @@ async fn a_broken_runs_table_is_a_500_not_a_missing_run() {
 
 #[tokio::test]
 async fn a_broken_runs_table_is_a_500_from_the_run_existence_gate() {
+    if skipped_on_postgres() {
+        return;
+    }
     // `run_exists`, the gate the child endpoints share.
     let (app, dir, _run) = seeded().await;
     break_table(&dir, "runs");
@@ -78,6 +102,9 @@ async fn a_broken_runs_table_is_a_500_from_the_run_existence_gate() {
 
 #[tokio::test]
 async fn a_broken_runs_table_is_a_500_when_pinning_a_baseline() {
+    if skipped_on_postgres() {
+        return;
+    }
     // `set_baseline`'s existence check. The set gate ahead of it reads the
     // policy tables, which are untouched, so the 500 can only come from the
     // check itself.
@@ -101,6 +128,9 @@ async fn a_broken_runs_table_is_a_500_when_pinning_a_baseline() {
 
 #[tokio::test]
 async fn a_broken_baselines_table_is_a_500_not_an_unpinned_suite() {
+    if skipped_on_postgres() {
+        return;
+    }
     // `read_baseline`. Only the baselines table is gone, so the suite listing
     // gets as far as reading the pin and no further.
     let (app, dir, _run) = seeded().await;
@@ -114,6 +144,9 @@ async fn a_broken_baselines_table_is_a_500_not_an_unpinned_suite() {
 
 #[tokio::test]
 async fn a_broken_cases_table_is_a_500_not_a_missing_case() {
+    if skipped_on_postgres() {
+        return;
+    }
     // `get_case_detail`. `runs` survives, so the visibility subquery resolves
     // and the failure is the case read itself.
     let (app, dir, run) = seeded().await;

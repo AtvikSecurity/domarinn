@@ -135,6 +135,12 @@ async fn case_list_filters_narrow_by_cell_columns() {
 
 #[tokio::test]
 async fn sentinel_and_null_cell_columns_surface_as_null() {
+    // Simulates a failed migration-3 backfill row via rusqlite; a fresh
+    // Postgres deployment can never contain that sqlite-legacy state.
+    if common::pg::backend_is_postgres() {
+        eprintln!("skipping on postgres: exercises sqlite-legacy database state");
+        return;
+    }
     let (app, dir) = test_app(Settings::default()).await;
     post_json(&app, "/api/v1/runs", None, &run_value(&cells_run("r-sent"))).await;
 
@@ -228,6 +234,12 @@ async fn run_config_endpoint_is_read_scoped_like_export() {
 
 #[tokio::test]
 async fn run_detail_exposes_config_digest_and_nulls_sentinel() {
+    // Simulates a failed migration-3 backfill row via rusqlite; a fresh
+    // Postgres deployment can never contain that sqlite-legacy state.
+    if common::pg::backend_is_postgres() {
+        eprintln!("skipping on postgres: exercises sqlite-legacy database state");
+        return;
+    }
     let (app, dir) = test_app(Settings::default()).await;
     post_json(&app, "/api/v1/runs", None, &run_value(&simple_run("r-det"))).await;
 

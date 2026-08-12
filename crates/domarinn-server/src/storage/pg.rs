@@ -57,10 +57,7 @@ impl PgConnector {
     /// URL's `sslmode` (`disable`/`prefer`/`require`), handled by the driver.
     pub fn connect(&self) -> anyhow::Result<postgres::Client> {
         let tls = MakeRustlsConnect::new((*self.tls).clone());
-        self.config
-            .connect(tls)
-            .context("connecting to postgres")
-            .map_err(Into::into)
+        self.config.connect(tls).context("connecting to postgres")
     }
 }
 

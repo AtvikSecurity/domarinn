@@ -126,6 +126,12 @@ async fn run_detail_exposes_cache_tokens_and_the_second_cost_figure() {
 /// would assert the run had no cache activity, which we have no way to know.
 #[tokio::test]
 async fn a_run_predating_the_columns_reports_them_as_null_not_zero() {
+    // Simulates a pre-migration-12 SQLite database by NULLing columns via
+    // rusqlite; a fresh Postgres deployment can never contain that state.
+    if common::pg::backend_is_postgres() {
+        eprintln!("skipping on postgres: exercises sqlite-legacy database state");
+        return;
+    }
     let (app, dir) = test_app(Settings::default()).await;
     seed_cache_mix(&app).await;
 
@@ -245,6 +251,12 @@ async fn case_list_exposes_cached_and_filters_by_it() {
 /// would silently drop every legacy row.
 #[tokio::test]
 async fn legacy_null_cache_columns_are_never_hidden() {
+    // Simulates a pre-migration-6 SQLite database by NULLing columns via
+    // rusqlite; a fresh Postgres deployment can never contain that state.
+    if common::pg::backend_is_postgres() {
+        eprintln!("skipping on postgres: exercises sqlite-legacy database state");
+        return;
+    }
     let (app, dir) = test_app(Settings::default()).await;
     seed_cache_mix(&app).await;
 

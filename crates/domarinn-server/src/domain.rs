@@ -86,7 +86,7 @@ macro_rules! string_id {
         }
 
         impl crate::storage::exec::IntoValue for $name {
-            fn into_value(&self) -> crate::storage::exec::Value {
+            fn to_value(&self) -> crate::storage::exec::Value {
                 crate::storage::exec::Value::Text(self.as_str().to_owned())
             }
         }
@@ -168,7 +168,7 @@ impl FromSql for Role {
 }
 
 impl IntoValue for Role {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         Value::Text(self.as_str().to_owned())
     }
 }
@@ -195,7 +195,7 @@ impl FromSql for Scope {
 }
 
 impl IntoValue for Scope {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         Value::Text(self.label().to_owned())
     }
 }
@@ -261,7 +261,7 @@ impl FromSql for SsoKind {
 }
 
 impl IntoValue for SsoKind {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         Value::Text(self.as_str().to_owned())
     }
 }
@@ -427,34 +427,34 @@ mod tests {
     #[test]
     fn role_round_trips_through_exec_value() {
         for role in [Role::Admin, Role::Member, Role::Viewer] {
-            assert_eq!(Role::from_value(role.into_value()).unwrap(), role);
+            assert_eq!(Role::from_value(role.to_value()).unwrap(), role);
         }
     }
 
     #[test]
     fn scope_round_trips_through_exec_value() {
         for scope in [Scope::Read, Scope::Write, Scope::Admin] {
-            assert_eq!(Scope::from_value(scope.into_value()).unwrap(), scope);
+            assert_eq!(Scope::from_value(scope.to_value()).unwrap(), scope);
         }
     }
 
     #[test]
     fn sso_kind_round_trips_through_exec_value() {
         for kind in [SsoKind::Oidc, SsoKind::Saml] {
-            assert_eq!(SsoKind::from_value(kind.into_value()).unwrap(), kind);
+            assert_eq!(SsoKind::from_value(kind.to_value()).unwrap(), kind);
         }
     }
 
     #[test]
     fn user_id_round_trips_through_exec_value() {
         let id = UserId::new("usr_abc123");
-        assert_eq!(UserId::from_value(id.into_value()).unwrap(), id);
+        assert_eq!(UserId::from_value(id.to_value()).unwrap(), id);
     }
 
     #[test]
     fn api_key_id_round_trips_through_exec_value() {
         let id = ApiKeyId::new("key_xyz789");
-        assert_eq!(ApiKeyId::from_value(id.into_value()).unwrap(), id);
+        assert_eq!(ApiKeyId::from_value(id.to_value()).unwrap(), id);
     }
 
     #[test]

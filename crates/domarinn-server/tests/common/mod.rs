@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod mock_oidc;
+pub mod pg;
 
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
@@ -43,20 +44,36 @@ pub async fn test_app_with_mode(
 /// [`test_app_with_mode`] plus a second [`Storage`] handle onto the same data
 /// directory, for tests that seed state the HTTP API cannot reach yet (run-set
 /// policy, whose endpoints do not exist).
+///
+/// Backend selection: `DOMARINN_TEST_BACKEND=postgres` runs the suite against
+/// a per-test Postgres database (see [`pg`]); otherwise SQLite files in the
+/// temp dir. The second handle is a second connection set to the same
+/// database either way.
 pub async fn test_app_with_storage(
-    settings: Settings,
+    mut settings: Settings,
     auth_mode: domarinn_server::AuthMode,
 ) -> (Router, Storage, TempDir) {
     let dir = TempDir::new().expect("tempdir");
+    if settings.database_url.is_none() && pg::backend_is_postgres() {
+        settings.database_url = Some(
+            tokio::task::spawn_blocking(pg::fresh_database_url)
+                .await
+                .expect("create postgres test database"),
+        );
+    }
+    let database_url = settings.database_url.clone();
     let config = ServerConfig {
         port: 0,
         data_dir: dir.path().to_path_buf(),
         auth_mode,
     };
     let (app, _state) = build_app(&config, settings).await.expect("build_app");
-    let storage = Storage::open(dir.path().to_path_buf())
-        .await
-        .expect("open storage");
+    let storage = match database_url {
+        Some(url) => Storage::open_postgres(url).await.expect("open storage"),
+        None => Storage::open(dir.path().to_path_buf())
+            .await
+            .expect("open storage"),
+    };
     (app, storage, dir)
 }
 

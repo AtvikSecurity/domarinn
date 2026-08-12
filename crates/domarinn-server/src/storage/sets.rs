@@ -226,10 +226,13 @@ fn project_has_visible_runs(
 ) -> anyhow::Result<bool> {
     let mut args: Vec<Value> = vec![project.to_string().into(), optional_text(suite)];
     let visible = visibility_predicate("runs", vis, &mut args);
-    // `?2 IS NULL OR suite = ?2`: the project form ignores the suite column.
+    // `suite = ?2 OR ?2 IS NULL`: the project form ignores the suite column.
+    // `suite = ?2` must come first: Postgres types a parameter at its first
+    // occurrence, and a bare `?2 IS NULL` leaves it undeterminable (a prepare
+    // error), while `suite = ?2` pins it to TEXT for both tests.
     let sql = format!(
         "SELECT 1 FROM runs
-          WHERE project = ?1 AND (?2 IS NULL OR suite = ?2) AND {visible} LIMIT 1"
+          WHERE project = ?1 AND (suite = ?2 OR ?2 IS NULL) AND {visible} LIMIT 1"
     );
     Ok(conn.query_row_opt(&sql, &args, |_| Ok(()))?.is_some())
 }
@@ -337,7 +340,9 @@ fn sparklines(
     let visible = visibility_predicate("runs", vis, &mut args);
     let cap = SPARKLINE_RUNS;
     // Newest-first inside the window (that is what "the last 20" means), then
-    // re-sorted oldest-first for the consumer.
+    // re-sorted oldest-first for the consumer. `suite = ?2` before `?2 IS
+    // NULL` for the same Postgres first-occurrence typing rule as
+    // `project_has_visible_runs`.
     let sql = format!(
         "SELECT suite, pass_rate FROM (
              SELECT suite, created_at, id, {PASS_RATE} AS pass_rate,
@@ -345,7 +350,7 @@ fn sparklines(
                                        ORDER BY created_at DESC, id DESC) AS rn
                FROM runs
               WHERE project = ?1 AND suite IS NOT NULL
-                AND (?2 IS NULL OR suite = ?2) AND {visible}
+                AND (suite = ?2 OR ?2 IS NULL) AND {visible}
          ) AS ranked
           WHERE rn <= {cap}
           ORDER BY suite ASC, created_at ASC, id ASC"

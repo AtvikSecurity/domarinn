@@ -438,6 +438,12 @@ async fn a_skipped_fallback_answer_is_billed_but_not_counted_as_a_handoff() {
 /// rather than inventing an answerer or dropping the cost entirely.
 #[tokio::test]
 async fn matrix_attributes_a_legacy_null_row_to_its_configured_provider() {
+    // Simulates a pre-attribution row via rusqlite; a fresh Postgres
+    // deployment can never contain that sqlite-legacy state.
+    if common::pg::backend_is_postgres() {
+        eprintln!("skipping on postgres: exercises sqlite-legacy database state");
+        return;
+    }
     let (app, dir) = test_app(Settings::default()).await;
     ingest(&app, &fallback_run("r-legacy")).await;
 
@@ -475,6 +481,12 @@ async fn matrix_404s_for_unknown_run() {
 
 #[tokio::test]
 async fn matrix_is_empty_for_a_run_without_cell_columns() {
+    // Simulates a pre-backfill/failed-backfill run via rusqlite; a fresh
+    // Postgres deployment can never contain that sqlite-legacy state.
+    if common::pg::backend_is_postgres() {
+        eprintln!("skipping on postgres: exercises sqlite-legacy database state");
+        return;
+    }
     let (app, dir) = test_app(Settings::default()).await;
     ingest(&app, &matrix_run("r-empty")).await;
 

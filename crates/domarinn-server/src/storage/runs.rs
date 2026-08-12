@@ -736,14 +736,16 @@ impl RunListFilter {
             None
         };
         match self.cached {
-            // `IS NOT 1` rather than `NOT (...)`, and it is not a style choice:
-            // a legacy row has NULL cache counters, so the predicate evaluates
-            // to NULL and `NOT NULL` is NULL — which SQLite filters out, hiding
-            // exactly the rows the "never hide what we cannot classify" rule
-            // exists to protect. `IS NOT 1` is NULL-safe: NULL IS NOT 1 is true.
+            // `IS NOT TRUE` rather than `NOT (...)`, and it is not a style
+            // choice: a legacy row has NULL cache counters, so the predicate
+            // evaluates to NULL and `NOT NULL` is NULL — which both engines
+            // filter out, hiding exactly the rows the "never hide what we
+            // cannot classify" rule exists to protect. `NULL IS NOT TRUE` is
+            // true on SQLite (≥3.23) and Postgres alike; the SQLite-only
+            // spelling `IS NOT 1` is a boolean/integer type error on Postgres.
             // (Pinned by `legacy_null_cache_columns_are_never_hidden`, which
             // caught this the moment the COALESCE wrapper came off.)
-            Some(CachedFilter::Exclude) => clauses.push(format!("{hidden_predicate} IS NOT 1")),
+            Some(CachedFilter::Exclude) => clauses.push(format!("{hidden_predicate} IS NOT TRUE")),
             Some(CachedFilter::Only) => clauses.push(format!("({FULLY_CACHED})")),
             Some(CachedFilter::All) | None => {}
         }

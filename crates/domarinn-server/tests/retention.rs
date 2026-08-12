@@ -18,6 +18,20 @@ const DAY: i64 = 24 * 60;
 /// A retention window comfortably wider than the fixture epoch's age.
 const WIDE_WINDOW_DAYS: u64 = 36_500;
 
+/// [`test_app`] plus a [`domarinn_server::storage::Storage`] handle onto the
+/// *same* database. `Storage::open(dir.path())` — the old spelling — always
+/// opens SQLite files in the temp dir, which under
+/// `DOMARINN_TEST_BACKEND=postgres` is a second, empty database: the sweep
+/// then deletes nothing while `ids()` still sees every run. The harness's
+/// second handle follows the app's backend either way.
+async fn app_and_storage() -> (
+    axum::Router,
+    domarinn_server::storage::Storage,
+    tempfile::TempDir,
+) {
+    test_app_with_storage(Settings::default(), domarinn_server::AuthMode::Open).await
+}
+
 async fn seed(app: &axum::Router, id: &str, suite: &str, branch: &str, minute_offset: i64) {
     let run = make_run(
         id,
@@ -59,14 +73,11 @@ async fn retention_is_off_unless_configured() {
 /// in a while must go stale, not vanish.
 #[tokio::test]
 async fn a_sweep_keeps_the_newest_run_of_every_branch() {
-    let (app, dir) = test_app(Settings::default()).await;
+    let (app, storage, _dir) = app_and_storage().await;
     seed(&app, "main-old", "s", "main", -100 * DAY).await;
     seed(&app, "main-new", "s", "main", -90 * DAY).await;
     seed(&app, "feat-only", "s", "feat/x", -100 * DAY).await;
 
-    let storage = domarinn_server::storage::Storage::open(dir.path().to_path_buf())
-        .await
-        .unwrap();
     let swept = storage.sweep_runs(30).await.unwrap();
 
     // Only `main-old` is evictable: the other two are each the newest of their
@@ -87,7 +98,7 @@ async fn a_sweep_keeps_the_newest_run_of_every_branch() {
 /// unresolvable-baseline error.
 #[tokio::test]
 async fn a_sweep_never_deletes_a_pinned_baseline() {
-    let (app, dir) = test_app(Settings::default()).await;
+    let (app, storage, _dir) = app_and_storage().await;
     seed(&app, "pinned", "s", "main", -100 * DAY).await;
     seed(&app, "middle", "s", "main", -95 * DAY).await;
     seed(&app, "newest", "s", "main", -90 * DAY).await;
@@ -107,9 +118,6 @@ async fn a_sweep_never_deletes_a_pinned_baseline() {
         reply.status
     );
 
-    let storage = domarinn_server::storage::Storage::open(dir.path().to_path_buf())
-        .await
-        .unwrap();
     let swept = storage.sweep_runs(30).await.unwrap();
 
     assert_eq!(swept.deleted, 1, "only `middle` is evictable");
@@ -121,14 +129,11 @@ async fn a_sweep_never_deletes_a_pinned_baseline() {
 /// Runs inside the window are untouched no matter how many there are.
 #[tokio::test]
 async fn a_sweep_leaves_runs_inside_the_window_alone() {
-    let (app, dir) = test_app(Settings::default()).await;
+    let (app, storage, _dir) = app_and_storage().await;
     for (i, id) in ["a", "b", "c"].iter().enumerate() {
         seed(&app, id, "s", "main", -(i as i64) * DAY).await;
     }
 
-    let storage = domarinn_server::storage::Storage::open(dir.path().to_path_buf())
-        .await
-        .unwrap();
     let swept = storage.sweep_runs(WIDE_WINDOW_DAYS).await.unwrap();
     assert_eq!(swept, domarinn_server::storage::retention::Swept::default());
     assert_eq!(ids(&app).await.len(), 3);
@@ -139,7 +144,7 @@ async fn a_sweep_leaves_runs_inside_the_window_alone() {
 /// already documents.
 #[tokio::test]
 async fn a_sweep_removes_the_runs_search_rows() {
-    let (app, dir) = test_app(Settings::default()).await;
+    let (app, storage, _dir) = app_and_storage().await;
     let mut old = make_run(
         "searchable",
         Some("p"),
@@ -166,9 +171,6 @@ async fn a_sweep_removes_the_runs_search_rows() {
         "precondition: the note is searchable before the sweep"
     );
 
-    let storage = domarinn_server::storage::Storage::open(dir.path().to_path_buf())
-        .await
-        .unwrap();
     assert_eq!(storage.sweep_runs(30).await.unwrap().deleted, 1);
 
     assert!(

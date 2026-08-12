@@ -300,6 +300,16 @@ CREATE INDEX idx_run_set_grants_user ON run_set_grants(user_id);
 -- and delete_run's explicit FTS deletes stay correct (the FK cascade merely
 -- makes them redundant here). coalesce + || rather than concat_ws: concat_ws
 -- is only STABLE in Postgres, and generated columns require IMMUTABLE.
+--
+-- The regexp_replace collapses runs of ASCII whitespace/punctuation to one
+-- space BEFORE to_tsvector. Without it Postgres's default parser glues
+-- path/host/email-shaped text into single lexemes ('feature/fts-search',
+-- 'qwen::billing/refund'), so a search for `fts` or `refund` — which hits on
+-- FTS5, whose unicode61 tokenizer splits on every non-alphanumeric — would
+-- silently miss on Postgres. ASCII-only on purpose: non-ASCII stays intact,
+-- matching the documented "'simple' keeps diacritics" parity note, and it
+-- keeps the expression locale-independent (regexp_replace is IMMUTABLE;
+-- ftsdialect::match_arg applies the same split to query tokens).
 CREATE TABLE runs_fts (
     run_id      TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
     project     TEXT,
@@ -308,10 +318,11 @@ CREATE TABLE runs_fts (
     commit_sha  TEXT,
     description TEXT,
     tags        TEXT,
-    tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple',
+    tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', regexp_replace(
         coalesce(project,'') || ' ' || coalesce(suite,'') || ' '
         || coalesce(branch,'') || ' ' || coalesce(commit_sha,'') || ' '
-        || coalesce(description,'') || ' ' || coalesce(tags,''))) STORED
+        || coalesce(description,'') || ' ' || coalesce(tags,''),
+        '[\s!-/:-@\[-`{-~]+', ' ', 'g'))) STORED
 );
 CREATE INDEX idx_runs_fts_tsv ON runs_fts USING GIN (tsv);
 
@@ -330,10 +341,11 @@ CREATE TABLE cases_fts (
     output   TEXT,
     error    TEXT,
     tags     TEXT,
-    tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple',
+    tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', regexp_replace(
         coalesce(name,'') || ' ' || coalesce(prompt,'') || ' '
         || coalesce(output,'') || ' ' || coalesce(error,'') || ' '
-        || coalesce(tags,''))) STORED
+        || coalesce(tags,''),
+        '[\s!-/:-@\[-`{-~]+', ' ', 'g'))) STORED
 );
 CREATE INDEX idx_cases_fts_run_case ON cases_fts(run_id, case_key);
 CREATE INDEX idx_cases_fts_tsv ON cases_fts USING GIN (tsv);
@@ -406,14 +418,19 @@ INSERT INTO cache_counters (id, hits, misses) VALUES (1, 0, 0)
 -- id. The FK cascade replaces the cache_entries_delete_fts trigger, and the
 -- PK is safe because insert_fts is delete-then-insert. Request text is
 -- weighted above output so an entry whose *request* mentions a term ranks
--- ahead of one whose response merely discusses it.
+-- ahead of one whose response merely discusses it. The regexp_replace is the
+-- same ASCII-punctuation split as runs_fts/cases_fts above: cache_query's
+-- tokens are plain words, and they must find text FTS5's unicode61 would
+-- have split (URLs, model ids, paths) rather than Postgres's glued lexemes.
 CREATE TABLE cache_entries_fts (
     id      BIGINT PRIMARY KEY REFERENCES cache_entries(id) ON DELETE CASCADE,
     request TEXT,
     output  TEXT,
     tsv tsvector GENERATED ALWAYS AS (
-        setweight(to_tsvector('simple', coalesce(request,'')), 'A')
-        || to_tsvector('simple', coalesce(output,''))) STORED
+        setweight(to_tsvector('simple', regexp_replace(
+            coalesce(request,''), '[\s!-/:-@\[-`{-~]+', ' ', 'g')), 'A')
+        || to_tsvector('simple', regexp_replace(
+            coalesce(output,''), '[\s!-/:-@\[-`{-~]+', ' ', 'g'))) STORED
 );
 CREATE INDEX idx_cache_fts_tsv ON cache_entries_fts USING GIN (tsv);
 "#;

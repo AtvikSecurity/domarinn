@@ -97,7 +97,7 @@ impl FromSql for GrantLevel {
 }
 
 impl IntoValue for GrantLevel {
-    fn into_value(&self) -> Value {
+    fn to_value(&self) -> Value {
         Value::Text(self.as_str().to_owned())
     }
 }
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn grant_level_round_trips_through_exec_value() {
         for level in [GrantLevel::View, GrantLevel::Upload, GrantLevel::Manage] {
-            assert_eq!(GrantLevel::from_value(level.into_value()).unwrap(), level);
+            assert_eq!(GrantLevel::from_value(level.to_value()).unwrap(), level);
         }
         assert!(GrantLevel::from_value(Value::Text("owner".into())).is_err());
     }

@@ -62,6 +62,8 @@ pub(crate) mod cacheindex;
 pub(crate) mod cachelink;
 mod cases;
 mod compare;
+#[cfg(test)]
+mod drift_tests;
 pub(crate) mod exec;
 mod ftsdialect;
 mod history;
@@ -141,6 +143,10 @@ struct Db {
     inner: Arc<DbInner>,
 }
 
+// Two instances per process, each behind an `Arc` — boxing the larger
+// variant would trade a fixed few hundred bytes for an extra indirection on
+// every query closure.
+#[allow(clippy::large_enum_variant)]
 enum DbInner {
     Sqlite {
         writer: TokioMutex<Connection>,

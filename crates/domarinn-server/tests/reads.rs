@@ -652,7 +652,13 @@ async fn runs_report_empty_count_and_empty_counts() {
     );
 
     // Unknown is not zero. A legacy row (NULL) and an undecodable blob (the -1
-    // sentinel) must both render as absent rather than as a number.
+    // sentinel) must both render as absent rather than as a number. This tail
+    // seeds those rows via rusqlite; a fresh Postgres deployment can never
+    // contain that sqlite-legacy state, so only the tally half runs there.
+    if common::pg::backend_is_postgres() {
+        eprintln!("skipping legacy tail on postgres: exercises sqlite-legacy database state");
+        return;
+    }
     let db = rusqlite::Connection::open(dir.path().join("domarinn.db")).unwrap();
     db.execute(
         "UPDATE runs SET empty_count = NULL WHERE id = 'r-tally'",
