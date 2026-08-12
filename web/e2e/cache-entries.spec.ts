@@ -66,6 +66,25 @@ test.describe("Cache entries", () => {
     await expect(page.getByRole("button", { name: /Clear \d+ filter/ })).toBeVisible();
   });
 
+  test("text and token columns sort server-side with the right first direction", async ({
+    page,
+  }) => {
+    await page.goto("/cache/entries");
+    await expect(page.getByRole("grid")).toBeVisible();
+
+    // Text column: A→Z on the first click, not the grid's desc-first default.
+    const kind = page.getByRole("columnheader", { name: /Kind/ });
+    await kind.getByRole("button").click();
+    await expect(page).toHaveURL(/[?&]sort=kind(&|$)/);
+    await expect(kind).toHaveAttribute("aria-sort", "ascending");
+
+    // Numeric column: biggest-first on the first click.
+    const tokens = page.getByRole("columnheader", { name: /Tokens/ });
+    await tokens.getByRole("button").click();
+    await expect(page).toHaveURL(/[?&]sort=-tokens(&|$)/);
+    await expect(tokens).toHaveAttribute("aria-sort", "descending");
+  });
+
   test("an entry that has not been indexed says so rather than showing nothing", async ({
     page,
   }) => {

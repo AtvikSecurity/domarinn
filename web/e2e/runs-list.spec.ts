@@ -31,6 +31,37 @@ test.describe("Runs list", () => {
     ).toBeVisible();
   });
 
+  test("clicking a header sorts the runs and round-trips through ?sort", async ({
+    page,
+  }) => {
+    await page.goto("/runs");
+    await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
+
+    // Every suite group repeats the same header row; the sort is page-level,
+    // so exercising the first group's header speaks for all of them.
+    const when = page.getByRole("columnheader", { name: /When/ }).first();
+
+    await when.getByRole("button").click();
+    await expect(page).toHaveURL(/[?&]sort=when(&|$)/);
+    await expect(when).toHaveAttribute("aria-sort", "ascending");
+
+    await when.getByRole("button").click();
+    await expect(page).toHaveURL(/[?&]sort=-when(&|$)/);
+    await expect(when).toHaveAttribute("aria-sort", "descending");
+
+    await when.getByRole("button").click();
+    await expect(page).not.toHaveURL(/[?&]sort=/);
+    await expect(when).toHaveAttribute("aria-sort", "none");
+  });
+
+  test("deep-loads a sort from the URL", async ({ page }) => {
+    await page.goto("/runs?sort=-cost");
+    await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
+    await expect(
+      page.getByRole("columnheader", { name: /Cost/ }).first(),
+    ).toHaveAttribute("aria-sort", "descending");
+  });
+
   test("the suite group header links to that set", async ({ page }) => {
     await page.goto("/runs");
     // Every group is named by the set it belongs to; that name is the only

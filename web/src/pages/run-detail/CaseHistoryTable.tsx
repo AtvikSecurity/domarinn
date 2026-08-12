@@ -22,6 +22,9 @@ import {
 } from "@/lib/format";
 import { changePoints } from "@/lib/history";
 import { cn } from "@/lib/cn";
+import { type SortAccessor, sortRows, STATUS_RANK } from "@/lib/sort";
+import { useLocalSort } from "@/lib/useTableSort";
+import { parseTimestamp } from "@/lib/format";
 
 const HISTORY_TABLE_ID = "caseHistory";
 
@@ -45,6 +48,31 @@ const HISTORY_COLUMNS: ColumnDef[] = [
   { id: "commit", label: "Commit", track: "12%", min: 64, numeric: true },
   { id: "cfg", label: "Cfg", track: "11%", min: 60, numeric: true },
 ];
+
+/** A history point paired with its own change markers, so a sort can never
+ *  separate a row from the amber "changed here" flags computed against its
+ *  chronological neighbour. */
+interface HistoryRow {
+  point: CaseHistoryPoint;
+  change: ReturnType<typeof changePoints>[number];
+}
+
+/** Sortable columns. `commit`/`cfg` stay inert: they render digests, whose
+ *  lexical order means nothing — the change markers are the content there.
+ *  Sort state is local, not `?sort=`: this drawer lives on RunDetail, whose
+ *  URL sort belongs to the case grid. */
+const HISTORY_SORT_FIELDS: Record<string, SortAccessor<HistoryRow>> = {
+  run: (r) => r.point.run_id,
+  when: (r) => parseTimestamp(r.point.created_at),
+  status: (r) => STATUS_RANK[r.point.status],
+  score: (r) => r.point.score,
+  tokens: (r) =>
+    r.point.prompt_tokens == null && r.point.completion_tokens == null
+      ? null
+      : (r.point.prompt_tokens ?? 0) + (r.point.completion_tokens ?? 0),
+  cost: (r) => r.point.cost_usd,
+  latency: (r) => r.point.latency_ms,
+};
 
 /**
  * The per-run detail behind the history rail.
@@ -70,9 +98,12 @@ export function CaseHistoryTable({
 }) {
   const changes = changePoints(points);
   // Newest-first for reading, keeping each point paired with its own marker.
-  const rows = points
+  const rows: HistoryRow[] = points
     .map((p, i) => ({ point: p, change: changes[i]! }))
     .reverse();
+  const sort = useLocalSort();
+  // Cleared sort = the newest-first default (sortRows returns rows unchanged).
+  const displayRows = sortRows(rows, sort.sorting, HISTORY_SORT_FIELDS);
   const colPrefs = useColumnPrefs(HISTORY_TABLE_ID);
   const shownCols = useMemo(
     () => visibleColumns(HISTORY_COLUMNS, colPrefs),
@@ -102,6 +133,14 @@ export function CaseHistoryTable({
                 def={c}
                 tableId={HISTORY_TABLE_ID}
                 prefs={colPrefs}
+                sort={
+                  HISTORY_SORT_FIELDS[c.id]
+                    ? {
+                        active: sort.sortFor(c.id),
+                        onToggle: () => sort.toggle(c.id),
+                      }
+                    : undefined
+                }
                 className={cn(
                   "sticky top-0 z-10 whitespace-nowrap border-b border-border bg-surface-2 px-2 py-1.5 font-medium",
                   c.numeric ? "text-right" : "text-left",
@@ -113,7 +152,7 @@ export function CaseHistoryTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ point: p, change }) => {
+          {displayRows.map(({ point: p, change }) => {
             const isCurrent = p.run_id === runId;
             const isBaseline = baselineRunId != null && p.run_id === baselineRunId;
             const tokens =

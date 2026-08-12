@@ -14,6 +14,9 @@ import { ResizableTh } from "@/components/ui/ResizableTh";
 import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
 import { cn } from "@/lib/cn";
 import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
+import { sortRows } from "@/lib/sort";
+import { RUN_SORT_FIELDS } from "@/lib/runSort";
+import { type TableSort, useSortParam } from "@/lib/useTableSort";
 import {
   formatCost,
   formatDateAbsolute,
@@ -144,6 +147,10 @@ export function RunsList() {
   const cachedPref = useCachedPref();
   const resolvedCached = resolveCached(params.get("cached"), cachedPref);
   const runsColumnPrefs = useColumnPrefs(RUNS_TABLE_ID);
+  // One `?sort=` for the page: every suite group is the same table repeated,
+  // so a sort applies to all of them (within each group — group order stays
+  // most-recently-active first either way).
+  const sort = useSortParam();
 
   return (
     <div className="space-y-5">
@@ -166,14 +173,23 @@ export function RunsList() {
             setParams(mergeParams(params, { cached: next }), { replace: true })
           }
         />
-        <ColumnPicker
-          columns={RUNS_COLUMNS}
-          prefs={runsColumnPrefs}
-          onChange={(id, visible) =>
-            setColumnVisible(RUNS_TABLE_ID, id, visible)
-          }
-          onReset={() => resetColumns(RUNS_TABLE_ID)}
-        />
+        <div className="flex items-center gap-3">
+          {/* The list is cursor paginated, so a client sort can only order
+              what is loaded — say so whenever more pages remain. */}
+          {sort.sorting.length > 0 && q.hasNextPage ? (
+            <span className="text-[11px] text-muted">
+              (sorted within loaded runs)
+            </span>
+          ) : null}
+          <ColumnPicker
+            columns={RUNS_COLUMNS}
+            prefs={runsColumnPrefs}
+            onChange={(id, visible) =>
+              setColumnVisible(RUNS_TABLE_ID, id, visible)
+            }
+            onReset={() => resetColumns(RUNS_TABLE_ID)}
+          />
+        </div>
       </div>
 
       {q.isPending ? (
@@ -187,7 +203,7 @@ export function RunsList() {
       ) : (
         <div className="space-y-6">
           {groups.map((g) => (
-            <SuiteGroup key={g.key} group={g} />
+            <SuiteGroup key={g.key} group={g} sort={sort} />
           ))}
           {q.hasNextPage ? (
             <div className="flex justify-center">
@@ -206,7 +222,7 @@ export function RunsList() {
   );
 }
 
-function SuiteGroup({ group }: { group: Group }) {
+function SuiteGroup({ group, sort }: { group: Group; sort: TableSort }) {
   const [selected, setSelected] = useState<string[]>([]);
   const rowNav = useRowNav();
   // Every suite group on the page reads the same preference, so hiding a
@@ -239,6 +255,14 @@ function SuiteGroup({ group }: { group: Group }) {
   }
 
   const pair = comparePair(group.runs, selected);
+
+  // Reorders only the presentation. Compare semantics ("the previous run")
+  // stay temporal, so `previousRun`/`comparePair` keep reading `group.runs`
+  // (newest-first) below, whatever order the rows display in.
+  const displayRuns = useMemo(
+    () => sortRows(group.runs, sort.sorting, RUN_SORT_FIELDS),
+    [group.runs, sort.sorting],
+  );
 
   return (
     <section className={cn(CHROME_FRAME, "overflow-hidden")}>
@@ -329,6 +353,14 @@ function SuiteGroup({ group }: { group: Group }) {
                   def={c}
                   tableId={RUNS_TABLE_ID}
                   prefs={prefs}
+                  sort={
+                    RUN_SORT_FIELDS[c.id]
+                      ? {
+                          active: sort.sortFor(c.id),
+                          onToggle: () => sort.toggle(c.id),
+                        }
+                      : undefined
+                  }
                   className={cn(
                     "py-2 font-medium",
                     c.id === "run" ? "px-4" : "px-3",
@@ -345,7 +377,7 @@ function SuiteGroup({ group }: { group: Group }) {
             </tr>
           </thead>
           <tbody>
-            {group.runs.map((r) => {
+            {displayRuns.map((r) => {
               // Older run in the loaded group = the default compare base for
               // this row. Undefined when `r` is the oldest loaded run — the
               // real server has no route for a target-less compare, so the

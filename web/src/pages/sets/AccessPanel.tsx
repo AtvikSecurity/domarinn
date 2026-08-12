@@ -6,7 +6,7 @@ import {
   useSetRestrictionMutation,
   useUsers,
 } from "@/api/queries";
-import type { GrantLevel } from "@/api";
+import type { GrantLevel, SetGrantView } from "@/api";
 import { ApiError } from "@/api/client";
 import { useAuthView } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
@@ -20,6 +20,8 @@ import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
 import { useColumnPrefs } from "@/lib/useColumnPrefs";
 import { cn } from "@/lib/cn";
 import { formatDate, isoFromEpoch } from "@/lib/format";
+import { type SortAccessor, sortRows } from "@/lib/sort";
+import { useLocalSort } from "@/lib/useTableSort";
 
 const ACCESS_TABLE_ID = "access";
 
@@ -46,6 +48,14 @@ const GRANT_COLUMNS: ColumnDef[] = [
 
 /** Every level a grant can hold, least privileged first (`GrantLevel`). */
 const LEVELS: GrantLevel[] = ["view", "upload", "manage"];
+
+/** Sortable columns; `level` orders by privilege (`LEVELS` order). Sort state
+ *  is component-local, not `?sort=` — this is a modal over pages that own the
+ *  URL's sort for their own tables. */
+const GRANT_SORT_FIELDS: Record<string, SortAccessor<SetGrantView>> = {
+  person: (g) => g.username,
+  level: (g) => LEVELS.indexOf(g.level),
+};
 
 const LEVEL_HINT: Record<GrantLevel, string> = {
   view: "Read this set's runs.",
@@ -127,6 +137,8 @@ export function AccessPanel({
   const scope = suite === null ? "project" : "suite";
   const grants = access.data?.grants ?? [];
   const colPrefs = useColumnPrefs(ACCESS_TABLE_ID);
+  const sort = useLocalSort();
+  const sortedGrants = sortRows(grants, sort.sorting, GRANT_SORT_FIELDS);
   const granted = new Set(grants.map((g) => g.user_id));
   const addable = (users.data ?? []).filter((u) => !granted.has(u.id));
 
@@ -298,6 +310,14 @@ export function AccessPanel({
                             def={c}
                             tableId={ACCESS_TABLE_ID}
                             prefs={colPrefs}
+                            sort={
+                              GRANT_SORT_FIELDS[c.id]
+                                ? {
+                                    active: sort.sortFor(c.id),
+                                    onToggle: () => sort.toggle(c.id),
+                                  }
+                                : undefined
+                            }
                             className={cn(
                               "py-2 font-medium",
                               c.id === "person" && "pr-3",
@@ -315,7 +335,7 @@ export function AccessPanel({
                       </tr>
                     </thead>
                     <tbody>
-                      {grants.map((g) => (
+                      {sortedGrants.map((g) => (
                         <tr
                           key={g.user_id}
                           data-testid={`grant-row-${g.username}`}

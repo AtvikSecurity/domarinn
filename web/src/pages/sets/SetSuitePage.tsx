@@ -28,6 +28,9 @@ import { ResizableTh } from "@/components/ui/ResizableTh";
 import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
 import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
 import { cn } from "@/lib/cn";
+import { sortRows } from "@/lib/sort";
+import { RUN_SORT_FIELDS } from "@/lib/runSort";
+import { useSortParam } from "@/lib/useTableSort";
 import {
   formatDateAbsolute,
   formatDuration,
@@ -117,6 +120,13 @@ export function SetSuitePage() {
   );
   const [selected, setSelected] = useState<string[]>([]);
   const rowNav = useRowNav();
+  const sort = useSortParam();
+  // Presentation order only. `previousRun`/`comparePair` keep reading `runs`
+  // (server newest-first): "the previous run" is temporal, not visual.
+  const displayRuns = useMemo(
+    () => sortRows(runs, sort.sorting, RUN_SORT_FIELDS),
+    [runs, sort.sorting],
+  );
 
   if (q.isPending) return <CenteredSpinner label="Loading suite…" />;
   if (q.isError) {
@@ -277,14 +287,22 @@ export function SetSuitePage() {
               setParams(mergeParams(params, { cached: next }), { replace: true })
             }
           />
-          <ColumnPicker
-            columns={SUITE_RUN_COLUMNS}
-            prefs={colPrefs}
-            onChange={(id, visible) =>
-              setColumnVisible(SUITE_RUNS_TABLE_ID, id, visible)
-            }
-            onReset={() => resetColumns(SUITE_RUNS_TABLE_ID)}
-          />
+          <div className="flex items-center gap-3">
+            {/* Cursor paginated: a client sort only orders what is loaded. */}
+            {sort.sorting.length > 0 && runsQ.hasNextPage ? (
+              <span className="text-[11px] text-muted">
+                (sorted within loaded runs)
+              </span>
+            ) : null}
+            <ColumnPicker
+              columns={SUITE_RUN_COLUMNS}
+              prefs={colPrefs}
+              onChange={(id, visible) =>
+                setColumnVisible(SUITE_RUNS_TABLE_ID, id, visible)
+              }
+              onReset={() => resetColumns(SUITE_RUNS_TABLE_ID)}
+            />
+          </div>
         </div>
 
         {runsQ.isPending ? (
@@ -311,6 +329,14 @@ export function SetSuitePage() {
                           def={c}
                           tableId={SUITE_RUNS_TABLE_ID}
                           prefs={colPrefs}
+                          sort={
+                            RUN_SORT_FIELDS[c.id]
+                              ? {
+                                  active: sort.sortFor(c.id),
+                                  onToggle: () => sort.toggle(c.id),
+                                }
+                              : undefined
+                          }
                           className={cn(
                             "py-2 font-medium",
                             c.id === "run" ? "px-4" : "px-3",
@@ -327,7 +353,7 @@ export function SetSuitePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {runs.map((r) => {
+                    {displayRuns.map((r) => {
                       const compareTarget = previousRun(runs, r.id);
                       const fullyCached = isFullyCached(r);
                       // Dim exactly what `cached=exclude` would have hidden. A

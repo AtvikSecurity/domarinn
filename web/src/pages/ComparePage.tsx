@@ -5,6 +5,7 @@ import { useCompare, useRun, useRuns } from "@/api/queries";
 import type {
   CaseStatus,
   CompareCaseRow,
+  CompareDelta,
   CompareSummary,
   RunTotals,
 } from "@/api";
@@ -21,6 +22,9 @@ import { CHROME_FRAME, type OutlineTone } from "@/components/ui/chrome";
 import { cn } from "@/lib/cn";
 import { ColumnPicker } from "@/components/ui/ColumnPicker";
 import { ColumnResizer } from "@/components/ui/ColumnResizer";
+import { SortArrow } from "@/components/ui/SortArrow";
+import { type SortAccessor, sortRows, STATUS_RANK } from "@/lib/sort";
+import { useSortParam } from "@/lib/useTableSort";
 import {
   type ColumnDef,
   effectiveWidth,
@@ -363,6 +367,32 @@ const DELTA_COLUMNS: ColumnDef[] = [
   { id: "output", label: "Output", track: "76px", min: 70, numeric: true },
 ];
 
+/**
+ * Severity rank for sorting the Delta column: descending floats regressions
+ * (newly failing, then still failing) to the top, which is what a reviewer
+ * opens this page for.
+ */
+const DELTA_RANK: Record<CompareDelta, number> = {
+  newly_failing: 6,
+  still_failing: 5,
+  newly_passing: 4,
+  added: 3,
+  removed: 2,
+  still_passing: 1,
+  unchanged: 0,
+};
+
+/** Sortable columns. A missing side (`null` status on base/head) sorts last
+ *  in either direction, like every other null. */
+const DELTA_SORT_FIELDS: Record<string, SortAccessor<CompareCaseRow>> = {
+  case: (r) => r.name ?? r.case_key,
+  base: (r) => (r.base_status ? STATUS_RANK[r.base_status] : null),
+  head: (r) => (r.head_status ? STATUS_RANK[r.head_status] : null),
+  delta: (r) => DELTA_RANK[r.delta],
+  score_delta: (r) => r.score_delta,
+  output: (r) => (r.output_changed ? 1 : 0),
+};
+
 const deltaTone: Record<string, string> = {
   newly_failing: "text-fail",
   newly_passing: "text-pass",
@@ -391,6 +421,12 @@ function DeltaTable({
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const prefs = useColumnPrefs(DELTA_TABLE_ID);
+  // `?sort=` is free on this page (its URL carries delta/diff/case/config).
+  const sort = useSortParam();
+  const sortedRows = useMemo(
+    () => sortRows(rows, sort.sorting, DELTA_SORT_FIELDS),
+    [rows, sort.sorting],
+  );
   const shown = useMemo(() => visibleColumns(DELTA_COLUMNS, prefs), [prefs]);
   // Cells are omitted, not blanked: a stray one shifts every column after it
   // out of alignment with the header above.
@@ -403,11 +439,11 @@ function DeltaTable({
   const minWidth = useMemo(() => minWidthFor(DELTA_COLUMNS, prefs, 32), [prefs]);
 
   const virtualizer = useVirtualizer({
-    count: rows.length,
+    count: sortedRows.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 46,
     overscan: 12,
-    getItemKey: (i) => rows[i]?.case_key ?? String(i),
+    getItemKey: (i) => sortedRows[i]?.case_key ?? String(i),
   });
 
   // Deep-link support: scroll the (possibly off-screen, virtualized) expanded
@@ -422,9 +458,9 @@ function DeltaTable({
     didInitialScroll.current = true;
     const target = deepLinkedCase.current;
     if (!target) return;
-    const index = rows.findIndex((r) => r.case_key === target);
+    const index = sortedRows.findIndex((r) => r.case_key === target);
     if (index >= 0) virtualizer.scrollToIndex(index, { align: "center" });
-  }, [rows, virtualizer]);
+  }, [sortedRows, virtualizer]);
 
   return (
     <div
@@ -446,17 +482,54 @@ function DeltaTable({
           measures — so a column dragged past the container's width has to move
           both, or the labels drift off the values they name. */}
       <div className="overflow-x-auto">
-        <div style={{ minWidth }}>
+        {/* Minimal table semantics: enough for the columnheaders (and their
+            `aria-sort`) to be owned by a table. The expandable button-rows
+            below keep their disclosure semantics rather than gaining
+            row/cell roles — full grid semantics for rows that are single
+            buttons is its own project. */}
+        <div style={{ minWidth }} role="table">
       <div
         className="grid items-center border-b border-border bg-surface-2/95 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted"
         style={{ gridTemplateColumns: gridTemplate }}
+        role="row"
       >
         {shown.map((c, i, arr) => {
           const labelId = `delta-h-${c.id}`;
+          const sortable = Boolean(DELTA_SORT_FIELDS[c.id]);
+          const active = sort.sortFor(c.id);
           return (
             // `relative` so the handle can straddle this cell's right edge.
-            <span key={c.id} className={cn("relative", c.numeric && "text-right")}>
-              <span id={labelId}>{c.label}</span>
+            <span
+              key={c.id}
+              className={cn("relative min-w-0", c.numeric && "text-right")}
+              role="columnheader"
+              aria-sort={
+                !sortable
+                  ? undefined
+                  : active === "asc"
+                    ? "ascending"
+                    : active === "desc"
+                      ? "descending"
+                      : "none"
+              }
+            >
+              {sortable ? (
+                <button
+                  type="button"
+                  onClick={() => sort.toggle(c.id)}
+                  className={cn(
+                    "inline-flex w-full min-w-0 items-center gap-1 rounded uppercase tracking-wide transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    c.numeric ? "justify-end" : "justify-start",
+                  )}
+                >
+                  <span id={labelId} className="truncate">{c.label}</span>
+                  <SortArrow dir={active} />
+                </button>
+              ) : (
+                <span id={labelId}>{c.label}</span>
+              )}
+              {/* A SIBLING of the sort button, never inside it — the classic
+                  table-resizer pointerdown bug. */}
               <ColumnResizer
                 def={c}
                 width={effectiveWidth(c, prefs)}
@@ -473,7 +546,7 @@ function DeltaTable({
       <div ref={parentRef} className="max-h-[64vh] overflow-y-auto">
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((vi) => {
-            const row = rows[vi.index];
+            const row = sortedRows[vi.index];
             if (!row) return null;
             const isOpen = expandedCase === row.case_key;
             return (

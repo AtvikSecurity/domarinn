@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { useSetProject } from "@/api/queries";
+import type { SuiteSetView } from "@/api";
 import { ApiError } from "@/api/client";
 import { useAuthView } from "@/auth/AuthProvider";
 import { Breadcrumb } from "@/components/ui/Breadcrumb";
@@ -19,6 +20,8 @@ import { ResizableTh } from "@/components/ui/ResizableTh";
 import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
 import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
 import { cn } from "@/lib/cn";
+import { type SortAccessor, sortRows } from "@/lib/sort";
+import { useSortParam } from "@/lib/useTableSort";
 import {
   formatDateAbsolute,
   formatInt,
@@ -45,6 +48,15 @@ const SUITE_COLUMNS: ColumnDef[] = [
   { id: "flags", label: "Flags", track: "150px", min: 120, numeric: true },
 ];
 
+/** Sortable columns. The trend sparkline and the flag chips have no scalar
+ *  order, so their headers stay inert. */
+const SUITE_SORT_FIELDS: Record<string, SortAccessor<SuiteSetView>> = {
+  suite: (s) => s.suite,
+  runs: (s) => s.run_count,
+  last_activity: (s) => s.last_run_at,
+  pass_rate: (s) => s.latest_pass_rate,
+};
+
 /**
  * One project's suites.
  *
@@ -64,6 +76,7 @@ export function SetProjectPage() {
     [colPrefs],
   );
   const shownIds = useMemo(() => new Set(shownCols.map((c) => c.id)), [shownCols]);
+  const sort = useSortParam();
 
   if (q.isPending) return <CenteredSpinner label="Loading project…" />;
   if (q.isError) {
@@ -72,6 +85,9 @@ export function SetProjectPage() {
   }
 
   const detail = q.data;
+  // Below the early returns, so plain computation rather than a hook; the
+  // suite list is small (a project's suites), so no memo is warranted.
+  const sortedSuites = sortRows(detail.suites, sort.sorting, SUITE_SORT_FIELDS);
   const runCount = detail.suites.reduce((n, s) => n + s.run_count, 0);
   // Reading the panel is read-scoped, so a viewer-role manager may open it;
   // the panel itself is what gates the mutations inside.
@@ -140,6 +156,14 @@ export function SetProjectPage() {
                     def={c}
                     tableId={SUITES_TABLE_ID}
                     prefs={colPrefs}
+                    sort={
+                      SUITE_SORT_FIELDS[c.id]
+                        ? {
+                            active: sort.sortFor(c.id),
+                            onToggle: () => sort.toggle(c.id),
+                          }
+                        : undefined
+                    }
                     className={cn(
                       "py-2 font-medium",
                       c.id === "suite" ? "px-4" : "px-3",
@@ -156,7 +180,7 @@ export function SetProjectPage() {
               </tr>
             </thead>
             <tbody>
-              {detail.suites.map((s) => {
+              {sortedSuites.map((s) => {
                 const last = isoFromEpoch(s.last_run_at);
                 return (
                   <tr

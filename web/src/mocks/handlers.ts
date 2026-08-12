@@ -143,7 +143,7 @@ function filterCacheEntries(
 
   const column = p.get("sort") ?? "created";
   const desc = (p.get("order") ?? "desc") === "desc";
-  const value = (r: CacheEntryListItem): number | null => {
+  const value = (r: CacheEntryListItem): number | string | null => {
     switch (column) {
       case "size":
         return r.size;
@@ -151,15 +151,38 @@ function filterCacheEntries(
         return r.cost_usd;
       case "last_access":
         return r.last_access_at ? parseTimestamp(r.last_access_at) : null;
+      case "kind":
+        return r.kind;
+      case "model":
+        return r.model;
+      case "tokens":
+        return r.input_tokens === null && r.output_tokens === null
+          ? null
+          : (r.input_tokens ?? 0) + (r.output_tokens ?? 0);
+      case "key":
+        return r.key;
       default:
         return parseTimestamp(r.created_at);
     }
   };
-  // The server excludes unknown cost outright when sorting by it, because
+  // The server excludes rows whose sort value is unknown outright, because
   // ordering by an unknown value is meaningless and the NULL tail also stops
-  // its keyset pagination.
-  const sortable =
-    column === "cost" ? matched.filter((r) => r.cost_usd !== null) : matched;
+  // its keyset pagination. (For tokens the server sorts on the SQL sum, which
+  // is NULL when either operand is.)
+  const sortable = matched.filter((r) => {
+    switch (column) {
+      case "cost":
+        return r.cost_usd !== null;
+      case "kind":
+        return r.kind !== null;
+      case "model":
+        return r.model !== null;
+      case "tokens":
+        return r.input_tokens !== null && r.output_tokens !== null;
+      default:
+        return true;
+    }
+  });
 
   return [...sortable].sort((a, b) => {
     const av = value(a);
@@ -168,7 +191,12 @@ function filterCacheEntries(
     if (av === null) return desc ? 1 : -1;
     if (bv === null) return desc ? -1 : 1;
     if (av === bv) return (a.key < b.key ? 1 : -1) * (desc ? 1 : -1);
-    return desc ? bv - av : av - bv;
+    // Plain < over strings, not localeCompare: the server orders TEXT by the
+    // BINARY collation, and the mock must agree with it about "a" vs "B".
+    const cmp = typeof av === "string" || typeof bv === "string"
+      ? (String(av) < String(bv) ? -1 : 1)
+      : av - bv;
+    return desc ? -cmp : cmp;
   });
 }
 

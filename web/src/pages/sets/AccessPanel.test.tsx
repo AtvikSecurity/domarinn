@@ -66,6 +66,27 @@ function signInAsReadOnlyManager() {
 }
 
 describe("AccessPanel", () => {
+  it("sorts the people by header click, ascending then descending", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByRole("combobox", { name: "Level for member" });
+    const order = () =>
+      Array.from(dialog.querySelectorAll('[data-testid^="grant-row-"]')).map(
+        (el) => el.getAttribute("data-testid"),
+      );
+
+    // Local component state, not `?sort=` — this modal sits over pages that
+    // own the URL's sort for their own tables.
+    const person = within(dialog).getByRole("button", { name: /Person/ });
+    await user.click(person);
+    expect(order()).toEqual(["grant-row-member", "grant-row-sso.only"]);
+    expect(person.closest("th")).toHaveAttribute("aria-sort", "ascending");
+
+    await user.click(person);
+    expect(order()).toEqual(["grant-row-sso.only", "grant-row-member"]);
+  });
+
   it("lists who holds the set, and at what level", async () => {
     renderPanel();
     const dialog = await screen.findByRole("dialog");

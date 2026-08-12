@@ -61,45 +61,82 @@ pub struct CacheListFilter {
     pub sort: CacheSort,
     pub order: SortOrder,
     pub limit: i64,
-    pub cursor: Option<(i64, String)>,
+    pub cursor: Option<(CursorValue, String)>,
 }
 
-/// Cursor encodes `{sort_value}:{key}`.
+/// The keyset position a cursor carries: the last row's sort-column value.
+///
+/// Integer for the timestamp/size/cost/token sorts, text for `kind`, `model`
+/// and `key`. Never mixed within one sort, so the derived ordering (used by
+/// the local tier's in-memory sort) only ever compares like with like.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CursorValue {
+    Int(i64),
+    Text(String),
+}
+
+/// Cursor encodes `{sort_value}:{key}` for integer sorts — the historical
+/// format, kept byte-identical so pre-existing cursors still decode — and
+/// `t:{hex(sort_value)}:{key}` for text sorts. Hex, because a kind or model
+/// string may contain a colon of its own; the key's `sha256:` colon is safe
+/// because the key is always the final segment.
 ///
 /// Split on the **first** colon: a key is `sha256:<hex>` and contains one of
 /// its own, so the run-list's `split_once` would decode the sort value as
 /// `"sha256"` and lose the key entirely.
-pub fn encode_entry_cursor(sort_value: i64, key: &str) -> String {
-    format!("{sort_value}:{key}")
+pub fn encode_entry_cursor(sort_value: &CursorValue, key: &str) -> String {
+    match sort_value {
+        CursorValue::Int(v) => format!("{v}:{key}"),
+        CursorValue::Text(t) => format!("t:{}:{key}", hex::encode(t)),
+    }
 }
 
-pub fn decode_entry_cursor(cursor: &str) -> Option<(i64, String)> {
-    let (value, key) = cursor.split_once(':')?;
-    Some((value.parse().ok()?, key.to_string()))
+pub fn decode_entry_cursor(cursor: &str) -> Option<(CursorValue, String)> {
+    let (value, rest) = cursor.split_once(':')?;
+    if value == "t" {
+        let (encoded, key) = rest.split_once(':')?;
+        let text = String::from_utf8(hex::decode(encoded).ok()?).ok()?;
+        return Some((CursorValue::Text(text), key.to_string()));
+    }
+    Some((CursorValue::Int(value.parse().ok()?), rest.to_string()))
 }
 
 impl CacheSort {
-    /// The column this sorts on. Every one is indexed.
+    /// The column (or expression) this sorts on.
+    ///
+    /// The plain columns are indexed. `Tokens` is an expression — SQLite
+    /// sorts it via a temp b-tree, acceptable for a browse over a cache
+    /// store; an expression index is possible later if it ever matters.
     fn column(self) -> &'static str {
         match self {
             CacheSort::Created => "created_at",
             CacheSort::LastAccess => "last_access_at",
             CacheSort::Size => "size",
             CacheSort::Cost => "cost_microusd",
+            CacheSort::Kind => "kind",
+            CacheSort::Model => "model",
+            // NULL when either operand is, which `requires_non_null` excludes
+            // — the same "unknown is not orderable" stance as cost.
+            CacheSort::Tokens => "(input_tokens + output_tokens)",
+            CacheSort::Key => "key",
         }
     }
 
     /// Whether ordering by this column has to exclude rows where it is NULL.
     ///
-    /// Only `cost_microusd` is nullable, and the exclusion is not cosmetic: the
-    /// keyset predicate is NULL-unsafe, so once a page reached the NULL tail
-    /// `cost < ?` would be NULL for every remaining row and pagination would
-    /// stop dead with entries left unseen. Wrapping it in `IFNULL` fixes that
-    /// and destroys the index — migration 11's lesson. Excluding is the honest
-    /// option: ordering *by* an unknown value is meaningless in a way that
-    /// filtering on one is not.
+    /// The exclusion is not cosmetic: the keyset predicate is NULL-unsafe, so
+    /// once a page reached the NULL tail `cost < ?` would be NULL for every
+    /// remaining row and pagination would stop dead with entries left unseen.
+    /// Wrapping it in `IFNULL` fixes that and destroys the index — migration
+    /// 11's lesson. Excluding is the honest option: ordering *by* an unknown
+    /// value is meaningless in a way that filtering on one is not. `kind` and
+    /// `model` are NULL exactly on unindexed rows; the token sum is NULL when
+    /// either count is.
     fn requires_non_null(self) -> bool {
-        matches!(self, CacheSort::Cost)
+        matches!(
+            self,
+            CacheSort::Cost | CacheSort::Kind | CacheSort::Model | CacheSort::Tokens
+        )
     }
 }
 
@@ -209,7 +246,12 @@ fn list_entries(
             SortOrder::Desc => '<',
             SortOrder::Asc => '>',
         };
-        args.push((*value).into());
+        // TEXT comparisons here match ORDER BY because both use the column's
+        // default BINARY collation.
+        args.push(match value {
+            CursorValue::Int(v) => (*v).into(),
+            CursorValue::Text(t) => t.clone().into(),
+        });
         let value_arg = args.len();
         args.push(key.clone().into());
         let key_arg = args.len();
@@ -226,10 +268,10 @@ fn list_entries(
         SortOrder::Asc => "ASC",
     };
     // SQLite puts NULLs first under ASC and last under DESC; Postgres defaults
-    // to the opposite. The only nullable sort column, `cost_microusd`, already
-    // has its NULLs excluded by `requires_non_null`, so the annotation is inert
-    // today — it pins SQLite's ordering so the engines cannot diverge if a
-    // nullable sort ever stops excluding them.
+    // to the opposite. Every nullable sort column already has its NULLs
+    // excluded by `requires_non_null`, so the annotation is inert today — it
+    // pins SQLite's ordering so the engines cannot diverge if a nullable sort
+    // ever stops excluding them.
     let nulls = if filter.sort.requires_non_null() {
         match filter.order {
             SortOrder::Desc => " NULLS LAST",
@@ -245,19 +287,17 @@ fn list_entries(
         args.len()
     ));
 
-    let mut fetched: Vec<(CacheEntryListItem, Option<i64>)> =
+    let sort = filter.sort;
+    let mut fetched: Vec<(CacheEntryListItem, CursorValue)> =
         conn.query_map(&sql, &args, |row| {
-            Ok((
-                row_to_item(row)?,
-                row.get::<Option<i64>>(sort_index(filter.sort))?,
-            ))
+            Ok((row_to_item(row)?, sort_value(row, sort)?))
         })?;
 
     let next_cursor = if fetched.len() as i64 > filter.limit {
         fetched.truncate(filter.limit as usize);
-        fetched.last().map(|(item, sort_value)| {
-            encode_entry_cursor(sort_value.unwrap_or_default(), &item.key)
-        })
+        fetched
+            .last()
+            .map(|(item, sort_value)| encode_entry_cursor(sort_value, &item.key))
     } else {
         None
     };
@@ -277,15 +317,26 @@ fn empty_page() -> CacheEntryListResponse {
     }
 }
 
-/// Which selected column carries the sort value, so the cursor can be built
-/// from the row already in hand rather than a second lookup.
-fn sort_index(sort: CacheSort) -> usize {
-    match sort {
-        CacheSort::Created => 2,
-        CacheSort::LastAccess => 3,
-        CacheSort::Size => 1,
-        CacheSort::Cost => 9,
-    }
+/// The sort value off the row already in hand (positions per [`LIST_COLUMNS`]),
+/// so the cursor can be built without a second lookup.
+///
+/// The `Option` unwraps are for the nullable integer columns a sort does not
+/// exclude (`last_access_at`); the columns behind text sorts and the token sum
+/// are non-NULL under `requires_non_null`.
+fn sort_value(row: &Row<'_>, sort: CacheSort) -> anyhow::Result<CursorValue> {
+    Ok(match sort {
+        CacheSort::Created => CursorValue::Int(row.get(2)?),
+        CacheSort::LastAccess => CursorValue::Int(row.get::<Option<i64>>(3)?.unwrap_or_default()),
+        CacheSort::Size => CursorValue::Int(row.get(1)?),
+        CacheSort::Cost => CursorValue::Int(row.get::<Option<i64>>(9)?.unwrap_or_default()),
+        CacheSort::Kind => CursorValue::Text(row.get(7)?),
+        CacheSort::Model => CursorValue::Text(row.get(8)?),
+        CacheSort::Tokens => CursorValue::Int(
+            row.get::<Option<i64>>(10)?.unwrap_or_default()
+                + row.get::<Option<i64>>(11)?.unwrap_or_default(),
+        ),
+        CacheSort::Key => CursorValue::Text(row.get(0)?),
+    })
 }
 
 fn row_to_item(row: &Row<'_>) -> anyhow::Result<CacheEntryListItem> {
@@ -488,17 +539,45 @@ mod tests {
     #[test]
     fn a_cursor_round_trips_a_key_that_contains_a_colon() {
         let key = "sha256:0123456789abcdef";
-        let cursor = encode_entry_cursor(1_700_000_000_000, key);
+        let cursor = encode_entry_cursor(&CursorValue::Int(1_700_000_000_000), key);
         assert_eq!(
             decode_entry_cursor(&cursor),
-            Some((1_700_000_000_000, key.to_string()))
+            Some((CursorValue::Int(1_700_000_000_000), key.to_string()))
         );
+    }
+
+    /// The integer encoding is the historical format, byte for byte, so a
+    /// cursor issued before text sorts existed still decodes.
+    #[test]
+    fn an_integer_cursor_keeps_the_historical_encoding() {
+        assert_eq!(
+            encode_entry_cursor(&CursorValue::Int(42), "sha256:aa"),
+            "42:sha256:aa"
+        );
+    }
+
+    /// Text sort values are hex-wrapped so a value containing a colon — or
+    /// anything else — cannot be confused with the `value:key` framing.
+    #[test]
+    fn a_text_cursor_round_trips_a_value_that_contains_a_colon() {
+        let key = "sha256:0123456789abcdef";
+        for value in ["chat", "weird:model/v1", ""] {
+            let cursor = encode_entry_cursor(&CursorValue::Text(value.to_string()), key);
+            assert_eq!(
+                decode_entry_cursor(&cursor),
+                Some((CursorValue::Text(value.to_string()), key.to_string())),
+                "value {value:?}"
+            );
+        }
     }
 
     #[test]
     fn a_malformed_cursor_decodes_to_nothing() {
         assert_eq!(decode_entry_cursor("nonsense"), None);
         assert_eq!(decode_entry_cursor("notanumber:sha256:aa"), None);
+        // A `t:` cursor whose hex segment is junk, or that lacks a key.
+        assert_eq!(decode_entry_cursor("t:zz:sha256:aa"), None);
+        assert_eq!(decode_entry_cursor("t:63686174"), None);
     }
 
     /// fts5 answers stray operators with a syntax error. Quoting every term

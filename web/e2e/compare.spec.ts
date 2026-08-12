@@ -36,6 +36,25 @@ test.describe("Compare view", () => {
     );
   });
 
+  test("the delta table sorts by a column and round-trips through ?sort", async ({
+    page,
+  }) => {
+    await page.goto(`/runs/${MONEY_RUN_BASELINE}/compare/${MONEY_RUN}`);
+    await expect(page.getByTestId("delta-table")).toBeVisible();
+
+    const scoreDelta = page.getByRole("columnheader", { name: /Δ score/ });
+    await scoreDelta.getByRole("button").click();
+    await expect(page).toHaveURL(/[?&]sort=score_delta(&|$)/);
+    await expect(scoreDelta).toHaveAttribute("aria-sort", "ascending");
+
+    await scoreDelta.getByRole("button").click();
+    await expect(page).toHaveURL(/[?&]sort=-score_delta(&|$)/);
+    await expect(scoreDelta).toHaveAttribute("aria-sort", "descending");
+
+    await scoreDelta.getByRole("button").click();
+    await expect(page).not.toHaveURL(/[?&]sort=/);
+  });
+
   test("shows summary chips, filters the delta grid, and expands to a side-by-side diff", async ({
     page,
   }) => {

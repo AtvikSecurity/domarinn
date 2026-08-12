@@ -4,7 +4,9 @@ import { useApiKeys, useCreateApiKey, useRevokeApiKey } from "@/api/queries";
 import type { ApiKeyCreatedResponse, ApiKeyView, AuthScope } from "@/api";
 import { useAuth } from "@/auth/AuthProvider";
 import { scopesAtMost } from "@/lib/authz";
-import { formatDate, formatRelative } from "@/lib/format";
+import { formatDate, formatRelative, parseTimestamp } from "@/lib/format";
+import { type SortAccessor, sortRows } from "@/lib/sort";
+import { useSortParam } from "@/lib/useTableSort";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Chip } from "@/components/ui/Chip";
@@ -38,6 +40,20 @@ const KEY_COLUMNS: ColumnDef[] = [
   { id: "actions", label: "Actions", track: "110px", min: 100, numeric: true, alwaysVisible: true },
 ];
 
+/** Scope sorts by privilege, not alphabetically (else "admin" < "read"). */
+const SCOPE_RANK: Record<AuthScope, number> = { read: 0, write: 1, admin: 2 };
+
+/** Sortable columns. `prefix` is random key material — ordering it is noise —
+ *  and `actions` is a button, so both stay inert headers. */
+const KEY_SORT_FIELDS: Record<string, SortAccessor<ApiKeyView>> = {
+  name: (k) => k.name,
+  scope: (k) => SCOPE_RANK[k.scope],
+  created: (k) => parseTimestamp(k.created_at),
+  // Never-used keys yield null and so sort last in either direction.
+  last_used: (k) => (k.last_used_at ? parseTimestamp(k.last_used_at) : null),
+  status: (k) => (k.revoked ? 1 : 0),
+};
+
 export function KeysPage() {
   const { view, isLoading } = useAuth();
   const allowedScopes = scopesAtMost(view.scope);
@@ -58,6 +74,7 @@ export function KeysPage() {
     [colPrefs],
   );
   const shownIds = useMemo(() => new Set(shownCols.map((c) => c.id)), [shownCols]);
+  const sort = useSortParam();
 
   if (isLoading) {
     return (
@@ -194,6 +211,14 @@ export function KeysPage() {
                         def={c}
                         tableId={KEYS_TABLE_ID}
                         prefs={colPrefs}
+                        sort={
+                          KEY_SORT_FIELDS[c.id]
+                            ? {
+                                active: sort.sortFor(c.id),
+                                onToggle: () => sort.toggle(c.id),
+                              }
+                            : undefined
+                        }
                         className={cn(
                           "py-2 font-medium",
                           c.id === "name" ? "px-4" : "px-3",
@@ -206,7 +231,7 @@ export function KeysPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {keysQuery.data.map((k) => (
+                  {sortRows(keysQuery.data, sort.sorting, KEY_SORT_FIELDS).map((k) => (
                     <tr
                       key={k.id}
                       className="border-b border-border/60 last:border-0"

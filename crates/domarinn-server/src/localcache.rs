@@ -41,7 +41,7 @@ use crate::dto::cacheentries::{
     CacheEntryDetail, CacheEntryListItem, CacheEntryListResponse, CacheFacet, CacheFacetsResponse,
 };
 use crate::storage::cacheindex::EntryIndex;
-use crate::storage::{decode_entry_cursor, encode_entry_cursor, CacheListFilter};
+use crate::storage::{decode_entry_cursor, encode_entry_cursor, CacheListFilter, CursorValue};
 
 /// Files stat'ed before the walk gives up and reports truncation.
 ///
@@ -232,20 +232,37 @@ impl LocalTier {
             })
             .collect();
 
-        // `cost` excludes unknown cost for the same reason the server tier
-        // does: ordering by a value that is not there is meaningless.
-        if filter.sort == CacheSort::Cost {
-            matched.retain(|row| row.cost_microusd.is_some());
+        // Sorts over a nullable value exclude the rows where it is unknown,
+        // for the same reason the server tier's `requires_non_null` does:
+        // ordering by a value that is not there is meaningless. The token
+        // exclusion mirrors SQL's `(input + output) IS NOT NULL` — gone when
+        // either operand is unknown.
+        match filter.sort {
+            CacheSort::Cost => matched.retain(|row| row.cost_microusd.is_some()),
+            CacheSort::Kind => matched.retain(|row| row.item.kind.is_some()),
+            CacheSort::Model => matched.retain(|row| row.item.model.is_some()),
+            CacheSort::Tokens => matched
+                .retain(|row| row.item.input_tokens.is_some() && row.item.output_tokens.is_some()),
+            CacheSort::Created | CacheSort::LastAccess | CacheSort::Size | CacheSort::Key => {}
         }
 
-        let sort_value = |row: &Row| -> i64 {
+        let sort_value = |row: &Row| -> CursorValue {
             match filter.sort {
-                CacheSort::Size => row.item.size,
-                CacheSort::Cost => row.cost_microusd.unwrap_or_default(),
+                CacheSort::Size => CursorValue::Int(row.item.size),
+                CacheSort::Cost => CursorValue::Int(row.cost_microusd.unwrap_or_default()),
                 // There is no access time on this tier, so `last_access` falls
                 // back to mtime rather than erroring — it is the only clock a
                 // filesystem offers, and the column renders empty regardless.
-                CacheSort::Created | CacheSort::LastAccess => row.created_ms,
+                CacheSort::Created | CacheSort::LastAccess => CursorValue::Int(row.created_ms),
+                // The unwraps-to-default are unreachable: the retain above
+                // dropped every row where the value is unknown.
+                CacheSort::Kind => CursorValue::Text(row.item.kind.clone().unwrap_or_default()),
+                CacheSort::Model => CursorValue::Text(row.item.model.clone().unwrap_or_default()),
+                CacheSort::Tokens => CursorValue::Int(
+                    row.item.input_tokens.unwrap_or_default()
+                        + row.item.output_tokens.unwrap_or_default(),
+                ),
+                CacheSort::Key => CursorValue::Text(row.item.key.clone()),
             }
         };
         matched.sort_by(|a, b| {
@@ -280,7 +297,7 @@ impl LocalTier {
         let next_cursor = matched
             .get(start + window.len())
             .and(window.last())
-            .map(|last| encode_entry_cursor(0, &last.key));
+            .map(|last| encode_entry_cursor(&CursorValue::Int(0), &last.key));
 
         Ok(CacheEntryListResponse {
             entries: window,

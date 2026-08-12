@@ -40,6 +40,7 @@ import { compareStatus } from "@/lib/sort";
 import { cn } from "@/lib/cn";
 import { ColumnPicker } from "@/components/ui/ColumnPicker";
 import { ColumnResizer } from "@/components/ui/ColumnResizer";
+import { SortArrow } from "@/components/ui/SortArrow";
 
 /** This grid's slot in the shared column-preference store. */
 const TABLE_ID = "cases";
@@ -154,35 +155,44 @@ export function CaseGrid({
 }: CaseGridProps) {
   const columns = useMemo(() => {
     const assertCols = assertLabels.map((label) =>
-      col.display({
-        id: `assert:${label}`,
-        header: () => (
-          <Tooltip content={label}>
-            <span className="block truncate">{label}</span>
-          </Tooltip>
-        ),
-        cell: ({ row }) => {
-          const a = row.original.asserts.find((x) => x.label === label);
-          if (!a)
-            return (
-              <>
-                <span className="sr-only">{label}: not evaluated</span>
-                <span className="text-muted/50" aria-hidden>
-                  –
-                </span>
-              </>
-            );
-          return (
-            // The label lives in `aria-label`, not a native `title`: the dot is
-            // the only content in the cell, so this is the sole text a screen
-            // reader has to work with.
-            <AssertDot
-              passed={a.passed}
-              label={`${label} · ${a.kind} · ${a.passed ? "passed" : "failed"} (${a.score.toFixed(2)})`}
-            />
-          );
+      // Sorts by outcome rank — absent (0) < failed (1) < passed (2) — so
+      // descending leads with passes and ascending surfaces the rows where
+      // this assertion failed or never ran.
+      col.accessor(
+        (c) => {
+          const a = c.asserts.find((x) => x.label === label);
+          return a ? (a.passed ? 2 : 1) : 0;
         },
-      }),
+        {
+          id: `assert:${label}`,
+          header: () => (
+            <Tooltip content={label}>
+              <span className="block truncate">{label}</span>
+            </Tooltip>
+          ),
+          cell: ({ row }) => {
+            const a = row.original.asserts.find((x) => x.label === label);
+            if (!a)
+              return (
+                <>
+                  <span className="sr-only">{label}: not evaluated</span>
+                  <span className="text-muted/50" aria-hidden>
+                    –
+                  </span>
+                </>
+              );
+            return (
+              // The label lives in `aria-label`, not a native `title`: the dot
+              // is the only content in the cell, so this is the sole text a
+              // screen reader has to work with.
+              <AssertDot
+                passed={a.passed}
+                label={`${label} · ${a.kind} · ${a.passed ? "passed" : "failed"} (${a.score.toFixed(2)})`}
+              />
+            );
+          },
+        },
+      ),
     );
 
     return [
@@ -259,9 +269,10 @@ export function CaseGrid({
             }),
           ]
         : []),
-      col.accessor("output_preview", {
+      // Sorts on the preview text (missing output as ""), which clusters
+      // similar responses — refusals, empty JSON, one-word answers — together.
+      col.accessor((c) => c.output_preview ?? "", {
         id: "preview",
-        enableSorting: false,
         header: () => <span>Preview</span>,
         cell: ({ row }) => {
           const c = row.original;
@@ -696,21 +707,6 @@ function IdentCell({ value }: { value: string | null }) {
   return (
     <span className="block truncate font-mono text-[11px] text-muted" title={value}>
       {value}
-    </span>
-  );
-}
-
-/** Sort-direction indicator: solid arrow when active, faint glyph otherwise. */
-function SortArrow({ dir }: { dir: false | "asc" | "desc" }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "shrink-0 text-[10px] leading-none",
-        dir ? "text-fg" : "text-muted opacity-40",
-      )}
-    >
-      {dir === "asc" ? "↑" : dir === "desc" ? "↓" : "↕"}
     </span>
   );
 }

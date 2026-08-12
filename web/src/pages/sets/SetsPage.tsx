@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "react-router";
 import { useSets } from "@/api/queries";
+import type { ProjectSetView } from "@/api";
 import { Card } from "@/components/ui/Card";
 import { Chip } from "@/components/ui/Chip";
 import { CopyButton } from "@/components/ui/CopyButton";
@@ -13,6 +14,8 @@ import { ResizableTh } from "@/components/ui/ResizableTh";
 import { type ColumnDef, visibleColumns } from "@/lib/tableColumns";
 import { resetColumns, setColumnVisible, useColumnPrefs } from "@/lib/useColumnPrefs";
 import { cn } from "@/lib/cn";
+import { type SortAccessor, sortRows } from "@/lib/sort";
+import { useSortParam } from "@/lib/useTableSort";
 import { setsPath } from "@/lib/routes";
 import { useRowNav } from "@/lib/useRowNav";
 import { Sparkline } from "@/components/Sparkline";
@@ -38,6 +41,15 @@ const SET_COLUMNS: ColumnDef[] = [
   { id: "access", label: "Access", track: "160px", min: 130, numeric: true },
 ];
 
+/** Which columns sort, and by what. The sparkline and the access chips have
+ *  no scalar order, so they stay inert headers. */
+const SET_SORT_FIELDS: Record<string, SortAccessor<ProjectSetView>> = {
+  project: (p) => p.project,
+  suites: (p) => p.suite_count,
+  runs: (p) => p.run_count,
+  last_activity: (p) => p.last_run_at,
+};
+
 /**
  * The run-set browser's root: every project this caller may see.
  *
@@ -48,7 +60,7 @@ const SET_COLUMNS: ColumnDef[] = [
  */
 export function SetsPage() {
   const q = useSets();
-  const projects = q.data?.projects ?? [];
+  const projects = useMemo(() => q.data?.projects ?? [], [q.data]);
   const rowNav = useRowNav();
   const colPrefs = useColumnPrefs(SETS_TABLE_ID);
   const shownCols = useMemo(
@@ -56,6 +68,11 @@ export function SetsPage() {
     [colPrefs],
   );
   const shownIds = useMemo(() => new Set(shownCols.map((c) => c.id)), [shownCols]);
+  const sort = useSortParam();
+  const sortedProjects = useMemo(
+    () => sortRows(projects, sort.sorting, SET_SORT_FIELDS),
+    [projects, sort.sorting],
+  );
 
   return (
     <div className="space-y-5">
@@ -106,6 +123,14 @@ export function SetsPage() {
                       def={c}
                       tableId={SETS_TABLE_ID}
                       prefs={colPrefs}
+                      sort={
+                        SET_SORT_FIELDS[c.id]
+                          ? {
+                              active: sort.sortFor(c.id),
+                              onToggle: () => sort.toggle(c.id),
+                            }
+                          : undefined
+                      }
                       className={cn(
                         "py-2 font-medium",
                         c.id === "project" ? "px-4" : "px-3",
@@ -122,7 +147,7 @@ export function SetsPage() {
                 </tr>
               </thead>
               <tbody>
-                {projects.map((p) => {
+                {sortedProjects.map((p) => {
                   const last = isoFromEpoch(p.last_run_at);
                   return (
                     <tr
