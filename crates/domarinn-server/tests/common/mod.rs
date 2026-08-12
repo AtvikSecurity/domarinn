@@ -60,6 +60,8 @@ pub async fn test_app_with_storage(
                 .await
                 .expect("create postgres test database"),
         );
+    } else if settings.database_url.is_none() {
+        seed_sqlite_from_template(dir.path()).await;
     }
     let database_url = settings.database_url.clone();
     let config = ServerConfig {
@@ -75,6 +77,31 @@ pub async fn test_app_with_storage(
             .expect("open storage"),
     };
     (app, storage, dir)
+}
+
+/// Copy pre-migrated SQLite files into `dir` — the SQLite analogue of the
+/// Postgres template database: both migration ledgers replay once per test
+/// process instead of twice per test, and every subsequent `Storage::open`
+/// on the copy is a no-op fast path. End state is byte-equivalent to opening
+/// an empty dir (a clean close checkpoints the WAL), so tests see no
+/// difference beyond speed.
+async fn seed_sqlite_from_template(dir: &std::path::Path) {
+    static TEMPLATE: tokio::sync::OnceCell<std::path::PathBuf> = tokio::sync::OnceCell::const_new();
+    let template = TEMPLATE
+        .get_or_init(|| async {
+            let tmpl = TempDir::new().expect("sqlite template dir");
+            let path = tmpl.path().to_path_buf();
+            drop(Storage::open(path.clone()).await.expect("migrate template"));
+            // Held for the whole process: dropping the guard would delete
+            // the files mid-suite. The OS temp reaper collects it later.
+            std::mem::forget(tmpl);
+            path
+        })
+        .await;
+    for entry in std::fs::read_dir(template).expect("read template dir") {
+        let entry = entry.expect("template entry");
+        std::fs::copy(entry.path(), dir.join(entry.file_name())).expect("copy template file");
+    }
 }
 
 // ---------------------------------------------------------------------------

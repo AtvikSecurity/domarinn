@@ -235,7 +235,8 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 
 | Variable                        | Default        | Purpose |
 |---------------------------------|----------------|---------|
-| `DOMARINN_DATA_DIR`           | `/data`        | State directory. Holds `domarinn.db` and `cache.db`. Also settable with `--data-dir`. |
+| `DOMARINN_DATA_DIR`           | `/data`        | State directory. Holds `domarinn.db` and `cache.db` (SQLite mode); still required under Postgres, where it keeps only the local cache tier. Also settable with `--data-dir`. |
+| `DOMARINN_DATABASE_URL`       | (unset)        | Postgres connection URL. When set, **all durable state** — runs, users, sessions, API keys, baselines, and the shared cache — lives in that one database instead of SQLite files under the data dir, and running **multiple replicas** becomes supported. TLS follows the URL's `sslmode` (`disable` \| `prefer` \| `require`). See [Storage](#storage). |
 | `DOMARINN_TOKENS`             | (unset)        | Static bearer tokens as `scope:secret` pairs, comma-separated. Grants access but never changes the mode. |
 | `DOMARINN_AUTH_MODE`          | `closed`       | The mode: `open` \| `protect-writes` \| `closed`. Unset means `closed`. |
 | `DOMARINN_ADMIN_USER`         | (unset)        | Bootstrap admin username. Requires the password too. |
@@ -294,6 +295,10 @@ RUST_LOG=domarinn=warn,tower_http=off domarinn server
 
 ## Storage
 
+Storage is **SQLite by default**, or **Postgres when `DOMARINN_DATABASE_URL` is set**. Feature parity is full either way — every endpoint, view, and background task works on both — so the choice is operational: SQLite keeps self-hosting a zero-dependency one-liner; Postgres lets several server replicas share one database.
+
+### SQLite (the default)
+
 State lives in the data directory as **two SQLite files** (WAL mode):
 
 | File            | Contents | Back up? |
@@ -301,7 +306,16 @@ State lives in the data directory as **two SQLite files** (WAL mode):
 | `domarinn.db` | Durable run history. Each run is stored both as a compressed lossless blob (for export) and as normalized rows for indexed filtering. Also holds users, sessions, API keys, and baselines. | **Yes — this is the backup target.** |
 | `cache.db`      | The content-addressed request cache. Regenerable. | No — disposable. |
 
-SQLite is a **single writer**: run exactly one instance against a given data directory. This is what makes backups a file copy and self-hosting a one-liner — and why the deployment guidance is single-replica. Migrations run automatically at startup. See [Self-hosting](../guides/self-host.md) for backup and Kubernetes details.
+SQLite is a **single writer**: run exactly one instance against a given data directory. This is what makes backups a file copy and self-hosting a one-liner — and why the deployment guidance under SQLite is single-replica. Migrations run automatically at startup. See [Self-hosting](../guides/self-host.md) for backup and Kubernetes details.
+
+### Postgres
+
+Set `DOMARINN_DATABASE_URL` to a Postgres connection URL and **one Postgres database holds everything** the two SQLite files hold — run history, users, sessions, API keys, baselines, *and* the shared cache (the two table sets have disjoint names). The data dir stays required: it still holds the [local cache tier](#environment-variables), which is local disk on every backend. Migrations are forward-only and run automatically at startup, exactly as on SQLite. To move an existing SQLite deployment, use [`domarinn migrate-db`](cli.md#domarinn-migrate-db---data-dir-dir---database-url-url); the hosting walkthrough is in [Self-hosting](../guides/self-host.md#postgres).
+
+- **Multiple replicas are supported — that is the point.** Startup migrations run under `pg_advisory_lock`, so replicas racing at boot serialize instead of colliding (SQLite got the same guarantee from its single-writer file lock). The hourly retention task and the cache-index backfill run on every replica, but both are idempotent — an overlapping sweep is wasted work, never corruption.
+- **TLS is built in.** The driver stack is pure Rust (rustls with bundled webpki roots) — no libpq, nothing to install in the container. Whether TLS is negotiated follows the URL's `sslmode`: `disable`, `prefer` (the driver default), or `require`.
+- **Text ordering follows the database collation.** SQLite orders text bytewise (`BINARY`). For ordering identical to SQLite — recommended, not required — create the database with the `C` locale: `CREATE DATABASE domarinn TEMPLATE template0 LOCALE 'C';`. Under any other collation, name-sorted listings can order differently than they did on SQLite.
+- **Full-text search is approximate parity, documented.** SQLite searches with FTS5; Postgres with `tsvector`/`tsquery` in the `simple` configuration (no stemming — the closest analogue to FTS5's tokenizer). Hit *sets* match, but ranking differs (FTS5's bm25 weighs corpus-wide term rarity, `ts_rank_cd` does not), snippets pick slightly different windows, and `simple` keeps diacritics that FTS5's unicode61 tokenizer strips.
 
 ### Promoting `empty_reason` on upgrade
 

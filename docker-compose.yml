@@ -1,8 +1,10 @@
 # domarinn — single-service self-host.
 #
-# SQLite is a single writer, so this is intentionally ONE replica with a
-# persistent volume. Do not scale this service to >1; see
-# docs/guides/self-host.md.
+# Storage is SQLite by default, and SQLite is a single writer: as long as
+# that default holds, this is intentionally ONE replica with a persistent
+# volume — do not scale this service to >1. The optional Postgres backend
+# below (DOMARINN_DATABASE_URL + the `postgres` profile) lifts that limit;
+# see docs/guides/self-host.md.
 #
 #   docker compose up -d
 #   # UI + API on http://localhost:8321
@@ -22,7 +24,27 @@ services:
     environment:
       # Where the SQLite db + cache live inside the container (mapped to the
       # named volume below). Matches the image default; shown for clarity.
+      # Still required with the Postgres backend — it keeps the local cache
+      # tier there.
       DOMARINN_DATA_DIR: /data
+
+      # --- Postgres backend (optional; off by default) ---
+      # Storage is SQLite under /data unless this is set. Point it at a
+      # Postgres database and ALL durable state (runs, users, sessions, keys,
+      # baselines, the shared cache) moves there — which also makes >1 replica
+      # supported. The `postgres` service below (behind its own profile)
+      # provides a matching database:
+      #
+      #   docker compose --profile postgres up -d
+      #
+      # with, in the `.env` beside this file (the passwords must match):
+      #
+      #   DOMARINN_DATABASE_URL=postgres://domarinn:CHANGE_ME_db_password@postgres:5432/domarinn
+      #   POSTGRES_PASSWORD=CHANGE_ME_db_password
+      #
+      # Empty (the default) means SQLite. To carry existing SQLite data over,
+      # run `domarinn migrate-db` first; see docs/guides/self-host.md.
+      DOMARINN_DATABASE_URL: "${DOMARINN_DATABASE_URL:-}"
 
       # The server is CLOSED by default: every page and API call requires
       # auth, and the first visit walks you through creating the admin (or
@@ -84,6 +106,40 @@ services:
       retries: 3
       start_period: 10s
 
+  # --- Postgres (optional; off by default) -----------------------------
+  #
+  # The opt-in storage backend: one Postgres database holds everything the
+  # SQLite files hold, and — unlike SQLite — supports several domarinn
+  # replicas sharing it. It lives behind its own compose profile: nothing in
+  # the `domarinn` service above depends on it, and a plain `docker compose
+  # up` never starts it. Enable it together with DOMARINN_DATABASE_URL above
+  # (both via the same `.env`):
+  #
+  #   docker compose --profile postgres up -d
+  #
+  # See docs/guides/self-host.md for the full walkthrough, including
+  # migrating an existing SQLite deployment with `domarinn migrate-db`.
+  postgres:
+    image: postgres:17-alpine
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: domarinn
+      POSTGRES_DB: domarinn
+      # Must match the password inside DOMARINN_DATABASE_URL — set both in
+      # the `.env`, and treat it like every other secret in this file.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-CHANGE_ME_db_password}"
+      # The C locale sorts text bytewise, matching SQLite's ordering exactly.
+      # Recommended, not required; see docs/reference/server.md#storage.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U domarinn -d domarinn"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # --- Ollama (optional; off by default) -------------------------------
   #
   # A local OpenAI-compatible endpoint for suites that call a model — no API
@@ -123,4 +179,5 @@ services:
 
 volumes:
   domarinn-data:
+  postgres-data:
   ollama-models:

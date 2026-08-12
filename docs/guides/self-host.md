@@ -5,14 +5,14 @@ guides/self-host.md. The env-var table exists ONLY in reference/server.md. -->
 
 # Self-hosting domarinn
 
-domarinn is **one static binary**. The `server` subcommand runs the results API and the embedded web UI; the same binary is the CLI, the eval engine, and its own container healthcheck. There are **zero runtime dependencies** — no sidecar database, no external cache, no libc. State is SQLite under the data directory.
+domarinn is **one static binary**. The `server` subcommand runs the results API and the embedded web UI; the same binary is the CLI, the eval engine, and its own container healthcheck. There are **zero runtime dependencies** — no sidecar database, no external cache, no libc. State is SQLite under the data directory by default, or [Postgres](#postgres) when you opt in.
 
 For the API surface, the auth model, and the full environment-variable reference, see [`../reference/server.md`](../reference/server.md). This page is about *hosting* it.
 
 ## What the server is (and is not)
 
-- **Single-writer.** Storage is SQLite. That is a deliberate, boring choice: it makes backups a file copy and self-hosting a one-liner. It also means the service is **one replica**. Do not run two.
-- **Stateless except for `/data`.** Everything durable lives in the data directory (default `/data`, env `DOMARINN_DATA_DIR`): the `domarinn.db` SQLite database (runs, users, sessions, API keys, baselines) and `cache.db` (the disposable content-addressed cache).
+- **Single-writer by default.** Storage is SQLite unless you opt into [Postgres](#postgres). SQLite is a deliberate, boring choice: it makes backups a file copy and self-hosting a one-liner. It also means the service is **one replica** — do not run two against the same data dir. When you need more than one, that is what the Postgres backend is for.
+- **Stateless except for `/data`.** Everything durable lives in the data directory (default `/data`, env `DOMARINN_DATA_DIR`): the `domarinn.db` SQLite database (runs, users, sessions, API keys, baselines) and `cache.db` (the disposable content-addressed cache). Under Postgres, everything durable moves into the database; `/data` stays mounted for the local cache tier.
 
 ## Configuration
 
@@ -159,7 +159,7 @@ The container runs as the distroless `nonroot` user, **uid 65532** — never roo
 
 ## Kubernetes
 
-Because SQLite is a single writer, deploy exactly **one replica** with a **`Recreate`** update strategy (never `RollingUpdate` — two pods must never hold the database open at once) and a **`ReadWriteOnce` PVC** mounted at `/data`.
+Under the default SQLite storage, because SQLite is a single writer, deploy exactly **one replica** with a **`Recreate`** update strategy (never `RollingUpdate` — two pods must never hold the database open at once) and a **`ReadWriteOnce` PVC** mounted at `/data`. The [Postgres backend](#postgres) lifts both constraints: with `DOMARINN_DATABASE_URL` set, several replicas may share one database and `RollingUpdate` is safe.
 
 ```yaml
 apiVersion: apps/v1
@@ -167,7 +167,7 @@ kind: Deployment
 metadata:
   name: domarinn
 spec:
-  replicas: 1                 # single writer — do NOT scale up
+  replicas: 1                 # single writer (SQLite) — do NOT scale up
   strategy:
     type: Recreate            # tear the old pod down before the new one starts
   selector:
@@ -228,6 +228,88 @@ spec:
 
 Expose it with a plain `Service` + `Ingress`. Give it a **hostname of its own** (`domarinn.example.com`), **not a path prefix** — the app assumes it is served at the web root, and `DOMARINN_PUBLIC_URL` should be that hostname's URL.
 
+## Postgres
+
+Setting `DOMARINN_DATABASE_URL` moves **all durable state** — runs, users, sessions, API keys, baselines, and the shared cache — into one Postgres database. What that changes semantically (multi-replica support, TLS, collation, full-text-search parity) is in [`../reference/server.md`](../reference/server.md#storage), the sole owner of those details; this section is about hosting it.
+
+**When to choose it:**
+
+- **A shared team server** whose history should live in a database you already operate, monitor, and back up.
+- **More than one replica.** Several domarinn replicas can share one database — startup migrations serialize under an advisory lock, and the per-replica background tasks are idempotent. SQLite can never offer this.
+- **Kubernetes**, where a Postgres service is more natural than a `ReadWriteOnce` PVC — run `replicas: 2+` with a plain `RollingUpdate`, and the PVC constraints above stop applying.
+- **A managed database.** The driver is pure Rust with TLS built in (no libpq to install), so a managed Postgres needs nothing but the URL — put `sslmode=require` in it.
+
+Keep `/data` mounted either way: it still holds the local cache tier, and (until you migrate) the SQLite files.
+
+### Compose with a Postgres service
+
+```yaml
+services:
+  domarinn:
+    image: ghcr.io/atviksecurity/domarinn:rolling
+    restart: unless-stopped
+    ports:
+      - "8321:8321"
+    environment:
+      DOMARINN_DATA_DIR: /data
+      # All durable state lives in Postgres; /data keeps the local cache tier.
+      DOMARINN_DATABASE_URL: "postgres://domarinn:CHANGE_ME_db_password@postgres:5432/domarinn"
+      DOMARINN_PUBLIC_URL: "https://domarinn.example.com"
+    volumes:
+      - domarinn-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # The binary is its own probe (distroless has no shell/curl).
+      test: ["CMD", "/domarinn", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: domarinn
+      POSTGRES_PASSWORD: CHANGE_ME_db_password
+      POSTGRES_DB: domarinn
+      # The C locale sorts text bytewise, matching SQLite's ordering exactly.
+      # Recommended, not required — see ../reference/server.md#postgres.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U domarinn -d domarinn"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  domarinn-data:
+  postgres-data:
+```
+
+Replace the placeholder password (both occurrences — they must match) and inject it from a secret store rather than committing it. The checked-in [`docker-compose.yml`](https://github.com/AtvikSecurity/domarinn/blob/main/docker-compose.yml) carries the same Postgres service as an opt-in variant of the default SQLite setup.
+
+### Migrating an existing SQLite deployment
+
+`domarinn migrate-db` copies a SQLite data dir into an **empty** Postgres database (it refuses a non-empty one), verifies per-table row counts, and prints a summary — see [`../reference/cli.md`](../reference/cli.md#domarinn-migrate-db---data-dir-dir---database-url-url). A fresh install skips this entirely: just start the server with `DOMARINN_DATABASE_URL` set and it creates its schema.
+
+1. **Stop the server.** SQLite is a single writer, and the migration must be the only thing holding the database open.
+2. **Run the migration** (the flags fall back to `DOMARINN_DATA_DIR` / `DOMARINN_DATABASE_URL`):
+
+    ```sh
+    domarinn migrate-db --data-dir /data --database-url "postgres://domarinn:…@postgres:5432/domarinn"
+    ```
+
+3. **Start the server with `DOMARINN_DATABASE_URL` set.** The SQLite files are left in place as a rollback: point the server back at the data dir (by unsetting the URL) and it runs as before — minus whatever was written to Postgres in the meantime.
+
+### Backups under Postgres
+
+`pg_dump` (or your managed database's snapshots) replaces copying the data dir — the [Backups](#backups) section below is about SQLite. `/data` still holds the local cache tier, which is disposable and needs no backup.
+
 <a id="reverse-proxies"></a>
 
 ## Reverse proxies and share links
@@ -238,7 +320,7 @@ When `DOMARINN_PUBLIC_URL` is *unset*, the server derives the base URL for share
 
 ## Backups
 
-The backup target is one file: `${DOMARINN_DATA_DIR}/domarinn.db`. (`cache.db` is a disposable, regenerable cache — no need to back it up.)
+Under the default SQLite storage, the backup target is one file: `${DOMARINN_DATA_DIR}/domarinn.db`. (`cache.db` is a disposable, regenerable cache — no need to back it up.) Under Postgres, back up the database instead — see [Backups under Postgres](#backups-under-postgres).
 
 - **Volume snapshots** are the simplest option (snapshot the PVC / Docker volume).
 - For a **hot copy**, use SQLite's online backup rather than `cp` on a live database:
@@ -253,6 +335,6 @@ Restoring is just putting the file back at `/data/domarinn.db` while the service
 
 ## Upgrades
 
-Pull the new image tag and restart the single pod/container (`Recreate` on Kubernetes handles the ordering). Because the schema migrations run at startup and there is only ever one writer, upgrades are a stop-start with a backup taken first.
+Pull the new image tag and restart the single pod/container (`Recreate` on Kubernetes handles the ordering). Because the schema migrations run at startup and — on SQLite — there is only ever one writer, upgrades are a stop-start with a backup taken first. Under [Postgres](#postgres), a rolling upgrade is safe: replicas racing through startup serialize their migrations under an advisory lock.
 
 Published tags are `rolling` (tracks `main`), plus `{{version}}`, `{{major}}.{{minor}}` and `{{major}}` for each release. There is deliberately **no `latest`** — pin a version, or track `rolling` if you want the tip of main. See [`CONTRIBUTING.md`](https://github.com/AtvikSecurity/domarinn/blob/main/CONTRIBUTING.md#container-image-dockeryml).

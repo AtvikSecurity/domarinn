@@ -68,6 +68,7 @@ pub(crate) mod exec;
 mod ftsdialect;
 mod history;
 mod matrix;
+pub mod migratedb;
 mod pg;
 mod projects;
 pub mod retention;
