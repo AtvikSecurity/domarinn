@@ -63,6 +63,7 @@ pub(crate) mod cachelink;
 mod cases;
 mod compare;
 pub(crate) mod exec;
+mod ftsdialect;
 mod history;
 mod matrix;
 mod pg;

@@ -20,11 +20,10 @@ use domarinn_core::result::{CaseResult, CaseStatus};
 use domarinn_core::types::RenderedPrompt;
 
 use super::exec::{params, Conn, Queryable, Tx, Value};
+use super::ftsdialect::{self, FtsQuery};
 use super::{cached_clause_sql, decompress, ms_to_rfc3339, Storage};
 use crate::domain::CachedFilter;
-use crate::dto::search::{
-    CaseSearchHit, RunSearchHit, SearchResponse, SNIPPET_CLOSE, SNIPPET_OPEN,
-};
+use crate::dto::search::{CaseSearchHit, RunSearchHit, SearchResponse};
 use crate::runsets::{visibility_predicate, RunVisibility};
 
 /// Report a run's cache provenance without ever claiming more than we know.
@@ -42,12 +41,10 @@ const RUN_CACHED_CASE: &str = "CASE
     ELSE 0
   END";
 
-/// Snippet length passed to FTS5 `snippet()` (in tokens).
-const SNIPPET_TOKENS: i64 = 12;
-
 impl Storage {
-    /// Grouped full-text hits for a user query, each group ranked by bm25.
-    /// A query with no indexable tokens returns empty groups.
+    /// Grouped full-text hits for a user query, each group best-ranked first
+    /// (bm25 on SQLite, `ts_rank_cd` on Postgres). A query with no indexable
+    /// tokens returns empty groups.
     pub async fn search(
         &self,
         query: String,
@@ -57,7 +54,7 @@ impl Storage {
     ) -> anyhow::Result<SearchResponse> {
         self.runs
             .read(move |conn| {
-                let Some(fts) = fts_match_query(&query) else {
+                let Some(fts) = ftsdialect::search_query(&query) else {
                     return Ok(SearchResponse {
                         runs: Vec::new(),
                         cases: Vec::new(),
@@ -72,55 +69,47 @@ impl Storage {
     }
 }
 
-/// Build an FTS5 `MATCH` expression from raw user input: each whitespace
-/// token becomes a quoted phrase with prefix matching (`"tok"*`), joined by
-/// implicit AND. Quoting neutralizes FTS5 operators (`AND`, `NEAR`, parens);
-/// embedded double quotes are stripped since they cannot be escaped inside a
-/// phrase. Tokens with no alphanumeric characters are dropped — quoted, they
-/// tokenize to an empty phrase, which FTS5 rejects as a syntax error.
-fn fts_match_query(input: &str) -> Option<String> {
-    let tokens: Vec<String> = input
-        .split_whitespace()
-        .map(|t| t.replace('"', ""))
-        .filter(|t| t.chars().any(char::is_alphanumeric))
-        .map(|t| format!("\"{t}\"*"))
-        .collect();
-    if tokens.is_empty() {
-        None
-    } else {
-        Some(tokens.join(" "))
-    }
-}
-
 fn run_hits(
     conn: &mut Conn<'_>,
-    fts: &str,
+    fts: &FtsQuery,
     limit: i64,
     vis: &RunVisibility,
     cached: Option<CachedFilter>,
 ) -> anyhow::Result<Vec<RunSearchHit>> {
+    let dialect = conn.dialect();
     // The FTS tables index every run; the join back to `runs` is where access
     // is decided, so a restricted run never surfaces as a hit or a snippet.
-    let mut args: Vec<Value> = vec![
-        fts.to_string().into(),
-        SNIPPET_OPEN.to_string().into(),
-        SNIPPET_CLOSE.to_string().into(),
-        SNIPPET_TOKENS.into(),
-        limit.into(),
-    ];
+    // Layout: ?1 = match arg (referenced by match/snippet/rank fragments),
+    // ?2 = limit, visibility from ?3.
+    let mut args: Vec<Value> = vec![fts.match_arg(dialect).into(), limit.into()];
     let visible = visibility_predicate("r", vis, &mut args);
     // Appended after the visibility predicate so it can never widen access:
     // the cached filter narrows what an already-permitted reader sees.
     let cached_clause = cached_clause_sql("r", cached);
+    let matches = ftsdialect::match_predicate(dialect, "runs_fts", 1);
+    let snippet = ftsdialect::snippet_expr(
+        dialect,
+        "runs_fts",
+        &[
+            "project",
+            "suite",
+            "branch",
+            "commit_sha",
+            "description",
+            "tags",
+        ],
+        1,
+    );
+    let rank = ftsdialect::rank_order(dialect, "runs_fts", 1);
     let sql = format!(
         "SELECT runs_fts.run_id, r.project, r.suite, r.created_at,
-                snippet(runs_fts, -1, ?2, ?3, '…', ?4),
+                {snippet},
                 {RUN_CACHED_CASE}
          FROM runs_fts
          JOIN runs r ON r.id = runs_fts.run_id
-         WHERE runs_fts MATCH ?1 AND {visible}{cached_clause}
-         ORDER BY rank
-         LIMIT ?5"
+         WHERE {matches} AND {visible}{cached_clause}
+         ORDER BY {rank}
+         LIMIT ?2"
     );
     conn.query_map(&sql, &args, |row| {
         Ok(RunSearchHit {
@@ -138,34 +127,37 @@ fn run_hits(
 
 fn case_hits(
     conn: &mut Conn<'_>,
-    fts: &str,
+    fts: &FtsQuery,
     limit: i64,
     vis: &RunVisibility,
     cached: Option<CachedFilter>,
 ) -> anyhow::Result<Vec<CaseSearchHit>> {
-    let mut args: Vec<Value> = vec![
-        fts.to_string().into(),
-        SNIPPET_OPEN.to_string().into(),
-        SNIPPET_CLOSE.to_string().into(),
-        SNIPPET_TOKENS.into(),
-        limit.into(),
-    ];
+    let dialect = conn.dialect();
+    let mut args: Vec<Value> = vec![fts.match_arg(dialect).into(), limit.into()];
     let visible = visibility_predicate("r", vis, &mut args);
     // The filter is about the owning RUN (was this whole execution a replay?),
     // so it reads `r`, while the per-hit `cached` flag below reports the case's
     // own provenance from `c`. Two different questions about the same row.
     let cached_clause = cached_clause_sql("r", cached);
+    let matches = ftsdialect::match_predicate(dialect, "cases_fts", 1);
+    let snippet = ftsdialect::snippet_expr(
+        dialect,
+        "cases_fts",
+        &["name", "prompt", "output", "error", "tags"],
+        1,
+    );
+    let rank = ftsdialect::rank_order(dialect, "cases_fts", 1);
     let sql = format!(
         "SELECT cases_fts.run_id, cases_fts.case_key, c.name, c.status,
                 r.project, r.suite,
-                snippet(cases_fts, -1, ?2, ?3, '…', ?4),
+                {snippet},
                 c.cached
          FROM cases_fts
          JOIN cases c ON c.run_id = cases_fts.run_id AND c.case_key = cases_fts.case_key
          JOIN runs r ON r.id = cases_fts.run_id
-         WHERE cases_fts MATCH ?1 AND {visible}{cached_clause}
-         ORDER BY rank
-         LIMIT ?5"
+         WHERE {matches} AND {visible}{cached_clause}
+         ORDER BY {rank}
+         LIMIT ?2"
     );
     conn.query_map(&sql, &args, |row| {
         Ok(CaseSearchHit {
@@ -409,33 +401,4 @@ fn backfill_one_run(tx: &mut Tx<'_>, run_id: &str) -> anyhow::Result<()> {
         )?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::fts_match_query;
-
-    #[test]
-    fn tokens_become_quoted_prefix_phrases_joined_by_implicit_and() {
-        assert_eq!(
-            fts_match_query("empty cart").as_deref(),
-            Some("\"empty\"* \"cart\"*")
-        );
-    }
-
-    #[test]
-    fn operators_and_quotes_are_neutralized() {
-        assert_eq!(fts_match_query("AND").as_deref(), Some("\"AND\"*"));
-        assert_eq!(
-            fts_match_query("a\"b OR(c").as_deref(),
-            Some("\"ab\"* \"OR(c\"*")
-        );
-    }
-
-    #[test]
-    fn queries_with_no_indexable_tokens_are_rejected() {
-        assert_eq!(fts_match_query(""), None);
-        assert_eq!(fts_match_query("   "), None);
-        assert_eq!(fts_match_query("-- ((( \"\""), None);
-    }
 }

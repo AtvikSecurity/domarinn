@@ -92,6 +92,24 @@ async fn postgres_backend_smoke() {
     let reply = common::post_json(&app, "/api/v1/runs", None, &body).await;
     assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
 
+    // Full-text search runs through the tsvector mirror tables: a hit for
+    // the run's tag, prefix matching, and marked-up snippets.
+    let reply = common::get(&app, "/api/v1/search?q=smok").await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
+    let hits = reply.json();
+    let runs = hits["runs"].as_array().expect("runs array").clone();
+    assert_eq!(runs.len(), 1, "prefix search should hit the run: {hits:?}");
+    assert_eq!(runs[0]["id"], "run_pg_smoke_1");
+    let snippet = runs[0]["snippet"].as_str().expect("snippet");
+    assert!(
+        snippet.contains('\u{e000}') && snippet.contains('\u{e001}'),
+        "snippet should mark the match: {snippet:?}"
+    );
+    // A query with no indexable tokens is empty groups, not an error.
+    let reply = common::get(&app, "/api/v1/search?q=%2A%2A%2A").await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.json()["runs"].as_array().map(Vec::len), Some(0));
+
     // Cache round-trip straight through Storage (put wins, second put loses,
     // get counts a hit).
     let outcome = storage

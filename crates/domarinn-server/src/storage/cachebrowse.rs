@@ -21,6 +21,7 @@ use domarinn_core::cache::CacheEntry;
 
 use super::cacheindex::{clamp_empty_reason, entry_id_col};
 use super::exec::{params, Conn, Queryable, Row, Value};
+use super::ftsdialect;
 use super::{from_microusd, ms_to_rfc3339, Storage};
 use crate::domain::{CacheSort, SortOrder};
 use crate::dto::cacheentries::{
@@ -102,23 +103,6 @@ impl CacheSort {
     }
 }
 
-/// Turn a user's search box into an fts5 query that cannot be a syntax error.
-///
-/// Users type quotes, stars and stray parens; fts5 answers those with an error,
-/// and an error is the server's problem, not the user's. Each run of
-/// alphanumerics becomes its own quoted phrase, so the result is an implicit
-/// AND of literal terms with no operator surface at all. `None` means the input
-/// contained nothing searchable — which matches no entry, rather than silently
-/// matching every entry.
-fn fts_query(q: &str) -> Option<String> {
-    let terms: Vec<String> = q
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .map(|t| format!("\"{t}\""))
-        .collect();
-    (!terms.is_empty()).then(|| terms.join(" "))
-}
-
 impl Storage {
     pub async fn cache_list_entries(
         &self,
@@ -197,14 +181,16 @@ fn list_entries(
         sql.push_str(&format!(" AND cost_microusd <= ?{}", args.len()));
     }
     if let Some(q) = &filter.q {
-        match fts_query(q) {
+        // The sanitizer means user input cannot be a syntax error in either
+        // engine — an error is the server's problem, not the user's.
+        match ftsdialect::cache_query(q) {
             Some(query) => {
-                args.push(query.into());
-                let id = entry_id_col(conn.dialect());
+                let dialect = conn.dialect();
+                args.push(query.match_arg(dialect).into());
+                let id = entry_id_col(dialect);
+                let matches = ftsdialect::match_predicate(dialect, "cache_entries_fts", args.len());
                 sql.push_str(&format!(
-                    " AND {id} IN (SELECT {id} FROM cache_entries_fts \
-                      WHERE cache_entries_fts MATCH ?{})",
-                    args.len()
+                    " AND {id} IN (SELECT {id} FROM cache_entries_fts WHERE {matches})"
                 ));
             }
             // Nothing searchable in the box: match nothing rather than
@@ -516,19 +502,19 @@ mod tests {
     }
 
     /// fts5 answers stray operators with a syntax error. Quoting every term
-    /// removes the operator surface entirely.
+    /// removes the operator surface entirely. (The sanitizer lives in
+    /// `ftsdialect`; this pins the rendering this module splices into SQL.)
     #[test]
     fn a_search_box_never_produces_fts_syntax() {
+        use crate::storage::exec::Dialect;
+        let render = |q: &str| ftsdialect::cache_query(q).map(|f| f.match_arg(Dialect::Sqlite));
         assert_eq!(
-            fts_query("refund policy").as_deref(),
+            render("refund policy").as_deref(),
             Some(r#""refund" "policy""#)
         );
-        assert_eq!(fts_query("NEAR(").as_deref(), Some(r#""NEAR""#));
-        assert_eq!(
-            fts_query(r#""unbalanced"#).as_deref(),
-            Some(r#""unbalanced""#)
-        );
-        assert_eq!(fts_query("*"), None);
-        assert_eq!(fts_query("   "), None);
+        assert_eq!(render("NEAR(").as_deref(), Some(r#""NEAR""#));
+        assert_eq!(render(r#""unbalanced"#).as_deref(), Some(r#""unbalanced""#));
+        assert_eq!(render("*"), None);
+        assert_eq!(render("   "), None);
     }
 }
