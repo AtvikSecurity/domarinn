@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.3](https://github.com/AtvikSecurity/domarinn/compare/0.10.2...0.10.3) (2026-08-12)
+
+
+### Features
+
+* Postgres backend alongside SQLite ([#92](https://github.com/AtvikSecurity/domarinn/issues/92)) ([06c6b90](https://github.com/AtvikSecurity/domarinn/commit/06c6b90004c390beaf288994375a44e2c8993c5c))
+* sortable columns on every table ([#96](https://github.com/AtvikSecurity/domarinn/issues/96)) ([2665883](https://github.com/AtvikSecurity/domarinn/commit/2665883b61dfd807ed1295670a72a2cf9bb3cbb8))
+
+
+### Bug Fixes
+
+* **docker:** retry cdeps tarball downloads on transient upstream errors ([b41686f](https://github.com/AtvikSecurity/domarinn/commit/b41686f273d06c7946c66974db5482ffc6349a13))
+
 ## [0.10.2](https://github.com/AtvikSecurity/domarinn/compare/0.10.1...0.10.2) (2026-08-11)
 
 
