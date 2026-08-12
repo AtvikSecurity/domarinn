@@ -101,6 +101,28 @@ run = "cargo run -p domarinn-cli -- server"
 description = "Run the Rust test suite."
 run = "cargo test --workspace"
 
+[tasks.test-pg]
+description = "Run the server suite against the Postgres backend (needs Docker)."
+# One shared postgres for all ~30 test binaries: exporting the URL keeps the
+# testcontainers fallback (one container per binary) as the no-setup path for
+# `cargo test` run by hand, without paying its startup cost here.
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+# max_connections raised: parallel test threads each hold a writer + reader
+# connections across two logical handles, and the default 100 exhausts.
+cid=$(docker run -d --rm -e POSTGRES_PASSWORD=postgres -p 127.0.0.1::5432 postgres:17-alpine -c max_connections=500)
+trap 'docker stop "$cid" >/dev/null' EXIT
+port=$(docker port "$cid" 5432/tcp | head -1 | awk -F: '{print $NF}')
+for _ in $(seq 60); do
+  docker exec "$cid" pg_isready -U postgres >/dev/null 2>&1 && break
+  sleep 0.5
+done
+export DOMARINN_TEST_BACKEND=postgres
+export DOMARINN_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${port}/postgres"
+cargo test -p domarinn-server
+"""
+
 [tasks.test-all]
 description = "Run every test: Rust workspace tests + the web unit tests (vitest)."
 depends = ["test"]
@@ -224,11 +246,12 @@ description = "Serve the docs locally with live reload on http://127.0.0.1:8000 
 run = "uv run mkdocs serve"
 
 [tasks.ci]
-description = "Run every CI gate locally: clippy, fmt-check, tests, schema/type drift checks, the web pipeline, the static musl build, the docs build, and the workflow lint."
+description = "Run every CI gate locally: clippy, fmt-check, tests (SQLite and Postgres), schema/type drift checks, the web pipeline, the static musl build, the docs build, and the workflow lint."
 depends = [
   "clippy",
   "fmt-check",
   "test",
+  "test-pg",
   "schema-check",
   "gen-types-check",
   "web-lint",

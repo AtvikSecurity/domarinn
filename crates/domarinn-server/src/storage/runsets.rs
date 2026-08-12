@@ -18,8 +18,7 @@
 //! A run with no *project* can never be covered at all (`project = NULL` is
 //! likewise never true), which is why such runs are always accessible.
 
-use rusqlite::{params, Connection, OptionalExtension};
-
+use super::exec::{params, Conn, Queryable};
 use super::{now_ms, Storage};
 use crate::domain::UserId;
 use crate::runsets::{GrantLevel, RunVisibility};
@@ -54,8 +53,8 @@ impl Storage {
                 let n = conn.execute(
                     "INSERT INTO run_set_restrictions (project, suite, created_at, created_by)
                      VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT(project, COALESCE(suite,'')) DO NOTHING",
-                    params![project, suite, now_ms(), created_by],
+                     ON CONFLICT (project, COALESCE(suite,'')) DO NOTHING",
+                    &params![project, suite, now_ms(), created_by],
                 )?;
                 Ok(n > 0)
             })
@@ -75,7 +74,7 @@ impl Storage {
                 let n = conn.execute(
                     "DELETE FROM run_set_restrictions
                       WHERE project = ?1 AND COALESCE(suite,'') = COALESCE(?2,'')",
-                    params![project, suite],
+                    &params![project, suite],
                 )?;
                 Ok(n > 0)
             })
@@ -110,13 +109,12 @@ impl Storage {
         self.runs
             .read(move |conn| {
                 Ok(conn
-                    .query_row(
+                    .query_row_opt(
                         "SELECT 1 FROM run_set_restrictions
                           WHERE project = ?1 AND COALESCE(suite,'') = COALESCE(?2,'') LIMIT 1",
-                        params![project, suite],
+                        &params![project, suite],
                         |_| Ok(()),
-                    )
-                    .optional()?
+                    )?
                     .is_some())
             })
             .await
@@ -138,9 +136,9 @@ impl Storage {
                     "INSERT INTO run_set_grants
                          (id, project, suite, user_id, level, created_at, created_by)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                     ON CONFLICT(project, COALESCE(suite,''), user_id)
+                     ON CONFLICT (project, COALESCE(suite,''), user_id)
                      DO UPDATE SET level = excluded.level",
-                    params![id, project, suite, user_id, level, now_ms(), created_by],
+                    &params![id, project, suite, user_id, level, now_ms(), created_by],
                 )?;
                 Ok(())
             })
@@ -160,7 +158,7 @@ impl Storage {
                 let n = conn.execute(
                     "DELETE FROM run_set_grants
                       WHERE project = ?1 AND COALESCE(suite,'') = COALESCE(?2,'') AND user_id = ?3",
-                    params![project, suite, user_id],
+                    &params![project, suite, user_id],
                 )?;
                 Ok(n > 0)
             })
@@ -179,26 +177,26 @@ impl Storage {
     ) -> anyhow::Result<Vec<RunSetGrant>> {
         self.runs
             .read(move |conn| {
-                let mut stmt = conn.prepare(
+                conn.query_map(
                     "SELECT g.id, g.project, g.suite, g.user_id, u.username, g.level,
                             g.created_at, g.created_by
                        FROM run_set_grants g JOIN users u ON u.id = g.user_id
                       WHERE g.project = ?1 AND COALESCE(g.suite,'') = COALESCE(?2,'')
                       ORDER BY g.created_at ASC, u.username ASC",
-                )?;
-                let rows = stmt.query_map(params![project, suite], |row| {
-                    Ok(RunSetGrant {
-                        id: row.get(0)?,
-                        project: row.get(1)?,
-                        suite: row.get(2)?,
-                        user_id: row.get(3)?,
-                        username: row.get(4)?,
-                        level: row.get(5)?,
-                        created_at: row.get(6)?,
-                        created_by: row.get(7)?,
-                    })
-                })?;
-                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+                    &params![project, suite],
+                    |row| {
+                        Ok(RunSetGrant {
+                            id: row.get(0)?,
+                            project: row.get(1)?,
+                            suite: row.get(2)?,
+                            user_id: row.get(3)?,
+                            username: row.get(4)?,
+                            level: row.get(5)?,
+                            created_at: row.get(6)?,
+                            created_by: row.get(7)?,
+                        })
+                    },
+                )
             })
             .await
     }
@@ -267,18 +265,17 @@ impl Storage {
 }
 
 pub(super) fn restricted(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     project: Option<&str>,
     suite: Option<&str>,
 ) -> anyhow::Result<bool> {
     Ok(conn
-        .query_row(
+        .query_row_opt(
             "SELECT 1 FROM run_set_restrictions
               WHERE project = ?1 AND (suite IS NULL OR suite = ?2) LIMIT 1",
-            params![project, suite],
+            &params![project, suite],
             |_| Ok(()),
-        )
-        .optional()?
+        )?
         .is_some())
 }
 
@@ -287,21 +284,19 @@ pub(super) fn restricted(
 /// over them would order them alphabetically — `manage` < `upload` < `view` —
 /// i.e. exactly backwards.
 pub(super) fn covering_level(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     project: Option<&str>,
     suite: Option<&str>,
     user_id: &UserId,
 ) -> anyhow::Result<Option<GrantLevel>> {
-    let mut stmt = conn.prepare(
+    let rows = conn.query_map(
         "SELECT level FROM run_set_grants
           WHERE user_id = ?3 AND project = ?1 AND (suite IS NULL OR suite = ?2)",
+        &params![project, suite, user_id],
+        |row| row.get::<GrantLevel>(0),
     )?;
-    let rows = stmt.query_map(params![project, suite, user_id], |row| {
-        row.get::<_, GrantLevel>(0)
-    })?;
     let mut best: Option<GrantLevel> = None;
     for level in rows {
-        let level = level?;
         best = Some(best.map_or(level, |b: GrantLevel| b.max(level)));
     }
     Ok(best)

@@ -314,6 +314,23 @@ Run the self-hostable results server + embedded web UI (default port `8321`, bin
 domarinn server --port 8321 --data-dir ./data
 ```
 
+## `domarinn migrate-db [--data-dir DIR] [--database-url URL]`
+
+Copy an existing SQLite data dir into an **empty** Postgres database, so a deployment can switch storage backends without losing its history. One-shot and offline: **stop the server first** — SQLite is a single writer, and the migration must be the only thing holding the database open.
+
+| Flag | Effect |
+|------|--------|
+| `--data-dir <DIR>` | The SQLite data dir to migrate from (also `DOMARINN_DATA_DIR`). |
+| `--database-url <URL>` | The target Postgres connection URL (also `DOMARINN_DATABASE_URL`). |
+
+What it does, in order: brings the SQLite source up to the **latest schema** (the same migrations the server runs at startup), **refuses a non-empty target** — an accidental URL must not merge two histories — copies everything (runs, users, sessions, API keys, baselines, and the shared cache), **verifies per-table row counts**, and prints a summary. The SQLite files are not modified beyond that schema upgrade, so they remain a rollback: point the server back at the data dir and it runs as before.
+
+Afterwards, start the server with `DOMARINN_DATABASE_URL` set. See [server.md](server.md#storage) for what the Postgres backend changes and [self-host.md](../guides/self-host.md#postgres) for the hosting walkthrough.
+
+```sh
+domarinn migrate-db --data-dir /data --database-url "postgres://domarinn:secret@db.example.com:5432/domarinn"
+```
+
 ## `domarinn healthcheck [--port N]`
 
 Probe **this binary's own** server health and exit `0`/non-zero accordingly. Designed for the container `HEALTHCHECK` in the distroless image, which has no shell or curl.

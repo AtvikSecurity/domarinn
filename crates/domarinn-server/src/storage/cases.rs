@@ -2,11 +2,10 @@
 
 use std::str::FromStr;
 
-use rusqlite::{Connection, OptionalExtension};
-
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 
+use super::exec::{Conn, Queryable, Value};
 use super::{decompress, empty_to_none, from_microusd, parse_stored_asserts, Storage};
 use crate::dto::cases::{CaseDetailResponse, CaseListItem, CaseListResponse};
 use crate::runsets::{visible_run_predicate, RunVisibility};
@@ -66,7 +65,7 @@ pub struct CaseListFilter {
 pub const UNCLASSIFIED_ERROR: &str = "unknown";
 
 impl CaseListFilter {
-    fn query(self, conn: &Connection) -> anyhow::Result<CaseListResponse> {
+    fn query(self, conn: &mut Conn<'_>) -> anyhow::Result<CaseListResponse> {
         let mut sql = String::from(
             "SELECT case_key, idx, name, status, output_preview, asserts,
                     prompt_tokens, completion_tokens, cost_microusd, latency_ms,
@@ -74,7 +73,7 @@ impl CaseListFilter {
                     cached, error, error_class, empty_reason, answered_by_provider_id
              FROM cases WHERE run_id = ?1",
         );
-        let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
+        let mut args: Vec<Value> = vec![self.run_id.as_str().to_string().into()];
         let visible = visible_run_predicate(1, &self.visibility, &mut args);
         sql.push_str(&format!(" AND {visible}"));
         if let Some(status) = self.status {
@@ -94,7 +93,13 @@ impl CaseListFilter {
             let a = args.len();
             args.push(like.into());
             let b = args.len();
-            sql.push_str(&format!(" AND (output_text LIKE ?{a} OR name LIKE ?{b})"));
+            // `LOWER` on both sides: SQLite's LIKE is ASCII-case-insensitive on
+            // its own (making LOWER a no-op there), Postgres's is
+            // case-sensitive — the explicit LOWER is what makes both engines
+            // agree on a case-insensitive match.
+            sql.push_str(&format!(
+                " AND (LOWER(output_text) LIKE LOWER(?{a}) OR LOWER(name) LIKE LOWER(?{b}))"
+            ));
         }
         if let Some(provider) = &self.provider {
             args.push(provider.clone().into());
@@ -151,64 +156,58 @@ impl CaseListFilter {
         args.push((self.limit + 1).into());
         sql.push_str(&format!(" ORDER BY idx ASC LIMIT ?{}", args.len()));
 
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+        let mut collected: Vec<(i64, CaseListItem)> = conn.query_map(&sql, &args, |row| {
             let case_key: String = row.get(0)?;
             let asserts_str: Option<String> = row.get(5)?;
             // Graceful degrade (see `parse_stored_asserts`): a corrupt/tampered
             // row lists as having no asserts rather than failing the whole read.
             let asserts = parse_stored_asserts(asserts_str, self.run_id.as_str(), &case_key);
             let status_raw: String = row.get(3)?;
-            let status = CaseStatus::from_str(&status_raw).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, e.into())
-            })?;
+            let status =
+                CaseStatus::from_str(&status_raw).map_err(|e| anyhow::anyhow!("column 3: {e}"))?;
             let idx: i64 = row.get(1)?;
             Ok((
                 idx,
                 CaseListItem {
-                    case_key: CaseKey::new(row.get::<_, String>(0)?),
+                    case_key: CaseKey::new(row.get::<String>(0)?),
                     idx,
-                    name: row.get::<_, Option<String>>(2)?,
+                    name: row.get::<Option<String>>(2)?,
                     status,
-                    output_preview: row.get::<_, Option<String>>(4)?,
+                    output_preview: row.get::<Option<String>>(4)?,
                     asserts,
-                    prompt_tokens: row.get::<_, Option<i64>>(6)?,
-                    completion_tokens: row.get::<_, Option<i64>>(7)?,
-                    cost_usd: from_microusd(row.get::<_, Option<i64>>(8)?),
-                    latency_ms: row.get::<_, Option<i64>>(9)?,
+                    prompt_tokens: row.get::<Option<i64>>(6)?,
+                    completion_tokens: row.get::<Option<i64>>(7)?,
+                    cost_usd: from_microusd(row.get::<Option<i64>>(8)?),
+                    latency_ms: row.get::<Option<i64>>(9)?,
                     // Map the empty-string backfill sentinel to `None` on the
                     // text columns; `repeat_idx`/`score` are numeric and land
                     // NULL on sentinel rows.
-                    provider_id: empty_to_none(row.get::<_, Option<String>>(10)?),
-                    prompt_id: empty_to_none(row.get::<_, Option<String>>(11)?),
-                    test_id: empty_to_none(row.get::<_, Option<String>>(12)?),
-                    repeat: row.get::<_, Option<i64>>(13)?,
-                    score: row.get::<_, Option<f64>>(14)?,
-                    stop_reason: empty_to_none(row.get::<_, Option<String>>(15)?),
+                    provider_id: empty_to_none(row.get::<Option<String>>(10)?),
+                    prompt_id: empty_to_none(row.get::<Option<String>>(11)?),
+                    test_id: empty_to_none(row.get::<Option<String>>(12)?),
+                    repeat: row.get::<Option<i64>>(13)?,
+                    score: row.get::<Option<f64>>(14)?,
+                    stop_reason: empty_to_none(row.get::<Option<String>>(15)?),
                     // 1/0 → Some(true/false); NULL (legacy) and the -1
                     // undecodable-blob sentinel → None.
-                    cached: row.get::<_, Option<i64>>(16)?.and_then(|v| match v {
+                    cached: row.get::<Option<i64>>(16)?.and_then(|v| match v {
                         1 => Some(true),
                         0 => Some(false),
                         _ => None,
                     }),
                     // '' means "known: no error"; NULL means "not backfilled
                     // yet". Both read as `None` on the wire.
-                    error: empty_to_none(row.get::<_, Option<String>>(17)?),
-                    error_class: row.get::<_, Option<String>>(18)?,
+                    error: empty_to_none(row.get::<Option<String>>(17)?),
+                    error_class: row.get::<Option<String>>(18)?,
                     // Same tri-state as `error`: '' is "known: not empty",
                     // NULL is "not backfilled yet".
-                    empty_reason: empty_to_none(row.get::<_, Option<String>>(19)?),
+                    empty_reason: empty_to_none(row.get::<Option<String>>(19)?),
                     // And once more: '' is "the configured provider answered",
                     // NULL is "not backfilled yet".
-                    answered_by_provider_id: empty_to_none(row.get::<_, Option<String>>(20)?),
+                    answered_by_provider_id: empty_to_none(row.get::<Option<String>>(20)?),
                 },
             ))
         })?;
-        let mut collected: Vec<(i64, CaseListItem)> = Vec::new();
-        for row in rows {
-            collected.push(row?);
-        }
 
         let mut next_cursor = None;
         if collected.len() as i64 > self.limit {
@@ -224,25 +223,21 @@ impl CaseListFilter {
 }
 
 fn get_case_detail(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     run_id: &RunId,
     case_key: &CaseKey,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<CaseDetailResponse>> {
-    let mut args: Vec<rusqlite::types::Value> = vec![
+    let mut args: Vec<Value> = vec![
         run_id.as_str().to_string().into(),
         case_key.as_str().to_string().into(),
     ];
     let visible = visible_run_predicate(1, vis, &mut args);
     let sql = format!("SELECT detail FROM cases WHERE run_id = ?1 AND case_key = ?2 AND {visible}");
-    // `.optional()?`, never `.ok()` — see `project_has_visible_runs` in
+    // `query_row_opt`, never `.ok()` — see `project_has_visible_runs` in
     // [`super::sets`]. This answer becomes a 404, and a storage fault must not
     // be reported to the caller as a case that does not exist.
-    let blob: Option<Vec<u8>> = conn
-        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
-            row.get(0)
-        })
-        .optional()?;
+    let blob: Option<Vec<u8>> = conn.query_row_opt(&sql, &args, |row| row.get(0))?;
     let Some(blob) = blob else {
         return Ok(None);
     };

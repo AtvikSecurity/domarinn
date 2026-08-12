@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod mock_oidc;
+pub mod pg;
 
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
@@ -43,21 +44,64 @@ pub async fn test_app_with_mode(
 /// [`test_app_with_mode`] plus a second [`Storage`] handle onto the same data
 /// directory, for tests that seed state the HTTP API cannot reach yet (run-set
 /// policy, whose endpoints do not exist).
+///
+/// Backend selection: `DOMARINN_TEST_BACKEND=postgres` runs the suite against
+/// a per-test Postgres database (see [`pg`]); otherwise SQLite files in the
+/// temp dir. The second handle is a second connection set to the same
+/// database either way.
 pub async fn test_app_with_storage(
-    settings: Settings,
+    mut settings: Settings,
     auth_mode: domarinn_server::AuthMode,
 ) -> (Router, Storage, TempDir) {
     let dir = TempDir::new().expect("tempdir");
+    if settings.database_url.is_none() && pg::backend_is_postgres() {
+        settings.database_url = Some(
+            tokio::task::spawn_blocking(pg::fresh_database_url)
+                .await
+                .expect("create postgres test database"),
+        );
+    } else if settings.database_url.is_none() {
+        seed_sqlite_from_template(dir.path()).await;
+    }
+    let database_url = settings.database_url.clone();
     let config = ServerConfig {
         port: 0,
         data_dir: dir.path().to_path_buf(),
         auth_mode,
     };
     let (app, _state) = build_app(&config, settings).await.expect("build_app");
-    let storage = Storage::open(dir.path().to_path_buf())
-        .await
-        .expect("open storage");
+    let storage = match database_url {
+        Some(url) => Storage::open_postgres(url).await.expect("open storage"),
+        None => Storage::open(dir.path().to_path_buf())
+            .await
+            .expect("open storage"),
+    };
     (app, storage, dir)
+}
+
+/// Copy pre-migrated SQLite files into `dir` — the SQLite analogue of the
+/// Postgres template database: both migration ledgers replay once per test
+/// process instead of twice per test, and every subsequent `Storage::open`
+/// on the copy is a no-op fast path. End state is byte-equivalent to opening
+/// an empty dir (a clean close checkpoints the WAL), so tests see no
+/// difference beyond speed.
+async fn seed_sqlite_from_template(dir: &std::path::Path) {
+    static TEMPLATE: tokio::sync::OnceCell<std::path::PathBuf> = tokio::sync::OnceCell::const_new();
+    let template = TEMPLATE
+        .get_or_init(|| async {
+            let tmpl = TempDir::new().expect("sqlite template dir");
+            let path = tmpl.path().to_path_buf();
+            drop(Storage::open(path.clone()).await.expect("migrate template"));
+            // Held for the whole process: dropping the guard would delete
+            // the files mid-suite. The OS temp reaper collects it later.
+            std::mem::forget(tmpl);
+            path
+        })
+        .await;
+    for entry in std::fs::read_dir(template).expect("read template dir") {
+        let entry = entry.expect("template entry");
+        std::fs::copy(entry.path(), dir.join(entry.file_name())).expect("copy template file");
+    }
 }
 
 // ---------------------------------------------------------------------------

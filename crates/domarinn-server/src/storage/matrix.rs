@@ -15,11 +15,10 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use rusqlite::Connection;
-
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 
+use super::exec::{Conn, Queryable, Value};
 use super::{empty_to_none, from_microusd, Storage};
 use crate::dto::matrix::{MatrixCell, MatrixColumn, MatrixResponse, MatrixRow, ProviderCost};
 use crate::runsets::{visible_run_predicate, RunVisibility};
@@ -126,12 +125,12 @@ struct RowAcc {
 }
 
 impl MatrixFilter {
-    fn query(self, conn: &Connection) -> anyhow::Result<MatrixResponse> {
+    fn query(self, conn: &mut Conn<'_>) -> anyhow::Result<MatrixResponse> {
         // Column-only scan, insertion order. `idx`/`repeat_idx` come along for
         // row/case-key ordering. Legacy/failed-backfill rows (NULL or `''`
         // provider_id) are excluded here, so a pre-backfill run scans to zero
         // rows and returns an empty matrix.
-        let mut args: Vec<rusqlite::types::Value> = vec![self.run_id.as_str().to_string().into()];
+        let mut args: Vec<Value> = vec![self.run_id.as_str().to_string().into()];
         let visible = visible_run_predicate(1, &self.visibility, &mut args);
         let sql = format!(
             "SELECT test_id, provider_id, prompt_id, name, status, score,
@@ -142,32 +141,29 @@ impl MatrixFilter {
                AND {visible}
              ORDER BY idx"
         );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+        let rows = conn.query_map(&sql, &args, |row| {
             let status_raw: String = row.get(4)?;
-            let status = CaseStatus::from_str(&status_raw).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, e.into())
-            })?;
+            let status = CaseStatus::from_str(&status_raw).map_err(anyhow::Error::msg)?;
             Ok(RawCase {
                 // `test_id` maps the `''` sentinel to `None`; such a row has a
                 // provider but no test identity, so it cannot form a matrix
                 // cell and is dropped below.
-                test_id: empty_to_none(row.get::<_, Option<String>>(0)?).unwrap_or_default(),
-                provider_id: row.get::<_, String>(1)?,
-                prompt_id: empty_to_none(row.get::<_, Option<String>>(2)?),
-                name: row.get::<_, Option<String>>(3)?,
+                test_id: empty_to_none(row.get::<Option<String>>(0)?).unwrap_or_default(),
+                provider_id: row.get::<String>(1)?,
+                prompt_id: empty_to_none(row.get::<Option<String>>(2)?),
+                name: row.get::<Option<String>>(3)?,
                 status,
-                score: row.get::<_, Option<f64>>(5)?,
-                output_hash: row.get::<_, Option<String>>(6)?,
-                latency_ms: row.get::<_, Option<i64>>(7)?,
-                cost_microusd: row.get::<_, Option<i64>>(8)?,
-                case_key: row.get::<_, String>(9)?,
-                repeat_idx: row.get::<_, Option<i64>>(10)?.unwrap_or(0),
-                idx: row.get::<_, i64>(11)?,
+                score: row.get::<Option<f64>>(5)?,
+                output_hash: row.get::<Option<String>>(6)?,
+                latency_ms: row.get::<Option<i64>>(7)?,
+                cost_microusd: row.get::<Option<i64>>(8)?,
+                case_key: row.get::<String>(9)?,
+                repeat_idx: row.get::<Option<i64>>(10)?.unwrap_or(0),
+                idx: row.get::<i64>(11)?,
                 // `''` (the configured provider answered) and NULL (a legacy
                 // row, never backfilled) both read as `None`, so both attribute
                 // to the configured provider below.
-                answered_by: empty_to_none(row.get::<_, Option<String>>(12)?),
+                answered_by: empty_to_none(row.get::<Option<String>>(12)?),
             })
         })?;
 
@@ -185,7 +181,6 @@ impl MatrixFilter {
         let mut cost_accs: Vec<ProviderCostAcc> = Vec::new();
 
         for raw in rows {
-            let raw = raw?;
             // A provider-bearing row with no test identity can't be placed.
             if raw.test_id.is_empty() {
                 continue;

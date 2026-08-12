@@ -141,6 +141,19 @@ enum Command {
         #[arg(long, env = "DOMARINN_DATA_DIR", default_value = "/data")]
         data_dir: PathBuf,
     },
+    /// Copy an existing SQLite deployment into an empty Postgres database.
+    ///
+    /// Run it with the server stopped; afterwards start the server with
+    /// DOMARINN_DATABASE_URL pointing at the same database. The target must
+    /// be empty — the tool refuses to merge into live data.
+    MigrateDb {
+        /// State directory holding the SQLite databases (env: DOMARINN_DATA_DIR).
+        #[arg(long, env = "DOMARINN_DATA_DIR", default_value = "/data")]
+        data_dir: PathBuf,
+        /// Postgres connection URL to copy into (env: DOMARINN_DATABASE_URL).
+        #[arg(long, env = "DOMARINN_DATABASE_URL")]
+        database_url: String,
+    },
     /// Probe this binary's own /api/v1/health (used by container HEALTHCHECK).
     Healthcheck {
         #[arg(long, default_value_t = 8321)]
@@ -223,6 +236,10 @@ fn main() -> ExitCode {
             generators,
         } => cmd_list(what, &path, json, generators),
         Command::Server { port, data_dir } => cmd_server(port, data_dir),
+        Command::MigrateDb {
+            data_dir,
+            database_url,
+        } => cmd_migrate_db(data_dir, database_url),
         Command::Healthcheck { port } => cmd_healthcheck(port),
     };
     ExitCode::from(code)
@@ -437,6 +454,31 @@ fn cmd_server(port: u16, data_dir: PathBuf) -> u8 {
     };
     match runtime.block_on(domarinn_server::serve(config)) {
         Ok(()) => exit::OK,
+        Err(e) => fail(exit::INFRA, &e),
+    }
+}
+
+fn cmd_migrate_db(data_dir: PathBuf, database_url: String) -> u8 {
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return exit::INFRA;
+        }
+    };
+    match runtime.block_on(domarinn_server::storage::migratedb::migrate_to_postgres(
+        data_dir,
+        database_url,
+    )) {
+        Ok(report) => {
+            let mut total = 0u64;
+            for (table, rows) in &report.tables {
+                println!("{table}: {rows} rows");
+                total += rows;
+            }
+            println!("total: {total} rows");
+            exit::OK
+        }
         Err(e) => fail(exit::INFRA, &e),
     }
 }

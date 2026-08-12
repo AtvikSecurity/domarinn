@@ -34,6 +34,16 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2"
+# Postgres backend: pure Rust end to end. The sync `postgres` facade fits the
+# blocking closure model in `storage::Db`; TLS is rustls pinned to the `ring`
+# provider (never aws-lc-rs — see the Dockerfile header) with bundled webpki
+# roots, so the musl/static and distroless `ldd` gates are unaffected.
+postgres = "0.19"
+tokio-postgres = "0.7"
+tokio-postgres-rustls = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
+webpki-roots = "1"
 zstd = "0.13"
 sha2 = { workspace = true }
 hex = "0.4"
@@ -57,6 +67,12 @@ base64 = "0.23"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
+# Postgres-backed test runs (DOMARINN_TEST_BACKEND=postgres). When
+# DOMARINN_TEST_DATABASE_URL is unset, each test binary starts a throwaway
+# postgres container; `mise run test-pg` provides one shared server instead
+# so the ~30 test binaries don't each pay container startup.
+testcontainers = { version = "0.25", features = ["blocking"] }
+testcontainers-modules = { version = "0.13", features = ["postgres"] }
 flate2 = "1"
 ulid = { workspace = true }
 rusqlite = { version = "0.40", features = ["bundled"] }

@@ -63,6 +63,53 @@ async fn delete(app: &axum::Router, uri: &str, token: Option<&str>) -> Reply {
     send(app, "DELETE", uri, token, None, Vec::new()).await
 }
 
+/// [`test_app`] plus a handle raw SQL can reach: on Postgres the test creates
+/// the database itself and passes it through `Settings` (the harness would
+/// otherwise pick a name nothing outside `build_app` learns), on SQLite the
+/// database is the file in the returned dir. For tests that must read or seed
+/// column states no API exposes — both schemas carry the same sentinel
+/// contracts, so those states are as real on Postgres as on SQLite.
+async fn test_app_with_raw_db() -> (axum::Router, Option<String>, TempDir) {
+    let pg_url = if common::pg::backend_is_postgres() {
+        // Blocking sync-postgres call; direct use on the runtime panics.
+        Some(
+            tokio::task::spawn_blocking(common::pg::fresh_database_url)
+                .await
+                .expect("create postgres test database"),
+        )
+    } else {
+        None
+    };
+    let settings = Settings {
+        database_url: pg_url.clone(),
+        ..Settings::default()
+    };
+    let (app, dir) = test_app(settings).await;
+    (app, pg_url, dir)
+}
+
+/// Execute raw SQL against the database behind [`test_app_with_raw_db`].
+/// Statements must be dialect-neutral (no placeholders, portable literals).
+async fn exec_raw(pg_url: &Option<String>, dir: &Path, sql: &'static str) {
+    match pg_url {
+        Some(url) => {
+            let url = url.clone();
+            tokio::task::spawn_blocking(move || {
+                postgres::Client::connect(&url, postgres::NoTls)
+                    .expect("connect to test postgres")
+                    .batch_execute(sql)
+                    .expect("execute raw sql");
+            })
+            .await
+            .unwrap();
+        }
+        None => {
+            let conn = Connection::open(dir.join("domarinn.db")).unwrap();
+            conn.execute_batch(sql).unwrap();
+        }
+    }
+}
+
 fn case_hits(body: &serde_json::Value) -> Vec<(String, String)> {
     body["cases"]
         .as_array()
@@ -94,7 +141,7 @@ fn run_hit_ids(body: &serde_json::Value) -> Vec<String> {
 /// nothing.
 #[tokio::test]
 async fn a_runs_note_is_stored_as_its_description_and_is_searchable() {
-    let (app, dir) = test_app(Settings::default()).await;
+    let (app, pg_url, dir) = test_app_with_raw_db().await;
 
     let mut run = make_run(
         "s-noted",
@@ -112,15 +159,30 @@ async fn a_runs_note_is_stored_as_its_description_and_is_searchable() {
     let reply = post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
     assert_eq!(reply.status, StatusCode::CREATED);
 
-    // The column itself, not just the index — the DTO does not expose it yet.
-    let conn = Connection::open(dir.path().join("domarinn.db")).unwrap();
-    let description: Option<String> = conn
-        .query_row(
-            "SELECT description FROM runs WHERE id = ?1",
-            ["s-noted"],
-            |r| r.get(0),
-        )
-        .unwrap();
+    // The column itself, not just the index — the DTO does not expose it yet,
+    // so read the backing database directly on whichever backend is running.
+    let description: Option<String> = match &pg_url {
+        Some(url) => {
+            let url = url.clone();
+            tokio::task::spawn_blocking(move || {
+                postgres::Client::connect(&url, postgres::NoTls)
+                    .unwrap()
+                    .query_one("SELECT description FROM runs WHERE id = 's-noted'", &[])
+                    .unwrap()
+                    .get(0)
+            })
+            .await
+            .unwrap()
+        }
+        None => Connection::open(dir.path().join("domarinn.db"))
+            .unwrap()
+            .query_row(
+                "SELECT description FROM runs WHERE id = 's-noted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
+    };
     assert_eq!(
         description.as_deref(),
         Some("investigating quibblewort latency")
@@ -417,16 +479,15 @@ async fn search_cached_only_returns_replayed_runs_whatever_their_verdict() {
 /// and have promised never to hide.
 #[tokio::test]
 async fn search_never_hides_a_run_it_cannot_classify() {
-    let (app, dir) = test_app(Settings::default()).await;
+    let (app, pg_url, dir) = test_app_with_raw_db().await;
     seed_cache_mix(&app).await;
 
-    let db = Connection::open(dir.path().join("domarinn.db")).unwrap();
-    db.execute(
+    exec_raw(
+        &pg_url,
+        dir.path(),
         "UPDATE runs SET cache_hits = NULL, cache_misses = NULL WHERE id = 's-replayed'",
-        [],
     )
-    .unwrap();
-    drop(db);
+    .await;
 
     let body = get(&app, "/api/v1/search?q=quibble&cached=exclude")
         .await
@@ -466,28 +527,19 @@ async fn search_hits_report_cache_provenance_for_runs_and_cases() {
 /// would assert a fresh measurement nobody made.
 #[tokio::test]
 async fn search_run_hits_report_unknown_provenance_as_null_not_fresh() {
-    let (app, dir) = test_app(Settings::default()).await;
+    let (app, pg_url, dir) = test_app_with_raw_db().await;
     seed_cache_mix(&app).await;
 
-    let db = Connection::open(dir.path().join("domarinn.db")).unwrap();
     // NULL is the legacy pre-backfill state; -1 is the undecodable-blob
     // sentinel. Both mean "cannot tell".
-    db.execute(
-        "UPDATE runs SET cache_hits = NULL, cache_misses = NULL WHERE id = 's-fresh'",
-        [],
+    exec_raw(
+        &pg_url,
+        dir.path(),
+        "UPDATE runs SET cache_hits = NULL, cache_misses = NULL WHERE id = 's-fresh';
+         UPDATE runs SET cache_hits = -1, cache_misses = -1 WHERE id = 's-replayed';
+         UPDATE cases SET cached = -1 WHERE run_id = 's-replayed';",
     )
-    .unwrap();
-    db.execute(
-        "UPDATE runs SET cache_hits = -1, cache_misses = -1 WHERE id = 's-replayed'",
-        [],
-    )
-    .unwrap();
-    db.execute(
-        "UPDATE cases SET cached = -1 WHERE run_id = 's-replayed'",
-        [],
-    )
-    .unwrap();
-    drop(db);
+    .await;
 
     let body = get(&app, "/api/v1/search?q=quibble").await.json();
     for run in body["runs"].as_array().unwrap() {

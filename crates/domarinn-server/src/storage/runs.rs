@@ -3,11 +3,11 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use domarinn_core::ids::RunId;
 use domarinn_core::result::{AssertStatus, RunResult};
 
+use super::exec::{params, Conn, Queryable, Value};
 use super::{
     compress, content_hash, decompress, empty_to_none, encode_cursor, from_microusd, ms_to_rfc3339,
     now_ms, sha256_hex, to_microusd, IngestOutcome, Storage,
@@ -70,16 +70,14 @@ impl Storage {
     }
 
     /// Whether the run exists *and* this caller may see it — the gate `/cases`
-    /// and `/matrix` share. `.optional()?`, never `.is_ok()` (see `sets`).
+    /// and `/matrix` share. `query_row_opt`, never `.is_ok()` (see `sets`).
     pub async fn run_exists(&self, id: RunId, vis: RunVisibility) -> anyhow::Result<bool> {
         self.runs
             .read(move |conn| {
-                let mut args: Vec<rusqlite::types::Value> = vec![id.as_str().to_string().into()];
+                let mut args: Vec<Value> = vec![id.as_str().to_string().into()];
                 let clause = visibility_predicate("runs", &vis, &mut args);
                 let sql = format!("SELECT 1 FROM runs WHERE id = ?1 AND {clause}");
-                let found = conn
-                    .query_row(&sql, rusqlite::params_from_iter(args.iter()), |_| Ok(()))
-                    .optional()?;
+                let found = conn.query_row_opt(&sql, &args, |_| Ok(()))?;
                 Ok(found.is_some())
             })
             .await
@@ -88,17 +86,17 @@ impl Storage {
     pub async fn delete_run(&self, id: RunId) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let n = tx.execute("DELETE FROM runs WHERE id = ?1", params![id.as_str()])?;
+                let mut tx = conn.immediate_tx()?;
+                let n = tx.execute("DELETE FROM runs WHERE id = ?1", &params![id.as_str()])?;
                 // FTS virtual tables have no FK cascade; drop the search rows
                 // in the same transaction.
                 tx.execute(
                     "DELETE FROM runs_fts WHERE run_id = ?1",
-                    params![id.as_str()],
+                    &params![id.as_str()],
                 )?;
                 tx.execute(
                     "DELETE FROM cases_fts WHERE run_id = ?1",
-                    params![id.as_str()],
+                    &params![id.as_str()],
                 )?;
                 tx.commit()?;
                 Ok(n > 0)
@@ -401,15 +399,13 @@ impl PreparedRun {
         })
     }
 
-    fn insert(self, conn: &mut Connection) -> anyhow::Result<IngestOutcome> {
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT content_hash FROM runs WHERE id = ?1",
-                params![self.id],
-                |row| row.get(0),
-            )
-            .ok();
+    fn insert(self, conn: &mut Conn<'_>) -> anyhow::Result<IngestOutcome> {
+        let mut tx = conn.immediate_tx()?;
+        let existing: Option<String> = tx.query_row_opt(
+            "SELECT content_hash FROM runs WHERE id = ?1",
+            &params![self.id],
+            |row| row.get(0),
+        )?;
         if let Some(existing_hash) = existing {
             return Ok(if existing_hash == self.content_hash {
                 IngestOutcome::Existing
@@ -440,7 +436,7 @@ impl PreparedRun {
                 ?34, ?35, ?36, ?37,
                 ?38, ?39, ?40, ?41
             )",
-            params![
+            &params![
                 self.id,
                 self.project,
                 self.suite,
@@ -487,19 +483,20 @@ impl PreparedRun {
 
         tx.execute(
             "INSERT INTO run_blobs (run_id, encoding, body) VALUES (?1, 'zstd', ?2)",
-            params![self.id, self.blob],
+            &params![self.id, self.blob],
         )?;
 
         for tag in &self.tags {
             tx.execute(
-                "INSERT OR IGNORE INTO run_tags (run_id, tag) VALUES (?1, ?2)",
-                params![self.id, tag],
+                "INSERT INTO run_tags (run_id, tag) VALUES (?1, ?2)
+                 ON CONFLICT (run_id, tag) DO NOTHING",
+                &params![self.id, tag],
             )?;
         }
 
         for case in &self.cases {
             tx.execute(
-                "INSERT OR IGNORE INTO cases (
+                "INSERT INTO cases (
                     run_id, case_key, idx, name, status, output_preview, output_text,
                     output_hash, asserts, prompt_tokens, completion_tokens, cost_microusd,
                     latency_ms, detail,
@@ -510,8 +507,8 @@ impl PreparedRun {
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                     ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27,
                     ?28, ?29
-                )",
-                params![
+                ) ON CONFLICT (run_id, case_key) DO NOTHING",
+                &params![
                     self.id,
                     case.case_key,
                     case.idx,
@@ -555,12 +552,13 @@ impl PreparedRun {
             )?;
             for tag in &case.tags {
                 tx.execute(
-                    "INSERT OR IGNORE INTO case_tags (run_id, case_key, tag) VALUES (?1, ?2, ?3)",
-                    params![self.id, case.case_key, tag],
+                    "INSERT INTO case_tags (run_id, case_key, tag) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (run_id, case_key, tag) DO NOTHING",
+                    &params![self.id, case.case_key, tag],
                 )?;
             }
             super::search::index_case(
-                &tx,
+                &mut tx,
                 &super::search::CaseFtsRow {
                     run_id: &self.id,
                     case_key: &case.case_key,
@@ -574,7 +572,7 @@ impl PreparedRun {
         }
 
         super::search::index_run(
-            &tx,
+            &mut tx,
             &super::search::RunFtsRow {
                 run_id: &self.id,
                 project: self.project.as_deref(),
@@ -645,7 +643,7 @@ pub struct RunListPage {
 const FULLY_CACHED: &str = "cache_misses = 0 AND cache_hits > 0";
 
 impl RunListFilter {
-    fn query(self, conn: &Connection) -> anyhow::Result<RunListPage> {
+    fn query(self, conn: &mut Conn<'_>) -> anyhow::Result<RunListPage> {
         let mut sql = String::from(
             "SELECT id, project, suite, created_at, git_branch, git_commit, git_dirty,
                     case_count, pass_count, fail_count, error_count,
@@ -657,7 +655,7 @@ impl RunListFilter {
              FROM runs",
         );
         let mut clauses: Vec<String> = Vec::new();
-        let mut args: Vec<rusqlite::types::Value> = Vec::new();
+        let mut args: Vec<Value> = Vec::new();
 
         if let Some(project) = &self.project {
             clauses.push(format!("project = ?{}", args.len() + 1));
@@ -732,23 +730,22 @@ impl RunListFilter {
                 count_sql.push_str(" AND ");
                 count_sql.push_str(clause);
             }
-            let n: i64 =
-                conn.query_row(&count_sql, rusqlite::params_from_iter(args.iter()), |row| {
-                    row.get(0)
-                })?;
+            let n: i64 = conn.query_row(&count_sql, &args, |row| row.get(0))?;
             Some(n)
         } else {
             None
         };
         match self.cached {
-            // `IS NOT 1` rather than `NOT (...)`, and it is not a style choice:
-            // a legacy row has NULL cache counters, so the predicate evaluates
-            // to NULL and `NOT NULL` is NULL — which SQLite filters out, hiding
-            // exactly the rows the "never hide what we cannot classify" rule
-            // exists to protect. `IS NOT 1` is NULL-safe: NULL IS NOT 1 is true.
+            // `IS NOT TRUE` rather than `NOT (...)`, and it is not a style
+            // choice: a legacy row has NULL cache counters, so the predicate
+            // evaluates to NULL and `NOT NULL` is NULL — which both engines
+            // filter out, hiding exactly the rows the "never hide what we
+            // cannot classify" rule exists to protect. `NULL IS NOT TRUE` is
+            // true on SQLite (≥3.23) and Postgres alike; the SQLite-only
+            // spelling `IS NOT 1` is a boolean/integer type error on Postgres.
             // (Pinned by `legacy_null_cache_columns_are_never_hidden`, which
             // caught this the moment the COALESCE wrapper came off.)
-            Some(CachedFilter::Exclude) => clauses.push(format!("{hidden_predicate} IS NOT 1")),
+            Some(CachedFilter::Exclude) => clauses.push(format!("{hidden_predicate} IS NOT TRUE")),
             Some(CachedFilter::Only) => clauses.push(format!("({FULLY_CACHED})")),
             Some(CachedFilter::All) | None => {}
         }
@@ -767,15 +764,15 @@ impl RunListFilter {
             sql.push_str(" WHERE ");
             sql.push_str(&clauses.join(" AND "));
         }
-        sql.push_str(" ORDER BY created_at DESC, id DESC LIMIT ?");
         // fetch one extra to detect a next page
         let fetch = self.limit + 1;
         args.push(fetch.into());
-        let limit_idx = args.len();
-        sql = sql.replacen("LIMIT ?", &format!("LIMIT ?{limit_idx}"), 1);
+        sql.push_str(&format!(
+            " ORDER BY created_at DESC, id DESC LIMIT ?{}",
+            args.len()
+        ));
 
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+        let mut collected: Vec<RunRow> = conn.query_map(&sql, &args, |row| {
             Ok(RunRow {
                 id: row.get(0)?,
                 project: row.get(1)?,
@@ -806,10 +803,6 @@ impl RunListFilter {
                 xpass_count: row.get(26)?,
             })
         })?;
-        let mut collected: Vec<RunRow> = Vec::new();
-        for row in rows {
-            collected.push(row?);
-        }
 
         let mut next_cursor = None;
         if collected.len() as i64 > self.limit {
@@ -923,10 +916,12 @@ impl RunRow {
     }
 }
 
-pub(super) fn load_run_tags(conn: &Connection, run_id: &str) -> anyhow::Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT tag FROM run_tags WHERE run_id = ?1 ORDER BY tag")?;
-    let rows = stmt.query_map(params![run_id], |row| row.get::<_, String>(0))?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+pub(super) fn load_run_tags(conn: &mut Conn<'_>, run_id: &str) -> anyhow::Result<Vec<String>> {
+    conn.query_map(
+        "SELECT tag FROM run_tags WHERE run_id = ?1 ORDER BY tag",
+        &params![run_id],
+        |row| row.get::<String>(0),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -934,11 +929,11 @@ pub(super) fn load_run_tags(conn: &Connection, run_id: &str) -> anyhow::Result<V
 // ---------------------------------------------------------------------------
 
 fn get_run_detail(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     id: &RunId,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<RunDetailResponse>> {
-    let mut args: Vec<rusqlite::types::Value> = vec![id.as_str().to_string().into()];
+    let mut args: Vec<Value> = vec![id.as_str().to_string().into()];
     let clause = visibility_predicate("runs", vis, &mut args);
     let sql = format!(
         "SELECT id, project, suite, created_at, uploaded_at, schema_version,
@@ -952,57 +947,55 @@ fn get_run_detail(
                     xfail_count, xpass_count
              FROM runs WHERE id = ?1 AND {clause}"
     );
-    let row = conn
-        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
-            Ok(RunDetailResponse {
-                id: RunId::new(row.get::<_, String>(0)?),
-                project: row.get::<_, Option<String>>(1)?,
-                suite: row.get::<_, Option<String>>(2)?,
-                created_at: ms_to_rfc3339(row.get::<_, i64>(3)?),
-                uploaded_at: ms_to_rfc3339(row.get::<_, i64>(4)?),
-                schema_version: row.get::<_, i64>(5)?,
-                git_branch: row.get::<_, Option<String>>(6)?,
-                git_commit: row.get::<_, Option<String>>(7)?,
-                git_dirty: row.get::<_, Option<i64>>(8)?.map(|d| d != 0),
-                ci_provider: row.get::<_, Option<String>>(9)?,
-                ci_run_url: row.get::<_, Option<String>>(10)?,
-                case_count: row.get::<_, i64>(11)?,
-                pass_count: row.get::<_, i64>(12)?,
-                fail_count: row.get::<_, i64>(13)?,
-                error_count: row.get::<_, i64>(14)?,
-                prompt_tokens: row.get::<_, i64>(15)?,
-                completion_tokens: row.get::<_, i64>(16)?,
-                cost_usd: from_microusd(row.get::<_, Option<i64>>(17)?),
-                duration_ms: row.get::<_, i64>(18)?,
-                content_hash: row.get::<_, String>(19)?,
-                uploaded_by: row.get::<_, Option<String>>(20)?,
-                // Map the empty-string backfill sentinel to `None`.
-                config_digest: empty_to_none(row.get::<_, Option<String>>(21)?),
-                cache_hits: clean_cache_count(row.get::<_, Option<i64>>(22)?),
-                cache_misses: clean_cache_count(row.get::<_, Option<i64>>(23)?),
-                actor: row.get::<_, Option<String>>(24)?,
-                host: row.get::<_, Option<String>>(25)?,
-                note: row.get::<_, Option<String>>(26)?,
-                domarinn_version: row.get::<_, Option<String>>(27)?,
-                // Migration-12 columns. NULL for anything stored before
-                // them, and rendered as absent rather than zero — the run
-                // may well have had cache activity we simply did not
-                // record.
-                cache_read_tokens: row.get::<_, Option<i64>>(28)?,
-                cache_write_tokens: row.get::<_, Option<i64>>(29)?,
-                cache_savings_usd: from_microusd(row.get::<_, Option<i64>>(30)?),
-                grader_cost_usd: from_microusd(row.get::<_, Option<i64>>(31)?),
-                // Migration-19 counters: NULL honestly reads 0.
-                xfail_count: row.get::<_, Option<i64>>(32)?.unwrap_or(0),
-                xpass_count: row.get::<_, Option<i64>>(33)?.unwrap_or(0),
-                // Filled in below, after the row is loaded.
-                tags: Vec::new(),
-                assert_labels: Vec::new(),
-                empty_counts: None,
-            })
+    // Never `.ok()`: a fault must not read as a missing run (see `sets`).
+    let row = conn.query_row_opt(&sql, &args, |row| {
+        Ok(RunDetailResponse {
+            id: RunId::new(row.get::<String>(0)?),
+            project: row.get::<Option<String>>(1)?,
+            suite: row.get::<Option<String>>(2)?,
+            created_at: ms_to_rfc3339(row.get::<i64>(3)?),
+            uploaded_at: ms_to_rfc3339(row.get::<i64>(4)?),
+            schema_version: row.get::<i64>(5)?,
+            git_branch: row.get::<Option<String>>(6)?,
+            git_commit: row.get::<Option<String>>(7)?,
+            git_dirty: row.get::<Option<i64>>(8)?.map(|d| d != 0),
+            ci_provider: row.get::<Option<String>>(9)?,
+            ci_run_url: row.get::<Option<String>>(10)?,
+            case_count: row.get::<i64>(11)?,
+            pass_count: row.get::<i64>(12)?,
+            fail_count: row.get::<i64>(13)?,
+            error_count: row.get::<i64>(14)?,
+            prompt_tokens: row.get::<i64>(15)?,
+            completion_tokens: row.get::<i64>(16)?,
+            cost_usd: from_microusd(row.get::<Option<i64>>(17)?),
+            duration_ms: row.get::<i64>(18)?,
+            content_hash: row.get::<String>(19)?,
+            uploaded_by: row.get::<Option<String>>(20)?,
+            // Map the empty-string backfill sentinel to `None`.
+            config_digest: empty_to_none(row.get::<Option<String>>(21)?),
+            cache_hits: clean_cache_count(row.get::<Option<i64>>(22)?),
+            cache_misses: clean_cache_count(row.get::<Option<i64>>(23)?),
+            actor: row.get::<Option<String>>(24)?,
+            host: row.get::<Option<String>>(25)?,
+            note: row.get::<Option<String>>(26)?,
+            domarinn_version: row.get::<Option<String>>(27)?,
+            // Migration-12 columns. NULL for anything stored before
+            // them, and rendered as absent rather than zero — the run
+            // may well have had cache activity we simply did not
+            // record.
+            cache_read_tokens: row.get::<Option<i64>>(28)?,
+            cache_write_tokens: row.get::<Option<i64>>(29)?,
+            cache_savings_usd: from_microusd(row.get::<Option<i64>>(30)?),
+            grader_cost_usd: from_microusd(row.get::<Option<i64>>(31)?),
+            // Migration-19 counters: NULL honestly reads 0.
+            xfail_count: row.get::<Option<i64>>(32)?.unwrap_or(0),
+            xpass_count: row.get::<Option<i64>>(33)?.unwrap_or(0),
+            // Filled in below, after the row is loaded.
+            tags: Vec::new(),
+            assert_labels: Vec::new(),
+            empty_counts: None,
         })
-        // Never `.ok()`: a fault must not read as a missing run (see `sets`).
-        .optional()?;
+    })?;
 
     let Some(mut detail) = row else {
         return Ok(None);
@@ -1029,32 +1022,33 @@ fn get_run_detail(
 /// excludes legacy pre-backfill rows. Index-covered by migration 15's
 /// `idx_cases_run_empty_reason(run_id, empty_reason)`.
 fn empty_counts_by_reason(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     run_id: &str,
 ) -> anyhow::Result<Option<BTreeMap<String, u64>>> {
-    let mut stmt = conn.prepare(
+    let rows = conn.query_map(
         "SELECT empty_reason, COUNT(*) FROM cases
           WHERE run_id = ?1 AND empty_reason IS NOT NULL AND empty_reason <> ''
           GROUP BY empty_reason",
+        &params![run_id],
+        |row| Ok((row.get::<String>(0)?, row.get::<i64>(1)?)),
     )?;
-    let rows = stmt.query_map(params![run_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    })?;
     let mut counts = BTreeMap::new();
-    for row in rows {
-        let (reason, n) = row?;
+    for (reason, n) in rows {
         counts.insert(reason, n.max(0) as u64);
     }
     // Omitted, never `{}` — see `RunDetailResponse::empty_counts`.
     Ok((!counts.is_empty()).then_some(counts))
 }
 
-fn distinct_assert_labels(conn: &Connection, run_id: &str) -> anyhow::Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT asserts FROM cases WHERE run_id = ?1")?;
-    let rows = stmt.query_map(params![run_id], |row| row.get::<_, Option<String>>(0))?;
+fn distinct_assert_labels(conn: &mut Conn<'_>, run_id: &str) -> anyhow::Result<Vec<String>> {
+    let rows = conn.query_map(
+        "SELECT asserts FROM cases WHERE run_id = ?1",
+        &params![run_id],
+        |row| row.get::<Option<String>>(0),
+    )?;
     let mut seen: Vec<String> = Vec::new();
     for row in rows {
-        let Some(json) = row? else { continue };
+        let Some(json) = row else { continue };
         // Graceful degrade (same rationale as `CaseListFilter::query` in
         // storage/cases.rs): rows written by this codebase always serialize as
         // a `Vec<CaseAssertLean>`, so a parse failure here means a hand-tampered
@@ -1080,7 +1074,7 @@ fn distinct_assert_labels(conn: &Connection, run_id: &str) -> anyhow::Result<Vec
 }
 
 fn export_run_blob(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     id: &RunId,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<serde_json::Value>> {
@@ -1096,18 +1090,14 @@ fn export_run_blob(
 /// is invisible. `run_blobs` carries no `project`/`suite` of its own, so the
 /// access check rides on an `EXISTS` over `runs`.
 fn load_run_blob(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     id: &RunId,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    let mut args: Vec<rusqlite::types::Value> = vec![id.as_str().to_string().into()];
+    let mut args: Vec<Value> = vec![id.as_str().to_string().into()];
     let clause = visible_run_predicate(1, vis, &mut args);
     let sql = format!("SELECT body FROM run_blobs WHERE run_id = ?1 AND {clause}");
-    Ok(conn
-        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
-            row.get(0)
-        })
-        .ok())
+    conn.query_row_opt(&sql, &args, |row| row.get(0))
 }
 
 /// Like [`export_run_blob`], but extracts just the `config_digest` and
@@ -1116,7 +1106,7 @@ fn load_run_blob(
 /// blob (unknown run). The digest is `None` when absent or the empty-string
 /// sentinel; the snapshot is `null` when the document has none.
 fn run_config_blob(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     id: &RunId,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<RunConfigResponse>> {

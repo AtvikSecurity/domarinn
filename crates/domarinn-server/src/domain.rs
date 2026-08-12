@@ -1,8 +1,10 @@
-//! Enums and id newtypes shared across the HTTP and SQLite boundaries.
+//! Enums and id newtypes shared across the HTTP and SQL boundaries.
 //!
 //! [`Role`] and [`crate::auth::Scope`] cross both boundaries: they are stored
-//! in SQLite (via [`rusqlite::types::ToSql`]/[`rusqlite::types::FromSql`]) and
-//! appear in JSON request/response bodies (via `serde`). Every enum here
+//! in SQL (via [`rusqlite::types::ToSql`]/[`rusqlite::types::FromSql`] on the
+//! direct-rusqlite path, and via the executor's `IntoValue`/`FromValue` pair
+//! over its owned `Value` on the backend-neutral `crate::storage::exec` one)
+//! and appear in JSON request/response bodies (via `serde`). Every enum here
 //! serializes to the exact lowercase strings the wire format already used as
 //! plain strings before this module existed — see the server integration
 //! tests for the frozen JSON assertions.
@@ -14,9 +16,9 @@
 //! [`UserId`] and [`ApiKeyId`] are the server-local counterparts of core's
 //! [`domarinn_core::ids::RunId`]/[`domarinn_core::ids::CaseKey`]: opaque,
 //! `#[serde(transparent)]` string newtypes (see that module's docs for why
-//! `transparent` is load-bearing) with a `ToSql`/`FromSql` pair so storage
-//! code binds them directly instead of threading `.as_str()` through every
-//! call site. The macro is a local copy rather than a re-export from core —
+//! `transparent` is load-bearing) with a `ToSql`/`FromSql` pair (plus the
+//! executor's `IntoValue`/`FromValue` twin) so storage code binds them
+//! directly instead of threading `.as_str()` through every call site. The macro is a local copy rather than a re-export from core —
 //! core stays rusqlite-free (orphan rule), and these two ids are server-only.
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
@@ -24,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::auth::Scope;
+use crate::storage::exec::{FromValue, IntoValue, Value};
 
 macro_rules! string_id {
     ($(#[$meta:meta])* pub struct $name:ident;) => {
@@ -79,6 +82,20 @@ macro_rules! string_id {
         impl FromSql for $name {
             fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
                 Ok($name::new(value.as_str()?))
+            }
+        }
+
+        impl crate::storage::exec::IntoValue for $name {
+            fn to_value(&self) -> crate::storage::exec::Value {
+                crate::storage::exec::Value::Text(self.as_str().to_owned())
+            }
+        }
+
+        impl crate::storage::exec::FromValue for $name {
+            fn from_value(v: crate::storage::exec::Value) -> anyhow::Result<Self> {
+                Ok($name::new(
+                    <String as crate::storage::exec::FromValue>::from_value(v)?,
+                ))
             }
         }
     };
@@ -150,6 +167,18 @@ impl FromSql for Role {
     }
 }
 
+impl IntoValue for Role {
+    fn to_value(&self) -> Value {
+        Value::Text(self.as_str().to_owned())
+    }
+}
+
+impl FromValue for Role {
+    fn from_value(v: Value) -> anyhow::Result<Self> {
+        String::from_value(v)?.parse().map_err(anyhow::Error::msg)
+    }
+}
+
 impl ToSql for Scope {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
         Ok(self.label().into())
@@ -162,6 +191,18 @@ impl FromSql for Scope {
             .as_str()?
             .parse()
             .map_err(|e: String| FromSqlError::Other(e.into()))
+    }
+}
+
+impl IntoValue for Scope {
+    fn to_value(&self) -> Value {
+        Value::Text(self.label().to_owned())
+    }
+}
+
+impl FromValue for Scope {
+    fn from_value(v: Value) -> anyhow::Result<Self> {
+        String::from_value(v)?.parse().map_err(anyhow::Error::msg)
     }
 }
 
@@ -216,6 +257,18 @@ impl FromSql for SsoKind {
             .as_str()?
             .parse()
             .map_err(|e: String| FromSqlError::Other(e.into()))
+    }
+}
+
+impl IntoValue for SsoKind {
+    fn to_value(&self) -> Value {
+        Value::Text(self.as_str().to_owned())
+    }
+}
+
+impl FromValue for SsoKind {
+    fn from_value(v: Value) -> anyhow::Result<Self> {
+        String::from_value(v)?.parse().map_err(anyhow::Error::msg)
     }
 }
 
@@ -369,6 +422,46 @@ mod tests {
             .query_row("SELECT id FROM t", [], |r| r.get(0))
             .unwrap();
         assert_eq!(got, id);
+    }
+
+    #[test]
+    fn role_round_trips_through_exec_value() {
+        for role in [Role::Admin, Role::Member, Role::Viewer] {
+            assert_eq!(Role::from_value(role.to_value()).unwrap(), role);
+        }
+    }
+
+    #[test]
+    fn scope_round_trips_through_exec_value() {
+        for scope in [Scope::Read, Scope::Write, Scope::Admin] {
+            assert_eq!(Scope::from_value(scope.to_value()).unwrap(), scope);
+        }
+    }
+
+    #[test]
+    fn sso_kind_round_trips_through_exec_value() {
+        for kind in [SsoKind::Oidc, SsoKind::Saml] {
+            assert_eq!(SsoKind::from_value(kind.to_value()).unwrap(), kind);
+        }
+    }
+
+    #[test]
+    fn user_id_round_trips_through_exec_value() {
+        let id = UserId::new("usr_abc123");
+        assert_eq!(UserId::from_value(id.to_value()).unwrap(), id);
+    }
+
+    #[test]
+    fn api_key_id_round_trips_through_exec_value() {
+        let id = ApiKeyId::new("key_xyz789");
+        assert_eq!(ApiKeyId::from_value(id.to_value()).unwrap(), id);
+    }
+
+    #[test]
+    fn invalid_exec_value_scope_fails_to_parse() {
+        // Mirrors `invalid_stored_scope_fails_to_parse`: garbage must error,
+        // never default.
+        assert!(Scope::from_value(Value::Text("bogus".into())).is_err());
     }
 
     #[test]

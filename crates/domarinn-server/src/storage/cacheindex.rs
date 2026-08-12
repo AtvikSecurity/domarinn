@@ -26,12 +26,12 @@
 //! rows, drained by [`Storage::cache_reindex_batch`] after the port is bound.
 
 use anyhow::Context;
-use rusqlite::{params, Connection, TransactionBehavior};
 use serde_json::Value as Json;
 
 use domarinn_core::cache::CacheEntry;
 use domarinn_core::types::Output;
 
+use super::exec::{params, Conn, Dialect, Queryable};
 use super::{now_ms, to_microusd, Storage};
 
 /// Characters of request/output text handed to FTS per entry.
@@ -252,13 +252,13 @@ impl Storage {
                 Ok(BackfillRemaining {
                     unindexed: conn.query_row(
                         "SELECT COUNT(*) FROM cache_entries WHERE indexed_at IS NULL",
-                        [],
+                        &[],
                         |r| r.get(0),
                     )?,
                     stale: conn.query_row(
                         "SELECT COUNT(*) FROM cache_entries
                           WHERE reindexed_at IS NULL AND indexed_at IS NOT NULL",
-                        [],
+                        &[],
                         |r| r.get(0),
                     )?,
                 })
@@ -291,20 +291,22 @@ struct Reindexed {
     index: Option<EntryIndex>,
 }
 
-fn read_reindex_batch(conn: &Connection, batch: i64) -> anyhow::Result<Vec<Reindexed>> {
+fn read_reindex_batch(conn: &mut Conn<'_>, batch: i64) -> anyhow::Result<Vec<Reindexed>> {
+    let id = entry_id_col(conn.dialect());
     // `indexed_at IS NOT NULL` keeps the two passes disjoint. A row that has
     // never been looked at is in both partial indexes, and letting this pass
     // claim it would derive it twice and stamp only half the state.
-    let candidates: Vec<(i64, Option<i64>)> = {
-        let mut stmt = conn.prepare(
-            "SELECT rowid, index_ok FROM cache_entries
+    let candidates: Vec<(i64, Option<i64>)> = conn.query_map(
+        &format!(
+            "SELECT {id}, index_ok FROM cache_entries
               WHERE reindexed_at IS NULL AND indexed_at IS NOT NULL
-              ORDER BY rowid LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![batch], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
+              ORDER BY {id} LIMIT ?1"
+        ),
+        &params![batch],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
 
+    let body_sql = format!("SELECT body FROM cache_entries WHERE {id} = ?1");
     let mut out = Vec::with_capacity(candidates.len());
     let mut budget = READ_BYTE_BUDGET;
     for (rowid, index_ok) in candidates {
@@ -314,13 +316,8 @@ fn read_reindex_batch(conn: &Connection, batch: i64) -> anyhow::Result<Vec<Reind
             out.push(Reindexed { rowid, index: None });
             continue;
         }
-        let body: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT body FROM cache_entries WHERE rowid = ?1",
-                params![rowid],
-                |row| row.get(0),
-            )
-            .ok();
+        let body: Option<Vec<u8>> =
+            conn.query_row_opt(&body_sql, &params![rowid], |row| row.get(0))?;
         // Gone since the id was read — a prune ran between the two statements.
         let Some(body) = body else { continue };
         budget = budget.saturating_sub(body.len());
@@ -335,32 +332,36 @@ fn read_reindex_batch(conn: &Connection, batch: i64) -> anyhow::Result<Vec<Reind
     Ok(out)
 }
 
-fn write_reindex_batch(conn: &mut Connection, derived: Vec<Reindexed>) -> anyhow::Result<usize> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+fn write_reindex_batch(conn: &mut Conn<'_>, derived: Vec<Reindexed>) -> anyhow::Result<usize> {
+    let mut tx = conn.immediate_tx()?;
+    let id = entry_id_col(tx.dialect());
+    let stamp_sql = format!(
+        "UPDATE cache_entries SET reindexed_at = ?1
+                  WHERE {id} = ?2 AND reindexed_at IS NULL"
+    );
+    let update_sql = format!(
+        "UPDATE cache_entries
+                SET reindexed_at = ?1, kind = ?2, model = ?3,
+                    cost_microusd = ?4, input_tokens = ?5, output_tokens = ?6,
+                    entry_created_at = ?7, request_summary = ?8, output_preview = ?9,
+                    empty_reason = ?10
+              WHERE {id} = ?11 AND reindexed_at IS NULL"
+    );
     let now = now_ms();
     let mut stamped = 0usize;
     for Reindexed { rowid, index } in derived {
         let Some(index) = index else {
             // Nothing was read, so nothing is re-derived; the stamp alone takes
             // the row out of the pending index. `index_ok` keeps its verdict.
-            stamped += tx.execute(
-                "UPDATE cache_entries SET reindexed_at = ?1
-                  WHERE rowid = ?2 AND reindexed_at IS NULL",
-                params![now, rowid],
-            )?;
+            stamped += tx.execute(&stamp_sql, &params![now, rowid])? as usize;
             continue;
         };
         // `AND reindexed_at IS NULL` closes the same read-then-write race
         // `write_batch` documents: a prune may have deleted this row and
         // SQLite may have handed its rowid to a new entry.
         let changed = tx.execute(
-            "UPDATE cache_entries
-                SET reindexed_at = ?1, kind = ?2, model = ?3,
-                    cost_microusd = ?4, input_tokens = ?5, output_tokens = ?6,
-                    entry_created_at = ?7, request_summary = ?8, output_preview = ?9,
-                    empty_reason = ?10
-              WHERE rowid = ?11 AND reindexed_at IS NULL",
-            params![
+            &update_sql,
+            &params![
                 now,
                 index.kind,
                 index.model,
@@ -378,7 +379,7 @@ fn write_reindex_batch(conn: &mut Connection, derived: Vec<Reindexed>) -> anyhow
             continue;
         }
         stamped += 1;
-        insert_fts(&tx, rowid, &index)?;
+        insert_fts(&mut tx, rowid, &index)?;
     }
     tx.commit()?;
     Ok(stamped)
@@ -391,25 +392,20 @@ fn write_reindex_batch(conn: &mut Connection, derived: Vec<Reindexed>) -> anyhow
 /// times the 4 MiB entry cap.
 const READ_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 
-fn read_batch(conn: &Connection, batch: i64) -> anyhow::Result<Vec<(i64, Option<EntryIndex>)>> {
-    let rowids: Vec<i64> = {
-        let mut stmt = conn.prepare(
-            "SELECT rowid FROM cache_entries WHERE indexed_at IS NULL ORDER BY rowid LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![batch], |row| row.get::<_, i64>(0))?;
-        rows.collect::<Result<Vec<i64>, _>>()?
-    };
+fn read_batch(conn: &mut Conn<'_>, batch: i64) -> anyhow::Result<Vec<(i64, Option<EntryIndex>)>> {
+    let id = entry_id_col(conn.dialect());
+    let rowids: Vec<i64> = conn.query_map(
+        &format!("SELECT {id} FROM cache_entries WHERE indexed_at IS NULL ORDER BY {id} LIMIT ?1"),
+        &params![batch],
+        |row| row.get(0),
+    )?;
 
+    let body_sql = format!("SELECT body FROM cache_entries WHERE {id} = ?1");
     let mut out = Vec::with_capacity(rowids.len());
     let mut budget = READ_BYTE_BUDGET;
     for rowid in rowids {
-        let body: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT body FROM cache_entries WHERE rowid = ?1",
-                params![rowid],
-                |row| row.get(0),
-            )
-            .ok();
+        let body: Option<Vec<u8>> =
+            conn.query_row_opt(&body_sql, &params![rowid], |row| row.get(0))?;
         // Gone since the id was read — a prune ran between the two statements.
         let Some(body) = body else { continue };
         budget = budget.saturating_sub(body.len());
@@ -422,10 +418,19 @@ fn read_batch(conn: &Connection, batch: i64) -> anyhow::Result<Vec<(i64, Option<
 }
 
 fn write_batch(
-    conn: &mut Connection,
+    conn: &mut Conn<'_>,
     derived: Vec<(i64, Option<EntryIndex>)>,
 ) -> anyhow::Result<usize> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut tx = conn.immediate_tx()?;
+    let sql = format!(
+        "UPDATE cache_entries
+                SET indexed_at = ?1, reindexed_at = ?1, index_ok = ?2, kind = ?3, model = ?4,
+                    cost_microusd = ?5, input_tokens = ?6, output_tokens = ?7,
+                    entry_created_at = ?8, request_summary = ?9, output_preview = ?10,
+                    empty_reason = ?11
+              WHERE {id} = ?12 AND indexed_at IS NULL",
+        id = entry_id_col(tx.dialect()),
+    );
     let now = now_ms();
     let mut stamped = 0usize;
     for (rowid, index) in derived {
@@ -434,13 +439,8 @@ fn write_batch(
         // entry, which would otherwise be stamped with another entry's
         // metadata. Not decorative.
         let changed = tx.execute(
-            "UPDATE cache_entries
-                SET indexed_at = ?1, reindexed_at = ?1, index_ok = ?2, kind = ?3, model = ?4,
-                    cost_microusd = ?5, input_tokens = ?6, output_tokens = ?7,
-                    entry_created_at = ?8, request_summary = ?9, output_preview = ?10,
-                    empty_reason = ?11
-              WHERE rowid = ?12 AND indexed_at IS NULL",
-            params![
+            &sql,
+            &params![
                 now,
                 index.is_some() as i64,
                 index.as_ref().and_then(|i| i.kind.clone()),
@@ -460,11 +460,20 @@ fn write_batch(
         }
         stamped += 1;
         if let Some(index) = index {
-            insert_fts(&tx, rowid, &index)?;
+            insert_fts(&mut tx, rowid, &index)?;
         }
     }
     tx.commit()?;
     Ok(stamped)
+}
+
+/// The cache_entries row-identity column: SQLite's implicit `rowid`;
+/// on Postgres an explicit `id BIGINT GENERATED ALWAYS AS IDENTITY`.
+pub(super) fn entry_id_col(dialect: Dialect) -> &'static str {
+    match dialect {
+        Dialect::Sqlite => "rowid",
+        Dialect::Postgres => "id",
+    }
 }
 
 /// Replace one entry's searchable text, rowid-aligned with `cache_entries` so
@@ -484,15 +493,20 @@ fn write_batch(
 /// back **including its `reindexed_at` stamps**. The driver would warn, sleep,
 /// re-read the identical batch, and fail identically — forever, never reaching
 /// the rows the pass exists to fix.
-pub(super) fn insert_fts(conn: &Connection, rowid: i64, index: &EntryIndex) -> anyhow::Result<()> {
-    conn.execute(
-        "DELETE FROM cache_entries_fts WHERE rowid = ?1",
-        params![rowid],
+pub(super) fn insert_fts(
+    q: &mut impl Queryable,
+    rowid: i64,
+    index: &EntryIndex,
+) -> anyhow::Result<()> {
+    let id = entry_id_col(q.dialect());
+    q.execute(
+        &format!("DELETE FROM cache_entries_fts WHERE {id} = ?1"),
+        &params![rowid],
     )
     .context("clearing stale cache entry text")?;
-    conn.execute(
-        "INSERT INTO cache_entries_fts (rowid, request, output) VALUES (?1, ?2, ?3)",
-        params![rowid, index.fts_request, index.fts_output],
+    q.execute(
+        &format!("INSERT INTO cache_entries_fts ({id}, request, output) VALUES (?1, ?2, ?3)"),
+        &params![rowid, index.fts_request, index.fts_output],
     )
     .context("indexing cache entry text")?;
     Ok(())

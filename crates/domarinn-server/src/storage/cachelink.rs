@@ -14,10 +14,9 @@
 //! ("nothing used it" or "everything that used it predates the column") and
 //! every reader has to say so rather than implying the entry is unused.
 
-use rusqlite::Connection;
-
 use domarinn_core::ids::RunId;
 
+use super::exec::{Conn, Queryable, Value};
 use super::{decode_cursor, encode_cursor, ms_to_rfc3339, Storage};
 use crate::dto::cacheentries::{CacheEntryRunRef, CacheEntryRunsResponse};
 use crate::runsets::{visibility_predicate, RunVisibility};
@@ -38,7 +37,7 @@ impl Storage {
 }
 
 fn entry_runs(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     key: &str,
     limit: i64,
     cursor: Option<(i64, RunId)>,
@@ -49,7 +48,7 @@ fn entry_runs(
     // Positional arguments, built in the order the SQL numbers them, so the
     // visibility parameter lands after the cursor's two slots when there is a
     // cursor and immediately after `LIMIT`'s when there is not.
-    let mut args: Vec<rusqlite::types::Value> = vec![key.to_string().into(), fetch.into()];
+    let mut args: Vec<Value> = vec![key.to_string().into(), fetch.into()];
     let mut sql = String::from(
         "SELECT runs.id, runs.project, runs.suite, runs.created_at,
                 cases.case_key, cases.name, cases.status, cases.cached
@@ -68,8 +67,7 @@ fn entry_runs(
     sql.push_str(&format!(" AND {visible}"));
     sql.push_str(" ORDER BY runs.created_at DESC, runs.id DESC LIMIT ?2");
 
-    let mut stmt = conn.prepare(&sql)?;
-    let map = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(CacheEntryRunRef, i64, String)> {
+    let mut rows: Vec<(CacheEntryRunRef, i64, String)> = conn.query_map(&sql, &args, |row| {
         let created_at: i64 = row.get(3)?;
         let run_id: String = row.get(0)?;
         Ok((
@@ -81,15 +79,12 @@ fn entry_runs(
                 case_key: row.get(4)?,
                 name: row.get(5)?,
                 status: row.get(6)?,
-                cached: row.get::<_, Option<i64>>(7)?.unwrap_or(0) != 0,
+                cached: row.get::<Option<i64>>(7)?.unwrap_or(0) != 0,
             },
             created_at,
             run_id,
         ))
-    };
-    let mut rows: Vec<(CacheEntryRunRef, i64, String)> = stmt
-        .query_map(rusqlite::params_from_iter(args.iter()), map)?
-        .collect::<Result<_, _>>()?;
+    })?;
 
     let next_cursor = if rows.len() as i64 > limit {
         rows.truncate(limit as usize);

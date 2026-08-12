@@ -303,6 +303,12 @@ async fn history_points_report_whether_each_run_was_replayed() {
 /// pre-backfill run was freshly measured invents a measurement nobody made.
 #[tokio::test]
 async fn history_reports_an_unclassifiable_run_as_unknown_not_fresh() {
+    // Simulates pre-backfill/undecodable-blob rows via rusqlite; a fresh
+    // Postgres deployment can never contain that sqlite-legacy state.
+    if common::pg::backend_is_postgres() {
+        eprintln!("skipping on postgres: exercises sqlite-legacy database state");
+        return;
+    }
     let (app, dir) = test_app(Settings::default()).await;
     seed_replay(&app).await;
 

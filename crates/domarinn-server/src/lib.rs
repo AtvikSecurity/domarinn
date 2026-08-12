@@ -198,6 +198,12 @@ pub struct Settings {
     /// declines to *write*, this one *deletes*, and mistaking them is data loss
     /// in one direction and silent cache poisoning in the other.
     pub cache_sweep_empty_reason: Option<String>,
+    /// Postgres connection URL (`DOMARINN_DATABASE_URL`). When set, all
+    /// storage lives in that database instead of SQLite files under the data
+    /// dir; `data_dir` stays required for the local cache tier. An
+    /// environment variable rather than a `ServerConfig` field, per that
+    /// struct's documented contract (see `local_cache_dir`).
+    pub database_url: Option<String>,
 }
 
 impl Settings {
@@ -227,6 +233,7 @@ impl Settings {
             local_cache_dir: env("DOMARINN_LOCAL_CACHE_DIR").map(std::path::PathBuf::from),
             local_cache_max_scan: env("DOMARINN_LOCAL_CACHE_MAX_SCAN").and_then(|v| v.parse().ok()),
             cache_sweep_empty_reason: env("DOMARINN_CACHE_SWEEP_EMPTY_REASON"),
+            database_url: env("DOMARINN_DATABASE_URL"),
         })
     }
 }
@@ -321,7 +328,10 @@ impl AppState {
     /// Open storage, bootstrap any configured admin, and derive the effective
     /// auth mode.
     pub async fn new(config: &ServerConfig, settings: Settings) -> anyhow::Result<AppState> {
-        let storage = Storage::open(config.data_dir.clone()).await?;
+        let storage = match settings.database_url.as_deref() {
+            Some(url) => Storage::open_postgres(url.to_owned()).await?,
+            None => Storage::open(config.data_dir.clone()).await?,
+        };
         let authenticator =
             StaticTokenAuthenticator::from_env_value(settings.tokens.as_deref().unwrap_or(""));
 
