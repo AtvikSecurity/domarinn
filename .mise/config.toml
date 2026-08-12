@@ -229,6 +229,17 @@ run = [
   "cargo build --release --target ${MUSL_TARGET:-x86_64-unknown-linux-musl} -p domarinn-cli",
 ]
 
+[tasks.ci-musl-build]
+description = "The musl-build gate as `mise run ci` runs it: builds when a musl C toolchain is present, otherwise skips LOUDLY. This cannot weaken the real gate — the CI musl-build job apt-installs musl-tools and invokes the strict `musl-build` task directly; this wrapper exists only so `mise run ci` stays usable on dev machines without musl-gcc."
+run = '''
+if command -v musl-gcc >/dev/null 2>&1; then
+  mise run musl-build
+else
+  echo "WARNING: musl-gcc not found - SKIPPING the static musl build gate." >&2
+  echo "CI still enforces it; install a musl C toolchain (e.g. Debian musl-tools) to run it locally." >&2
+fi
+'''
+
 [tasks.workflow-lint]
 description = "Static-analyse the GitHub Actions workflows with zizmor (the CI workflow-lint job). Offline, so it matches the pre-commit hook in .lefthook.toml byte for byte."
 run = "zizmor --offline .github/workflows/*.yml .github/actions/*/action.yml"
@@ -246,7 +257,7 @@ description = "Serve the docs locally with live reload on http://127.0.0.1:8000 
 run = "uv run mkdocs serve"
 
 [tasks.ci]
-description = "Run every CI gate locally: clippy, fmt-check, tests (SQLite and Postgres), schema/type drift checks, the web pipeline, the static musl build, the docs build, and the workflow lint."
+description = "Run every CI gate locally: clippy, fmt-check, tests (SQLite and Postgres), schema/type drift checks, the web pipeline, the static musl build (skipped loudly if no musl toolchain is installed), the docs build, and the workflow lint."
 depends = [
   "clippy",
   "fmt-check",
@@ -257,7 +268,7 @@ depends = [
   "web-lint",
   "web-build",
   "web-test",
-  "musl-build",
+  "ci-musl-build",
   "docs",
   "workflow-lint",
 ]
