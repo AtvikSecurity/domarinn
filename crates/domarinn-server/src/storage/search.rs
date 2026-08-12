@@ -14,12 +14,12 @@
 //! tables are not external-content over `cases`.
 
 use anyhow::Context;
-use rusqlite::{params, Connection, TransactionBehavior};
 
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::{CaseResult, CaseStatus};
 use domarinn_core::types::RenderedPrompt;
 
+use super::exec::{params, Conn, Queryable, Tx, Value};
 use super::{cached_clause_sql, decompress, ms_to_rfc3339, Storage};
 use crate::domain::CachedFilter;
 use crate::dto::search::{
@@ -93,7 +93,7 @@ fn fts_match_query(input: &str) -> Option<String> {
 }
 
 fn run_hits(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     fts: &str,
     limit: i64,
     vis: &RunVisibility,
@@ -101,7 +101,7 @@ fn run_hits(
 ) -> anyhow::Result<Vec<RunSearchHit>> {
     // The FTS tables index every run; the join back to `runs` is where access
     // is decided, so a restricted run never surfaces as a hit or a snippet.
-    let mut args: Vec<rusqlite::types::Value> = vec![
+    let mut args: Vec<Value> = vec![
         fts.to_string().into(),
         SNIPPET_OPEN.to_string().into(),
         SNIPPET_CLOSE.to_string().into(),
@@ -122,30 +122,28 @@ fn run_hits(
          ORDER BY rank
          LIMIT ?5"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+    conn.query_map(&sql, &args, |row| {
         Ok(RunSearchHit {
-            id: RunId::new(row.get::<_, String>(0)?),
+            id: RunId::new(row.get::<String>(0)?),
             project: row.get(1)?,
             suite: row.get(2)?,
             created_at: ms_to_rfc3339(row.get(3)?),
             snippet: row.get(4)?,
             // The CASE already emitted NULL for anything unclassifiable, so
             // this only has to distinguish the two real answers.
-            cached: row.get::<_, Option<i64>>(5)?.map(|v| v == 1),
+            cached: row.get::<Option<i64>>(5)?.map(|v| v == 1),
         })
-    })?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    })
 }
 
 fn case_hits(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     fts: &str,
     limit: i64,
     vis: &RunVisibility,
     cached: Option<CachedFilter>,
 ) -> anyhow::Result<Vec<CaseSearchHit>> {
-    let mut args: Vec<rusqlite::types::Value> = vec![
+    let mut args: Vec<Value> = vec![
         fts.to_string().into(),
         SNIPPET_OPEN.to_string().into(),
         SNIPPET_CLOSE.to_string().into(),
@@ -169,31 +167,26 @@ fn case_hits(
          ORDER BY rank
          LIMIT ?5"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+    conn.query_map(&sql, &args, |row| {
         Ok(CaseSearchHit {
-            run_id: RunId::new(row.get::<_, String>(0)?),
-            case_key: CaseKey::new(row.get::<_, String>(1)?),
+            run_id: RunId::new(row.get::<String>(0)?),
+            case_key: CaseKey::new(row.get::<String>(1)?),
             name: row.get(2)?,
             // The column is CHECK-constrained to the six statuses; Error
             // is an unreachable fallback, not a real decode path.
-            status: row
-                .get::<_, String>(3)?
-                .parse()
-                .unwrap_or(CaseStatus::Error),
+            status: row.get::<String>(3)?.parse().unwrap_or(CaseStatus::Error),
             project: row.get(4)?,
             suite: row.get(5)?,
             snippet: row.get(6)?,
             // Only 1 and 0 are claims; NULL and the -1 sentinel are both
             // "cannot tell" and must not flatten into `false`.
-            cached: match row.get::<_, Option<i64>>(7)? {
+            cached: match row.get::<Option<i64>>(7)? {
                 Some(1) => Some(true),
                 Some(0) => Some(false),
                 _ => None,
             },
         })
-    })?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -224,14 +217,11 @@ pub(super) struct CaseFtsRow<'a> {
 }
 
 /// Insert the `runs_fts` row for one run inside the caller's transaction.
-pub(super) fn index_run(
-    tx: &rusqlite::Transaction<'_>,
-    row: &RunFtsRow<'_>,
-) -> rusqlite::Result<()> {
-    tx.execute(
+pub(super) fn index_run(q: &mut impl Queryable, row: &RunFtsRow<'_>) -> anyhow::Result<()> {
+    q.execute(
         "INSERT INTO runs_fts (run_id, project, suite, branch, commit_sha, description, tags)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
+        &params![
             row.run_id,
             row.project.unwrap_or(""),
             row.suite.unwrap_or(""),
@@ -245,14 +235,11 @@ pub(super) fn index_run(
 }
 
 /// Insert the `cases_fts` row for one case inside the caller's transaction.
-pub(super) fn index_case(
-    tx: &rusqlite::Transaction<'_>,
-    row: &CaseFtsRow<'_>,
-) -> rusqlite::Result<()> {
-    tx.execute(
+pub(super) fn index_case(q: &mut impl Queryable, row: &CaseFtsRow<'_>) -> anyhow::Result<()> {
+    q.execute(
         "INSERT INTO cases_fts (run_id, case_key, name, prompt, output, error, tags)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
+        &params![
             row.run_id,
             row.case_key,
             row.name.unwrap_or(""),
@@ -314,25 +301,23 @@ const RUN_CHUNK: i64 = 50;
 /// so the driving predicate selects nothing on a current database. A case
 /// whose blob cannot be decoded is indexed from its promoted columns alone
 /// (name/output/tags) rather than skipped, so the run never rescans.
-pub(super) fn backfill(conn: &mut Connection) -> anyhow::Result<()> {
+pub(super) fn backfill(conn: &mut Conn<'_>) -> anyhow::Result<()> {
     loop {
-        let chunk: Vec<String> = {
-            let mut stmt = conn.prepare(
-                "SELECT id FROM runs
-                 WHERE id NOT IN (SELECT run_id FROM runs_fts)
-                 LIMIT ?1",
-            )?;
-            let rows = stmt.query_map(params![RUN_CHUNK], |row| row.get::<_, String>(0))?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
+        let chunk: Vec<String> = conn.query_map(
+            "SELECT id FROM runs
+             WHERE id NOT IN (SELECT run_id FROM runs_fts)
+             LIMIT ?1",
+            &params![RUN_CHUNK],
+            |row| row.get::<String>(0),
+        )?;
         if chunk.is_empty() {
             break;
         }
         let n = chunk.len();
 
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut tx = conn.immediate_tx()?;
         for run_id in chunk {
-            backfill_one_run(&tx, &run_id)
+            backfill_one_run(&mut tx, &run_id)
                 .with_context(|| format!("backfilling search index for run {run_id}"))?;
         }
         tx.commit()?;
@@ -341,27 +326,27 @@ pub(super) fn backfill(conn: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn backfill_one_run(tx: &rusqlite::Transaction<'_>, run_id: &str) -> anyhow::Result<()> {
+fn backfill_one_run(tx: &mut Tx<'_>, run_id: &str) -> anyhow::Result<()> {
     let (project, suite, branch, commit, description) = tx.query_row(
         "SELECT project, suite, git_branch, git_commit, description FROM runs WHERE id = ?1",
-        params![run_id],
+        &params![run_id],
         |row| {
             Ok((
-                row.get::<_, Option<String>>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
+                row.get::<Option<String>>(0)?,
+                row.get::<Option<String>>(1)?,
+                row.get::<Option<String>>(2)?,
+                row.get::<Option<String>>(3)?,
+                row.get::<Option<String>>(4)?,
             ))
         },
     )?;
-    let run_tags: Vec<String> = {
-        let mut stmt = tx.prepare("SELECT tag FROM run_tags WHERE run_id = ?1 ORDER BY tag")?;
-        let rows = stmt.query_map(params![run_id], |row| row.get::<_, String>(0))?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
+    let run_tags: Vec<String> = tx.query_map(
+        "SELECT tag FROM run_tags WHERE run_id = ?1 ORDER BY tag",
+        &params![run_id],
+        |row| row.get::<String>(0),
+    )?;
     index_run(
-        tx,
+        &mut *tx,
         &RunFtsRow {
             run_id,
             project: project.as_deref(),
@@ -379,19 +364,18 @@ fn backfill_one_run(tx: &rusqlite::Transaction<'_>, run_id: &str) -> anyhow::Res
         output_text: Option<String>,
         detail: Option<Vec<u8>>,
     }
-    let cases: Vec<StoredCase> = {
-        let mut stmt =
-            tx.prepare("SELECT case_key, name, output_text, detail FROM cases WHERE run_id = ?1")?;
-        let rows = stmt.query_map(params![run_id], |row| {
+    let cases: Vec<StoredCase> = tx.query_map(
+        "SELECT case_key, name, output_text, detail FROM cases WHERE run_id = ?1",
+        &params![run_id],
+        |row| {
             Ok(StoredCase {
                 case_key: row.get(0)?,
                 name: row.get(1)?,
                 output_text: row.get(2)?,
                 detail: row.get(3)?,
             })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
+        },
+    )?;
     for case in cases {
         let decoded: Option<CaseResult> = case
             .detail
@@ -412,7 +396,7 @@ fn backfill_one_run(tx: &rusqlite::Transaction<'_>, run_id: &str) -> anyhow::Res
         let error = decoded.as_ref().and_then(|c| c.error.clone());
         let tags = decoded.map(|c| c.tags).unwrap_or_default();
         index_case(
-            tx,
+            &mut *tx,
             &CaseFtsRow {
                 run_id,
                 case_key: &case.case_key,

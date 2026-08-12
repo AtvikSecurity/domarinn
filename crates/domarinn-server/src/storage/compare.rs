@@ -11,13 +11,12 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use rusqlite::{params, Connection, OptionalExtension};
-
 use domarinn_core::diff::{classify_change, CaseChange, ChangeInputs};
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 use domarinn_core::stats::{mcnemar, wilson, Z_95};
 
+use super::exec::{params, Conn, Queryable, Value};
 use super::{empty_to_none, from_microusd, parse_stored_asserts, Storage};
 use crate::dto::compare::{
     AssertFlip, CompareCaseRow, CompareConfig, CompareDelta, CompareResponse, CompareStats,
@@ -71,41 +70,39 @@ struct RunAgg {
 const COMPONENTS: [&str; 5] = ["prompts", "providers", "tests", "asserts", "grader"];
 
 fn load_compare_cases(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     run_id: &str,
 ) -> anyhow::Result<BTreeMap<String, CmpCase>> {
-    let mut stmt = conn.prepare(
+    let rows = conn.query_map(
         "SELECT case_key, name, status, output_hash, score, asserts,
                 prompt_digest, provider_digest, assert_digest
          FROM cases WHERE run_id = ?1",
+        &params![run_id],
+        |row| {
+            let case_key: String = row.get(0)?;
+            let status_raw: String = row.get(2)?;
+            let status = CaseStatus::from_str(&status_raw).map_err(anyhow::Error::msg)?;
+            // Graceful degrade, matching the case-list read path (see
+            // `parse_stored_asserts`): a corrupt/tampered row contributes no flips.
+            let asserts_str: Option<String> = row.get(5)?;
+            let asserts = parse_stored_asserts(asserts_str, run_id, &case_key);
+            Ok((
+                case_key,
+                CmpCase {
+                    name: row.get(1)?,
+                    status,
+                    output_hash: row.get(3)?,
+                    score: row.get(4)?,
+                    asserts,
+                    prompt_digest: row.get(6)?,
+                    provider_digest: row.get(7)?,
+                    assert_digest: row.get(8)?,
+                },
+            ))
+        },
     )?;
-    let rows = stmt.query_map(params![run_id], |row| {
-        let case_key: String = row.get(0)?;
-        let status_raw: String = row.get(2)?;
-        let status = CaseStatus::from_str(&status_raw).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, e.into())
-        })?;
-        // Graceful degrade, matching the case-list read path (see
-        // `parse_stored_asserts`): a corrupt/tampered row contributes no flips.
-        let asserts_str: Option<String> = row.get(5)?;
-        let asserts = parse_stored_asserts(asserts_str, run_id, &case_key);
-        Ok((
-            case_key,
-            CmpCase {
-                name: row.get(1)?,
-                status,
-                output_hash: row.get(3)?,
-                score: row.get(4)?,
-                asserts,
-                prompt_digest: row.get(6)?,
-                provider_digest: row.get(7)?,
-                assert_digest: row.get(8)?,
-            },
-        ))
-    })?;
     let mut map = BTreeMap::new();
-    for row in rows {
-        let (k, v) = row?;
+    for (k, v) in rows {
         map.insert(k, v);
     }
     Ok(map)
@@ -114,11 +111,11 @@ fn load_compare_cases(
 /// Load a run's aggregate columns. `None` means the run does not exist (drives
 /// the endpoint's 404).
 fn load_run_agg(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     run_id: &str,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<RunAgg>> {
-    let mut args: Vec<rusqlite::types::Value> = vec![run_id.to_string().into()];
+    let mut args: Vec<Value> = vec![run_id.to_string().into()];
     let visible = visibility_predicate("runs", vis, &mut args);
     let sql = format!(
         "SELECT prompt_tokens, completion_tokens, cost_microusd, duration_ms,
@@ -127,26 +124,24 @@ fn load_run_agg(
                     grader_digest
              FROM runs WHERE id = ?1 AND {visible}"
     );
-    let agg = conn
-        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
-            Ok(RunAgg {
-                prompt_tokens: row.get(0)?,
-                completion_tokens: row.get(1)?,
-                cost_microusd: row.get(2)?,
-                duration_ms: row.get(3)?,
-                case_count: row.get(4)?,
-                pass_count: row.get(5)?,
-                config_digest: row.get(6)?,
-                components: [
-                    row.get(7)?,
-                    row.get(8)?,
-                    row.get(9)?,
-                    row.get(10)?,
-                    row.get(11)?,
-                ],
-            })
+    let agg = conn.query_row_opt(&sql, &args, |row| {
+        Ok(RunAgg {
+            prompt_tokens: row.get(0)?,
+            completion_tokens: row.get(1)?,
+            cost_microusd: row.get(2)?,
+            duration_ms: row.get(3)?,
+            case_count: row.get(4)?,
+            pass_count: row.get(5)?,
+            config_digest: row.get(6)?,
+            components: [
+                row.get(7)?,
+                row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
+                row.get(11)?,
+            ],
         })
-        .optional()?;
+    })?;
     Ok(agg)
 }
 
@@ -248,7 +243,7 @@ fn classify(b: Option<&CmpCase>, h: Option<&CmpCase>) -> CompareDelta {
 }
 
 fn compare_runs(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     base: &RunId,
     head: &RunId,
     vis: &RunVisibility,

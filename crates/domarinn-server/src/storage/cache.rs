@@ -3,10 +3,9 @@
 //! (also used by the retention task).
 
 use anyhow::Context;
-use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, TransactionBehavior};
 
 use super::cacheindex::{self, EntryIndex};
+use super::exec::{params, Conn, Queryable, Value};
 use super::{ms_to_rfc3339, now_ms, CachePutOutcome, Storage};
 use crate::dto::cache::CacheStatsResponse;
 
@@ -14,26 +13,27 @@ impl Storage {
     pub async fn cache_get(&self, key: String) -> anyhow::Result<Option<Vec<u8>>> {
         self.cache
             .write(move |conn| {
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let body: Option<Vec<u8>> = tx
-                    .query_row(
-                        "SELECT body FROM cache_entries WHERE key = ?1",
-                        params![key],
-                        |row| row.get(0),
-                    )
-                    .ok();
+                let mut tx = conn.immediate_tx()?;
+                let body: Option<Vec<u8>> = tx.query_row_opt(
+                    "SELECT body FROM cache_entries WHERE key = ?1",
+                    &params![key],
+                    |row| row.get(0),
+                )?;
                 match &body {
                     Some(_) => {
                         tx.execute(
                             "UPDATE cache_entries SET last_access_at = ?2 WHERE key = ?1",
-                            params![key, now_ms()],
+                            &params![key, now_ms()],
                         )?;
-                        tx.execute("UPDATE cache_counters SET hits = hits + 1 WHERE id = 1", [])?;
+                        tx.execute(
+                            "UPDATE cache_counters SET hits = hits + 1 WHERE id = 1",
+                            &[],
+                        )?;
                     }
                     None => {
                         tx.execute(
                             "UPDATE cache_counters SET misses = misses + 1 WHERE id = 1",
-                            [],
+                            &[],
                         )?;
                     }
                 }
@@ -50,18 +50,18 @@ impl Storage {
     pub async fn cache_has(&self, key: String) -> anyhow::Result<bool> {
         self.cache
             .write(move |conn| {
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let mut tx = conn.immediate_tx()?;
                 let found = tx
-                    .query_row(
+                    .query_row_opt(
                         "SELECT 1 FROM cache_entries WHERE key = ?1",
-                        params![key],
+                        &params![key],
                         |_| Ok(()),
-                    )
-                    .is_ok();
+                    )?
+                    .is_some();
                 if found {
                     tx.execute(
                         "UPDATE cache_entries SET last_access_at = ?2 WHERE key = ?1",
-                        params![key, now_ms()],
+                        &params![key, now_ms()],
                     )?;
                 }
                 tx.commit()?;
@@ -90,23 +90,31 @@ impl Storage {
 
         self.cache
             .write(move |conn| {
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let mut tx = conn.immediate_tx()?;
                 let now = now_ms();
                 let size = body.len() as i64;
-                // First-write-wins: INSERT OR IGNORE, then detect whether we won.
-                // `reindexed_at` is stamped here with `indexed_at`: this row was
-                // just derived by *this* build, so the migration-3 catch-up pass
-                // has nothing to do with it. Leaving it NULL would put every new
-                // write into that pass's queue and re-read its body once more,
-                // for a column it already holds.
-                let n = tx.execute(
-                    "INSERT OR IGNORE INTO cache_entries
+                // First-write-wins: `ON CONFLICT DO NOTHING RETURNING` answers
+                // "did we win" and hands back the row's id for the FTS insert
+                // in one statement (`last_insert_rowid()` has no Postgres
+                // analogue). `reindexed_at` is stamped here with `indexed_at`:
+                // this row was just derived by *this* build, so the
+                // migration-3 catch-up pass has nothing to do with it. Leaving
+                // it NULL would put every new write into that pass's queue and
+                // re-read its body once more, for a column it already holds.
+                let sql = format!(
+                    "INSERT INTO cache_entries
                          (key, body, size, created_at, last_access_at,
                           indexed_at, reindexed_at, index_ok, kind, model, cost_microusd,
                           input_tokens, output_tokens, entry_created_at,
                           request_summary, output_preview, empty_reason)
-                     VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-                    params![
+                     VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                     ON CONFLICT (key) DO NOTHING
+                     RETURNING {id}",
+                    id = cacheindex::entry_id_col(tx.dialect()),
+                );
+                let won: Option<i64> = tx.query_row_opt(
+                    &sql,
+                    &params![
                         key,
                         body,
                         size,
@@ -123,14 +131,14 @@ impl Storage {
                         index.as_ref().and_then(|i| i.output_preview.clone()),
                         index.as_ref().and_then(|i| i.empty_reason.clone()),
                     ],
+                    |row| row.get(0),
                 )?;
-                let outcome = if n > 0 {
+                let outcome = if let Some(rowid) = won {
                     // Only the winner indexes: an entry is immutable, so a
                     // losing PUT has nothing to add and a second FTS row would
                     // make the same entry match twice.
                     if let Some(index) = &index {
-                        let rowid = tx.last_insert_rowid();
-                        cacheindex::insert_fts(&tx, rowid, index)?;
+                        cacheindex::insert_fts(&mut tx, rowid, index)?;
                     }
                     CachePutOutcome::Created
                 } else {
@@ -155,7 +163,7 @@ impl Storage {
         self.cache
             .write(move |conn| {
                 let removed =
-                    conn.execute("DELETE FROM cache_entries WHERE key = ?1", params![key])?;
+                    conn.execute("DELETE FROM cache_entries WHERE key = ?1", &params![key])?;
                 Ok(removed > 0)
             })
             .await
@@ -211,15 +219,15 @@ impl CachePruneFilter {
     }
 }
 
-fn cache_stats(conn: &Connection) -> anyhow::Result<CacheStatsResponse> {
+fn cache_stats(conn: &mut Conn<'_>) -> anyhow::Result<CacheStatsResponse> {
     let (entries, total_bytes, oldest): (i64, i64, Option<i64>) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(size), 0), MIN(created_at) FROM cache_entries",
-        [],
+        "SELECT COUNT(*), CAST(COALESCE(SUM(size), 0) AS BIGINT), MIN(created_at) FROM cache_entries",
+        &[],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     let (hits, misses): (i64, i64) = conn.query_row(
         "SELECT hits, misses FROM cache_counters WHERE id = 1",
-        [],
+        &[],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     // Its own query rather than a FILTER on the aggregate above, so the partial
@@ -227,7 +235,7 @@ fn cache_stats(conn: &Connection) -> anyhow::Result<CacheStatsResponse> {
     // drained, which is the steady state.
     let unindexed: i64 = conn.query_row(
         "SELECT COUNT(*) FROM cache_entries WHERE indexed_at IS NULL",
-        [],
+        &[],
         |row| row.get(0),
     )?;
     Ok(CacheStatsResponse {
@@ -256,9 +264,9 @@ fn cutoff_ms(days: i64) -> i64 {
 ///
 /// Returns an **empty** clause list for a filter that names no predicate. That
 /// is the load-bearing case: see [`cache_prune`].
-fn prune_predicate(filter: &CachePruneFilter) -> (Vec<String>, Vec<SqlValue>) {
+fn prune_predicate(filter: &CachePruneFilter) -> (Vec<String>, Vec<Value>) {
     let mut clauses: Vec<String> = Vec::new();
-    let mut args: Vec<SqlValue> = Vec::new();
+    let mut args: Vec<Value> = Vec::new();
 
     if let Some(days) = filter.older_than_days {
         args.push(cutoff_ms(days).into());
@@ -304,35 +312,34 @@ fn prune_predicate(filter: &CachePruneFilter) -> (Vec<String>, Vec<SqlValue>) {
 /// a filter, and one of them — the hourly retention task — is unattended. So the
 /// clauses are collected into a `Vec` and an empty one **skips the statement
 /// entirely** rather than falling through to a bare `DELETE FROM`.
-fn cache_prune(conn: &mut Connection, filter: &CachePruneFilter) -> anyhow::Result<u64> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+fn cache_prune(conn: &mut Conn<'_>, filter: &CachePruneFilter) -> anyhow::Result<u64> {
+    let mut tx = conn.immediate_tx()?;
     let mut pruned = 0u64;
 
     let (clauses, args) = prune_predicate(filter);
     if !clauses.is_empty() {
         let sql = format!("DELETE FROM cache_entries WHERE {}", clauses.join(" AND "));
-        pruned += tx.execute(&sql, params_from_iter(args.iter()))? as u64;
+        pruned += tx.execute(&sql, &args)?;
     }
 
     if let Some(target) = filter.target_bytes {
         let mut total: i64 = tx.query_row(
-            "SELECT COALESCE(SUM(size), 0) FROM cache_entries",
-            [],
+            "SELECT CAST(COALESCE(SUM(size), 0) AS BIGINT) FROM cache_entries",
+            &[],
             |row| row.get(0),
         )?;
         if total > target {
             // Evict least-recently-accessed first until under target.
-            let mut stmt =
-                tx.prepare("SELECT key, size FROM cache_entries ORDER BY last_access_at ASC")?;
-            let victims: Vec<(String, i64)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<Result<_, _>>()?;
-            drop(stmt);
+            let victims: Vec<(String, i64)> = tx.query_map(
+                "SELECT key, size FROM cache_entries ORDER BY last_access_at ASC",
+                &[],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
             for (key, size) in victims {
                 if total <= target {
                     break;
                 }
-                tx.execute("DELETE FROM cache_entries WHERE key = ?1", params![key])?;
+                tx.execute("DELETE FROM cache_entries WHERE key = ?1", &params![key])?;
                 total -= size;
                 pruned += 1;
             }

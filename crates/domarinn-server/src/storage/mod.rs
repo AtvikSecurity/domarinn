@@ -45,6 +45,8 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::domain::CachedFilter;
 use crate::dto::runs::CaseAssertLean;
 
+use self::exec::Conn;
+
 mod auth;
 mod backfill;
 mod cache;
@@ -53,6 +55,7 @@ pub(crate) mod cacheindex;
 pub(crate) mod cachelink;
 mod cases;
 mod compare;
+pub(crate) mod exec;
 mod history;
 mod matrix;
 mod projects;
@@ -144,13 +147,13 @@ impl Db {
     /// Run a closure with the exclusive writer connection.
     async fn write<F, T>(&self, f: F) -> anyhow::Result<T>
     where
-        F: FnOnce(&mut Connection) -> anyhow::Result<T> + Send + 'static,
+        F: FnOnce(&mut Conn<'_>) -> anyhow::Result<T> + Send + 'static,
         T: Send + 'static,
     {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = inner.writer.blocking_lock();
-            f(&mut guard)
+            let guard = inner.writer.blocking_lock();
+            f(&mut Conn::Sqlite(&guard))
         })
         .await
         .context("write task panicked")?
@@ -159,13 +162,13 @@ impl Db {
     /// Run a closure with a pooled read connection.
     async fn read<F, T>(&self, f: F) -> anyhow::Result<T>
     where
-        F: FnOnce(&Connection) -> anyhow::Result<T> + Send + 'static,
+        F: FnOnce(&mut Conn<'_>) -> anyhow::Result<T> + Send + 'static,
         T: Send + 'static,
     {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let conn = inner.acquire_reader()?;
-            let result = f(&conn);
+            let result = f(&mut Conn::Sqlite(&conn));
             inner.release_reader(conn);
             result
         })
@@ -224,7 +227,7 @@ impl Storage {
         schema::migrate_runs(&mut runs_writer).context("applying runs migrations")?;
         // Populate the migration-3 columns for any rows written before the
         // migration (fresh DBs and already-backfilled DBs select 0 rows).
-        backfill::run(&mut runs_writer).context("backfilling runs database")?;
+        backfill::run(&mut Conn::Sqlite(&runs_writer)).context("backfilling runs database")?;
 
         let cache_path = dir.join("cache.db");
         let mut cache_writer = open_conn(&cache_path)?;
@@ -327,11 +330,12 @@ pub(super) fn cached_hidden_sql(alias: &str) -> String {
 /// no-op cases.
 pub(super) fn cached_clause_sql(alias: &str, cached: Option<CachedFilter>) -> String {
     match cached {
-        // `IS NOT 1`, never `NOT (...)`. A legacy row with NULL counters makes
-        // the predicate NULL; `NOT NULL` is NULL; SQLite filters that out —
-        // hiding exactly the rows we cannot classify and have promised never
-        // to hide.
-        Some(CachedFilter::Exclude) => format!(" AND {} IS NOT 1", cached_hidden_sql(alias)),
+        // `IS NOT TRUE`, never `NOT (...)`. A legacy row with NULL counters
+        // makes the predicate NULL; `NOT NULL` is NULL; both engines filter
+        // that out — hiding exactly the rows we cannot classify and have
+        // promised never to hide. `NULL IS NOT TRUE` is true on SQLite
+        // (≥3.23) and Postgres alike, so those rows stay visible.
+        Some(CachedFilter::Exclude) => format!(" AND {} IS NOT TRUE", cached_hidden_sql(alias)),
         Some(CachedFilter::Only) => format!(" AND ({})", fully_cached_sql(alias)),
         Some(CachedFilter::All) | None => String::new(),
     }

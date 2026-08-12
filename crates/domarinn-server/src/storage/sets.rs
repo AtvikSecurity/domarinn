@@ -12,9 +12,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension};
-
+use super::exec::{Conn, Queryable, Row, Value};
 use super::projects::read_baseline;
 use super::runsets::{covering_level, restricted};
 use super::Storage;
@@ -34,9 +32,9 @@ const PROJECT_SPARK_CAP: usize = 20;
 
 /// The per-run aggregate columns, in the order every reader below unpacks them.
 const AGGREGATES: &str = "COUNT(*), MAX(created_at), \
-     COALESCE(SUM(pass_count), 0), COALESCE(SUM(fail_count), 0), \
-     COALESCE(SUM(error_count), 0), COALESCE(SUM(case_count), 0), \
-     COALESCE(SUM(CASE WHEN empty_count > 0 THEN empty_count ELSE 0 END), 0)";
+     CAST(COALESCE(SUM(pass_count), 0) AS BIGINT), CAST(COALESCE(SUM(fail_count), 0) AS BIGINT), \
+     CAST(COALESCE(SUM(error_count), 0) AS BIGINT), CAST(COALESCE(SUM(case_count), 0) AS BIGINT), \
+     CAST(COALESCE(SUM(CASE WHEN empty_count > 0 THEN empty_count ELSE 0 END), 0) AS BIGINT)";
 
 /// A run's pass rate, as SQL. A run with no cases is 0.0 rather than NULL: the
 /// sparkline is a `number[]`, and "no cases" is not a gap in the series.
@@ -61,7 +59,7 @@ struct Aggregates {
 }
 
 impl Aggregates {
-    fn read(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<Aggregates> {
+    fn read(row: &Row<'_>, offset: usize) -> anyhow::Result<Aggregates> {
         Ok(Aggregates {
             run_count: row.get(offset)?,
             last_run_at: row.get(offset + 1)?,
@@ -126,7 +124,7 @@ fn optional_text(value: Option<&str>) -> Value {
 /// `None` for the classes that do not ride grants at all: an admin is never
 /// filtered by one, and anonymous/static-token callers can never hold one.
 fn my_level(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     vis: &RunVisibility,
     project: &str,
     suite: Option<&str>,
@@ -137,7 +135,7 @@ fn my_level(
     }
 }
 
-fn list_run_sets(conn: &Connection, vis: &RunVisibility) -> anyhow::Result<SetsResponse> {
+fn list_run_sets(conn: &mut Conn<'_>, vis: &RunVisibility) -> anyhow::Result<SetsResponse> {
     let mut args: Vec<Value> = Vec::new();
     let visible = visibility_predicate("runs", vis, &mut args);
     let sql = format!(
@@ -147,15 +145,13 @@ fn list_run_sets(conn: &Connection, vis: &RunVisibility) -> anyhow::Result<SetsR
           GROUP BY project
           ORDER BY project ASC"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+    let rows: Vec<(String, i64, Aggregates)> = conn.query_map(&sql, &args, |row| {
         Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)?,
+            row.get::<String>(0)?,
+            row.get::<i64>(1)?,
             Aggregates::read(row, 2)?,
         ))
     })?;
-    let rows: Vec<(String, i64, Aggregates)> = rows.collect::<Result<_, _>>()?;
 
     let mut rates = latest_pass_rates(conn, vis)?;
     let mut projects = Vec::with_capacity(rows.len());
@@ -187,7 +183,7 @@ fn list_run_sets(conn: &Connection, vis: &RunVisibility) -> anyhow::Result<SetsR
 /// per project: the listing is unpaginated, so N+1 here would be N+1 over every
 /// project on the instance.
 fn latest_pass_rates(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     vis: &RunVisibility,
 ) -> anyhow::Result<HashMap<String, Vec<f64>>> {
     let mut args: Vec<Value> = Vec::new();
@@ -201,17 +197,15 @@ fn latest_pass_rates(
                                        ORDER BY created_at DESC, id DESC) AS rn
                FROM runs
               WHERE project IS NOT NULL AND suite IS NOT NULL AND {visible}
-         )
+         ) AS ranked
           WHERE rn = 1
           ORDER BY project ASC, suite ASC"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+    let rows: Vec<(String, f64)> = conn.query_map(&sql, &args, |row| {
+        Ok((row.get::<String>(0)?, row.get::<f64>(1)?))
     })?;
     let mut out: HashMap<String, Vec<f64>> = HashMap::new();
-    for row in rows {
-        let (project, rate) = row?;
+    for (project, rate) in rows {
         out.entry(project).or_default().push(rate);
     }
     Ok(out)
@@ -220,11 +214,12 @@ fn latest_pass_rates(
 /// Whether the project has any visible run — the existence test both detail
 /// endpoints 404 on.
 ///
-/// `.optional()?`, never `.is_ok()`: this answer becomes a 404, so swallowing
-/// the error would report "no such set" for a locked database or a corrupt
-/// page, and the operator would never see the 500 that is really happening.
+/// `.query_row_opt(...)?`, never `.is_ok()`: this answer becomes a 404, so
+/// swallowing the error would report "no such set" for a locked database or a
+/// corrupt page, and the operator would never see the 500 that is really
+/// happening.
 fn project_has_visible_runs(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     project: &str,
     suite: Option<&str>,
     vis: &RunVisibility,
@@ -236,14 +231,11 @@ fn project_has_visible_runs(
         "SELECT 1 FROM runs
           WHERE project = ?1 AND (?2 IS NULL OR suite = ?2) AND {visible} LIMIT 1"
     );
-    Ok(conn
-        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |_| Ok(()))
-        .optional()?
-        .is_some())
+    Ok(conn.query_row_opt(&sql, &args, |_| Ok(()))?.is_some())
 }
 
 fn run_set_project(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     project: &str,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<ProjectSetDetailResponse>> {
@@ -260,11 +252,9 @@ fn run_set_project(
           GROUP BY suite
           ORDER BY suite ASC"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
-        Ok((row.get::<_, String>(0)?, Aggregates::read(row, 1)?))
+    let rows: Vec<(String, Aggregates)> = conn.query_map(&sql, &args, |row| {
+        Ok((row.get::<String>(0)?, Aggregates::read(row, 1)?))
     })?;
-    let rows: Vec<(String, Aggregates)> = rows.collect::<Result<_, _>>()?;
 
     let mut sparklines = sparklines(conn, project, None, vis)?;
     let mut suites = Vec::with_capacity(rows.len());
@@ -296,7 +286,7 @@ fn run_set_project(
 }
 
 fn run_set_suite(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     project: &str,
     suite: &str,
     vis: &RunVisibility,
@@ -309,9 +299,7 @@ fn run_set_suite(
     let visible = visibility_predicate("runs", vis, &mut args);
     let sql =
         format!("SELECT {AGGREGATES} FROM runs WHERE project = ?1 AND suite = ?2 AND {visible}");
-    let agg = conn.query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
-        Aggregates::read(row, 0)
-    })?;
+    let agg = conn.query_row(&sql, &args, |row| Aggregates::read(row, 0))?;
 
     let sparkline = sparklines(conn, project, Some(suite), vis)?
         .remove(suite)
@@ -340,7 +328,7 @@ fn run_set_suite(
 /// `suite: Some(_)` narrows to one suite; `None` covers the whole project in a
 /// single pass, so the project detail does not issue a query per suite.
 fn sparklines(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     project: &str,
     suite: Option<&str>,
     vis: &RunVisibility,
@@ -358,17 +346,15 @@ fn sparklines(
                FROM runs
               WHERE project = ?1 AND suite IS NOT NULL
                 AND (?2 IS NULL OR suite = ?2) AND {visible}
-         )
+         ) AS ranked
           WHERE rn <= {cap}
           ORDER BY suite ASC, created_at ASC, id ASC"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+    let rows: Vec<(String, f64)> = conn.query_map(&sql, &args, |row| {
+        Ok((row.get::<String>(0)?, row.get::<f64>(1)?))
     })?;
     let mut out: HashMap<String, Vec<f64>> = HashMap::new();
-    for row in rows {
-        let (suite, rate) = row?;
+    for (suite, rate) in rows {
         out.entry(suite).or_default().push(rate);
     }
     Ok(out)

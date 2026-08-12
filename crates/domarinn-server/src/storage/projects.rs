@@ -1,9 +1,8 @@
 //! Projects, suites (with a recent pass-rate series), and baseline management.
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-
 use domarinn_core::ids::RunId;
 
+use super::exec::{params, Conn, Queryable, Value};
 use super::{ms_to_rfc3339, now_ms, Storage};
 use crate::dto::projects::{
     ProjectListItem, ProjectsResponse, SuitePoint, SuiteSummary, SuitesResponse,
@@ -41,8 +40,8 @@ impl Storage {
     /// * Membership, because it is what makes that probe pointless rather than
     ///   merely awkward, and because a baseline drawn from another suite is
     ///   meaningless anyway — every reader of this suite would be handed an id
-    ///   that does not belong to it. `IS` rather than `=` so the comparison is
-    ///   NULL-safe against a run that has no project or suite.
+    ///   that does not belong to it. `IS NOT DISTINCT FROM` rather than `=` so
+    ///   the comparison is NULL-safe against a run that has no project or suite.
     pub async fn set_baseline(
         &self,
         project: String,
@@ -52,8 +51,8 @@ impl Storage {
     ) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let mut args: Vec<rusqlite::types::Value> = vec![
+                let mut tx = conn.immediate_tx()?;
+                let mut args: Vec<Value> = vec![
                     run_id.as_str().to_string().into(),
                     project.clone().into(),
                     suite.clone().into(),
@@ -61,24 +60,22 @@ impl Storage {
                 let visible = visibility_predicate("runs", &vis, &mut args);
                 let sql = format!(
                     "SELECT 1 FROM runs
-                      WHERE id = ?1 AND project IS ?2 AND suite IS ?3 AND {visible}"
+                      WHERE id = ?1 AND project IS NOT DISTINCT FROM ?2
+                        AND suite IS NOT DISTINCT FROM ?3 AND {visible}"
                 );
-                // `.optional()?`, never `.is_ok()` — see
+                // `.query_row_opt(...)?`, never `.is_ok()` — see
                 // `project_has_visible_runs` in [`super::sets`]. A swallowed
                 // error here reports "no such run" for a broken database and
                 // silently leaves the baseline unpinned.
-                let exists = tx
-                    .query_row(&sql, rusqlite::params_from_iter(args.iter()), |_| Ok(()))
-                    .optional()?
-                    .is_some();
+                let exists = tx.query_row_opt(&sql, &args, |_| Ok(()))?.is_some();
                 if !exists {
                     return Ok(false);
                 }
                 tx.execute(
                     "INSERT INTO baselines (project, suite, run_id, set_at)
                      VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT(project, suite) DO UPDATE SET run_id = excluded.run_id, set_at = excluded.set_at",
-                    params![project, suite, run_id.as_str(), now_ms()],
+                     ON CONFLICT (project, suite) DO UPDATE SET run_id = excluded.run_id, set_at = excluded.set_at",
+                    &params![project, suite, run_id.as_str(), now_ms()],
                 )?;
                 tx.commit()?;
                 Ok(true)
@@ -91,7 +88,7 @@ impl Storage {
             .write(move |conn| {
                 let n = conn.execute(
                     "DELETE FROM baselines WHERE project = ?1 AND suite = ?2",
-                    params![project, suite],
+                    &params![project, suite],
                 )?;
                 Ok(n > 0)
             })
@@ -99,8 +96,8 @@ impl Storage {
     }
 }
 
-fn list_projects(conn: &Connection, vis: &RunVisibility) -> anyhow::Result<ProjectsResponse> {
-    let mut args: Vec<rusqlite::types::Value> = Vec::new();
+fn list_projects(conn: &mut Conn<'_>, vis: &RunVisibility) -> anyhow::Result<ProjectsResponse> {
+    let mut args: Vec<Value> = Vec::new();
     let visible = visibility_predicate("runs", vis, &mut args);
     let sql = format!(
         "SELECT project,
@@ -112,16 +109,14 @@ fn list_projects(conn: &Connection, vis: &RunVisibility) -> anyhow::Result<Proje
          GROUP BY project
          ORDER BY last_run_at DESC"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+    let projects: Vec<ProjectListItem> = conn.query_map(&sql, &args, |row| {
         Ok(ProjectListItem {
-            project: row.get::<_, String>(0)?,
-            run_count: row.get::<_, i64>(1)?,
-            suite_count: row.get::<_, i64>(2)?,
-            last_run_at: ms_to_rfc3339(row.get::<_, i64>(3)?),
+            project: row.get::<String>(0)?,
+            run_count: row.get::<i64>(1)?,
+            suite_count: row.get::<i64>(2)?,
+            last_run_at: ms_to_rfc3339(row.get::<i64>(3)?),
         })
     })?;
-    let projects: Vec<ProjectListItem> = rows.collect::<Result<_, _>>()?;
     Ok(ProjectsResponse { projects })
 }
 
@@ -134,76 +129,64 @@ fn list_projects(conn: &Connection, vis: &RunVisibility) -> anyhow::Result<Proje
 /// never checked — an upgraded database can hold a row pointing outside the
 /// set, and that row must not publish an invisible run's id on a visible suite.
 pub(super) fn read_baseline(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     project: &str,
     suite: &str,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<RunId>> {
-    let mut args: Vec<rusqlite::types::Value> =
-        vec![project.to_string().into(), suite.to_string().into()];
+    let mut args: Vec<Value> = vec![project.to_string().into(), suite.to_string().into()];
     let visible = visibility_predicate("runs", vis, &mut args);
     let sql = format!(
         "SELECT b.run_id FROM baselines b JOIN runs ON runs.id = b.run_id
           WHERE b.project = ?1 AND b.suite = ?2 AND {visible}"
     );
-    // `.optional()?`, never `.ok()` — see `project_has_visible_runs` in
+    // `.query_row_opt(...)?`, never `.ok()` — see `project_has_visible_runs` in
     // [`super::sets`]. A suite reading as unpinned because the query failed is
     // indistinguishable from one that was never pinned.
     Ok(conn
-        .query_row(&sql, rusqlite::params_from_iter(args.iter()), |row| {
-            row.get::<_, String>(0)
-        })
-        .optional()?
+        .query_row_opt(&sql, &args, |row| row.get::<String>(0))?
         .map(RunId::new))
 }
 
 fn list_suites(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     project: &str,
     vis: &RunVisibility,
 ) -> anyhow::Result<SuitesResponse> {
-    let mut names_args: Vec<rusqlite::types::Value> = vec![project.to_string().into()];
+    let mut names_args: Vec<Value> = vec![project.to_string().into()];
     let visible = visibility_predicate("runs", vis, &mut names_args);
     let names_sql = format!(
         "SELECT DISTINCT suite FROM runs
           WHERE project = ?1 AND suite IS NOT NULL AND {visible}"
     );
-    let mut stmt = conn.prepare(&names_sql)?;
-    let suite_names: Vec<String> = stmt
-        .query_map(rusqlite::params_from_iter(names_args.iter()), |row| {
-            row.get::<_, String>(0)
-        })?
-        .collect::<Result<_, _>>()?;
+    let suite_names: Vec<String> =
+        conn.query_map(&names_sql, &names_args, |row| row.get::<String>(0))?;
 
     let mut suites = Vec::new();
     for suite in suite_names {
-        let mut series_args: Vec<rusqlite::types::Value> =
-            vec![project.to_string().into(), suite.clone().into()];
+        let mut series_args: Vec<Value> = vec![project.to_string().into(), suite.clone().into()];
         let visible = visibility_predicate("runs", vis, &mut series_args);
         let series_sql = format!(
             "SELECT id, created_at, case_count, pass_count
              FROM runs WHERE project = ?1 AND suite = ?2 AND {visible}
              ORDER BY created_at DESC LIMIT 20"
         );
-        let mut series_stmt = conn.prepare(&series_sql)?;
-        let series: Vec<SuitePoint> = series_stmt
-            .query_map(rusqlite::params_from_iter(series_args.iter()), |row| {
-                let case_count: i64 = row.get(2)?;
-                let pass_count: i64 = row.get(3)?;
-                let pass_rate = if case_count > 0 {
-                    pass_count as f64 / case_count as f64
-                } else {
-                    0.0
-                };
-                Ok(SuitePoint {
-                    run_id: RunId::new(row.get::<_, String>(0)?),
-                    created_at: ms_to_rfc3339(row.get::<_, i64>(1)?),
-                    total: case_count,
-                    passed: pass_count,
-                    pass_rate,
-                })
-            })?
-            .collect::<Result<_, _>>()?;
+        let series: Vec<SuitePoint> = conn.query_map(&series_sql, &series_args, |row| {
+            let case_count: i64 = row.get(2)?;
+            let pass_count: i64 = row.get(3)?;
+            let pass_rate = if case_count > 0 {
+                pass_count as f64 / case_count as f64
+            } else {
+                0.0
+            };
+            Ok(SuitePoint {
+                run_id: RunId::new(row.get::<String>(0)?),
+                created_at: ms_to_rfc3339(row.get::<i64>(1)?),
+                total: case_count,
+                passed: pass_count,
+                pass_rate,
+            })
+        })?;
 
         let baseline_run_id = read_baseline(conn, project, &suite, vis)?;
 

@@ -7,11 +7,10 @@
 
 use std::str::FromStr;
 
-use rusqlite::Connection;
-
 use domarinn_core::ids::{CaseKey, RunId};
 use domarinn_core::result::CaseStatus;
 
+use super::exec::{Conn, Queryable, Value};
 use super::{empty_to_none, from_microusd, ms_to_rfc3339, Storage};
 use crate::dto::history::{CaseHistoryPoint, CaseHistoryResponse};
 use crate::runsets::{visibility_predicate, RunVisibility};
@@ -36,14 +35,14 @@ impl Storage {
 }
 
 fn case_history(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     project: &str,
     suite: &str,
     case_key: &CaseKey,
     limit: i64,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<CaseHistoryResponse>> {
-    let mut args: Vec<rusqlite::types::Value> = vec![
+    let mut args: Vec<Value> = vec![
         case_key.as_str().to_string().into(),
         project.to_string().into(),
         suite.to_string().into(),
@@ -60,38 +59,34 @@ fn case_history(
          ORDER BY r.created_at DESC, r.id DESC
          LIMIT ?4"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+    let mut points: Vec<CaseHistoryPoint> = conn.query_map(&sql, &args, |row| {
         let status_raw: String = row.get(4)?;
-        let status = CaseStatus::from_str(&status_raw).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, e.into())
-        })?;
+        let status = CaseStatus::from_str(&status_raw).map_err(anyhow::Error::msg)?;
         Ok(CaseHistoryPoint {
-            run_id: RunId::new(row.get::<_, String>(0)?),
-            created_at: ms_to_rfc3339(row.get::<_, i64>(1)?),
+            run_id: RunId::new(row.get::<String>(0)?),
+            created_at: ms_to_rfc3339(row.get::<i64>(1)?),
             // Empty-string sentinels (and NULLs) map to `None` on the wire.
-            git_commit: empty_to_none(row.get::<_, Option<String>>(2)?),
-            config_digest: empty_to_none(row.get::<_, Option<String>>(3)?),
+            git_commit: empty_to_none(row.get::<Option<String>>(2)?),
+            config_digest: empty_to_none(row.get::<Option<String>>(3)?),
             status,
-            score: row.get::<_, Option<f64>>(5)?,
-            output_hash: row.get::<_, Option<String>>(6)?,
+            score: row.get::<Option<f64>>(5)?,
+            output_hash: row.get::<Option<String>>(6)?,
             // Filled in after collection: it depends on the neighbouring row.
             output_changed: None,
-            prompt_tokens: row.get::<_, Option<i64>>(7)?,
-            completion_tokens: row.get::<_, Option<i64>>(8)?,
-            cost_usd: from_microusd(row.get::<_, Option<i64>>(9)?),
-            latency_ms: row.get::<_, Option<i64>>(10)?,
+            prompt_tokens: row.get::<Option<i64>>(7)?,
+            completion_tokens: row.get::<Option<i64>>(8)?,
+            cost_usd: from_microusd(row.get::<Option<i64>>(9)?),
+            latency_ms: row.get::<Option<i64>>(10)?,
             // Same mapping as `CaseListItem::cached`: only 1 and 0 are claims.
             // NULL (pre-backfill) and the -1 undecodable-blob sentinel both
             // mean "cannot tell", and must not be flattened into `false`.
-            cached: match row.get::<_, Option<i64>>(11)? {
+            cached: match row.get::<Option<i64>>(11)? {
                 Some(1) => Some(true),
                 Some(0) => Some(false),
                 _ => None,
             },
         })
     })?;
-    let mut points: Vec<CaseHistoryPoint> = rows.collect::<Result<_, _>>()?;
 
     // Zero rows means the case_key never appeared in any run of this
     // project/suite — a 404 at the handler.

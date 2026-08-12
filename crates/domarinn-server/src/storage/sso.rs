@@ -7,8 +7,7 @@
 //! Providers are stored namespaced (`oidc:google`, `saml:okta`) so OIDC and
 //! SAML provider names can never collide.
 
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
-
+use super::exec::{params, Queryable, Row, Tx};
 use super::{now_ms, Storage, UserRow};
 use crate::domain::{Role, SsoKind, UserId};
 
@@ -73,14 +72,14 @@ impl Storage {
                 let now = now_ms();
                 conn.execute(
                     "DELETE FROM login_transactions WHERE expires_at <= ?1",
-                    params![now],
+                    &params![now],
                 )?;
                 conn.execute(
                     "INSERT INTO login_transactions
                         (id_hash, kind, provider, nonce, pkce_verifier, request_id, return_to,
                          created_at, expires_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
+                    &params![
                         id_hash,
                         txn.kind,
                         txn.provider,
@@ -103,27 +102,25 @@ impl Storage {
     pub async fn take_login_txn(&self, id_hash: String) -> anyhow::Result<Option<LoginTxn>> {
         self.runs
             .write(move |conn| {
-                let row = conn
-                    .query_row(
-                        "DELETE FROM login_transactions WHERE id_hash = ?1
-                         RETURNING kind, provider, nonce, pkce_verifier, request_id, return_to,
-                                   expires_at",
-                        params![id_hash],
-                        |row| {
-                            Ok((
-                                LoginTxn {
-                                    kind: row.get(0)?,
-                                    provider: row.get(1)?,
-                                    nonce: row.get(2)?,
-                                    pkce_verifier: row.get(3)?,
-                                    request_id: row.get(4)?,
-                                    return_to: row.get(5)?,
-                                },
-                                row.get::<_, i64>(6)?,
-                            ))
-                        },
-                    )
-                    .optional()?;
+                let row = conn.query_row_opt(
+                    "DELETE FROM login_transactions WHERE id_hash = ?1
+                     RETURNING kind, provider, nonce, pkce_verifier, request_id, return_to,
+                               expires_at",
+                    &params![id_hash],
+                    |row| {
+                        Ok((
+                            LoginTxn {
+                                kind: row.get(0)?,
+                                provider: row.get(1)?,
+                                nonce: row.get(2)?,
+                                pkce_verifier: row.get(3)?,
+                                request_id: row.get(4)?,
+                                return_to: row.get(5)?,
+                            },
+                            row.get::<i64>(6)?,
+                        ))
+                    },
+                )?;
                 Ok(row.and_then(|(txn, expires_at)| (expires_at > now_ms()).then_some(txn)))
             })
             .await
@@ -138,31 +135,29 @@ impl Storage {
     ) -> anyhow::Result<Option<(UserIdentityRow, UserRow)>> {
         self.runs
             .read(move |conn| {
-                Ok(conn
-                    .query_row(
-                        "SELECT i.id, i.user_id, i.provider, i.kind, i.subject, i.email,
-                                i.display_name, i.created_at, i.last_login_at,
-                                u.id, u.username, u.password_hash, u.role, u.disabled,
-                                u.created_at, u.email
-                         FROM user_identities i JOIN users u ON u.id = i.user_id
-                         WHERE i.provider = ?1 AND i.subject = ?2",
-                        params![provider, subject],
-                        |row| {
-                            Ok((
-                                row_to_identity(row, 0)?,
-                                UserRow {
-                                    id: row.get(9)?,
-                                    username: row.get(10)?,
-                                    password_hash: row.get(11)?,
-                                    role: row.get(12)?,
-                                    disabled: row.get::<_, i64>(13)? != 0,
-                                    created_at: row.get(14)?,
-                                    email: row.get(15)?,
-                                },
-                            ))
-                        },
-                    )
-                    .optional()?)
+                conn.query_row_opt(
+                    "SELECT i.id, i.user_id, i.provider, i.kind, i.subject, i.email,
+                            i.display_name, i.created_at, i.last_login_at,
+                            u.id, u.username, u.password_hash, u.role, u.disabled,
+                            u.created_at, u.email
+                     FROM user_identities i JOIN users u ON u.id = i.user_id
+                     WHERE i.provider = ?1 AND i.subject = ?2",
+                    &params![provider, subject],
+                    |row| {
+                        Ok((
+                            row_to_identity(row, 0)?,
+                            UserRow {
+                                id: row.get(9)?,
+                                username: row.get(10)?,
+                                password_hash: row.get(11)?,
+                                role: row.get(12)?,
+                                disabled: row.get::<i64>(13)? != 0,
+                                created_at: row.get(14)?,
+                                email: row.get(15)?,
+                            },
+                        ))
+                    },
+                )
             })
             .await
     }
@@ -180,25 +175,24 @@ impl Storage {
     ) -> anyhow::Result<UserRow> {
         self.runs
             .write(move |conn| {
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let mut tx = conn.immediate_tx()?;
                 let username = {
-                    let taken = |tx: &rusqlite::Transaction, name: &str| -> anyhow::Result<bool> {
+                    let taken = |tx: &mut Tx<'_>, name: &str| -> anyhow::Result<bool> {
                         Ok(tx
-                            .query_row(
+                            .query_row_opt(
                                 "SELECT 1 FROM users WHERE username = ?1",
-                                params![name],
+                                &params![name],
                                 |_| Ok(()),
-                            )
-                            .optional()?
+                            )?
                             .is_some())
                     };
                     let mut chosen = None;
-                    if !taken(&tx, &username_base)? {
+                    if !taken(&mut tx, &username_base)? {
                         chosen = Some(username_base.clone());
                     } else {
                         for n in 2..=20 {
                             let candidate = format!("{username_base}-{n}");
-                            if !taken(&tx, &candidate)? {
+                            if !taken(&mut tx, &candidate)? {
                                 chosen = Some(candidate);
                                 break;
                             }
@@ -218,14 +212,14 @@ impl Storage {
                 tx.execute(
                     "INSERT INTO users (id, username, password_hash, role, disabled, created_at, email)
                      VALUES (?1, ?2, '', ?3, 0, ?4, ?5)",
-                    params![user_id, username, role, now, email],
+                    &params![user_id, username, role, now, email],
                 )?;
                 tx.execute(
                     "INSERT INTO user_identities
                         (id, user_id, provider, kind, subject, email, display_name,
                          created_at, last_login_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-                    params![
+                    &params![
                         identity_id,
                         user_id,
                         identity.provider,
@@ -264,7 +258,7 @@ impl Storage {
                     "UPDATE user_identities
                      SET email = ?2, display_name = ?3, last_login_at = ?4
                      WHERE id = ?1",
-                    params![id, email, display_name, now_ms()],
+                    &params![id, email, display_name, now_ms()],
                 )?;
                 Ok(())
             })
@@ -275,13 +269,13 @@ impl Storage {
     pub async fn list_all_identities(&self) -> anyhow::Result<Vec<UserIdentityRow>> {
         self.runs
             .read(|conn| {
-                let mut stmt = conn.prepare(
+                conn.query_map(
                     "SELECT id, user_id, provider, kind, subject, email, display_name,
                             created_at, last_login_at
                      FROM user_identities ORDER BY created_at ASC",
-                )?;
-                let rows = stmt.query_map([], |row| row_to_identity(row, 0))?;
-                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+                    &[],
+                    |row| row_to_identity(row, 0),
+                )
             })
             .await
     }
@@ -294,13 +288,13 @@ impl Storage {
     ) -> anyhow::Result<Vec<UserIdentityRow>> {
         self.runs
             .read(move |conn| {
-                let mut stmt = conn.prepare(
+                conn.query_map(
                     "SELECT id, user_id, provider, kind, subject, email, display_name,
                             created_at, last_login_at
                      FROM user_identities WHERE user_id = ?1 ORDER BY created_at ASC",
-                )?;
-                let rows = stmt.query_map(params![user_id], |row| row_to_identity(row, 0))?;
-                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+                    &params![user_id],
+                    |row| row_to_identity(row, 0),
+                )
             })
             .await
     }
@@ -317,13 +311,14 @@ impl Storage {
             .write(move |conn| {
                 conn.execute(
                     "DELETE FROM saml_consumed_assertions WHERE not_on_or_after <= ?1",
-                    params![now_ms()],
+                    &params![now_ms()],
                 )?;
                 let inserted = conn.execute(
-                    "INSERT OR IGNORE INTO saml_consumed_assertions
+                    "INSERT INTO saml_consumed_assertions
                         (assertion_id, provider, not_on_or_after)
-                     VALUES (?1, ?2, ?3)",
-                    params![assertion_id, provider, not_on_or_after],
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT (assertion_id) DO NOTHING",
+                    &params![assertion_id, provider, not_on_or_after],
                 )?;
                 Ok(inserted > 0)
             })
@@ -338,11 +333,11 @@ impl Storage {
                 let now = now_ms();
                 conn.execute(
                     "DELETE FROM login_transactions WHERE expires_at <= ?1",
-                    params![now],
+                    &params![now],
                 )?;
                 conn.execute(
                     "DELETE FROM saml_consumed_assertions WHERE not_on_or_after <= ?1",
-                    params![now],
+                    &params![now],
                 )?;
                 Ok(())
             })
@@ -350,7 +345,7 @@ impl Storage {
     }
 }
 
-fn row_to_identity(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<UserIdentityRow> {
+fn row_to_identity(row: &Row<'_>, offset: usize) -> anyhow::Result<UserIdentityRow> {
     Ok(UserIdentityRow {
         id: row.get(offset)?,
         user_id: row.get(offset + 1)?,

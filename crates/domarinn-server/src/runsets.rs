@@ -29,12 +29,13 @@
 //! access model — levels, classes, and the predicate that joins them — reads in
 //! one file. Its SQL glue mirrors [`crate::domain::Role`]'s.
 
-use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, Value, ValueRef};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::auth::{Identity, IdentitySource, Scope};
 use crate::domain::{Role, UserId};
+use crate::storage::exec::{FromValue, IntoValue, Value};
 
 /// What a grant lets its holder do with a restricted run set. Ordered:
 /// `View < Upload < Manage`, and a higher level includes everything below it.
@@ -95,6 +96,18 @@ impl FromSql for GrantLevel {
     }
 }
 
+impl IntoValue for GrantLevel {
+    fn into_value(&self) -> Value {
+        Value::Text(self.as_str().to_owned())
+    }
+}
+
+impl FromValue for GrantLevel {
+    fn from_value(v: Value) -> anyhow::Result<Self> {
+        String::from_value(v)?.parse().map_err(anyhow::Error::msg)
+    }
+}
+
 /// Which runs a caller may see. Derived once, by [`RunVisibility::of`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunVisibility {
@@ -134,7 +147,11 @@ impl RunVisibility {
 ///
 /// [`RunVisibility::Full`] yields `1=1` rather than nothing, so every call site
 /// can append the clause unconditionally instead of branching.
-pub fn visibility_predicate(alias: &str, vis: &RunVisibility, args: &mut Vec<Value>) -> String {
+pub(crate) fn visibility_predicate(
+    alias: &str,
+    vis: &RunVisibility,
+    args: &mut Vec<Value>,
+) -> String {
     // NULL-project runs fall out visible for free: `rsr.project = {alias}.project`
     // is NULL (never true) when the column is NULL, so the subquery matches
     // nothing and `NOT EXISTS` holds.
@@ -165,7 +182,7 @@ pub fn visibility_predicate(alias: &str, vis: &RunVisibility, args: &mut Vec<Val
 /// no `project`/`suite` columns to filter on — cases, matrix rows, stored
 /// blobs. `?{run_param}` must already be bound by the caller; the predicate's
 /// own parameter (if any) is appended after it.
-pub fn visible_run_predicate(
+pub(crate) fn visible_run_predicate(
     run_param: usize,
     vis: &RunVisibility,
     args: &mut Vec<Value>,
@@ -230,6 +247,14 @@ mod tests {
             assert_eq!(level.as_str().parse::<GrantLevel>().unwrap(), level);
         }
         assert!("owner".parse::<GrantLevel>().is_err());
+    }
+
+    #[test]
+    fn grant_level_round_trips_through_exec_value() {
+        for level in [GrantLevel::View, GrantLevel::Upload, GrantLevel::Manage] {
+            assert_eq!(GrantLevel::from_value(level.into_value()).unwrap(), level);
+        }
+        assert!(GrantLevel::from_value(Value::Text("owner".into())).is_err());
     }
 
     #[test]
@@ -311,7 +336,7 @@ mod tests {
     /// caller's own parameters left off.
     #[test]
     fn user_visibility_binds_the_id_after_the_callers_parameters() {
-        let mut args: Vec<Value> = vec![Value::Integer(7), Value::Text("x".into())];
+        let mut args: Vec<Value> = vec![Value::Int(7), Value::Text("x".into())];
         let sql = visibility_predicate(
             "runs",
             &RunVisibility::User(UserId::new("usr_9")),

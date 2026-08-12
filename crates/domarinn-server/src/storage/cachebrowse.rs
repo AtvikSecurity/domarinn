@@ -17,12 +17,10 @@
 //! Using [`super::Db::read`] makes that a property of the connection rather
 //! than of discipline: a pooled reader cannot execute the `UPDATE` at all.
 
-use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
-
 use domarinn_core::cache::CacheEntry;
 
-use super::cacheindex::clamp_empty_reason;
+use super::cacheindex::{clamp_empty_reason, entry_id_col};
+use super::exec::{params, Conn, Queryable, Row, Value};
 use super::{from_microusd, ms_to_rfc3339, Storage};
 use crate::domain::{CacheSort, SortOrder};
 use crate::dto::cacheentries::{
@@ -157,11 +155,11 @@ const LIST_COLUMNS: &str = "key, size, created_at, last_access_at, entry_created
      empty_reason";
 
 fn list_entries(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     filter: &CacheListFilter,
 ) -> anyhow::Result<CacheEntryListResponse> {
     let mut sql = format!("SELECT {LIST_COLUMNS} FROM cache_entries WHERE 1=1");
-    let mut args: Vec<SqlValue> = Vec::new();
+    let mut args: Vec<Value> = Vec::new();
 
     match filter.kind.as_deref() {
         // The two pseudo-values. Both name a state rather than a kind, and both
@@ -202,8 +200,9 @@ fn list_entries(
         match fts_query(q) {
             Some(query) => {
                 args.push(query.into());
+                let id = entry_id_col(conn.dialect());
                 sql.push_str(&format!(
-                    " AND rowid IN (SELECT rowid FROM cache_entries_fts \
+                    " AND {id} IN (SELECT {id} FROM cache_entries_fts \
                       WHERE cache_entries_fts MATCH ?{})",
                     args.len()
                 ));
@@ -240,21 +239,33 @@ fn list_entries(
         SortOrder::Desc => "DESC",
         SortOrder::Asc => "ASC",
     };
+    // SQLite puts NULLs first under ASC and last under DESC; Postgres defaults
+    // to the opposite. The only nullable sort column, `cost_microusd`, already
+    // has its NULLs excluded by `requires_non_null`, so the annotation is inert
+    // today — it pins SQLite's ordering so the engines cannot diverge if a
+    // nullable sort ever stops excluding them.
+    let nulls = if filter.sort.requires_non_null() {
+        match filter.order {
+            SortOrder::Desc => " NULLS LAST",
+            SortOrder::Asc => " NULLS FIRST",
+        }
+    } else {
+        ""
+    };
     // Fetch one extra to learn whether a next page exists without counting.
     args.push((filter.limit + 1).into());
     sql.push_str(&format!(
-        " ORDER BY {column} {direction}, key {direction} LIMIT ?{}",
+        " ORDER BY {column} {direction}{nulls}, key {direction} LIMIT ?{}",
         args.len()
     ));
 
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(args.iter()), |row| {
-        Ok((
-            row_to_item(row)?,
-            row.get::<_, Option<i64>>(sort_index(filter.sort))?,
-        ))
-    })?;
-    let mut fetched: Vec<(CacheEntryListItem, Option<i64>)> = rows.collect::<Result<_, _>>()?;
+    let mut fetched: Vec<(CacheEntryListItem, Option<i64>)> =
+        conn.query_map(&sql, &args, |row| {
+            Ok((
+                row_to_item(row)?,
+                row.get::<Option<i64>>(sort_index(filter.sort))?,
+            ))
+        })?;
 
     let next_cursor = if fetched.len() as i64 > filter.limit {
         fetched.truncate(filter.limit as usize);
@@ -291,15 +302,15 @@ fn sort_index(sort: CacheSort) -> usize {
     }
 }
 
-fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<CacheEntryListItem> {
+fn row_to_item(row: &Row<'_>) -> anyhow::Result<CacheEntryListItem> {
     let indexed_at: Option<i64> = row.get(5)?;
     let index_ok: Option<i64> = row.get(6)?;
     Ok(CacheEntryListItem {
         key: row.get(0)?,
         size: row.get(1)?,
         created_at: ms_to_rfc3339(row.get(2)?),
-        last_access_at: row.get::<_, Option<i64>>(3)?.map(ms_to_rfc3339),
-        entry_created_at: row.get::<_, Option<i64>>(4)?.map(ms_to_rfc3339),
+        last_access_at: row.get::<Option<i64>>(3)?.map(ms_to_rfc3339),
+        entry_created_at: row.get::<Option<i64>>(4)?.map(ms_to_rfc3339),
         indexed: indexed_at.is_some(),
         parseable: index_ok.map(|ok| ok != 0),
         kind: row.get(7)?,
@@ -324,27 +335,25 @@ struct DetailRow {
 }
 
 fn entry_detail(
-    conn: &Connection,
+    conn: &mut Conn<'_>,
     key: &str,
     include_raw: bool,
 ) -> anyhow::Result<Option<CacheEntryDetail>> {
-    let row: Option<DetailRow> = conn
-        .query_row(
-            "SELECT size, created_at, last_access_at, indexed_at, index_ok, body
-               FROM cache_entries WHERE key = ?1",
-            params![key],
-            |row| {
-                Ok(DetailRow {
-                    size: row.get(0)?,
-                    created_at: row.get(1)?,
-                    last_access_at: row.get(2)?,
-                    indexed_at: row.get(3)?,
-                    index_ok: row.get(4)?,
-                    body: row.get(5)?,
-                })
-            },
-        )
-        .optional()?;
+    let row: Option<DetailRow> = conn.query_row_opt(
+        "SELECT size, created_at, last_access_at, indexed_at, index_ok, body
+           FROM cache_entries WHERE key = ?1",
+        &params![key],
+        |row| {
+            Ok(DetailRow {
+                size: row.get(0)?,
+                created_at: row.get(1)?,
+                last_access_at: row.get(2)?,
+                indexed_at: row.get(3)?,
+                index_ok: row.get(4)?,
+                body: row.get(5)?,
+            })
+        },
+    )?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -420,62 +429,56 @@ fn entry_detail(
     Ok(Some(detail))
 }
 
-fn facets(conn: &Connection) -> anyhow::Result<CacheFacetsResponse> {
-    let kinds = {
-        let mut stmt = conn.prepare(
-            "SELECT kind, COUNT(*) FROM cache_entries
-              WHERE kind IS NOT NULL GROUP BY kind ORDER BY COUNT(*) DESC",
-        )?;
-        let rows = stmt.query_map([], |row| {
+fn facets(conn: &mut Conn<'_>) -> anyhow::Result<CacheFacetsResponse> {
+    let kinds = conn.query_map(
+        "SELECT kind, COUNT(*) FROM cache_entries
+          WHERE kind IS NOT NULL GROUP BY kind ORDER BY COUNT(*) DESC",
+        &[],
+        |row| {
             Ok(CacheFacet {
                 value: row.get(0)?,
                 count: row.get(1)?,
             })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
+        },
+    )?;
 
-    let models = {
-        let mut stmt = conn.prepare(
-            "SELECT model, COUNT(*) FROM cache_entries
-              WHERE model IS NOT NULL GROUP BY model ORDER BY COUNT(*) DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![MAX_MODEL_FACETS], |row| {
+    let models = conn.query_map(
+        "SELECT model, COUNT(*) FROM cache_entries
+          WHERE model IS NOT NULL GROUP BY model ORDER BY COUNT(*) DESC LIMIT ?1",
+        &params![MAX_MODEL_FACETS],
+        |row| {
             Ok(CacheFacet {
                 value: row.get(0)?,
                 count: row.get(1)?,
             })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
+        },
+    )?;
 
     // Uncapped, unlike `models`. The reason vocabulary is a handful of
     // constants plus whatever a future vendor invents, and `clamp_empty_reason`
     // bounds each value's length — so unlike a model string, this facet cannot
     // be grown without bound by whatever happens to be in the store.
-    let empty_reasons = {
-        let mut stmt = conn.prepare(
-            "SELECT empty_reason, COUNT(*) FROM cache_entries
-              WHERE empty_reason IS NOT NULL GROUP BY empty_reason ORDER BY COUNT(*) DESC",
-        )?;
-        let rows = stmt.query_map([], |row| {
+    let empty_reasons = conn.query_map(
+        "SELECT empty_reason, COUNT(*) FROM cache_entries
+          WHERE empty_reason IS NOT NULL GROUP BY empty_reason ORDER BY COUNT(*) DESC",
+        &[],
+        |row| {
             Ok(CacheFacet {
                 value: row.get(0)?,
                 count: row.get(1)?,
             })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
+        },
+    )?;
 
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM cache_entries", [], |r| r.get(0))?;
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM cache_entries", &[], |r| r.get(0))?;
     let unindexed: i64 = conn.query_row(
         "SELECT COUNT(*) FROM cache_entries WHERE indexed_at IS NULL",
-        [],
+        &[],
         |r| r.get(0),
     )?;
     let unparseable: i64 = conn.query_row(
         "SELECT COUNT(*) FROM cache_entries WHERE index_ok = 0",
-        [],
+        &[],
         |r| r.get(0),
     )?;
 

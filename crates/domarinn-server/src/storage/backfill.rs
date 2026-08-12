@@ -60,11 +60,11 @@
 //! back. What the store never does is decode a blob per case.
 
 use anyhow::Context;
-use rusqlite::{params, Connection, TransactionBehavior};
 
 use domarinn_core::result::CaseResult;
 
 use super::decompress;
+use super::exec::{params, Conn, Queryable};
 
 /// Rows processed per `cases` chunk (one IMMEDIATE transaction each).
 const CASE_CHUNK: i64 = 500;
@@ -74,7 +74,7 @@ const RUN_CHUNK: i64 = 100;
 /// Run both backfills against the runs-database writer connection. Called from
 /// `Storage::open_blocking` after migrations, so it borrows the writer
 /// exclusively and does its work before any request can race it.
-pub(super) fn run(conn: &mut Connection) -> anyhow::Result<()> {
+pub(super) fn run(conn: &mut Conn<'_>) -> anyhow::Result<()> {
     // Order is load-bearing; see the module docs.
     backfill_cases(conn)?;
     backfill_runs(conn)?;
@@ -92,27 +92,23 @@ pub(super) fn run(conn: &mut Connection) -> anyhow::Result<()> {
 /// [`backfill_case_answerers`] owns that column and can usually avoid the
 /// decode entirely. A row this pass decodes for one of the older columns gets
 /// its answerer stamped on the way past, for free, and is then skipped there.
-fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
+fn backfill_cases(conn: &mut Conn<'_>) -> anyhow::Result<()> {
     loop {
-        // Read a chunk, then drop the statement before opening the write txn.
-        let chunk: Vec<(i64, Option<Vec<u8>>)> = {
-            let mut stmt = conn.prepare(
-                "SELECT rowid, detail FROM cases
-                 WHERE provider_id IS NULL OR cached IS NULL OR error IS NULL
-                    OR empty_reason IS NULL
-                 LIMIT ?1",
-            )?;
-            let rows = stmt.query_map(params![CASE_CHUNK], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
+        // Read a chunk (materialized by `query_map`) before opening the write txn.
+        let chunk: Vec<(i64, Option<Vec<u8>>)> = conn.query_map(
+            "SELECT rowid, detail FROM cases
+             WHERE provider_id IS NULL OR cached IS NULL OR error IS NULL
+                OR empty_reason IS NULL
+             LIMIT ?1",
+            &params![CASE_CHUNK],
+            |row| Ok((row.get::<i64>(0)?, row.get::<Option<Vec<u8>>>(1)?)),
+        )?;
         if chunk.is_empty() {
             break;
         }
         let n = chunk.len();
 
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut tx = conn.immediate_tx()?;
         for (rowid, detail) in chunk {
             match decode_case(detail.as_deref()) {
                 Ok(case) => {
@@ -123,7 +119,7 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
                              error = ?8, empty_reason = ?9,
                              answered_by_provider_id = ?10
                          WHERE rowid = ?11",
-                        params![
+                        &params![
                             case.cell.provider_id,
                             case.cell.prompt_id,
                             case.cell.test_id,
@@ -160,7 +156,7 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
                         "UPDATE cases SET provider_id = '', cached = -1, error = '',
                              empty_reason = '', answered_by_provider_id = ''
                          WHERE rowid = ?1",
-                        params![rowid],
+                        &params![rowid],
                     )?;
                 }
             }
@@ -171,7 +167,7 @@ fn backfill_cases(conn: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn backfill_runs(conn: &mut Connection) -> anyhow::Result<()> {
+fn backfill_runs(conn: &mut Conn<'_>) -> anyhow::Result<()> {
     // Fast path for the migration-15 upgrade shape: every column but
     // `empty_count` already populated — which on the first open after that
     // upgrade is *every run in the store*, so letting these fall through to
@@ -197,7 +193,7 @@ fn backfill_runs(conn: &mut Connection) -> anyhow::Result<()> {
                SELECT 1 FROM cases
                WHERE cases.run_id = runs.id AND cases.cached = -1
            )",
-        [],
+        &[],
     )?;
     if fast > 0 {
         tracing::debug!(runs = fast, "backfill: counted empty cases from case rows");
@@ -227,7 +223,7 @@ fn backfill_runs(conn: &mut Connection) -> anyhow::Result<()> {
                WHERE cases.run_id = runs.id
                  AND (cases.answered_by_provider_id IS NULL OR cases.cached = -1)
            )",
-        [],
+        &[],
     )?;
     if fast > 0 {
         tracing::debug!(
@@ -236,27 +232,23 @@ fn backfill_runs(conn: &mut Connection) -> anyhow::Result<()> {
         );
     }
     loop {
-        let chunk: Vec<(String, Vec<u8>)> = {
-            let mut stmt = conn.prepare(
-                "SELECT run_id, body FROM run_blobs
-                 WHERE run_id IN (
-                     SELECT id FROM runs
-                     WHERE config_digest IS NULL OR cache_hits IS NULL
-                        OR empty_count IS NULL OR fallback_count IS NULL
-                 )
-                 LIMIT ?1",
-            )?;
-            let rows = stmt.query_map(params![RUN_CHUNK], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
+        let chunk: Vec<(String, Vec<u8>)> = conn.query_map(
+            "SELECT run_id, body FROM run_blobs
+             WHERE run_id IN (
+                 SELECT id FROM runs
+                 WHERE config_digest IS NULL OR cache_hits IS NULL
+                    OR empty_count IS NULL OR fallback_count IS NULL
+             )
+             LIMIT ?1",
+            &params![RUN_CHUNK],
+            |row| Ok((row.get::<String>(0)?, row.get::<Vec<u8>>(1)?)),
+        )?;
         if chunk.is_empty() {
             break;
         }
         let n = chunk.len();
 
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut tx = conn.immediate_tx()?;
         for (run_id, body) in chunk {
             match decode_run_columns(&body) {
                 Ok(RunColumns {
@@ -280,7 +272,7 @@ fn backfill_runs(conn: &mut Connection) -> anyhow::Result<()> {
                              empty_count    = COALESCE(empty_count, ?4),
                              fallback_count = COALESCE(fallback_count, ?5)
                          WHERE id = ?6",
-                        params![
+                        &params![
                             digest,
                             cache_hits,
                             cache_misses,
@@ -308,7 +300,7 @@ fn backfill_runs(conn: &mut Connection) -> anyhow::Result<()> {
                              empty_count    = COALESCE(empty_count, -1),
                              fallback_count = COALESCE(fallback_count, -1)
                          WHERE id = ?1",
-                        params![run_id],
+                        &params![run_id],
                     )?;
                 }
             }
@@ -334,12 +326,12 @@ fn backfill_runs(conn: &mut Connection) -> anyhow::Result<()> {
 /// NULL case rows whose blobs really do name a fallback. Only `fallback_count`
 /// can tell the two apart, so anything it does not vouch for (`> 0`, the -1
 /// undecodable sentinel, or a run with no row at all) is decoded case by case.
-fn backfill_case_answerers(conn: &mut Connection) -> anyhow::Result<()> {
+fn backfill_case_answerers(conn: &mut Conn<'_>) -> anyhow::Result<()> {
     let fast = conn.execute(
         "UPDATE cases SET answered_by_provider_id = ''
          WHERE answered_by_provider_id IS NULL
            AND run_id IN (SELECT id FROM runs WHERE fallback_count = 0)",
-        [],
+        &[],
     )?;
     if fast > 0 {
         tracing::debug!(
@@ -349,23 +341,19 @@ fn backfill_case_answerers(conn: &mut Connection) -> anyhow::Result<()> {
     }
 
     loop {
-        let chunk: Vec<(i64, Option<Vec<u8>>)> = {
-            let mut stmt = conn.prepare(
-                "SELECT rowid, detail FROM cases
-                 WHERE answered_by_provider_id IS NULL
-                 LIMIT ?1",
-            )?;
-            let rows = stmt.query_map(params![CASE_CHUNK], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
+        let chunk: Vec<(i64, Option<Vec<u8>>)> = conn.query_map(
+            "SELECT rowid, detail FROM cases
+             WHERE answered_by_provider_id IS NULL
+             LIMIT ?1",
+            &params![CASE_CHUNK],
+            |row| Ok((row.get::<i64>(0)?, row.get::<Option<Vec<u8>>>(1)?)),
+        )?;
         if chunk.is_empty() {
             break;
         }
         let n = chunk.len();
 
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut tx = conn.immediate_tx()?;
         for (rowid, detail) in chunk {
             // `''` on both arms, and for the same tri-state reason as
             // everywhere else: a decoded case with no answerer really was
@@ -384,7 +372,7 @@ fn backfill_case_answerers(conn: &mut Connection) -> anyhow::Result<()> {
             };
             tx.execute(
                 "UPDATE cases SET answered_by_provider_id = ?1 WHERE rowid = ?2",
-                params![answerer, rowid],
+                &params![answerer, rowid],
             )?;
         }
         tx.commit()?;
