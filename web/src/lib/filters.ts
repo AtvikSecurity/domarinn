@@ -71,7 +71,16 @@ export type CacheFilterKey = (typeof CACHE_FILTER_KEYS)[number];
 export type CacheFilters = Partial<Record<CacheFilterKey, string>>;
 
 /** Sort values the entries endpoint accepts. Anything else is a server 400. */
-const CACHE_SORT_COLUMNS = ["created", "last_access", "size", "cost"] as const;
+const CACHE_SORT_COLUMNS = [
+  "created",
+  "last_access",
+  "size",
+  "cost",
+  "kind",
+  "model",
+  "tokens",
+  "key",
+] as const;
 const DEFAULT_CACHE_SORT = "-created";
 
 function isBlank(v: string | undefined | null): boolean {

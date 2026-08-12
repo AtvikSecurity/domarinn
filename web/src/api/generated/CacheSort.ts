@@ -3,10 +3,11 @@
 /**
  * Sort column for `GET /cache/entries?sort=`.
  *
- * Deliberately only the columns SQL can order on directly. Everything else a
- * row shows lives inside the entry body, and sorting a single page of a large
- * cache by a field the database cannot see would be a lie dressed as an
- * ordering — `CaseGrid`'s "sorted within loaded cases" apology is the shape to
- * avoid, not to copy.
+ * Deliberately only columns SQL can order on directly — for `kind`, `model`
+ * and the token counts that means the promoted migration-11 columns, not the
+ * entry body. Everything else a row shows lives inside the body, and sorting
+ * a single page of a large cache by a field the database cannot see would be
+ * a lie dressed as an ordering — `CaseGrid`'s "sorted within loaded cases"
+ * apology is the shape to avoid, not to copy.
  */
-export type CacheSort = "created" | "last_access" | "size" | "cost";
+export type CacheSort = "created" | "last_access" | "size" | "cost" | "kind" | "model" | "tokens" | "key";

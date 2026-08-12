@@ -9,7 +9,9 @@ import type { Role, UserView } from "@/api";
 import { ApiError } from "@/api/client";
 import { useAuthView } from "@/auth/AuthProvider";
 import { ALL_ROLES } from "@/lib/authz";
-import { formatDate } from "@/lib/format";
+import { formatDate, parseTimestamp } from "@/lib/format";
+import { type SortAccessor, sortRows } from "@/lib/sort";
+import { useSortParam } from "@/lib/useTableSort";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Chip } from "@/components/ui/Chip";
@@ -49,6 +51,15 @@ const USER_COLUMNS: ColumnDef[] = [
   },
 ];
 
+/** Sortable columns; the actions column is buttons, not data. Role sorts by
+ *  privilege rank (`ALL_ROLES` order), not alphabetically. */
+const USER_SORT_FIELDS: Record<string, SortAccessor<UserView>> = {
+  username: (u) => u.username,
+  role: (u) => ALL_ROLES.indexOf(u.role),
+  status: (u) => (u.disabled ? 1 : 0),
+  created: (u) => parseTimestamp(u.created_at),
+};
+
 function errorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
     if (err.status === 409) {
@@ -81,6 +92,7 @@ export function AdminPage() {
     [colPrefs],
   );
   const shownIds = useMemo(() => new Set(shownCols.map((c) => c.id)), [shownCols]);
+  const sort = useSortParam();
 
   async function changeRole(user: UserView, role: Role) {
     setBanner(null);
@@ -168,6 +180,14 @@ export function AdminPage() {
                       def={c}
                       tableId={USERS_TABLE_ID}
                       prefs={colPrefs}
+                      sort={
+                        USER_SORT_FIELDS[c.id]
+                          ? {
+                              active: sort.sortFor(c.id),
+                              onToggle: () => sort.toggle(c.id),
+                            }
+                          : undefined
+                      }
                       className={cn(
                         "py-2 font-medium",
                         c.id === "username" ? "px-4" : "px-3",
@@ -180,7 +200,7 @@ export function AdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {usersQuery.data.map((u) => (
+                {sortRows(usersQuery.data, sort.sorting, USER_SORT_FIELDS).map((u) => (
                   <tr
                     key={u.id}
                     data-testid={`user-row-${u.username}`}

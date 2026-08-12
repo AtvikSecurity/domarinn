@@ -84,7 +84,7 @@ pub use auth::{
     ApiKeyAuth, ApiKeyInfo, DeleteUserOutcome, SessionUser, UpdateUserOutcome, UserRow,
 };
 pub use cache::CachePruneFilter;
-pub use cachebrowse::{decode_entry_cursor, encode_entry_cursor, CacheListFilter};
+pub use cachebrowse::{decode_entry_cursor, encode_entry_cursor, CacheListFilter, CursorValue};
 pub use cacheindex::BackfillRemaining;
 pub use cachelink::decode_run_cursor;
 pub use cases::CaseListFilter;

@@ -96,16 +96,26 @@ const TABLE_ID = "cacheEntries";
 const GRID_INSET = 24;
 
 /**
- * Columns the server can order by — the three literal indexed columns, plus
- * cost.
+ * Columns the server can order by — the indexed columns, cost, the promoted
+ * kind/model columns, the token sum, and the key itself.
  *
- * Everything else a row shows lives inside the entry body. Sorting one page of
- * a large cache by a column the database cannot see would order the loaded rows
- * and quietly claim to have ordered the cache, which is worse than not offering
- * it: the case grid has to apologise for exactly that with "sorted within
- * loaded cases", and here the apology would be a lie rather than a caveat.
+ * Only `summary` remains unsortable: it lives inside the entry body, and
+ * sorting one page of a large cache by a column the database cannot see would
+ * order the loaded rows and quietly claim to have ordered the cache, which is
+ * worse than not offering it: the case grid has to apologise for exactly that
+ * with "sorted within loaded cases", and here the apology would be a lie
+ * rather than a caveat.
  */
-const SORTABLE = new Set(["size", "created", "last_access", "cost"]);
+const SORTABLE = new Set([
+  "size",
+  "created",
+  "last_access",
+  "cost",
+  "kind",
+  "model",
+  "tokens",
+  "key",
+]);
 
 /** A muted placeholder for a value the entry never carried. */
 function Absent() {
@@ -160,13 +170,20 @@ export function CacheEntryGrid({
       {
         id: "key",
         header: "Key",
-        enableSorting: false,
+        // The sortable columns carry an accessor even though the ordering
+        // happens server-side: react-table's `getCanSort()` requires one, so a
+        // display-only column silently has no sort handler at all.
+        accessorFn: (row) => row.key,
+        // A→Z on first click; the grid-level desc-first fits dates and
+        // numbers, not text.
+        sortDescFirst: false,
         cell: ({ row }) => <KeyCell entry={row.original} />,
       },
       {
         id: "kind",
         header: "Kind",
-        enableSorting: false,
+        accessorFn: (row) => row.kind,
+        sortDescFirst: false,
         cell: ({ row }) =>
           metaCell(
             row.original,
@@ -189,7 +206,8 @@ export function CacheEntryGrid({
       {
         id: "model",
         header: "Model",
-        enableSorting: false,
+        accessorFn: (row) => row.model,
+        sortDescFirst: false,
         cell: ({ row }) =>
           metaCell(row.original, row.original.model ?? <Absent />),
       },
@@ -203,7 +221,7 @@ export function CacheEntryGrid({
       {
         id: "tokens",
         header: "Tokens",
-        enableSorting: false,
+        accessorFn: (row) => (row.input_tokens ?? 0) + (row.output_tokens ?? 0),
         cell: ({ row }) => {
           const { input_tokens, output_tokens } = row.original;
           if (input_tokens === null && output_tokens === null) {
@@ -215,9 +233,6 @@ export function CacheEntryGrid({
       {
         id: "cost",
         header: "Cost",
-        // The sortable columns carry an accessor even though the ordering
-        // happens server-side: react-table's `getCanSort()` requires one, so a
-        // display-only column silently has no sort handler at all.
         accessorFn: (row) => row.cost_usd,
         cell: ({ row }) =>
           row.original.cost_usd === null ? (

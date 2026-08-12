@@ -35,6 +35,43 @@ function renderRunsList() {
  */
 const HEAVY = { timeout: 20_000 };
 
+/** The regression group's checkboxes in DOM order — the row order made visible. */
+function regressionRunOrder(): string[] {
+  return screen
+    .getAllByLabelText(/Select run checkout-agent-regression-/)
+    .map((el) => el.getAttribute("aria-label") ?? "");
+}
+
+describe("RunsList column sorting", () => {
+  it("sorts rows within a group on header click and announces it via aria-sort", HEAVY, async () => {
+    const user = userEvent.setup();
+    renderRunsList();
+    await screen.findByLabelText("Select run checkout-agent-regression-12");
+
+    // Newest-first by default. Not asserted against id order — the fixtures
+    // deliberately give one run a timestamp out of step with its id.
+    const before = regressionRunOrder();
+    expect(before.length).toBeGreaterThan(2);
+
+    // Every suite group repeats the same header; the page-level sort means
+    // clicking any one of them sorts them all.
+    const whenHeader = screen.getAllByRole("button", { name: /When/ })[0]!;
+    await user.click(whenHeader);
+
+    expect(whenHeader.closest("th")).toHaveAttribute("aria-sort", "ascending");
+    // Ascending "When" = oldest first — the default order, reversed.
+    expect(regressionRunOrder()).toEqual([...before].reverse());
+  });
+
+  it("offers no sort control on the Compare column", HEAVY, async () => {
+    renderRunsList();
+    await screen.findByLabelText("Select run checkout-agent-regression-12");
+    // The rows carry Compare *links*; a sort button in the header would be
+    // the only Compare *button* on an unselected page.
+    expect(screen.queryAllByRole("button", { name: "Compare" })).toHaveLength(0);
+  });
+});
+
 // Regression pin for the compare-link bug cluster: the real server route is
 // `GET /runs/{id}/compare/{other}` -> `{ base: id, head: other }` (first url
 // segment is always base). A baseline comparison wants the OLDER run as
