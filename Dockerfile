@@ -53,6 +53,12 @@ RUN pnpm -C web build
 # builder stage links them into the binary. Native builds, so ./config //
 # ./configure autodetect the platform — the same Dockerfile serves amd64 and
 # arm64 without cross-compile casing.
+#
+# The downloads retry on ANY error, 5xx included (--retry-all-errors; bare
+# --retry covers only timeouts/connection resets). These layers are normally
+# served from the buildx cache, so a fetch only actually runs on a cache miss
+# — exactly when a transient upstream 503 would otherwise fail the whole
+# build, as one did when GitHub's release CDN blipped.
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS cdeps
 ARG OPENSSL_VER=3.5.1
@@ -70,7 +76,7 @@ WORKDIR /build
 
 # 1. OpenSSL — no shared libs, no engines/dso; the same install feeds both
 #    xmlsec1's configure and the Rust build's OPENSSL_DIR.
-RUN curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VER}/openssl-${OPENSSL_VER}.tar.gz" -o openssl.tar.gz && \
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VER}/openssl-${OPENSSL_VER}.tar.gz" -o openssl.tar.gz && \
     tar xf openssl.tar.gz && cd "openssl-${OPENSSL_VER}" && \
     ./config no-shared no-dso no-engine no-tests \
       --prefix="$CDEPS_PREFIX" --openssldir="$CDEPS_PREFIX/ssl" --libdir=lib && \
@@ -78,7 +84,7 @@ RUN curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-${O
 
 # 2. libxml2 — minimal: no python/zlib/lzma/http, kills large attack-surface
 #    classes we never touch. Static only.
-RUN curl -fsSL "https://download.gnome.org/sources/libxml2/${LIBXML2_VER%.*}/libxml2-${LIBXML2_VER}.tar.xz" -o libxml2.tar.xz && \
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "https://download.gnome.org/sources/libxml2/${LIBXML2_VER%.*}/libxml2-${LIBXML2_VER}.tar.xz" -o libxml2.tar.xz && \
     tar xf libxml2.tar.xz && cd "libxml2-${LIBXML2_VER}" && \
     ./configure --prefix="$CDEPS_PREFIX" \
       --enable-static --disable-shared \
@@ -87,7 +93,7 @@ RUN curl -fsSL "https://download.gnome.org/sources/libxml2/${LIBXML2_VER%.*}/lib
 
 # 3. xmlsec1 — static, crypto statically bound to OpenSSL (no runtime dlopen),
 #    no XSLT (removes the entire XSLT-transform class), OpenSSL only.
-RUN curl -fsSL "https://github.com/lsh123/xmlsec/releases/download/${XMLSEC_VER}/xmlsec1-${XMLSEC_VER}.tar.gz" -o xmlsec1.tar.gz && \
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "https://github.com/lsh123/xmlsec/releases/download/${XMLSEC_VER}/xmlsec1-${XMLSEC_VER}.tar.gz" -o xmlsec1.tar.gz && \
     tar xf xmlsec1.tar.gz && cd "xmlsec1-${XMLSEC_VER}" && \
     ./configure --prefix="$CDEPS_PREFIX" \
       --enable-static --disable-shared --enable-crypto-dl=no \
