@@ -120,7 +120,7 @@ services:
   # See docs/guides/self-host.md for the full walkthrough, including
   # migrating an existing SQLite deployment with `domarinn migrate-db`.
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     profiles: ["postgres"]
     restart: unless-stopped
     environment:
