@@ -29,7 +29,7 @@
     "@tanstack/react-virtual": "^3.14.9",
     "clsx": "^2.1.1",
     "diff": "^9.0.0",
-    "highlight.js": "^11.11.1",
+    "highlight.js": "^11.11.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
