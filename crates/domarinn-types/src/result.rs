@@ -635,6 +635,30 @@ pub struct ConfigDigests {
     pub grader: Option<String>,
 }
 
+/// Provenance of a synthetic branch-baseline document.
+///
+/// A branch baseline is a *merge*: per [`CaseResult::case_key`], the newest run
+/// on the branch that has the case wins, so a filtered or sharded newest run
+/// cannot silently shrink the gate's coverage. The merged document is built on
+/// demand for comparison and never persisted or uploaded — this field exists so
+/// a renderer can say which real runs the synthetic baseline was drawn from.
+///
+/// Additive and omitted when absent: every stored document predates it and must
+/// re-serialize byte-identically (the server's content-hash idempotency), so no
+/// [`RESULT_SCHEMA_VERSION`] bump.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(optional_fields)]
+pub struct CompositeBaseline {
+    /// The git branch the contributing runs were selected from.
+    pub branch: String,
+    /// The real runs that contributed at least one case, newest first.
+    pub contributing_run_ids: Vec<RunId>,
+    /// Set when the lookback cap was reached while runs were still contributing
+    /// new cases — older coverage may exist beyond the horizon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+}
+
 /// Which filters produced this run (for reproducibility and the UI).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FilterSpec {
@@ -680,6 +704,10 @@ pub struct RunResult {
     /// parsing it back out of an earlier command's stdout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_url: Option<String>,
+    /// Set only on a synthetic branch-baseline document assembled by merging
+    /// runs — see [`CompositeBaseline`]. Always absent on a real run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composite: Option<CompositeBaseline>,
     #[serde(default)]
     pub filters: FilterSpec,
     pub cases: Vec<CaseResult>,
@@ -811,6 +839,7 @@ mod tests {
         assert!(run.git.is_none());
         assert!(run.ci.is_none());
         assert!(run.share_url.is_none());
+        assert!(run.composite.is_none());
 
         let reserialized = serde_json::to_string(&run).unwrap();
         assert!(!reserialized.contains("origin"));
@@ -829,6 +858,9 @@ mod tests {
         // The expected-failure counters, added with the same contract.
         assert!(!reserialized.contains("xfailed"));
         assert!(!reserialized.contains("xpassed"));
+        // The synthetic branch-baseline marker: only ever set on a merged
+        // baseline document built in memory, so a stored run must never grow it.
+        assert!(!reserialized.contains("composite"));
     }
 
     /// Same 409 fence, for the empty-output tally: a run where nothing came

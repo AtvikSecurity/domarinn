@@ -61,7 +61,8 @@ use runner_cell::run_cell;
 // `cfg(test)` because the only non-test caller moved out with it.
 #[cfg(test)]
 use runner_cell::reasoning_is_skippable;
-use runner_result::{error_case, json_to_persist, summarize, CaseInputs};
+pub(crate) use runner_result::summarize;
+use runner_result::{error_case, json_to_persist, CaseInputs};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -803,6 +804,7 @@ pub async fn run_with_progress(
         origin: provenance.origin,
         digests: Some(digests),
         share_url: None,
+        composite: None,
         filters: FilterSpec {
             tags: opts.filter.tags.clone(),
             filters: opts.filter.filters.clone(),

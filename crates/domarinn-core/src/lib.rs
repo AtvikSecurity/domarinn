@@ -12,6 +12,7 @@ pub mod cache_adopt;
 pub mod cache_key;
 pub mod cache_migrate;
 pub mod chat_wire;
+pub mod composite;
 pub mod config;
 pub mod config_history;
 pub mod config_provider;
