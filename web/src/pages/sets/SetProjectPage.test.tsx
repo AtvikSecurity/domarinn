@@ -61,6 +61,15 @@ describe("SetProjectPage", () => {
     expect(screen.getAllByText("restricted")).toHaveLength(1);
   });
 
+  it("shows a branch pin distinctly on the suite row", async () => {
+    // A branch pin names no single run — the chip must say which branch the
+    // baseline tracks, not pretend a run is pinned.
+    fx.pinSuiteBaselineBranch("checkout-agent", "regression", "main");
+    renderProject("checkout-agent");
+    const row = await screen.findByTestId("suite-row-regression");
+    expect(within(row).getByText("baseline: main")).toBeInTheDocument();
+  });
+
   it("offers the access panel to a manage-grant holder", async () => {
     login("member", "member");
     renderProject("support-bot");

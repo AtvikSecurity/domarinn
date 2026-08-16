@@ -348,20 +348,28 @@ export function useSuites(project: string | undefined) {
   });
 }
 
+/** What to pin as a suite's baseline: a fixed run, or an auto-tracking branch. */
+export type BaselinePin = { runId: string } | { branch: string };
+
 export function useSetBaseline(project: string, suite: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (runId: string) =>
+    mutationFn: (pin: BaselinePin) =>
       apiRequest(
         `/projects/${encodeURIComponent(project)}/suites/${encodeURIComponent(
           suite,
         )}/baseline`,
-        { method: "PUT", body: { run_id: runId } },
+        {
+          method: "PUT",
+          body: "runId" in pin ? { run_id: pin.runId } : { branch: pin.branch },
+        },
       ),
     onSuccess: () => {
       // Fire-and-forget refetches; react-query owns the resulting promises.
       void client.invalidateQueries({ queryKey: qk.suites(project) });
       void client.invalidateQueries({ queryKey: ["compare"] });
+      // The set browser surfaces the pin as a chip at both detail levels.
+      void client.invalidateQueries({ queryKey: qk.sets() });
     },
   });
 }

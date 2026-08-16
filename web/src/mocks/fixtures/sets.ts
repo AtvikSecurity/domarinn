@@ -25,7 +25,7 @@ import type {
 } from "@/api";
 import { parseTimestamp } from "@/lib/format";
 import { allRunSummaries } from "./runStats";
-import { BASELINE_BY_SUITE } from "./runMeta";
+import { BASELINE_BRANCH_BY_SUITE, pinnedBaseline } from "./runMeta";
 
 /** How many recent runs a suite's sparkline covers (`SPARKLINE_RUNS`). */
 const SPARKLINE_RUNS = 20;
@@ -116,6 +116,7 @@ let grants = seededGrants();
 export function resetSets(): void {
   restrictions = seededRestrictions();
   grants = seededGrants();
+  BASELINE_BRANCH_BY_SUITE.clear();
 }
 
 // --- policy ----------------------------------------------------------------
@@ -358,8 +359,8 @@ export function runSetProject(
         case_count: agg.case_count,
         latest_pass_rate: series[series.length - 1] ?? null,
         sparkline: series,
-        baseline_run_id: BASELINE_BY_SUITE.get(`${project}/${suite}`) ?? null,
-        baseline_branch: null,
+        baseline_run_id: pinnedBaseline(`${project}/${suite}`).runId,
+        baseline_branch: pinnedBaseline(`${project}/${suite}`).branch,
         // Covering: a locked project locks the suites under it.
         restricted: coveringRestricted(project, suite),
         my_level: myLevel(viewer, project, suite),
@@ -398,8 +399,8 @@ export function runSetSuite(
     case_count: agg.case_count,
     latest_pass_rate: series[series.length - 1] ?? null,
     sparkline: series,
-    baseline_run_id: BASELINE_BY_SUITE.get(`${project}/${suite}`) ?? null,
-    baseline_branch: null,
+    baseline_run_id: pinnedBaseline(`${project}/${suite}`).runId,
+    baseline_branch: pinnedBaseline(`${project}/${suite}`).branch,
   };
 }
 

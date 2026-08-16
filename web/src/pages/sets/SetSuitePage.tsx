@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
-import { useRuns, useSetSuite } from "@/api/queries";
+import { useRuns, useSetBaseline, useSetSuite } from "@/api/queries";
 import type { RunListItem } from "@/api";
 import { ApiError } from "@/api/client";
 import { useAuthView } from "@/auth/AuthProvider";
@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Chip } from "@/components/ui/Chip";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { Popover } from "@/components/ui/Popover";
+import { TextField } from "@/components/ui/TextField";
 import { CenteredSpinner } from "@/components/ui/Spinner";
 import { StatBlock } from "@/components/ui/StatBlock";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -96,6 +98,9 @@ export function SetSuitePage() {
   const view = useAuthView();
   const q = useSetSuite(project, suite);
   const [accessOpen, setAccessOpen] = useState(false);
+  const pin = useSetBaseline(project, suite);
+  const [pinOpen, setPinOpen] = useState(false);
+  const [branchDraft, setBranchDraft] = useState("");
 
   // This page used to force `cached: "all"`, because hiding a suite's
   // fully-cached CI re-runs made the table disagree with the run count in the
@@ -184,7 +189,48 @@ export function SetSuitePage() {
             >
               baseline
             </Chip>
+          ) : detail.baseline_branch ? (
+            <Chip
+              tone="accent"
+              size="xs"
+              title={`Baseline tracks branch ${detail.baseline_branch}: the newest runs on it merge into the comparison`}
+            >
+              baseline: {detail.baseline_branch}
+            </Chip>
           ) : null}
+          <Popover
+            open={pinOpen}
+            onOpenChange={setPinOpen}
+            trigger={
+              <Button variant="ghost" size="sm" title="Pin a branch as this suite's comparison baseline">
+                Pin branch…
+              </Button>
+            }
+          >
+            <form
+              className="flex w-56 flex-col gap-2 p-1"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const branch = branchDraft.trim();
+                if (!branch) return;
+                pin.mutate(
+                  { branch },
+                  { onSuccess: () => setPinOpen(false) },
+                );
+              }}
+            >
+              <TextField
+                label="Baseline branch"
+                hint="The newest runs on this branch merge into the comparison baseline — a filtered run cannot shrink coverage."
+                placeholder="main"
+                value={branchDraft}
+                onChange={(e) => setBranchDraft(e.target.value)}
+              />
+              <Button type="submit" size="sm" disabled={pin.isPending || !branchDraft.trim()}>
+                {pin.isPending ? "Pinning…" : pin.isError ? "Could not pin — retry" : "Pin branch"}
+              </Button>
+            </form>
+          </Popover>
           {canOpenAccess ? (
             <Button
               className="ml-auto"

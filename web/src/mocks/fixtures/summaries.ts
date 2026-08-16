@@ -7,7 +7,7 @@ import type {
 } from "@/api";
 import { round4, toIso } from "./rng";
 import { DAY, NOW, RESULT_SCHEMA_VERSION, SUITE_DEFS } from "./suites";
-import { BASELINE_BY_SUITE, RUN_METAS, SUITE_RUN_IDS, suiteKeyOf } from "./runMeta";
+import { pinnedBaseline, RUN_METAS, SUITE_RUN_IDS, suiteKeyOf } from "./runMeta";
 import { runStats } from "./runStats";
 
 export function projectSummaries(): ProjectListItem[] {
@@ -54,8 +54,8 @@ export function suiteSummaries(project: string): SuiteSummary[] {
       suite: def.suite,
       run_count: ids.length,
       last_run_at: lastId ? runStats(lastId).created_at : null,
-      baseline_run_id: BASELINE_BY_SUITE.get(suiteKey) ?? null,
-      baseline_branch: null,
+      baseline_run_id: pinnedBaseline(suiteKey).runId,
+      baseline_branch: pinnedBaseline(suiteKey).branch,
       series,
     });
   }
