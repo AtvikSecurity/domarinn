@@ -89,13 +89,16 @@ inputs:
   against:
     description: >-
       Baseline to diff this run against. Use "server:baseline" in CI: it
-      resolves the baseline pinned for this suite on the results server, and
-      needs `server-url` plus `project:`/`suite:` in the config. "latest" reads
-      the local .domarinn/runs store, which a fresh checkout does not have — in
-      CI it silently finds nothing and the gate never fires. Also accepts a run
-      id or a result.json path. Empty disables the diff. A regression makes the
-      CLI exit 1; a baseline that was requested but could not be resolved makes
-      it exit 2.
+      resolves the pin for this suite on the results server — a fixed run, or a
+      branch pin that merges the newest runs on the branch per case — and needs
+      `server-url` plus `project:`/`suite:` in the config.
+      "server:branch:<name>" resolves the same branch merge with no pin at all.
+      "latest" reads the local .domarinn/runs store, which a fresh checkout
+      does not have — in CI it silently finds nothing and the gate never fires.
+      Also accepts a run id, a result.json path, or "none" to override a
+      `baseline:` suite default. Empty passes no reference (a `baseline:` key
+      in the suite still applies). A regression makes the CLI exit 1; a
+      baseline that was requested but could not be resolved makes it exit 2.
     required: false
     default: ""
   fail-on-regression:

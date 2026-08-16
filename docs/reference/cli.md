@@ -85,7 +85,7 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |
 | `--no-progress` | Disable the live progress bar (see below). |
 | `--allow-empty` | Succeed even if the run resolves to zero cases. Without it that is exit 2, because a green result over no cells is indistinguishable from a green result over every cell. Pass it for a sharded matrix where a shard legitimately has no work. |
-| `--against <REF>` | Compare against a baseline run. `server:baseline` uses the baseline pinned for this suite on the results server (the only reference that works in CI); `latest` uses the newest local run *of the same suite*; also accepts a run id or a `result.json` path. A regression sets exit code `1`; a baseline that was requested but could not be resolved sets exit code `2`. |
+| `--against <REF>` | Compare against a baseline. `server:baseline` uses the pin for this suite on the results server (a run *or* a branch — the reliable choice in CI); `server:branch:<name>` merges the newest server runs on `<name>` with no pin at all; `branch:<name>` does the same from the local run store; `latest` uses the newest local run *of the same suite*; a run id or a `result.json` path names one run; `none` disables the comparison (overriding a [`baseline:`](domarinn-yaml.md#baseline) suite default). A branch resolves to a *composite* — per case, the newest run on the branch wins, so a filtered newest run cannot shrink the gate's coverage. A regression sets exit code `1`; a baseline that was requested but could not be resolved sets exit code `2`. |
 | `--summary-md <FILE>` | Write a Markdown summary (headline metrics table, failing cases, and any baseline comparison). Identical to what [`ci-summary`](#domarinn-ci-summary-run-flags) writes, minus the step outputs. |
 | `--share` | Upload the completed run to the configured server, and record the returned URL on the stored run. **Fail-closed**: a rejected or unreachable upload logs an `ERROR` naming the run id, suite and case count, and exits `3`. Before the runner starts, `--share` also asks the server what result-schema versions it accepts; a confirmed mismatch — or no server URL configured at all — prints the remedy and exits `2` having spent nothing. See [Sharing a run](#sharing-a-run). |
 | `--allow-share-failure` | Opt out of the above (requires `--share`): an upload failure becomes a `WARN` and the exit code reflects the assertions alone, and a preflight refusal becomes a warning the run proceeds past. For a fork's pull request with no server credentials, or anywhere publishing is genuinely optional. |
@@ -213,6 +213,19 @@ DOMARINN_SERVER_URL=https://evals.example domarinn share --strict
 DOMARINN_SERVER_URL=https://evals.example domarinn share 01JD3V9GQ8 --strict
 ```
 
+## `domarinn baseline <show|set|clear> [flags]`
+
+Manage the server-side baseline pin for the suite named by the local `domarinn.yaml` — the pin `--against server:baseline` resolves. The same endpoints as the web UI's pin button; server from `--server-url` / `DOMARINN_SERVER_URL`, token from `DOMARINN_TOKEN`. The suite must set both `project:` and `suite:` (exit `2` otherwise — the server keys baselines on the pair).
+
+- `show [PATH]` — print the pin: a fixed run, or a branch (auto-tracking: the newest runs on the branch merge into the comparison). An unpinned suite is stated plainly, exit `0`.
+- `set <RUN> | set --branch <NAME> [--path PATH]` — pin a run (`latest`, a stored id, or a `result.json` path resolves locally to its concrete id; a bare id passes through for runs that exist only on the server) or pin a branch. A branch pin needs no run to exist yet — pinning `main` before the first upload is the natural bootstrap.
+- `clear [PATH]` — remove the pin. Clearing nothing is success: the requested end state holds.
+
+```sh
+DOMARINN_SERVER_URL=https://evals.example domarinn baseline set --branch main
+DOMARINN_SERVER_URL=https://evals.example domarinn baseline show
+```
+
 ## `domarinn ci-summary [RUN] [flags]`
 
 Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as GitHub Actions step outputs. See [`gate-in-ci.md`](../guides/gate-in-ci.md#the-ci-summary-command).
@@ -220,7 +233,7 @@ Summarize a stored run for CI: a Markdown report for a PR comment or job summary
 | Flag | Meaning |
 |---|---|
 | `RUN` | Run to summarize — a run id, `latest` (default), a `result.json`, or a run directory. |
-| `--against <REF>` | Append a baseline comparison; same references as `run --against`. `ci-summary` is a reporter, not a gate, so an unresolvable baseline warns and is skipped rather than failing. |
+| `--against <REF>` | Append a baseline comparison; same references as `run --against`, including the branch forms and `none`. With no flag, a [`baseline:`](domarinn-yaml.md#baseline) key in the summarized run's config supplies the same default the gate used. `ci-summary` is a reporter, not a gate, so an unresolvable baseline warns and is skipped rather than failing. |
 | `--out <FILE>` | Write the Markdown to a file instead of stdout. |
 | `--github-output <FILE>` | Append `key=value` step outputs here. Defaults to `$GITHUB_OUTPUT`, so on a runner no flag is needed. |
 
@@ -340,6 +353,6 @@ Probe **this binary's own** server health and exit `0`/non-zero accordingly. Des
 ## CI usage
 
 - **Validate on every push:** `domarinn validate` (fast, no provider calls).
-- **Gate PRs on eval quality:** `domarinn run --against server:baseline` (exit `1` on regression), or use the reusable action at `.github/actions/domarinn-eval`. See [gate-in-ci.md](../guides/gate-in-ci.md).
+- **Gate PRs on eval quality:** `domarinn run --against server:baseline` (exit `1` on regression), or use the reusable action at `.github/actions/domarinn-eval`. Pin a branch once (`domarinn baseline set --branch main`) and the baseline auto-tracks it; `--against server:branch:main` needs no pin at all. See [gate-in-ci.md](../guides/gate-in-ci.md).
 - **Contract-test the schema:** regenerate `domarinn schema config` and fail on drift (wired in `ci.yml`).
 - **Read the exit code**, not just stdout: `1` = the model regressed (block the PR), `3` = the harness broke (retry / page an operator, don't blame the PR).
