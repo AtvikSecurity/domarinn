@@ -686,6 +686,36 @@ fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE runs ADD COLUMN xpass_count INTEGER;
         "#,
         ),
+        // Migration 20: branch-pinned baselines. A pin is now a run *or* a
+        // branch (`--against server:baseline` resolves a branch pin to a
+        // composite of the newest runs on that branch), so `run_id` must go
+        // nullable — which SQLite has no ALTER for, hence the same rebuild
+        // recipe as migrations 14/19. Trivial here: `baselines` has no
+        // children, no indexes beyond its PK, and the batch-wide foreign-keys
+        // pragma in [`migrate_runs`] already covers the DROP/RENAME.
+        //
+        // The CHECK makes the two pin kinds exclusive at the schema, so no
+        // reader ever has to define what a row with both means. NOTE for every
+        // consumer of `baselines`: a NULL `run_id` now exists, and a bare
+        // `IN (SELECT run_id FROM baselines)` is never FALSE against it — see
+        // the retention sweep's protection predicate.
+        M::up(
+            r#"
+        CREATE TABLE baselines_new (
+            project TEXT NOT NULL,
+            suite   TEXT NOT NULL,
+            run_id  TEXT REFERENCES runs(id) ON DELETE CASCADE,
+            branch  TEXT,
+            set_at  INTEGER NOT NULL,
+            PRIMARY KEY (project, suite),
+            CHECK ((run_id IS NULL) <> (branch IS NULL))
+        );
+        INSERT INTO baselines_new (project, suite, run_id, set_at)
+            SELECT project, suite, run_id, set_at FROM baselines;
+        DROP TABLE baselines;
+        ALTER TABLE baselines_new RENAME TO baselines;
+        "#,
+        ),
     ])
 }
 

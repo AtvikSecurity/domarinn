@@ -104,6 +104,33 @@ async fn baseline_set_get_and_delete() {
 }
 
 #[tokio::test]
+async fn a_branch_pin_surfaces_in_the_suites_listing() {
+    use domarinn_server::runsets::RunVisibility;
+    use domarinn_server::storage::BaselinePin;
+
+    let (app, storage, _dir) =
+        test_app_with_storage(Settings::default(), domarinn_server::AuthMode::Open).await;
+    seed(&app).await;
+
+    storage
+        .set_baseline(
+            "proj".into(),
+            "suite".into(),
+            BaselinePin::Branch("main".into()),
+            RunVisibility::Full,
+        )
+        .await
+        .unwrap();
+
+    let suites = get(&app, "/api/v1/projects/proj/suites").await;
+    assert!(
+        suites.json()["suites"][0]["baseline_run_id"].is_null(),
+        "a branch pin names no single run"
+    );
+    assert_eq!(suites.json()["suites"][0]["baseline_branch"], "main");
+}
+
+#[tokio::test]
 async fn baseline_for_missing_run_is_404() {
     let (app, _dir) = test_app(Settings::default()).await;
     seed(&app).await;

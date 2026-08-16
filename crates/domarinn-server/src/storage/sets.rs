@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use super::exec::{Conn, Queryable, Row, Value};
-use super::projects::read_baseline;
+use super::projects::{read_baseline_pin, split_pin};
 use super::runsets::{covering_level, restricted};
 use super::Storage;
 use crate::dto::sets::{
@@ -263,6 +263,8 @@ fn run_set_project(
     let mut suites = Vec::with_capacity(rows.len());
     for (suite, agg) in rows {
         let sparkline = sparklines.remove(&suite).unwrap_or_default();
+        let (baseline_run_id, baseline_branch) =
+            split_pin(read_baseline_pin(conn, project, &suite, vis)?);
         suites.push(SuiteSetView {
             run_count: agg.run_count,
             last_run_at: agg.last_run_at,
@@ -273,7 +275,8 @@ fn run_set_project(
             empty_count: agg.reportable_empty_count(),
             latest_pass_rate: sparkline.last().copied(),
             sparkline,
-            baseline_run_id: read_baseline(conn, project, &suite, vis)?,
+            baseline_run_id,
+            baseline_branch,
             restricted: restricted(conn, Some(project), Some(&suite))?,
             my_level: my_level(conn, vis, project, Some(&suite))?,
             suite,
@@ -308,6 +311,9 @@ fn run_set_suite(
         .remove(suite)
         .unwrap_or_default();
 
+    let (baseline_run_id, baseline_branch) =
+        split_pin(read_baseline_pin(conn, project, suite, vis)?);
+
     Ok(Some(SuiteSetDetailResponse {
         project: project.to_string(),
         suite: suite.to_string(),
@@ -322,7 +328,8 @@ fn run_set_suite(
         empty_count: agg.reportable_empty_count(),
         latest_pass_rate: sparkline.last().copied(),
         sparkline,
-        baseline_run_id: read_baseline(conn, project, suite, vis)?,
+        baseline_run_id,
+        baseline_branch,
     }))
 }
 

@@ -41,12 +41,22 @@
 
 /// Forward-only migrations for the runs table set. Version numbers are this
 /// file's own ledger (they do not correspond to schema.rs migration numbers).
-pub(super) const RUNS_MIGRATIONS: &[(i64, &str)] = &[(1, RUNS_V1)];
+pub(super) const RUNS_MIGRATIONS: &[(i64, &str)] = &[(1, RUNS_V1), (2, RUNS_V2)];
 
 /// Forward-only migrations for the cache table set (its own ledger, matching
 /// the two-database split on SQLite; on Postgres both sets share one database
 /// — the names are disjoint).
 pub(super) const CACHE_MIGRATIONS: &[(i64, &str)] = &[(1, CACHE_V1)];
+
+/// Mirror of SQLite migration 20: branch-pinned baselines. Postgres can ALTER
+/// in place where SQLite had to rebuild; the end state is identical — `run_id`
+/// nullable, a `branch` column, and a CHECK making the two pin kinds exclusive.
+const RUNS_V2: &str = r#"
+ALTER TABLE baselines ALTER COLUMN run_id DROP NOT NULL;
+ALTER TABLE baselines ADD COLUMN branch TEXT;
+ALTER TABLE baselines ADD CONSTRAINT baselines_one_kind
+    CHECK ((run_id IS NULL) <> (branch IS NULL));
+"#;
 
 /// Final state of SQLite runs migrations 1–19, as one snapshot.
 const RUNS_V1: &str = r#"

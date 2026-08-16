@@ -779,7 +779,7 @@ async fn put_baseline(
         .set_baseline(
             project.clone(),
             suite.clone(),
-            body.run_id.clone(),
+            crate::storage::BaselinePin::Run(body.run_id.clone()),
             RunVisibility::of(&scope.identity),
         )
         .await?

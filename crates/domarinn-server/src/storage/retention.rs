@@ -48,8 +48,19 @@ impl Storage {
 /// load-bearing: `project`, `suite` and `git_branch` are all nullable, and
 /// `NULL = NULL` is NULL in SQL, so a run with no project would never match its
 /// own group and every such run would look evictable.
+///
+/// The `run_id IS NOT NULL` filter on the baselines subquery is equally
+/// load-bearing, in the opposite direction: a *branch* pin (migration 20)
+/// stores NULL in `run_id`, and `id IN (set containing NULL)` is never FALSE —
+/// only TRUE or NULL — so without the filter one branch pin turns
+/// `NOT ({PROTECTED})` into NULL for every unprotected run and the sweep
+/// silently deletes nothing, forever. A branch pin needs no row-level
+/// protection of its own: the newest-run-of-each-branch clause below already
+/// keeps its resolution alive, and sweeping older contributors only thins the
+/// composite (cases present only in old runs drop out as non-gating `added`
+/// noise), never breaks it.
 const PROTECTED: &str = "
-    id IN (SELECT run_id FROM baselines)
+    id IN (SELECT run_id FROM baselines WHERE run_id IS NOT NULL)
     OR id IN (
         SELECT r.id FROM runs r
         WHERE r.created_at = (

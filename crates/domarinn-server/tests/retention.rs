@@ -181,3 +181,37 @@ async fn a_sweep_removes_the_runs_search_rows() {
         "a swept run must not stay searchable"
     );
 }
+
+/// One branch pin puts a NULL `run_id` into `baselines`, and `id IN (SELECT
+/// run_id FROM baselines)` over a set containing NULL is never FALSE — only
+/// TRUE or NULL — so `NOT (protected)` evaluates NULL for every unprotected
+/// run and the sweep silently deletes nothing, forever. The protection
+/// subquery must exclude NULLs.
+#[tokio::test]
+async fn a_branch_pin_does_not_stop_the_sweep_from_deleting_expired_runs() {
+    use domarinn_server::runsets::RunVisibility;
+    use domarinn_server::storage::BaselinePin;
+
+    let (app, storage, _dir) = app_and_storage().await;
+    seed(&app, "expired", "s", "main", -100 * DAY).await;
+    seed(&app, "newest", "s", "main", -90 * DAY).await;
+
+    let pinned = storage
+        .set_baseline(
+            "p".into(),
+            "s".into(),
+            BaselinePin::Branch("main".into()),
+            RunVisibility::Full,
+        )
+        .await
+        .unwrap();
+    assert!(pinned, "a branch pin needs no run to exist");
+
+    let swept = storage.sweep_runs(30).await.unwrap();
+
+    assert_eq!(
+        swept.deleted, 1,
+        "the branch pin must not disable the sweep for unrelated runs"
+    );
+    assert_eq!(ids(&app).await, vec!["newest"]);
+}

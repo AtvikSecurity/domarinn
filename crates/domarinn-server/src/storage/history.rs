@@ -115,13 +115,16 @@ fn case_history(
         point.output_changed = changed;
     }
 
-    let baseline_run_id = super::projects::read_baseline(conn, project, suite, vis)?;
+    let (baseline_run_id, baseline_branch) = super::projects::split_pin(
+        super::projects::read_baseline_pin(conn, project, suite, vis)?,
+    );
 
     Ok(Some(CaseHistoryResponse {
         project: project.to_string(),
         suite: suite.to_string(),
         case_key: case_key.clone(),
         baseline_run_id,
+        baseline_branch,
         points,
     }))
 }

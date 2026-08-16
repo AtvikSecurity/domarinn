@@ -71,6 +71,7 @@ mod matrix;
 pub mod migratedb;
 mod pg;
 mod projects;
+pub use projects::BaselinePin;
 pub mod retention;
 mod runs;
 mod runsets;

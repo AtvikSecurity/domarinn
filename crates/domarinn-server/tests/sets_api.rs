@@ -162,7 +162,7 @@ async fn fixture() -> Fixture {
         .set_baseline(
             "open".into(),
             "beta".into(),
-            "b1".into(),
+            domarinn_server::storage::BaselinePin::Run("b1".into()),
             domarinn_server::runsets::RunVisibility::Full,
         )
         .await
