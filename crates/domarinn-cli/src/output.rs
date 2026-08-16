@@ -629,6 +629,7 @@ pub(crate) fn sample_run() -> RunResult {
         digests: None,
         origin: None,
         share_url: None,
+        composite: None,
         filters: Default::default(),
         cases: vec![
             case("ok", CaseStatus::Pass, 1.0),

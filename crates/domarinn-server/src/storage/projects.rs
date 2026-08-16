@@ -9,6 +9,17 @@ use crate::dto::projects::{
 };
 use crate::runsets::{visibility_predicate, RunVisibility};
 
+/// What a suite's baseline is pinned to.
+///
+/// Exactly one of the two, enforced by the `baselines` CHECK (migration 20): a
+/// fixed run, or a branch whose newest runs are merged into a composite at
+/// resolution time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaselinePin {
+    Run(RunId),
+    Branch(String),
+}
+
 impl Storage {
     /// The catalog of projects, counted over the runs this caller may see. A
     /// project whose every run is invisible disappears entirely rather than
@@ -27,11 +38,11 @@ impl Storage {
             .await
     }
 
-    /// Point `(project, suite)`'s baseline at `run_id`.
+    /// Point `(project, suite)`'s baseline at `pin` — a fixed run or a branch.
     ///
-    /// `false` — a 404 at the handler — when the run does not exist, is not
-    /// visible to this caller, or is not a run *of this suite*. All three
-    /// collapse into one answer on purpose:
+    /// For a run pin, `false` — a 404 at the handler — when the run does not
+    /// exist, is not visible to this caller, or is not a run *of this suite*.
+    /// All three collapse into one answer on purpose:
     ///
     /// * Visibility, because a baseline is a read of the named run as much as a
     ///   write to the suite. Without it, anyone who may write into any
@@ -42,43 +53,90 @@ impl Storage {
     ///   meaningless anyway — every reader of this suite would be handed an id
     ///   that does not belong to it. `IS NOT DISTINCT FROM` rather than `=` so
     ///   the comparison is NULL-safe against a run that has no project or suite.
+    ///
+    /// A branch pin requires no run to exist yet — pinning `main` before the
+    /// first upload is the natural CI bootstrap, and resolution honestly reads
+    /// "no runs on that branch" as an absent baseline until one lands. There is
+    /// nothing to probe: the pin names a branch, not a run.
     pub async fn set_baseline(
         &self,
         project: String,
         suite: String,
-        run_id: RunId,
+        pin: BaselinePin,
         vis: RunVisibility,
     ) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
                 let mut tx = conn.immediate_tx()?;
-                let mut args: Vec<Value> = vec![
-                    run_id.as_str().to_string().into(),
-                    project.clone().into(),
-                    suite.clone().into(),
-                ];
-                let visible = visibility_predicate("runs", &vis, &mut args);
-                let sql = format!(
-                    "SELECT 1 FROM runs
-                      WHERE id = ?1 AND project IS NOT DISTINCT FROM ?2
-                        AND suite IS NOT DISTINCT FROM ?3 AND {visible}"
-                );
-                // `.query_row_opt(...)?`, never `.is_ok()` — see
-                // `project_has_visible_runs` in [`super::sets`]. A swallowed
-                // error here reports "no such run" for a broken database and
-                // silently leaves the baseline unpinned.
-                let exists = tx.query_row_opt(&sql, &args, |_| Ok(()))?.is_some();
-                if !exists {
-                    return Ok(false);
+                match &pin {
+                    BaselinePin::Run(run_id) => {
+                        let mut args: Vec<Value> = vec![
+                            run_id.as_str().to_string().into(),
+                            project.clone().into(),
+                            suite.clone().into(),
+                        ];
+                        let visible = visibility_predicate("runs", &vis, &mut args);
+                        let sql = format!(
+                            "SELECT 1 FROM runs
+                              WHERE id = ?1 AND project IS NOT DISTINCT FROM ?2
+                                AND suite IS NOT DISTINCT FROM ?3 AND {visible}"
+                        );
+                        // `.query_row_opt(...)?`, never `.is_ok()` — see
+                        // `project_has_visible_runs` in [`super::sets`]. A
+                        // swallowed error here reports "no such run" for a
+                        // broken database and silently leaves the baseline
+                        // unpinned.
+                        let exists = tx.query_row_opt(&sql, &args, |_| Ok(()))?.is_some();
+                        if !exists {
+                            return Ok(false);
+                        }
+                        tx.execute(
+                            "INSERT INTO baselines (project, suite, run_id, branch, set_at)
+                             VALUES (?1, ?2, ?3, NULL, ?4)
+                             ON CONFLICT (project, suite) DO UPDATE
+                                SET run_id = excluded.run_id, branch = NULL, set_at = excluded.set_at",
+                            &params![project, suite, run_id.as_str(), now_ms()],
+                        )?;
+                    }
+                    BaselinePin::Branch(branch) => {
+                        tx.execute(
+                            "INSERT INTO baselines (project, suite, run_id, branch, set_at)
+                             VALUES (?1, ?2, NULL, ?3, ?4)
+                             ON CONFLICT (project, suite) DO UPDATE
+                                SET branch = excluded.branch, run_id = NULL, set_at = excluded.set_at",
+                            &params![project, suite, branch.as_str(), now_ms()],
+                        )?;
+                    }
                 }
-                tx.execute(
-                    "INSERT INTO baselines (project, suite, run_id, set_at)
-                     VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT (project, suite) DO UPDATE SET run_id = excluded.run_id, set_at = excluded.set_at",
-                    &params![project, suite, run_id.as_str(), now_ms()],
-                )?;
                 tx.commit()?;
                 Ok(true)
+            })
+            .await
+    }
+
+    /// The suite's pin, visibility-filtered — `None` reads as unpinned.
+    pub async fn baseline_pin(
+        &self,
+        project: String,
+        suite: String,
+        vis: RunVisibility,
+    ) -> anyhow::Result<Option<BaselinePin>> {
+        self.runs
+            .read(move |conn| read_baseline_pin(conn, &project, &suite, &vis))
+            .await
+    }
+
+    /// The pin plus when it was set (epoch-ms) — `GET .../baseline` metadata.
+    pub async fn baseline_meta(
+        &self,
+        project: String,
+        suite: String,
+        vis: RunVisibility,
+    ) -> anyhow::Result<Option<(BaselinePin, i64)>> {
+        self.runs
+            .read(move |conn| {
+                Ok(read_baseline_row(conn, &project, &suite, &vis)?
+                    .and_then(|(run_id, branch, set_at)| Some((pin_of(run_id, branch)?, set_at))))
             })
             .await
     }
@@ -120,32 +178,78 @@ fn list_projects(conn: &mut Conn<'_>, vis: &RunVisibility) -> anyhow::Result<Pro
     Ok(ProjectsResponse { projects })
 }
 
-/// The suite's baseline run id, filtered by visibility.
+/// The suite's baseline pin — a run id or a branch — filtered by visibility.
 ///
-/// `set_baseline` now refuses to record a run that is not of this suite, so on
-/// a database written by this version the join can only ever confirm what the
-/// caller already sees. It is unconditional anyway because `baselines` has no
-/// constraint tying a row to its run's `(project, suite)` and earlier versions
-/// never checked — an upgraded database can hold a row pointing outside the
-/// set, and that row must not publish an invisible run's id on a visible suite.
-pub(super) fn read_baseline(
+/// For a run pin, `set_baseline` now refuses to record a run that is not of
+/// this suite, so on a database written by this version the join can only ever
+/// confirm what the caller already sees. It is unconditional anyway because
+/// `baselines` has no constraint tying a row to its run's `(project, suite)`
+/// and earlier versions never checked — an upgraded database can hold a row
+/// pointing outside the set, and that row must not publish an invisible run's
+/// id on a visible suite. The LEFT JOIN keeps that guard for run pins while
+/// letting a branch pin — whose `run_id` is NULL, so there is no run to read —
+/// through: a branch name is visible to whoever the enclosing query already
+/// showed the suite.
+pub(super) fn read_baseline_pin(
     conn: &mut Conn<'_>,
     project: &str,
     suite: &str,
     vis: &RunVisibility,
-) -> anyhow::Result<Option<RunId>> {
+) -> anyhow::Result<Option<BaselinePin>> {
+    Ok(read_baseline_row(conn, project, suite, vis)?
+        .and_then(|(run_id, branch, _set_at)| pin_of(run_id, branch)))
+}
+
+/// One raw `baselines` row: `(run_id, branch, set_at)`.
+type BaselineRow = (Option<String>, Option<String>, i64);
+
+/// The raw `baselines` row, visibility-filtered as documented on
+/// [`read_baseline_pin`].
+fn read_baseline_row(
+    conn: &mut Conn<'_>,
+    project: &str,
+    suite: &str,
+    vis: &RunVisibility,
+) -> anyhow::Result<Option<BaselineRow>> {
     let mut args: Vec<Value> = vec![project.to_string().into(), suite.to_string().into()];
     let visible = visibility_predicate("runs", vis, &mut args);
     let sql = format!(
-        "SELECT b.run_id FROM baselines b JOIN runs ON runs.id = b.run_id
-          WHERE b.project = ?1 AND b.suite = ?2 AND {visible}"
+        "SELECT b.run_id, b.branch, b.set_at FROM baselines b
+          LEFT JOIN runs ON runs.id = b.run_id
+          WHERE b.project = ?1 AND b.suite = ?2
+            AND (b.run_id IS NULL OR {visible})"
     );
     // `.query_row_opt(...)?`, never `.ok()` — see `project_has_visible_runs` in
     // [`super::sets`]. A suite reading as unpinned because the query failed is
     // indistinguishable from one that was never pinned.
-    Ok(conn
-        .query_row_opt(&sql, &args, |row| row.get::<String>(0))?
-        .map(RunId::new))
+    conn.query_row_opt(&sql, &args, |row| {
+        Ok((
+            row.get::<Option<String>>(0)?,
+            row.get::<Option<String>>(1)?,
+            row.get::<i64>(2)?,
+        ))
+    })
+}
+
+/// The typed pin a row's `(run_id, branch)` pair spells. A row with neither is
+/// unreachable under the CHECK but must read as unpinned, not panic a listing.
+fn pin_of(run_id: Option<String>, branch: Option<String>) -> Option<BaselinePin> {
+    match (run_id, branch) {
+        (Some(run_id), _) => Some(BaselinePin::Run(RunId::new(run_id))),
+        (None, Some(branch)) => Some(BaselinePin::Branch(branch)),
+        (None, None) => None,
+    }
+}
+
+/// The two DTO columns a pin fans out into: `(baseline_run_id,
+/// baseline_branch)`. Every listing carries both — a run pin fills the first, a
+/// branch pin the second — so the split lives in one place.
+pub(super) fn split_pin(pin: Option<BaselinePin>) -> (Option<RunId>, Option<String>) {
+    match pin {
+        Some(BaselinePin::Run(id)) => (Some(id), None),
+        Some(BaselinePin::Branch(branch)) => (None, Some(branch)),
+        None => (None, None),
+    }
 }
 
 fn list_suites(
@@ -188,7 +292,8 @@ fn list_suites(
             })
         })?;
 
-        let baseline_run_id = read_baseline(conn, project, &suite, vis)?;
+        let (baseline_run_id, baseline_branch) =
+            split_pin(read_baseline_pin(conn, project, &suite, vis)?);
 
         let last_run_at = series.first().map(|s| s.created_at.clone());
 
@@ -197,6 +302,7 @@ fn list_suites(
             run_count: series.len() as i64,
             last_run_at,
             baseline_run_id,
+            baseline_branch,
             series,
         });
     }

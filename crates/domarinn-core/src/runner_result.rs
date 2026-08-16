@@ -127,7 +127,7 @@ pub(super) fn json_to_persist(include_raw: bool, raw: Option<Json>, what: &str) 
     }
 }
 
-pub(super) fn summarize(cases: &[CaseResult]) -> RunSummary {
+pub(crate) fn summarize(cases: &[CaseResult]) -> RunSummary {
     let mut s = RunSummary {
         total: cases.len() as u64,
         ..Default::default()

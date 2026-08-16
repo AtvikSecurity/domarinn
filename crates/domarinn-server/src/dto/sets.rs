@@ -101,6 +101,9 @@ pub struct SuiteSetView {
     /// `Sparkline` component consumes.
     pub sparkline: Vec<f64>,
     pub baseline_run_id: Option<RunId>,
+    /// The pinned baseline branch, when the suite's baseline is a branch pin
+    /// rather than a fixed run. Mutually exclusive with `baseline_run_id`.
+    pub baseline_branch: Option<String>,
     /// Covering: true when either the suite or its whole project is restricted.
     pub restricted: bool,
     pub my_level: Option<GrantLevel>,
@@ -138,6 +141,9 @@ pub struct SuiteSetDetailResponse {
     /// The last 20 runs' pass rates, oldest first — see `SuiteSetView`.
     pub sparkline: Vec<f64>,
     pub baseline_run_id: Option<RunId>,
+    /// The pinned baseline branch, when the suite's baseline is a branch pin
+    /// rather than a fixed run. Mutually exclusive with `baseline_run_id`.
+    pub baseline_branch: Option<String>,
 }
 
 /// One row of a set's access list.
@@ -262,6 +268,7 @@ mod tests {
                 latest_pass_rate: Some(1.0),
                 sparkline: vec![0.5, 1.0],
                 baseline_run_id: Some(RunId::new("r-1")),
+                baseline_branch: None,
                 restricted: true,
                 my_level: Some(GrantLevel::View),
             }],
@@ -285,6 +292,7 @@ mod tests {
                         "latest_pass_rate": 1.0,
                         "sparkline": [0.5, 1.0],
                         "baseline_run_id": "r-1",
+                        "baseline_branch": null,
                         "restricted": true,
                         "my_level": "view",
                     }
@@ -309,6 +317,7 @@ mod tests {
             latest_pass_rate: None,
             sparkline: vec![],
             baseline_run_id: None,
+            baseline_branch: None,
             restricted: false,
             my_level: None,
         };
@@ -321,6 +330,7 @@ mod tests {
             "last_run_at",
             "latest_pass_rate",
             "baseline_run_id",
+            "baseline_branch",
             "my_level",
         ] {
             assert!(v.get(key).is_some(), "missing key {key}");
@@ -345,6 +355,7 @@ mod tests {
             latest_pass_rate: None,
             sparkline: vec![],
             baseline_run_id: None,
+            baseline_branch: None,
         };
         assert_eq!(
             serde_json::to_value(&dto).unwrap(),
@@ -364,6 +375,7 @@ mod tests {
                 "latest_pass_rate": null,
                 "sparkline": [],
                 "baseline_run_id": null,
+                "baseline_branch": null,
             })
         );
     }

@@ -64,7 +64,7 @@ jobs:
 | `token`              | `""`                | Bearer token for the results server (exported as `DOMARINN_TOKEN`). Pass a **secret**, never a literal. |
 | `allow-share-failure` | `"false"`          | If `true`, a failed upload no longer fails the job (becomes `--allow-share-failure`). Off by default: with `server-url` set, publishing the run is the point of the step. Ignored without `server-url`. See [Uploading CI runs](#uploading-ci-runs-to-a-shared-server). |
 | `provider`           | `""`                | Provider id(s) to run, comma- or space-separated; each becomes a repeated `--provider`. Selection only — a selected cell keeps its whole `fallback:` chain. Empty runs the full matrix. Where the intent is "this provider exists only as a fallback target", prefer `fallback_only: true` in the suite, which keeps the cost model reviewable in the file. |
-| `against`            | `""`                | Baseline to diff against. Use `server:baseline` in CI (the suite's pinned baseline on the server); `latest` reads the local run store, which a fresh checkout does not have. Also accepts a run id or a `result.json` path. Empty disables the diff. A regression makes the CLI exit 1; a baseline that cannot be resolved makes it exit 2. |
+| `against`            | `""`                | Baseline to diff against. Use `server:baseline` in CI (the suite's pin on the server — a run or a branch), or `server:branch:<name>` to merge the newest server runs on `<name>` with no pin; `latest` reads the local run store, which a fresh checkout does not have. Also accepts a run id, a `result.json` path, or `none` to override a [`baseline:`](../reference/domarinn-yaml.md#baseline) suite default. Empty means no explicit reference (the suite default, if any, still applies). A regression makes the CLI exit 1; a baseline that cannot be resolved makes it exit 2. |
 | `fail-on-regression` | `"true"`            | If `true`, exit 1 (assertion/regression) fails the check. If `false`, exit 1 is a warning only. Exit 2 and 3 **always** fail. |
 | `comment`            | `"true"`            | Post/update the summary comment on the PR. |
 | `artifact-name`      | `"domarinn-results"` | Name of the uploaded artifact holding `results.xml` + `summary.md`. |
@@ -214,7 +214,15 @@ $ export DOMARINN_TOKEN=...
 $ domarinn run eval/behavioral.yaml --share
 ```
 
-Then pin a known-good run as the baseline for that project/suite in the web UI.
+Then pin the baseline for that project/suite. The recommended pin is a **branch**:
+
+```console
+$ domarinn baseline set --branch main
+```
+
+A branch pin auto-tracks: every merge to `main` that uploads a run advances the effective baseline, with no re-pinning. Resolution merges the newest runs on the branch *per case* — the newest run that has each case wins — so a filtered or sharded upload cannot silently shrink the gate's coverage; cases it lacked are filled from earlier runs. (Sweeping old runs under [retention](../reference/server.md) only thins that merge; it never breaks resolution.)
+
+Alternatively pin a fixed run (`domarinn baseline set <run-id>`, or the run page's *Set baseline* button in the web UI) when you want the baseline frozen until someone moves it — or skip pinning entirely and pass `against: server:branch:main`, which resolves the same branch merge with no server-side state at all. A third option is to declare the default in the suite itself with [`baseline: { branch: main }`](../reference/domarinn-yaml.md#baseline), so the gate fires with no `against:` input anywhere.
 
 ### 2. Gate against it
 
@@ -240,7 +248,7 @@ Then pin a known-good run as the baseline for that project/suite in the web UI.
 
 **`--against latest` in CI.** It resolves through a cwd-relative `.domarinn/runs/latest`, which a fresh checkout does not have. It finds nothing, warns, and exits `0` on a real regression. Use `server:baseline`.
 
-**No baseline pinned.** Also a warning, not a failure. The gate is only ever as good as what is actually pinned — and a stale or one-case baseline compares almost nothing while reading as a pass. Re-pin it after any deliberate improvement, and check what it contains.
+**No baseline pinned.** Also a warning, not a failure. The gate is only ever as good as what is actually pinned — and a stale or one-case fixed-run baseline compares almost nothing while reading as a pass. A **branch pin** closes most of this trap: it advances with every merge and back-fills filtered runs from earlier ones, so prefer `domarinn baseline set --branch main` and reserve fixed-run pins for deliberately frozen baselines.
 
 **A version mismatch.** The action shells out to `domarinn ci-summary`. Against an older binary that subcommand does not exist, and the step degrades to a stub comment on a green run. Pin the action and `DOMARINN_VERSION` as a pair.
 
@@ -278,9 +286,11 @@ domarinn run \
 
   Use this one in CI. `--against latest` reads the local `.domarinn/runs` store, which a fresh checkout does not have — so in CI it finds no baseline, compares nothing, and the job passes. It also needs `project:` and `suite:` set in your config, since the server pins one baseline per `(project, suite)`.
 
-  Pin a baseline from the run's page in the web UI, or with `PUT /api/v1/projects/{project}/suites/{suite}/baseline`.
+  Pin a baseline with `domarinn baseline set --branch main` (auto-tracking — the newest runs on the branch merge into the comparison, per case), `domarinn baseline set <run-id>` (frozen), from a run's page in the web UI, or with `PUT /api/v1/projects/{project}/suites/{suite}/baseline`.
 
-- `--against latest` is the **local** equivalent: the newest run *of the same suite* in `.domarinn/runs`. You can also pass a run id or a `result.json` path.
+- `--against server:branch:main` is the **pinless** server form: the same branch merge, named entirely in the workflow file. Against a server too old to know the route it is exit `2`, never a silent skip.
+
+- `--against latest` is the **local** equivalent: the newest run *of the same suite* in `.domarinn/runs`. `--against branch:main` merges the newest local runs on `main`. You can also pass a run id or a `result.json` path.
 
 - A baseline that was requested but cannot be resolved is **exit 2**, not a warning. A gate that silently skips its comparison is not a gate. Only a genuine absence — a suite's first run, or a suite with no baseline pinned yet — is treated as "nothing to compare" and lets the run through.
 - `--format junit --out results.xml` writes a JUnit report your CI can render as test results.

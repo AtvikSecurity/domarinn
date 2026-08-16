@@ -34,6 +34,15 @@ description: >-
   Every top-level suite key in one file, annotated with where its full story
   lives.
 
+# `baseline` — the default regression comparison: with no `--against` on the
+# command line, every run gates against the branch named here (per case, the
+# newest run on the branch wins — a filtered run cannot shrink coverage).
+# Resolved via the results server when one is configured, else the local run
+# store. `--against` overrides; `--against none` disables.
+#   examples/24-baselines-and-diff, docs/guides/gate-in-ci.md
+baseline:
+  branch: main
+
 # `extends` — ONE base suite this file is merged on top of.
 # `imports` — an ordered list of fragments merged after that base.
 #

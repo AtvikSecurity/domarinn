@@ -39,6 +39,10 @@ pub struct Suite {
     pub suite: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Default regression baseline: `run` compares against it when `--against`
+    /// is not passed (`--against none` disables, any other value overrides).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<BaselineCfg>,
     /// A base suite to deep-merge on top of (composition).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
@@ -73,6 +77,21 @@ pub struct Suite {
     pub runner: Option<Runner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheCfg>,
+}
+
+/// The suite's default regression baseline.
+///
+/// A struct rather than a bare string so future baseline policy (a score
+/// threshold, a lookback override) lands as optional siblings instead of a
+/// breaking retype.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BaselineCfg {
+    /// The branch whose newest runs are merged (per case, newest wins) into
+    /// the comparison baseline — typically the trunk, e.g. `main`. Resolved
+    /// against the results server when one is configured, else against the
+    /// local run store.
+    pub branch: String,
 }
 
 /// A tool the model may call.

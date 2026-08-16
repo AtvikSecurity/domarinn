@@ -22,6 +22,9 @@ pub struct CaseHistoryResponse {
     pub case_key: CaseKey,
     /// The suite's baseline run, when one is set; `None` otherwise.
     pub baseline_run_id: Option<RunId>,
+    /// The pinned baseline branch, when the suite's baseline is a branch pin
+    /// rather than a fixed run. Mutually exclusive with `baseline_run_id`.
+    pub baseline_branch: Option<String>,
     pub points: Vec<CaseHistoryPoint>,
 }
 
@@ -74,6 +77,7 @@ mod tests {
             suite: "suite".to_string(),
             case_key: CaseKey::new("deadbeef"),
             baseline_run_id: Some(RunId::new("r-1")),
+            baseline_branch: None,
             points: vec![CaseHistoryPoint {
                 run_id: RunId::new("r-2"),
                 created_at: "2026-01-01T00:00:00+00:00".to_string(),
@@ -97,6 +101,7 @@ mod tests {
                 "suite": "suite",
                 "case_key": "deadbeef",
                 "baseline_run_id": "r-1",
+                "baseline_branch": null,
                 "points": [
                     {
                         "run_id": "r-2",
@@ -125,6 +130,7 @@ mod tests {
             suite: "suite".to_string(),
             case_key: CaseKey::new("deadbeef"),
             baseline_run_id: None,
+            baseline_branch: None,
             points: vec![CaseHistoryPoint {
                 run_id: RunId::new("r-1"),
                 created_at: "2026-01-01T00:00:00+00:00".to_string(),

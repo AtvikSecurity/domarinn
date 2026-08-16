@@ -86,6 +86,20 @@ for (const m of RUN_METAS) {
   SUITE_RUN_IDS.set(m.suiteKey, list);
 }
 
+// Mutable branch pins (default: none — run pins are the seeded default). A
+// branch pin and a run pin are mutually exclusive, like the server's CHECK.
+export const BASELINE_BRANCH_BY_SUITE = new Map<string, string>();
+
+/** The suite's pin, as the two exclusive wire columns every listing carries. */
+export function pinnedBaseline(suiteKey: string): {
+  runId: string | null;
+  branch: string | null;
+} {
+  const branch = BASELINE_BRANCH_BY_SUITE.get(suiteKey);
+  if (branch) return { runId: null, branch };
+  return { runId: BASELINE_BY_SUITE.get(suiteKey) ?? null, branch: null };
+}
+
 // Mutable baselines (default: previous run in the series).
 export const BASELINE_BY_SUITE = new Map<string, string>();
 for (const [suiteKey, ids] of SUITE_RUN_IDS) {

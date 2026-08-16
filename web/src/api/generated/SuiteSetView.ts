@@ -24,6 +24,11 @@ latest_pass_rate: number | null,
  */
 sparkline: Array<number>, baseline_run_id: RunId | null, 
 /**
+ * The pinned baseline branch, when the suite's baseline is a branch pin
+ * rather than a fixed run. Mutually exclusive with `baseline_run_id`.
+ */
+baseline_branch: string | null, 
+/**
  * Covering: true when either the suite or its whole project is restricted.
  */
 restricted: boolean, my_level: GrantLevel | null, };

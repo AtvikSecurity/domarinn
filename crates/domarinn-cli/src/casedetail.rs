@@ -521,6 +521,7 @@ mod tests {
             digests: None,
             origin: None,
             share_url: None,
+            composite: None,
             filters: Default::default(),
             cases,
             summary: RunSummary::default(),

@@ -62,6 +62,7 @@ pub(crate) mod cacheindex;
 pub(crate) mod cachelink;
 mod cases;
 mod compare;
+mod composite;
 #[cfg(test)]
 mod drift_tests;
 pub(crate) mod exec;
@@ -71,6 +72,7 @@ mod matrix;
 pub mod migratedb;
 mod pg;
 mod projects;
+pub use projects::BaselinePin;
 pub mod retention;
 mod runs;
 mod runsets;

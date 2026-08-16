@@ -550,6 +550,7 @@ pub fn make_run(
         digests: None,
         origin: None,
         share_url: None,
+        composite: None,
         filters: FilterSpec {
             tags: tags.iter().map(|t| t.to_string()).collect(),
             ..Default::default()

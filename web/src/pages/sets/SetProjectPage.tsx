@@ -247,6 +247,14 @@ export function SetProjectPage() {
                           >
                             baseline
                           </Chip>
+                        ) : s.baseline_branch ? (
+                          <Chip
+                            tone="accent"
+                            size="xs"
+                            title={`Baseline tracks branch ${s.baseline_branch}: the newest runs on it merge into the comparison`}
+                          >
+                            baseline: {s.baseline_branch}
+                          </Chip>
                         ) : null}
                         {/* Only when the suite's own lock is what restricts it:
                             inside an already-restricted project the chip would

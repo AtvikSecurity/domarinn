@@ -1,6 +1,6 @@
 import type { CaseHistoryPoint, CaseHistoryResponse } from "@/api";
 import { clamp, toIso } from "./rng";
-import { BASELINE_BY_SUITE, RUN_META_BY_ID, SUITE_RUN_IDS, type RunMeta } from "./runMeta";
+import { BASELINE_BRANCH_BY_SUITE, BASELINE_BY_SUITE, pinnedBaseline, RUN_META_BY_ID, SUITE_RUN_IDS, type RunMeta } from "./runMeta";
 import { caseScore, generateCases, type MockCaseRow } from "./cases";
 import { configDigest } from "./config";
 
@@ -90,7 +90,8 @@ export function caseHistory(
     project,
     suite,
     case_key: caseKey,
-    baseline_run_id: BASELINE_BY_SUITE.get(suiteKey) ?? null,
+    baseline_run_id: pinnedBaseline(suiteKey).runId,
+    baseline_branch: pinnedBaseline(suiteKey).branch,
     points,
   };
 }
@@ -101,6 +102,16 @@ export function suiteBaseline(suiteKey: string): string | undefined {
 
 export function setSuiteBaseline(project: string, suite: string, runId: string): void {
   BASELINE_BY_SUITE.set(`${project}/${suite}`, runId);
+  BASELINE_BRANCH_BY_SUITE.delete(`${project}/${suite}`);
+}
+
+/** Test hook: pin a branch (exclusive with a run pin, like the server). */
+export function pinSuiteBaselineBranch(
+  project: string,
+  suite: string,
+  branch: string,
+): void {
+  BASELINE_BRANCH_BY_SUITE.set(`${project}/${suite}`, branch);
 }
 
 export function defaultCompareTarget(runId: string): string | undefined {

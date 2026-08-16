@@ -108,7 +108,10 @@ export function RunDetail() {
   // so the button kept reading "Baseline set ✓" after navigating to a sibling
   // run whose baseline had not been set at all.
   const justSetBaseline =
-    baseline.isSuccess && baseline.variables === run.data?.id;
+    baseline.isSuccess &&
+    baseline.variables !== undefined &&
+    "runId" in baseline.variables &&
+    baseline.variables.runId === run.data?.id;
   useEffect(() => {
     if (!baseline.isSuccess) return;
     const t = setTimeout(() => baseline.reset(), 2500);
@@ -355,7 +358,7 @@ export function RunDetail() {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => baseline.mutate(r.id)}
+              onClick={() => baseline.mutate({ runId: r.id })}
               disabled={baseline.isPending}
             >
               {justSetBaseline

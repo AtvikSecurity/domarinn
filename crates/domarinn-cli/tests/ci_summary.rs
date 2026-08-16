@@ -723,3 +723,80 @@ fn ci_summary_survives_an_unresolvable_baseline() {
         .success()
         .stdout(predicate::str::contains("| metric | value |"));
 }
+
+/// A suite that declares `baseline: {{ branch: main }}` carries it into the
+/// stored run's config snapshot, and `ci-summary` reads it there — the
+/// reporter compares by default exactly when the gate does, with no flag.
+#[test]
+fn ci_summary_defaults_to_the_suites_baseline_branch() {
+    let with_baseline = |output: &str| {
+        format!(
+            r#"
+version: 1
+project: p
+suite: s
+baseline:
+  branch: main
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{{\"output\":\"{output}\"}}'"]
+tests:
+  - id: t1
+    vars: {{}}
+    assert:
+      - {{type: contains, value: "hello"}}
+"#
+        )
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["init", "-q"]);
+    git(&[
+        "-c",
+        "user.email=t@example.invalid",
+        "-c",
+        "user.name=t",
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "seed",
+    ]);
+    let yaml = dir.path().join("domarinn.yaml");
+
+    std::fs::write(&yaml, with_baseline("hello")).unwrap();
+    bin()
+        .arg("run")
+        .env("DOMARINN_BRANCH", "main")
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    std::fs::write(&yaml, with_baseline("goodbye")).unwrap();
+    bin()
+        .args(["run", "--against", "none", "--no-cache"])
+        .env("DOMARINN_BRANCH", "main")
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .code(1);
+
+    bin()
+        .args(["ci-summary", "latest"])
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("### domarinn comparison"))
+        .stdout(predicate::str::contains("| Newly failing | 1 |"));
+}

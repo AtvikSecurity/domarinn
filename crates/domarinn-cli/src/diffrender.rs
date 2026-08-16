@@ -549,6 +549,7 @@ mod diff_tests {
             digests: None,
             origin: None,
             share_url: None,
+            composite: None,
             filters: Default::default(),
             summary: RunSummary {
                 total,

@@ -23,6 +23,7 @@ export { searchFixtures } from "./fixtures/search";
 export {
   caseHistory,
   defaultCompareTarget,
+  pinSuiteBaselineBranch,
   setSuiteBaseline,
   suiteBaseline,
 } from "./fixtures/history";

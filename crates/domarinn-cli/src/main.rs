@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 mod baseline;
+mod baselinecmd;
 mod cachecfg;
 mod cachecmd;
 mod cachels;
@@ -83,6 +84,8 @@ enum Command {
     CiSummary(cisummary::CiSummaryArgs),
     /// List stored runs (newest first).
     Runs(runscmd::RunsArgs),
+    /// Manage the server-side baseline pin for a suite (show/set/clear).
+    Baseline(baselinecmd::BaselineArgs),
     /// Diff two runs (regressions, fixes, output changes, significance).
     Diff(diffcmd::DiffArgs),
     /// Render a stored run in the terminal.
@@ -220,6 +223,7 @@ fn main() -> ExitCode {
         Command::Share(args) => share::execute(args, cli.server_url),
         Command::CiSummary(args) => cisummary::execute(args, cli.server_url),
         Command::Runs(args) => runscmd::execute(args, cli.server_url, palette),
+        Command::Baseline(args) => baselinecmd::execute(args, cli.server_url),
         Command::Diff(args) => diffcmd::execute_diff(args, palette),
         Command::View(args) => diffcmd::execute_view(args, palette),
         Command::Cache { cmd } => cachecmd::execute(cmd),

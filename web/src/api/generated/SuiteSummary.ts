@@ -12,4 +12,9 @@ export type SuiteSummary = { suite: string, run_count: number,
  * RFC3339. `None` only if the suite somehow has zero runs in its series
  * (the suite name itself always comes from at least one row).
  */
-last_run_at: string | null, baseline_run_id: RunId | null, series: Array<SuitePoint>, };
+last_run_at: string | null, baseline_run_id: RunId | null, 
+/**
+ * The pinned baseline branch, when the suite's baseline is a branch pin
+ * rather than a fixed run. Mutually exclusive with `baseline_run_id`.
+ */
+baseline_branch: string | null, series: Array<SuitePoint>, };

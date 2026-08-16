@@ -7,11 +7,20 @@
 # fail now — rather than on an absolute score, so a suite that was 80% green
 # yesterday does not have to be 100% green today to merge.
 #
-# Three ways to name a baseline, and the difference matters:
+# Ways to name a baseline, and the difference matters:
 #
-#   --against latest             the newest run in the LOCAL store
-#   --against <run-id>           a specific stored run
-#   --against server:baseline    the run pinned on a results server
+#   --against latest               the newest run in the LOCAL store
+#   --against <run-id>             a specific stored run
+#   --against branch:main          the newest LOCAL runs on a branch, merged
+#   --against server:baseline      the pin on a results server (run or branch)
+#   --against server:branch:main   the same branch merge, no pin needed
+#   --against none                 no comparison (overrides a `baseline:` key)
+#
+# A branch baseline is a MERGE, not one run: per case, the newest run on the
+# branch that has it wins, so a `--filter`ed newest run cannot silently shrink
+# the gate's coverage. Pin one with `domarinn baseline set --branch main`, or
+# declare `baseline: { branch: main }` in the suite to make the comparison the
+# default for every run.
 #
 # /// THE TRAP ///
 # `--against latest` resolves through a cwd-relative `.domarinn/runs/latest`.

@@ -44,6 +44,9 @@ pub struct SuiteSummary {
     /// (the suite name itself always comes from at least one row).
     pub last_run_at: Option<String>,
     pub baseline_run_id: Option<RunId>,
+    /// The pinned baseline branch, when the suite's baseline is a branch pin
+    /// rather than a fixed run. Mutually exclusive with `baseline_run_id`.
+    pub baseline_branch: Option<String>,
     pub series: Vec<SuitePoint>,
 }
 
@@ -93,6 +96,7 @@ mod tests {
                 run_count: 1,
                 last_run_at: Some("2026-01-01T00:00:00+00:00".to_string()),
                 baseline_run_id: Some(RunId::new("p-1")),
+                baseline_branch: None,
                 series: vec![SuitePoint {
                     run_id: RunId::new("p-2"),
                     created_at: "2026-01-01T00:00:00+00:00".to_string(),
@@ -112,6 +116,7 @@ mod tests {
                         "run_count": 1,
                         "last_run_at": "2026-01-01T00:00:00+00:00",
                         "baseline_run_id": "p-1",
+                        "baseline_branch": null,
                         "series": [
                             {
                                 "run_id": "p-2",
@@ -134,11 +139,14 @@ mod tests {
             run_count: 0,
             last_run_at: None,
             baseline_run_id: None,
+            baseline_branch: None,
             series: vec![],
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert!(v.get("baseline_run_id").is_some());
         assert!(v["baseline_run_id"].is_null());
+        assert!(v.get("baseline_branch").is_some());
+        assert!(v["baseline_branch"].is_null());
         assert!(v["last_run_at"].is_null());
         assert_eq!(v["series"], json!([]));
     }

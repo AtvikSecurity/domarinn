@@ -4,7 +4,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, patch, post, put};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
@@ -14,7 +14,6 @@ use tower_http::request_id::{
 };
 use tower_http::trace::{DefaultOnFailure, TraceLayer};
 use tracing::{info_span, Level, Span};
-use ts_rs::TS;
 
 use domarinn_core::cache::CacheKey;
 use domarinn_core::ids::{CaseKey, RunId};
@@ -25,7 +24,7 @@ use crate::domain::{CachedFilter, OriginFilter, RunStatusFilter};
 use crate::dto::meta::{CacheTierMeta, MetaCacheLimits, MetaResponse};
 use crate::dto::runs::{IngestResponse, RunListResponse};
 use crate::dto::search::SearchResponse;
-use crate::extract::{ApiJson, ApiQuery};
+use crate::extract::ApiQuery;
 use crate::runsets::{GrantLevel, RunVisibility};
 use crate::storage::{
     self, CachePutOutcome, CaseListFilter, IngestOutcome, MatrixFilter, RunListFilter,
@@ -105,10 +104,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects", get(list_projects))
         .route("/api/v1/projects/{project}/suites", get(list_suites))
         .route(
-            "/api/v1/projects/{project}/suites/{suite}/baseline",
-            put(put_baseline).delete(delete_baseline),
-        )
-        .route(
             "/api/v1/projects/{project}/suites/{suite}/cases/{case_key}/history",
             get(case_history),
         )
@@ -137,6 +132,7 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/{*path}", get(serve_asset))
         // The run-set browser and access management, from `crate::sets`.
         .merge(crate::sets::routes())
+        .merge(crate::baselines::routes())
         .fallback(spa_fallback);
 
     // The MCP endpoint, only when enabled. Merged before the layers below so
@@ -218,6 +214,12 @@ impl MakeRequestId for MakeUlidRequestId {
 /// Handler error that renders as a JSON `{ "error": ... }` body.
 pub enum ApiError {
     Status(StatusCode, String),
+    /// Like [`ApiError::Status`], plus a stable machine-readable `code` in the
+    /// body. For errors a client keys *behavior* off — the CLI's baseline
+    /// resolution treats a coded 404 as "nothing to compare against yet"
+    /// (non-fatal) and a bare 404 as "this server lacks the route" (fatal) —
+    /// where matching on prose would be a trap.
+    Coded(StatusCode, &'static str, String),
     Internal(anyhow::Error),
 }
 
@@ -235,17 +237,23 @@ impl From<anyhow::Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            ApiError::Status(code, msg) => (code, msg),
+        let (status, message, code) = match self {
+            ApiError::Status(code, msg) => (code, msg, None),
+            ApiError::Coded(status, code, msg) => (status, msg, Some(code)),
             ApiError::Internal(e) => {
                 tracing::error!(error = %e, "internal server error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal server error".to_string(),
+                    None,
                 )
             }
         };
-        (status, Json(json!({ "error": message }))).into_response()
+        let body = match code {
+            Some(code) => json!({ "error": message, "code": code }),
+            None => json!({ "error": message }),
+        };
+        (status, Json(body)).into_response()
     }
 }
 
@@ -754,67 +762,6 @@ async fn list_suites(
     Ok(Json(suites).into_response())
 }
 
-#[derive(Debug, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct BaselineBody {
-    run_id: RunId,
-}
-
-async fn put_baseline(
-    scope: Scoped<Write>,
-    State(state): State<AppState>,
-    Path((project, suite)): Path<(String, String)>,
-    ApiJson(body): ApiJson<BaselineBody>,
-) -> ApiResult<Response> {
-    require_set_access(
-        &state,
-        &scope.identity,
-        Some(&project),
-        Some(&suite),
-        GrantLevel::Upload,
-    )
-    .await?;
-    if state
-        .storage
-        .set_baseline(
-            project.clone(),
-            suite.clone(),
-            body.run_id.clone(),
-            RunVisibility::of(&scope.identity),
-        )
-        .await?
-    {
-        Ok(Json(json!({
-            "project": project,
-            "suite": suite,
-            "run_id": body.run_id,
-        }))
-        .into_response())
-    } else {
-        Err(not_found("run"))
-    }
-}
-
-async fn delete_baseline(
-    scope: Scoped<Write>,
-    State(state): State<AppState>,
-    Path((project, suite)): Path<(String, String)>,
-) -> ApiResult<Response> {
-    require_set_access(
-        &state,
-        &scope.identity,
-        Some(&project),
-        Some(&suite),
-        GrantLevel::Upload,
-    )
-    .await?;
-    if state.storage.delete_baseline(project, suite).await? {
-        Ok(StatusCode::NO_CONTENT.into_response())
-    } else {
-        Err(not_found("baseline"))
-    }
-}
-
 /// Query for `GET /projects/{project}/suites/{suite}/cases/{case_key}/history`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -928,7 +875,7 @@ pub(crate) fn clamp_limit(limit: Option<i64>) -> i64 {
 /// is restricted — an accepted bit — and a silent 404 on a legitimate upload
 /// would be a debugging trap for whoever runs the CI job. The access endpoints
 /// in [`crate::sets`] make the opposite trade, and say why.
-async fn require_set_access(
+pub(crate) async fn require_set_access(
     state: &AppState,
     identity: &crate::auth::Identity,
     project: Option<&str>,
