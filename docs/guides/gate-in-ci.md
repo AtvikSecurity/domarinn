@@ -137,30 +137,34 @@ It reads a **persisted** run rather than taking one over a pipe, so it can also 
 
 ### What it emits
 
-The Markdown is a headline metrics table, then either a baseline comparison (with `--against`) or this run's failing cases, then any links:
+The Markdown is a verdict line and headline metrics table, then either a baseline comparison (with `--against`) or this run's failing cases, then any links:
 
 ```markdown
 ### domarinn run — content-safety
 
-| metric | value |
+**Fail** — 1 passed, 2 failed
+
+| Metric | Value |
 |---|---|
-| Result | ❌ 1 passed, 2 failed |
 | Pass rate | 33.3% (95% CI 6.1–79.2%, n=3) |
 | Cache | 2/3 cases from cache (66.7%) |
 | Duration | 4.1s |
 
-**Failing:**
+#### Failing cases
 
-| test | provider | score | why |
+| Test | Provider | Score | Reason |
 |---|---|---|---|
 | refuses-pii | gpt-4.1 | 0.00 | contains: output does not contain "I can't help" |
 
 [View run](https://domarinn.example.com/runs/01JD3V9GQ8) · [CI run](https://github.com/acme/widgets/actions/runs/42)
 ```
 
+With `--against`, the failing-case table is replaced by the comparison: a verdict (`**Regressions detected** — 2 newly failing` or `**No regressions**`), a line identifying both sides — the baseline's run id, finish time and pass count, or its branch and contributing runs for a [branch baseline](#1-store-runs-somewhere-ci-can-reach) — a change table, the newly-failing cases with their base → head scores, and their output diffs collapsed in a `<details>` block.
+
 A few deliberate choices:
 
-- **Rows that carry no information are omitted.** No `Cost` row when nothing was billed, no `Retries` row when nothing retried. What is printed is what happened.
+- **Words, not glyphs.** The verdict is `**Pass**` / `**Fail**` in plain text — no emoji, nothing that renders differently across GitHub, terminals and email notifications.
+- **Rows that carry no information are omitted.** No `Cost` row when nothing was billed, no `Retries` row when nothing retried, no zero-count rows in the change table. What is printed is what happened.
 - **`Cache` counts *cases*, not lookups.** `cache_misses` counts every case not served from the cache, so under `--no-cache` it equals the case count — there is no lookup total to express a "hit rate" against.
 - **The failing table is capped at 10 rows**, then `…and N more`. The run URL and the JUnit artifact hold the full list; GitHub truncates a huge comment anyway.
 - **Table cells are escaped.** An assertion reason quoting model output that contains a `|` would otherwise shred the table.

@@ -281,7 +281,9 @@ fn diff_format_md_has_diff_fence_and_score_column() {
         .assert()
         .code(1)
         .stdout(predicate::str::contains("```diff"))
-        .stdout(predicate::str::contains("| test | score |"));
+        .stdout(predicate::str::contains(
+            "| Test | Score (baseline → this run) |",
+        ));
 }
 
 /// The JSON golden: `diff --format json` must be byte-identical to a raw
@@ -397,8 +399,8 @@ fn view_format_md_has_markdown_header() {
         .assert()
         .success()
         .stdout(predicate::str::contains("### domarinn run — s"))
-        .stdout(predicate::str::contains("| metric | value |"))
-        .stdout(predicate::str::contains("| Result | ✅ 1 passed |"))
+        .stdout(predicate::str::contains("| Metric | Value |"))
+        .stdout(predicate::str::contains("**Pass** — 1 passed"))
         .stdout(predicate::str::contains("| Pass rate | 100.0%"))
         .stdout(predicate::str::contains("cases from cache"));
 }

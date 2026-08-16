@@ -486,7 +486,7 @@ fn ci_summary_defaults_to_latest_and_tables_the_metrics() {
         .assert()
         .success()
         .stdout(predicate::str::contains("### domarinn run — s"))
-        .stdout(predicate::str::contains("| Result | ✅ 1 passed |"))
+        .stdout(predicate::str::contains("**Pass** — 1 passed"))
         .stdout(predicate::str::contains("cases from cache"));
 }
 
@@ -502,10 +502,8 @@ fn ci_summary_exits_zero_on_a_failing_run() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("**Failing:**"))
-        .stdout(predicate::str::contains(
-            "| Result | ❌ 0 passed, 1 failed |",
-        ));
+        .stdout(predicate::str::contains("#### Failing cases"))
+        .stdout(predicate::str::contains("**Fail** — 0 passed, 1 failed"));
 }
 
 #[test]
@@ -519,7 +517,7 @@ fn ci_summary_writes_markdown_to_out_path() {
         .assert()
         .success();
     let md = std::fs::read_to_string(dir.path().join("summary.md")).unwrap();
-    assert!(md.contains("| metric | value |"));
+    assert!(md.contains("| Metric | Value |"));
 }
 
 /// The key=value pairs a workflow reads back as step outputs. These replace the
@@ -671,7 +669,7 @@ fn ci_summary_against_a_baseline_reports_regressions() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("### domarinn comparison"))
+        .stdout(predicate::str::contains("### Comparison with baseline"))
         .stdout(predicate::str::contains("| Newly failing | 1 |"));
     let out = std::fs::read_to_string(dir.path().join("gh.txt")).unwrap();
     assert!(out.contains("regressed=1"));
@@ -691,8 +689,8 @@ fn ci_summary_against_a_baseline_does_not_repeat_the_failure_table() {
         .output()
         .unwrap();
     let md = String::from_utf8(out.stdout).unwrap();
-    assert!(!md.contains("**Failing:**"), "got:\n{md}");
-    assert!(md.contains("**Newly failing:**"));
+    assert!(!md.contains("Failing cases"), "got:\n{md}");
+    assert!(md.contains("#### Newly failing"));
 }
 
 /// An unresolvable run is a usage error, same as `share`.
@@ -721,7 +719,7 @@ fn ci_summary_survives_an_unresolvable_baseline() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("| metric | value |"));
+        .stdout(predicate::str::contains("| Metric | Value |"));
 }
 
 /// A suite that declares `baseline: {{ branch: main }}` carries it into the
@@ -797,6 +795,6 @@ tests:
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("### domarinn comparison"))
+        .stdout(predicate::str::contains("### Comparison with baseline"))
         .stdout(predicate::str::contains("| Newly failing | 1 |"));
 }
