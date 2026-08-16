@@ -53,6 +53,15 @@ struct RunIdent {
     #[serde(default)]
     suite: Option<String>,
     finished_at: DateTime<Utc>,
+    #[serde(default)]
+    git: Option<GitIdent>,
+}
+
+/// The one git field a scan needs: `branch:<name>` resolution filters on it.
+#[derive(Deserialize)]
+struct GitIdent {
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 /// A run found on disk.
@@ -61,6 +70,8 @@ pub struct StoredRun {
     pub project: Option<String>,
     pub suite: Option<String>,
     pub finished_at: DateTime<Utc>,
+    /// The recorded `git.branch`, when the run happened inside a repository.
+    pub branch: Option<String>,
     pub path: PathBuf,
 }
 
@@ -86,6 +97,7 @@ pub fn scan() -> Vec<StoredRun> {
                 project: ident.project,
                 suite: ident.suite,
                 finished_at: ident.finished_at,
+                branch: ident.git.and_then(|g| g.branch),
                 path,
             })
         })
@@ -215,6 +227,29 @@ pub fn latest_for_suite(head: &RunResult) -> Option<PathBuf> {
                 && run.suite == head.suite
         })
         .map(|run| run.path)
+}
+
+/// The newest stored runs of `head`'s suite on `branch`, fully loaded, newest
+/// first — the input to a composite merge. Excludes `head` itself (it persists
+/// to the store before comparison, so on its own branch it is always the
+/// newest candidate) and caps the walk at the shared
+/// [`BRANCH_LOOKBACK`](domarinn_core::composite::BRANCH_LOOKBACK) window.
+///
+/// A run whose ident matched but whose full document fails to parse is skipped
+/// for the same reason `scan` skips it: one corrupt file must not make a
+/// baseline unresolvable.
+pub fn runs_on_branch(head: &RunResult, branch: &str) -> Vec<RunResult> {
+    scan()
+        .into_iter()
+        .filter(|run| {
+            run.run_id != head.run_id.as_str()
+                && run.project == head.project
+                && run.suite == head.suite
+                && run.branch.as_deref() == Some(branch)
+        })
+        .take(domarinn_core::composite::BRANCH_LOOKBACK)
+        .filter_map(|run| read_json(&run.path).ok())
+        .collect()
 }
 
 #[cfg(test)]

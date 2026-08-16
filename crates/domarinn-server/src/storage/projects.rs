@@ -200,6 +200,9 @@ pub(super) fn read_baseline_pin(
         .and_then(|(run_id, branch, _set_at)| pin_of(run_id, branch)))
 }
 
+/// One raw `baselines` row: `(run_id, branch, set_at)`.
+type BaselineRow = (Option<String>, Option<String>, i64);
+
 /// The raw `baselines` row, visibility-filtered as documented on
 /// [`read_baseline_pin`].
 fn read_baseline_row(
@@ -207,7 +210,7 @@ fn read_baseline_row(
     project: &str,
     suite: &str,
     vis: &RunVisibility,
-) -> anyhow::Result<Option<(Option<String>, Option<String>, i64)>> {
+) -> anyhow::Result<Option<BaselineRow>> {
     let mut args: Vec<Value> = vec![project.to_string().into(), suite.to_string().into()];
     let visible = visibility_predicate("runs", vis, &mut args);
     let sql = format!(

@@ -219,12 +219,10 @@ fn server_baseline_catches_a_regression_in_a_fresh_checkout() {
     let baseline_id = latest_id(seed.path());
     let baseline_doc = stored_run(seed.path(), &baseline_id);
 
-    let suites = format!(
-        r#"{{"project":"p","suites":[{{"suite":"s","run_count":1,"last_run_at":null,"baseline_run_id":"{baseline_id}","series":[]}}]}}"#
-    );
+    let _ = baseline_id;
     let (url, server) = stub_routes(
-        vec![("/suites", suites), ("/export", baseline_doc)],
-        2,
+        vec![("/baseline/export", baseline_doc)],
+        1,
         std::time::Duration::from_secs(30),
     );
 
@@ -250,18 +248,25 @@ fn server_baseline_catches_a_regression_in_a_fresh_checkout() {
     let served = server.join().unwrap();
     assert_eq!(
         served.len(),
-        2,
-        "expected the suite listing then the baseline export, served: {served:?}"
+        1,
+        "one baseline-export request, served: {served:?}"
+    );
+    assert!(
+        served[0].contains("exclude="),
+        "the head run must be excluded from its own baseline: {}",
+        served[0]
     );
 }
 
 /// A server that has the suite but no pinned baseline is an absence — the normal
-/// state before anyone pins one — so the run still passes.
+/// state before anyone pins one — so the run still passes. The absence rides on
+/// the 404's machine `code`, not its status: a bare 404 means an old server and
+/// is fatal (see the legacy-fallback and too-old tests below).
 #[test]
 fn server_baseline_unpinned_is_an_absence_not_a_failure() {
-    let suites = r#"{"project":"p","suites":[{"suite":"s","run_count":1,"last_run_at":null,"baseline_run_id":null,"series":[]}]}"#;
-    let (url, server) = stub_routes(
-        vec![("/suites", suites.to_string())],
+    let body = r#"{"error":"no baseline pinned for p/s","code":"baseline_unpinned"}"#;
+    let (url, server) = common::stub_routes_status(
+        vec![("/baseline/export", "404 Not Found", body.to_string())],
         1,
         std::time::Duration::from_secs(30),
     );
@@ -280,4 +285,352 @@ fn server_baseline_unpinned_is_an_absence_not_a_failure() {
         .success();
 
     assert_eq!(server.join().unwrap().len(), 1);
+}
+
+/// A suite with two tests, `t2` asserting `t2_needle` — flipping the needle to
+/// something absent regresses exactly `t2`.
+fn suite_two(project: &str, suite: &str, t2_needle: &str) -> String {
+    format!(
+        r#"
+version: 1
+project: {project}
+suite: {suite}
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{{\"output\":\"hello\"}}'"]
+tests:
+  - id: t1
+    vars: {{}}
+    assert:
+      - {{type: contains, value: "hello"}}
+  - id: t2
+    vars: {{}}
+    assert:
+      - {{type: contains, value: "{t2_needle}"}}
+"#
+    )
+}
+
+/// The local store records `git.branch` only for runs inside a real repository,
+/// so the branch-reference tests run in one.
+fn git_seed(dir: &std::path::Path) {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["init", "-q"]);
+    git(&[
+        "-c",
+        "user.email=t@example.invalid",
+        "-c",
+        "user.name=t",
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "seed",
+    ]);
+}
+
+/// `--against branch:<name>` merges the newest local runs on that branch per
+/// case: a filtered newest run must not shrink the gate's coverage. Here the
+/// newest `main` run carried only `t1`, so a naive newest-run baseline would
+/// see head's failing `t2` as merely *added* — the discriminating assertion is
+/// the "Regressions detected" table, which only the merge can produce.
+#[test]
+fn a_local_branch_reference_merges_the_latest_runs_on_that_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    git_seed(dir.path());
+    let yaml = dir.path().join("domarinn.yaml");
+
+    // Full run on main: t1 and t2 both pass.
+    std::fs::write(&yaml, suite_two("p", "s", "hello")).unwrap();
+    bin()
+        .arg("run")
+        .env("DOMARINN_BRANCH", "main")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Newest main run is partial: only t1.
+    std::fs::write(&yaml, suite_named("p", "s", "hello", "hello")).unwrap();
+    bin()
+        .arg("run")
+        .env("DOMARINN_BRANCH", "main")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // A feature branch regresses t2.
+    std::fs::write(&yaml, suite_two("p", "s", "absent")).unwrap();
+    bin()
+        .args(["run", "--against", "branch:main", "--no-cache"])
+        .env("DOMARINN_BRANCH", "feature/x")
+        .current_dir(dir.path())
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "### domarinn comparison — ❌ Regressions detected",
+        ))
+        .stderr(predicate::str::contains("| Newly failing | 1 |"));
+}
+
+/// A branch reference only reads its own branch: runs on other branches are
+/// not candidates, and none on the named branch is an absence, not a failure.
+#[test]
+fn a_local_branch_reference_ignores_runs_on_other_branches() {
+    let dir = tempfile::tempdir().unwrap();
+    git_seed(dir.path());
+    std::fs::write(
+        dir.path().join("domarinn.yaml"),
+        suite_named("p", "s", "hello", "hello"),
+    )
+    .unwrap();
+
+    bin()
+        .arg("run")
+        .env("DOMARINN_BRANCH", "other")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    bin()
+        .args(["run", "--against", "branch:main", "--no-cache"])
+        .env("DOMARINN_BRANCH", "main")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("domarinn comparison").not());
+}
+
+/// The run being gated persists to the store *before* comparison, so on its
+/// own branch it is always the newest candidate — and must be excluded, or
+/// every gate self-compares to a permanent all-clear. Only the exclusion makes
+/// this regression visible as a regression rather than "no changes".
+#[test]
+fn the_composite_excludes_the_run_being_gated() {
+    let dir = tempfile::tempdir().unwrap();
+    git_seed(dir.path());
+    let yaml = dir.path().join("domarinn.yaml");
+
+    std::fs::write(&yaml, suite_named("p", "s", "hello", "hello")).unwrap();
+    bin()
+        .arg("run")
+        .env("DOMARINN_BRANCH", "main")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Regress on the same branch the baseline reads.
+    std::fs::write(&yaml, suite_named("p", "s", "goodbye", "hello")).unwrap();
+    bin()
+        .args(["run", "--against", "branch:main", "--no-cache"])
+        .env("DOMARINN_BRANCH", "main")
+        .current_dir(dir.path())
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "### domarinn comparison — ❌ Regressions detected",
+        ));
+}
+
+/// A branch nobody has run on yet is the bootstrap state — an absence.
+#[test]
+fn a_local_branch_with_no_runs_is_an_absence_not_a_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    git_seed(dir.path());
+    std::fs::write(
+        dir.path().join("domarinn.yaml"),
+        suite_named("p", "s", "hello", "hello"),
+    )
+    .unwrap();
+
+    bin()
+        .args(["run", "--against", "branch:main"])
+        .env("DOMARINN_BRANCH", "feature/x")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("domarinn comparison").not());
+}
+
+/// `server:branch:<name>` needs no pin at all: the workflow file names the
+/// branch and the server merges its newest runs.
+#[test]
+fn a_server_branch_reference_resolves_without_a_pin() {
+    let seed = tempfile::tempdir().unwrap();
+    std::fs::write(
+        seed.path().join("domarinn.yaml"),
+        suite_named("p", "s", "hello", "hello"),
+    )
+    .unwrap();
+    bin().arg("run").current_dir(seed.path()).assert().success();
+    let baseline_doc = stored_run(seed.path(), &latest_id(seed.path()));
+
+    let (url, server) = stub_routes(
+        vec![("/baseline/export", baseline_doc)],
+        1,
+        std::time::Duration::from_secs(30),
+    );
+
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fresh.path().join("domarinn.yaml"),
+        suite_named("p", "s", "goodbye", "hello"),
+    )
+    .unwrap();
+    bin()
+        .args(["run", "--against", "server:branch:main"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(fresh.path())
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "### domarinn comparison — ❌ Regressions detected",
+        ));
+
+    let served = server.join().unwrap();
+    assert!(
+        served[0].contains("branch=main") && served[0].contains("exclude="),
+        "the reference names the branch and excludes the head: {}",
+        served[0]
+    );
+}
+
+/// A branch with no runs on the server is an absence — the coded 404, unlike
+/// the bare one below.
+#[test]
+fn a_server_branch_with_no_runs_is_an_absence_not_a_failure() {
+    let body = r#"{"error":"no runs of p/s on branch main","code":"no_runs_on_branch"}"#;
+    let (url, server) = common::stub_routes_status(
+        vec![("/baseline/export", "404 Not Found", body.to_string())],
+        1,
+        std::time::Duration::from_secs(30),
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("domarinn.yaml"),
+        suite_named("p", "s", "hello", "hello"),
+    )
+    .unwrap();
+    bin()
+        .args(["run", "--against", "server:branch:main"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    assert_eq!(server.join().unwrap().len(), 1);
+}
+
+/// A server predating the export route answers a *bare* 404. For
+/// `server:baseline` that must not skip the gate — the pin may exist and be
+/// readable the old way — so resolution falls back to the legacy two-GET path.
+#[test]
+fn an_old_server_without_the_export_route_falls_back_to_the_legacy_path() {
+    let seed = tempfile::tempdir().unwrap();
+    std::fs::write(
+        seed.path().join("domarinn.yaml"),
+        suite_named("p", "s", "hello", "hello"),
+    )
+    .unwrap();
+    bin().arg("run").current_dir(seed.path()).assert().success();
+    let baseline_id = latest_id(seed.path());
+    let baseline_doc = stored_run(seed.path(), &baseline_id);
+
+    let suites = format!(
+        r#"{{"project":"p","suites":[{{"suite":"s","run_count":1,"last_run_at":null,"baseline_run_id":"{baseline_id}","series":[]}}]}}"#
+    );
+    // Route order matters: the request line for the new endpoint contains both
+    // "/suites" and "/export", so the bare-404 route must be first.
+    let (url, server) = common::stub_routes_status(
+        vec![
+            (
+                "/baseline/export",
+                "404 Not Found",
+                r#"{"error":"not found"}"#.to_string(),
+            ),
+            ("/suites", "200 OK", suites),
+            ("/export", "200 OK", baseline_doc),
+        ],
+        3,
+        std::time::Duration::from_secs(30),
+    );
+
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fresh.path().join("domarinn.yaml"),
+        suite_named("p", "s", "goodbye", "hello"),
+    )
+    .unwrap();
+    bin()
+        .args(["run", "--against", "server:baseline"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(fresh.path())
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "### domarinn comparison — ❌ Regressions detected",
+        ));
+
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+/// The legacy path cannot express a branch reference, so against an old server
+/// `server:branch:<name>` is fatal — silently skipping it would be the exact
+/// gate-that-never-fires bug this module exists to prevent.
+#[test]
+fn a_server_branch_reference_against_an_old_server_is_a_usage_error() {
+    let (url, server) = common::stub_routes_status(
+        vec![(
+            "/baseline/export",
+            "404 Not Found",
+            r#"{"error":"not found"}"#.to_string(),
+        )],
+        1,
+        std::time::Duration::from_secs(30),
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("domarinn.yaml"),
+        suite_named("p", "s", "hello", "hello"),
+    )
+    .unwrap();
+    bin()
+        .args(["run", "--against", "server:branch:main"])
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("does not support branch"));
+
+    assert_eq!(server.join().unwrap().len(), 1);
+}
+
+/// `--against none` is the explicit opt-out (the suite config can make a
+/// comparison the default; the flag must be able to turn it off). No
+/// comparison runs even though a baseline exists.
+#[test]
+fn against_none_disables_the_comparison() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("domarinn.yaml"),
+        suite_named("p", "s", "hello", "hello"),
+    )
+    .unwrap();
+    bin().arg("run").current_dir(dir.path()).assert().success();
+
+    bin()
+        .args(["run", "--against", "none", "--no-cache"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("domarinn comparison").not());
 }
