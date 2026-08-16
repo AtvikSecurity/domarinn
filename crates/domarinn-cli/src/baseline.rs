@@ -35,6 +35,38 @@ pub const NONE: &str = "none";
 /// through as a first run.
 const ABSENT_CODES: &[&str] = &["baseline_unpinned", "no_runs_on_branch", "unknown_suite"];
 
+/// The reference actually in force: the flag when given (`none` disabling
+/// outright), else the suite's `baseline.branch` default — aimed at the server
+/// when one is configured (a fresh CI checkout has no local store, which is
+/// the whole reason to have a default) and at the local store otherwise.
+pub fn effective(
+    flag: Option<&str>,
+    suite_branch: Option<&str>,
+    server_configured: bool,
+) -> Option<String> {
+    match flag {
+        Some(NONE) => None,
+        Some(explicit) => Some(explicit.to_string()),
+        None => suite_branch.map(|branch| {
+            if server_configured {
+                format!("{SERVER_BRANCH}{branch}")
+            } else {
+                format!("{LOCAL_BRANCH}{branch}")
+            }
+        }),
+    }
+}
+
+/// Whether a results server is reachable in principle — the same derivation
+/// [`resolve`]'s server arms use (the global `--server-url`, else
+/// `DOMARINN_SERVER_URL`).
+pub fn server_configured(server_url: Option<&str>) -> bool {
+    server_url.map(|s| !s.is_empty()).unwrap_or(false)
+        || std::env::var("DOMARINN_SERVER_URL")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+}
+
 /// Why a requested baseline could not be produced.
 ///
 /// The two-way split is the entire point of the type. Treating every failure as

@@ -61,7 +61,21 @@ pub fn execute(args: CiSummaryArgs, server_url: Option<String>) -> u8 {
     // `latest` means the newest run *of this suite*, not the newest run of any
     // suite — a summary that compared two unrelated suites would report
     // confident nonsense.
-    let baseline = args.against.as_deref().and_then(|reference| {
+    // The same default the gate applies: with no flag, the suite's
+    // `baseline.branch` — read from the run's own config snapshot, because
+    // ci-summary has no suite file, only the stored run.
+    let snapshot_branch = run
+        .config_snapshot
+        .get("baseline")
+        .and_then(|b| b.get("branch"))
+        .and_then(|b| b.as_str())
+        .map(str::to_string);
+    let reference = crate::baseline::effective(
+        args.against.as_deref(),
+        snapshot_branch.as_deref(),
+        crate::baseline::server_configured(server_url.as_deref()),
+    );
+    let baseline = reference.as_deref().and_then(|reference| {
         match crate::baseline::resolve(reference, &run, server_url.as_deref()) {
             Ok(base) => {
                 let diff = domarinn_core::diff_runs(&base, &run);

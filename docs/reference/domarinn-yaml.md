@@ -61,6 +61,7 @@ The schema is regenerated from the config structs, so it never drifts from what 
 | `project` | string | no | Project namespace — groups this suite's runs on the results server. |
 | `suite` | string | no | Suite name — names the run's suite on the server. |
 | `description` | string | no | Human-readable note; ignored by the engine. |
+| `baseline` | object | no | Default regression comparison. See [`baseline`](#baseline). |
 | `extends` | string (`file://`) | no | A base suite to deep-merge on top of. See [Composition](#composition-with-extends-and-imports). |
 | `imports` | list of strings (`file://`) | no | Reusable fragments merged in order. See [Composition](#composition-with-extends-and-imports). |
 | `providers` | list | **yes (≥1)** | The systems under test. |
@@ -78,6 +79,30 @@ project: platform-quality
 suite: refusal-behavior
 description: Checks that the assistant declines out-of-scope requests.
 ```
+
+---
+
+## `baseline`
+
+The suite's default regression baseline. With this set, every `domarinn run`
+compares against the named branch without any `--against` on the command line —
+the repo, not each workflow file, declares what "regressed" means.
+
+```yaml
+baseline:
+  branch: main
+```
+
+The branch resolves to a *composite*: per case, the newest run on the branch
+that has it wins, so a filtered or sharded newest run cannot shrink the gate's
+coverage. Resolution goes through the results server when one is configured
+(`--server-url` or `DOMARINN_SERVER_URL` — a fresh CI checkout has no local
+history), and through the local run store otherwise.
+
+Precedence: an explicit `--against` always overrides the suite key, and
+`--against none` disables the comparison entirely. A branch with no runs yet is
+an absence — the run proceeds without a comparison rather than failing. See
+[Gate a pull request in CI](../guides/gate-in-ci.md) for the full story.
 
 ---
 

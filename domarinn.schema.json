@@ -31,6 +31,17 @@
         "null"
       ]
     },
+    "baseline": {
+      "description": "Default regression baseline: `run` compares against it when `--against`\nis not passed (`--against none` disables, any other value overrides).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BaselineCfg"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "extends": {
       "description": "A base suite to deep-merge on top of (composition).",
       "type": [
@@ -123,6 +134,20 @@
     "providers"
   ],
   "$defs": {
+    "BaselineCfg": {
+      "description": "The suite's default regression baseline.\n\nA struct rather than a bare string so future baseline policy (a score\nthreshold, a lookback override) lands as optional siblings instead of a\nbreaking retype.",
+      "type": "object",
+      "properties": {
+        "branch": {
+          "description": "The branch whose newest runs are merged (per case, newest wins) into\nthe comparison baseline — typically the trunk, e.g. `main`. Resolved\nagainst the results server when one is configured, else against the\nlocal run store.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "branch"
+      ]
+    },
     "Provider": {
       "description": "A system under test.",
       "type": "object",

@@ -432,13 +432,14 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
     // refuses to call the job green.
     let mut baseline_unresolved = false;
     let mut baseline: Option<(domarinn_core::RunResult, domarinn_core::diff::RunDiff)> = None;
-    // `none` is the explicit opt-out, filtered before resolution so it can
-    // override a comparison the suite config makes the default.
-    let against = args
-        .against
-        .as_deref()
-        .filter(|r| *r != crate::baseline::NONE);
-    if let Some(reference) = against {
+    // The flag wins; `none` disables; with no flag the suite's
+    // `baseline.branch` supplies the default.
+    let against = crate::baseline::effective(
+        args.against.as_deref(),
+        suite.baseline.as_ref().map(|b| b.branch.as_str()),
+        crate::baseline::server_configured(server_url.as_deref()),
+    );
+    if let Some(reference) = against.as_deref() {
         match crate::baseline::resolve(reference, &result, server_url.as_deref()) {
             Ok(base) => {
                 let d = domarinn_core::diff_runs(&base, &result);

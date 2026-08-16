@@ -614,6 +614,129 @@ fn a_server_branch_reference_against_an_old_server_is_a_usage_error() {
     assert_eq!(server.join().unwrap().len(), 1);
 }
 
+/// A one-test suite that also declares a default baseline branch.
+fn suite_with_baseline(project: &str, suite: &str, output: &str, needle: &str) -> String {
+    format!(
+        r#"
+version: 1
+project: {project}
+suite: {suite}
+baseline:
+  branch: main
+providers:
+  - id: p
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{{\"output\":\"{output}\"}}'"]
+tests:
+  - id: t1
+    vars: {{}}
+    assert:
+      - {{type: contains, value: "{needle}"}}
+"#
+    )
+}
+
+/// `baseline: {{ branch: main }}` in the suite makes the comparison the
+/// default: no `--against` on the command line, and the gate still fires.
+#[test]
+fn the_suite_baseline_key_supplies_the_default_comparison() {
+    let dir = tempfile::tempdir().unwrap();
+    git_seed(dir.path());
+    let yaml = dir.path().join("domarinn.yaml");
+
+    std::fs::write(&yaml, suite_with_baseline("p", "s", "hello", "hello")).unwrap();
+    bin()
+        .arg("run")
+        .env("DOMARINN_BRANCH", "main")
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    std::fs::write(&yaml, suite_with_baseline("p", "s", "goodbye", "hello")).unwrap();
+    bin()
+        .args(["run", "--no-cache"])
+        .env("DOMARINN_BRANCH", "main")
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "### domarinn comparison — ❌ Regressions detected",
+        ));
+}
+
+/// The flag always wins over the suite key — `--against none` turns the
+/// default comparison off entirely.
+#[test]
+fn an_explicit_against_overrides_the_suite_baseline_key() {
+    let dir = tempfile::tempdir().unwrap();
+    git_seed(dir.path());
+    let yaml = dir.path().join("domarinn.yaml");
+
+    std::fs::write(&yaml, suite_with_baseline("p", "s", "hello", "hello")).unwrap();
+    bin()
+        .arg("run")
+        .env("DOMARINN_BRANCH", "main")
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    bin()
+        .args(["run", "--against", "none", "--no-cache"])
+        .env("DOMARINN_BRANCH", "main")
+        .env_remove("DOMARINN_SERVER_URL")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("domarinn comparison").not());
+}
+
+/// With a server configured, the suite default aims at the server — a fresh CI
+/// checkout has no local store, and the whole point of the default is that the
+/// workflow file stays empty.
+#[test]
+fn the_suite_default_prefers_the_server_when_one_is_configured() {
+    let seed = tempfile::tempdir().unwrap();
+    std::fs::write(
+        seed.path().join("domarinn.yaml"),
+        suite_named("p", "s", "hello", "hello"),
+    )
+    .unwrap();
+    bin().arg("run").current_dir(seed.path()).assert().success();
+    let baseline_doc = stored_run(seed.path(), &latest_id(seed.path()));
+
+    let (url, server) = stub_routes(
+        vec![("/baseline/export", baseline_doc)],
+        1,
+        std::time::Duration::from_secs(30),
+    );
+
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fresh.path().join("domarinn.yaml"),
+        suite_with_baseline("p", "s", "goodbye", "hello"),
+    )
+    .unwrap();
+    bin()
+        .arg("run")
+        .env("DOMARINN_SERVER_URL", &url)
+        .current_dir(fresh.path())
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "### domarinn comparison — ❌ Regressions detected",
+        ));
+
+    let served = server.join().unwrap();
+    assert!(
+        served[0].contains("branch=main"),
+        "the suite default must resolve through the server branch reference: {}",
+        served[0]
+    );
+}
+
 /// `--against none` is the explicit opt-out (the suite config can make a
 /// comparison the default; the flag must be able to turn it off). No
 /// comparison runs even though a baseline exists.
