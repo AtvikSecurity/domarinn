@@ -359,6 +359,7 @@ export function runSetProject(
         latest_pass_rate: series[series.length - 1] ?? null,
         sparkline: series,
         baseline_run_id: BASELINE_BY_SUITE.get(`${project}/${suite}`) ?? null,
+        baseline_branch: null,
         // Covering: a locked project locks the suites under it.
         restricted: coveringRestricted(project, suite),
         my_level: myLevel(viewer, project, suite),
@@ -398,6 +399,7 @@ export function runSetSuite(
     latest_pass_rate: series[series.length - 1] ?? null,
     sparkline: series,
     baseline_run_id: BASELINE_BY_SUITE.get(`${project}/${suite}`) ?? null,
+    baseline_branch: null,
   };
 }
 

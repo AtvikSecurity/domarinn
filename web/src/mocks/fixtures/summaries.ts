@@ -55,6 +55,7 @@ export function suiteSummaries(project: string): SuiteSummary[] {
       run_count: ids.length,
       last_run_at: lastId ? runStats(lastId).created_at : null,
       baseline_run_id: BASELINE_BY_SUITE.get(suiteKey) ?? null,
+      baseline_branch: null,
       series,
     });
   }

@@ -114,6 +114,33 @@ impl Storage {
             .await
     }
 
+    /// The suite's pin, visibility-filtered — `None` reads as unpinned.
+    pub async fn baseline_pin(
+        &self,
+        project: String,
+        suite: String,
+        vis: RunVisibility,
+    ) -> anyhow::Result<Option<BaselinePin>> {
+        self.runs
+            .read(move |conn| read_baseline_pin(conn, &project, &suite, &vis))
+            .await
+    }
+
+    /// The pin plus when it was set (epoch-ms) — `GET .../baseline` metadata.
+    pub async fn baseline_meta(
+        &self,
+        project: String,
+        suite: String,
+        vis: RunVisibility,
+    ) -> anyhow::Result<Option<(BaselinePin, i64)>> {
+        self.runs
+            .read(move |conn| {
+                Ok(read_baseline_row(conn, &project, &suite, &vis)?
+                    .and_then(|(run_id, branch, set_at)| Some((pin_of(run_id, branch)?, set_at))))
+            })
+            .await
+    }
+
     pub async fn delete_baseline(&self, project: String, suite: String) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
@@ -169,10 +196,22 @@ pub(super) fn read_baseline_pin(
     suite: &str,
     vis: &RunVisibility,
 ) -> anyhow::Result<Option<BaselinePin>> {
+    Ok(read_baseline_row(conn, project, suite, vis)?
+        .and_then(|(run_id, branch, _set_at)| pin_of(run_id, branch)))
+}
+
+/// The raw `baselines` row, visibility-filtered as documented on
+/// [`read_baseline_pin`].
+fn read_baseline_row(
+    conn: &mut Conn<'_>,
+    project: &str,
+    suite: &str,
+    vis: &RunVisibility,
+) -> anyhow::Result<Option<(Option<String>, Option<String>, i64)>> {
     let mut args: Vec<Value> = vec![project.to_string().into(), suite.to_string().into()];
     let visible = visibility_predicate("runs", vis, &mut args);
     let sql = format!(
-        "SELECT b.run_id, b.branch FROM baselines b
+        "SELECT b.run_id, b.branch, b.set_at FROM baselines b
           LEFT JOIN runs ON runs.id = b.run_id
           WHERE b.project = ?1 AND b.suite = ?2
             AND (b.run_id IS NULL OR {visible})"
@@ -180,17 +219,23 @@ pub(super) fn read_baseline_pin(
     // `.query_row_opt(...)?`, never `.ok()` — see `project_has_visible_runs` in
     // [`super::sets`]. A suite reading as unpinned because the query failed is
     // indistinguishable from one that was never pinned.
-    let row = conn.query_row_opt(&sql, &args, |row| {
-        Ok((row.get::<Option<String>>(0)?, row.get::<Option<String>>(1)?))
-    })?;
-    Ok(match row {
-        Some((Some(run_id), _)) => Some(BaselinePin::Run(RunId::new(run_id))),
-        Some((None, Some(branch))) => Some(BaselinePin::Branch(branch)),
-        // Unreachable under the CHECK, but a corrupted row must read as
-        // unpinned, not panic a listing.
-        Some((None, None)) => None,
-        None => None,
+    conn.query_row_opt(&sql, &args, |row| {
+        Ok((
+            row.get::<Option<String>>(0)?,
+            row.get::<Option<String>>(1)?,
+            row.get::<i64>(2)?,
+        ))
     })
+}
+
+/// The typed pin a row's `(run_id, branch)` pair spells. A row with neither is
+/// unreachable under the CHECK but must read as unpinned, not panic a listing.
+fn pin_of(run_id: Option<String>, branch: Option<String>) -> Option<BaselinePin> {
+    match (run_id, branch) {
+        (Some(run_id), _) => Some(BaselinePin::Run(RunId::new(run_id))),
+        (None, Some(branch)) => Some(BaselinePin::Branch(branch)),
+        (None, None) => None,
+    }
 }
 
 /// The two DTO columns a pin fans out into: `(baseline_run_id,

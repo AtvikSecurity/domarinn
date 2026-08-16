@@ -12,6 +12,7 @@ function suite(overrides: Partial<SuiteSummary> = {}): SuiteSummary {
     run_count: 3,
     last_run_at: "2026-07-19T15:00:00Z",
     baseline_run_id: "run-2",
+    baseline_branch: null,
     series: [
       { run_id: "run-3", created_at: "2026-07-19T15:00:00Z", total: 100, passed: 95, pass_rate: 0.95 },
       { run_id: "run-2", created_at: "2026-07-18T15:00:00Z", total: 100, passed: 90, pass_rate: 0.9 },

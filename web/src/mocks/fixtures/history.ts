@@ -91,6 +91,7 @@ export function caseHistory(
     suite,
     case_key: caseKey,
     baseline_run_id: BASELINE_BY_SUITE.get(suiteKey) ?? null,
+    baseline_branch: null,
     points,
   };
 }

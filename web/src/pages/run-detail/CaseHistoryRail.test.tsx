@@ -47,6 +47,7 @@ function loaded(points: CaseHistoryPoint[]): HistoryResult {
     suite: SUITE,
     case_key: CASE,
     baseline_run_id: BASELINE,
+    baseline_branch: null,
     points,
   };
   return { isPending: false, isError: false, data } as unknown as HistoryResult;

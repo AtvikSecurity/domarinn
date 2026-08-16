@@ -18,4 +18,9 @@ empty_count?: number, latest_pass_rate: number | null,
 /**
  * The last 20 runs' pass rates, oldest first — see `SuiteSetView`.
  */
-sparkline: Array<number>, baseline_run_id: RunId | null, };
+sparkline: Array<number>, baseline_run_id: RunId | null, 
+/**
+ * The pinned baseline branch, when the suite's baseline is a branch pin
+ * rather than a fixed run. Mutually exclusive with `baseline_run_id`.
+ */
+baseline_branch: string | null, };

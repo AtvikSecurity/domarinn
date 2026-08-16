@@ -37,6 +37,7 @@ use crate::storage::Storage;
 
 pub mod accounts;
 pub mod auth;
+pub mod baselines;
 pub mod cachebrowse;
 pub mod domain;
 pub mod dto;
@@ -769,6 +770,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     use ts_rs::Config;
 
     use crate::accounts::{CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody};
+    use crate::baselines::BaselineBody;
     use crate::domain::{
         CacheSort, CacheTier, CachedFilter, OriginFilter, RunStatusFilter, SortOrder,
     };
@@ -793,7 +795,6 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
         ProjectSetDetailResponse, SetAccessResponse, SetGrantUpsert, SetsResponse,
         SuiteSetDetailResponse,
     };
-    use crate::routes::BaselineBody;
 
     let cfg = Config::new().with_out_dir(dir).with_large_int("number");
 
