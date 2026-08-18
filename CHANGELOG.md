@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.4](https://github.com/AtvikSecurity/domarinn/compare/0.10.3...0.10.4) (2026-08-18)
+
+
+### Features
+
+* **cli:** restyle the CI markdown summary for PR comments ([#100](https://github.com/AtvikSecurity/domarinn/issues/100)) ([ed4b3ee](https://github.com/AtvikSecurity/domarinn/commit/ed4b3ee017bd6a55b9cba711744964ebeb6d717e))
+* **server:** branch-pinned suite baselines with composite resolution ([#98](https://github.com/AtvikSecurity/domarinn/issues/98)) ([b085b1f](https://github.com/AtvikSecurity/domarinn/commit/b085b1f80f4635d17fa158af9b76ebf693bc36cf))
+
 ## [0.10.3](https://github.com/AtvikSecurity/domarinn/compare/0.10.2...0.10.3) (2026-08-12)
 
 
