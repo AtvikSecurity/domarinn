@@ -77,7 +77,7 @@ fn a_first_run_with_no_baseline_yet_still_passes() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("domarinn comparison").not());
+        .stderr(predicate::str::contains("Comparison with baseline").not());
 }
 
 /// `latest` means the newest run *of this suite*. The `latest` pointer file
@@ -108,7 +108,7 @@ fn latest_does_not_compare_across_suites() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("domarinn comparison").not());
+        .stderr(predicate::str::contains("Comparison with baseline").not());
 }
 
 /// Two runs of the *same* suite do compare — the guard above must not have made
@@ -128,9 +128,7 @@ fn latest_compares_two_runs_of_the_same_suite() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains(
-            "### domarinn comparison — ✅ No regressions",
-        ));
+        .stderr(predicate::str::contains("**No regressions**"));
 }
 
 /// Naming an explicit run of another suite is rejected outright rather than
@@ -240,9 +238,7 @@ fn server_baseline_catches_a_regression_in_a_fresh_checkout() {
         .current_dir(fresh.path())
         .assert()
         .code(1)
-        .stderr(predicate::str::contains(
-            "### domarinn comparison — ❌ Regressions detected",
-        ))
+        .stderr(predicate::str::contains("**Regressions detected**"))
         .stderr(predicate::str::contains("| Newly failing | 1 |"));
 
     let served = server.join().unwrap();
@@ -374,9 +370,7 @@ fn a_local_branch_reference_merges_the_latest_runs_on_that_branch() {
         .current_dir(dir.path())
         .assert()
         .code(1)
-        .stderr(predicate::str::contains(
-            "### domarinn comparison — ❌ Regressions detected",
-        ))
+        .stderr(predicate::str::contains("**Regressions detected**"))
         .stderr(predicate::str::contains("| Newly failing | 1 |"));
 }
 
@@ -405,7 +399,7 @@ fn a_local_branch_reference_ignores_runs_on_other_branches() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("domarinn comparison").not());
+        .stderr(predicate::str::contains("Comparison with baseline").not());
 }
 
 /// The run being gated persists to the store *before* comparison, so on its
@@ -434,9 +428,7 @@ fn the_composite_excludes_the_run_being_gated() {
         .current_dir(dir.path())
         .assert()
         .code(1)
-        .stderr(predicate::str::contains(
-            "### domarinn comparison — ❌ Regressions detected",
-        ));
+        .stderr(predicate::str::contains("**Regressions detected**"));
 }
 
 /// A branch nobody has run on yet is the bootstrap state — an absence.
@@ -456,7 +448,7 @@ fn a_local_branch_with_no_runs_is_an_absence_not_a_failure() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("domarinn comparison").not());
+        .stderr(predicate::str::contains("Comparison with baseline").not());
 }
 
 /// `server:branch:<name>` needs no pin at all: the workflow file names the
@@ -490,9 +482,7 @@ fn a_server_branch_reference_resolves_without_a_pin() {
         .current_dir(fresh.path())
         .assert()
         .code(1)
-        .stderr(predicate::str::contains(
-            "### domarinn comparison — ❌ Regressions detected",
-        ));
+        .stderr(predicate::str::contains("**Regressions detected**"));
 
     let served = server.join().unwrap();
     assert!(
@@ -575,9 +565,7 @@ fn an_old_server_without_the_export_route_falls_back_to_the_legacy_path() {
         .current_dir(fresh.path())
         .assert()
         .code(1)
-        .stderr(predicate::str::contains(
-            "### domarinn comparison — ❌ Regressions detected",
-        ));
+        .stderr(predicate::str::contains("**Regressions detected**"));
 
     assert_eq!(server.join().unwrap().len(), 3);
 }
@@ -661,9 +649,7 @@ fn the_suite_baseline_key_supplies_the_default_comparison() {
         .current_dir(dir.path())
         .assert()
         .code(1)
-        .stderr(predicate::str::contains(
-            "### domarinn comparison — ❌ Regressions detected",
-        ));
+        .stderr(predicate::str::contains("**Regressions detected**"));
 }
 
 /// The flag always wins over the suite key — `--against none` turns the
@@ -690,7 +676,7 @@ fn an_explicit_against_overrides_the_suite_baseline_key() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("domarinn comparison").not());
+        .stderr(predicate::str::contains("Comparison with baseline").not());
 }
 
 /// With a server configured, the suite default aims at the server — a fresh CI
@@ -725,9 +711,7 @@ fn the_suite_default_prefers_the_server_when_one_is_configured() {
         .current_dir(fresh.path())
         .assert()
         .code(1)
-        .stderr(predicate::str::contains(
-            "### domarinn comparison — ❌ Regressions detected",
-        ));
+        .stderr(predicate::str::contains("**Regressions detected**"));
 
     let served = server.join().unwrap();
     assert!(
@@ -755,5 +739,5 @@ fn against_none_disables_the_comparison() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("domarinn comparison").not());
+        .stderr(predicate::str::contains("Comparison with baseline").not());
 }

@@ -123,7 +123,7 @@ pub fn render(run: &RunResult, comparison: Option<(&RunResult, &RunDiff)>) -> St
         // which strictly supersedes the flat failure table.
         Some((base, diff)) => {
             out.push('\n');
-            out.push_str(&crate::diffrender::render_markdown(base, run, diff));
+            out.push_str(&crate::diffmd::render_markdown(base, run, diff));
         }
         None => out.push_str(&outputmd::render_failures_md(run)),
     }

@@ -443,7 +443,7 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         match crate::baseline::resolve(reference, &result, server_url.as_deref()) {
             Ok(base) => {
                 let d = domarinn_core::diff_runs(&base, &result);
-                eprintln!("{}", crate::diffrender::render_markdown(&base, &result, &d));
+                eprintln!("{}", crate::diffmd::render_markdown(&base, &result, &d));
                 regressed = d.has_regression();
                 baseline = Some((base, d));
             }

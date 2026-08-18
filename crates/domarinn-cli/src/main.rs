@@ -17,6 +17,7 @@ mod cachels;
 mod casedetail;
 mod cisummary;
 mod diffcmd;
+mod diffmd;
 mod diffrender;
 mod import;
 mod loadrun;

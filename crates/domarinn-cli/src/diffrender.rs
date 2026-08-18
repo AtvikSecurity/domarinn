@@ -1,13 +1,14 @@
-//! Rendering for `domarinn diff`: the comparison table, the PR-comment
-//! markdown, and the shared unified-diff / score-delta / config-drift helpers.
+//! Rendering for `domarinn diff`: the terminal comparison table and the
+//! shared unified-diff / score-delta / config-drift helpers.
 //!
 //! Split out of `diffcmd` (which keeps the command wiring) so each file stays
-//! well under the source-line cap. `render_table` / `render_markdown` are the
-//! only entry points; everything else is a private helper.
+//! well under the source-line cap; the PR-comment markdown lives in
+//! [`crate::diffmd`], which borrows this module's diff helpers. `render_table`
+//! is the only entry point here; everything else is a helper.
 
 use std::collections::HashMap;
 
-use domarinn_core::diff::{CaseDelta, Delta, RunDiff};
+use domarinn_core::diff::{Delta, RunDiff};
 use domarinn_core::result::{CaseResult, RunResult};
 use domarinn_core::stats::{wilson, Z_95};
 use similar::{ChangeTag, TextDiff};
@@ -28,14 +29,14 @@ const DIFF_CONTEXT_RADIUS: usize = 3;
 /// (suppressed by `--full`).
 const TABLE_DIFF_LINES_PER_CASE: usize = 60;
 /// Markdown render cap: diff lines per case inside the `<details>` block.
-const MD_DIFF_LINES_PER_CASE: usize = 30;
+pub(crate) const MD_DIFF_LINES_PER_CASE: usize = 30;
 /// Markdown render cap: diff lines across *all* cases (keeps a PR comment small).
-const MD_DIFF_LINES_TOTAL: usize = 300;
+pub(crate) const MD_DIFF_LINES_TOTAL: usize = 300;
 /// Leading characters of a `blake3:…` digest shown in a drift note
 /// (`"blake3:"` = 7 chars, plus 8 hex nibbles).
 const DIGEST_ABBREV: usize = 7 + 8;
 /// Leading characters of a run id shown in the comparison header.
-const RUN_ID_ABBREV: usize = 8;
+pub(crate) const RUN_ID_ABBREV: usize = 8;
 
 /// Which cases receive an inline unified output diff.
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
@@ -52,14 +53,14 @@ pub enum DiffScope {
 }
 
 /// Index a run's cases by their stable `case_key`, for joining base↔head.
-fn index_by_key(run: &RunResult) -> HashMap<&str, &CaseResult> {
+pub(crate) fn index_by_key(run: &RunResult) -> HashMap<&str, &CaseResult> {
     run.cases.iter().map(|c| (c.case_key.as_str(), c)).collect()
 }
 
 /// The text view of a case's output, matching the diff engine's own notion of
 /// "output" (`Output::as_text`, compact JSON) so what we render agrees with the
 /// `output_changed` flag computed in core.
-fn case_output_text(case: &CaseResult) -> String {
+pub(crate) fn case_output_text(case: &CaseResult) -> String {
     case.output
         .as_ref()
         .map(|o| o.as_text().into_owned())
@@ -67,12 +68,12 @@ fn case_output_text(case: &CaseResult) -> String {
 }
 
 /// First `n` characters of `s` (char-safe; shorter strings pass through).
-fn short(s: &str, n: usize) -> String {
+pub(crate) fn short(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
 /// A `blake3:…`-style digest abbreviated for a drift note.
-fn short_digest(d: &str) -> String {
+pub(crate) fn short_digest(d: &str) -> String {
     if d.chars().count() > DIGEST_ABBREV {
         format!("{}…", short(d, DIGEST_ABBREV))
     } else {
@@ -117,7 +118,7 @@ fn clamp_for_diff(text: &str) -> std::borrow::Cow<'_, str> {
 /// The raw unified-diff lines (uncolored, un-indented) of two texts after the
 /// pre-diff clamp: `@@ … @@` hunk headers and `-`/`+`/` `-prefixed change lines.
 /// Empty when the two texts are identical.
-fn unified_diff_lines(base: &str, head: &str) -> Vec<String> {
+pub(crate) fn unified_diff_lines(base: &str, head: &str) -> Vec<String> {
     let base = clamp_for_diff(base);
     let head = clamp_for_diff(head);
     let diff = TextDiff::from_lines(base.as_ref(), head.as_ref());
@@ -375,116 +376,22 @@ pub(crate) fn render_table(
     out
 }
 
-/// A markdown comparison suitable for a PR comment.
-pub fn render_markdown(base: &RunResult, head: &RunResult, diff: &RunDiff) -> String {
-    let s = &diff.summary;
-    let mut out = String::new();
-    let verdict = if diff.has_regression() {
-        "❌ Regressions detected"
-    } else {
-        "✅ No regressions"
-    };
-    out.push_str(&format!("### domarinn comparison — {verdict}\n\n"));
-    out.push_str("| metric | count |\n|---|---|\n");
-    out.push_str(&format!("| Newly failing | {} |\n", s.newly_failing));
-    out.push_str(&format!("| Newly passing | {} |\n", s.newly_passing));
-    out.push_str(&format!("| Still failing | {} |\n", s.still_failing));
-    out.push_str(&format!("| Output changed | {} |\n", s.output_changed));
-    out.push_str(&format!("| Added | {} |\n", s.added));
-    out.push_str(&format!("| Removed | {} |\n", s.removed));
-    if diff.mcnemar.significant {
-        out.push_str(&format!(
-            "\n> McNemar test: change is statistically significant (statistic {:.2}).\n",
-            diff.mcnemar.statistic
-        ));
-    }
-    if base.config_digest != head.config_digest {
-        out.push_str(&format!(
-            "\n> Config changed: `{}` → `{}`.\n",
-            short_digest(&base.config_digest),
-            short_digest(&head.config_digest),
-        ));
-    }
-
-    let base_by = index_by_key(base);
-    let head_by = index_by_key(head);
-    let regressions: Vec<&CaseDelta> = diff
-        .cases
-        .iter()
-        .filter(|c| c.delta == Delta::NewlyFailing)
-        .collect();
-
-    if !regressions.is_empty() {
-        out.push_str("\n**Newly failing:**\n\n");
-        out.push_str("| test | score |\n|---|---|\n");
-        for c in &regressions {
-            let name = c.name.clone().unwrap_or_else(|| c.case_key.to_string());
-            let key = c.case_key.as_str();
-            let score = match (base_by.get(key), head_by.get(key)) {
-                (Some(b), Some(h)) => format!("{:.2} → {:.2}", b.score, h.score),
-                _ => "—".to_string(),
-            };
-            out.push_str(&format!("| {name} | {score} |\n"));
-        }
-
-        // Per-regression output diffs, capped per case and in total so a large
-        // regression can't produce a giant PR comment.
-        let mut body = String::new();
-        let mut total = 0usize;
-        let mut any = false;
-        let mut total_capped = false;
-        for c in &regressions {
-            if total >= MD_DIFF_LINES_TOTAL {
-                total_capped = true;
-                break;
-            }
-            let key = c.case_key.as_str();
-            let (Some(b), Some(h)) = (base_by.get(key), head_by.get(key)) else {
-                continue;
-            };
-            let raw = unified_diff_lines(&case_output_text(b), &case_output_text(h));
-            if raw.is_empty() {
-                continue;
-            }
-            any = true;
-            let per_case_cap = MD_DIFF_LINES_PER_CASE.min(MD_DIFF_LINES_TOTAL - total);
-            let shown = raw.len().min(per_case_cap);
-            let hidden = raw.len() - shown;
-            let name = c.name.clone().unwrap_or_else(|| c.case_key.to_string());
-            body.push_str(&format!("\n_{name}_\n\n```diff\n"));
-            for l in raw.iter().take(shown) {
-                body.push_str(l);
-                body.push('\n');
-            }
-            if hidden > 0 {
-                body.push_str(&format!("… +{hidden} more diff lines\n"));
-            }
-            body.push_str("```\n");
-            total += shown;
-        }
-        if any {
-            out.push_str("\n<details><summary>Output diffs</summary>\n");
-            out.push_str(&body);
-            if total_capped {
-                out.push_str(&format!(
-                    "\n_output diffs truncated at {MD_DIFF_LINES_TOTAL} total lines_\n"
-                ));
-            }
-            out.push_str("</details>\n");
-        }
-    }
-    out
-}
-
+/// Test fixtures shared with [`crate::diffmd`]'s tests: a minimal case, a run
+/// wrapping some cases, and the canonical one-case regression pair.
 #[cfg(test)]
-mod diff_tests {
-    use super::*;
-    use domarinn_core::diff::diff_runs;
+pub(crate) mod fixtures {
     use domarinn_core::ids::RunId;
-    use domarinn_core::result::{CaseStatus, CellKey, RunSummary, RESULT_SCHEMA_VERSION};
+    use domarinn_core::result::{
+        CaseResult, CaseStatus, CellKey, RunResult, RunSummary, RESULT_SCHEMA_VERSION,
+    };
     use domarinn_core::types::Output;
 
-    fn case(test: &str, status: CaseStatus, score: f64, output: Option<&str>) -> CaseResult {
+    pub(crate) fn case(
+        test: &str,
+        status: CaseStatus,
+        score: f64,
+        output: Option<&str>,
+    ) -> CaseResult {
         let cell = CellKey {
             provider_id: "p".into(),
             prompt_id: None,
@@ -528,7 +435,11 @@ mod diff_tests {
         }
     }
 
-    fn run_with(cases: Vec<CaseResult>, digest: &str, snapshot: serde_json::Value) -> RunResult {
+    pub(crate) fn run_with(
+        cases: Vec<CaseResult>,
+        digest: &str,
+        snapshot: serde_json::Value,
+    ) -> RunResult {
         let passed = cases
             .iter()
             .filter(|c| matches!(c.status, CaseStatus::Pass))
@@ -560,6 +471,28 @@ mod diff_tests {
             cases,
         }
     }
+
+    pub(crate) fn regression_pair() -> (RunResult, RunResult) {
+        let base = run_with(
+            vec![case("t1", CaseStatus::Pass, 1.0, Some("hello"))],
+            "blake3:aaaa1111bbbb2222",
+            serde_json::json!({"prompts": [{"id": "g", "template": "Hi"}]}),
+        );
+        let head = run_with(
+            vec![case("t1", CaseStatus::Fail, 0.0, Some("goodbye"))],
+            "blake3:cccc3333dddd4444",
+            serde_json::json!({"prompts": [{"id": "g", "template": "Hello"}]}),
+        );
+        (base, head)
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::fixtures::{case, regression_pair, run_with};
+    use super::*;
+    use domarinn_core::diff::diff_runs;
+    use domarinn_core::result::CaseStatus;
 
     // --- DiffScope selection ------------------------------------------------
 
@@ -697,20 +630,6 @@ mod diff_tests {
     }
 
     // --- Table: header, score line, config drift ----------------------------
-
-    fn regression_pair() -> (RunResult, RunResult) {
-        let base = run_with(
-            vec![case("t1", CaseStatus::Pass, 1.0, Some("hello"))],
-            "blake3:aaaa1111bbbb2222",
-            serde_json::json!({"prompts": [{"id": "g", "template": "Hi"}]}),
-        );
-        let head = run_with(
-            vec![case("t1", CaseStatus::Fail, 0.0, Some("goodbye"))],
-            "blake3:cccc3333dddd4444",
-            serde_json::json!({"prompts": [{"id": "g", "template": "Hello"}]}),
-        );
-        (base, head)
-    }
 
     #[test]
     fn table_shows_header_score_delta_and_diff() {
@@ -928,72 +847,5 @@ mod diff_tests {
         let text = table(&answered_run(None), &answered_run(None), DiffScope::None);
         assert!(!text.contains("answered by:"), "got:\n{text}");
         assert!(!text.contains("SAME"), "unchanged case stays hidden");
-    }
-
-    // --- Markdown -----------------------------------------------------------
-
-    #[test]
-    fn markdown_has_score_column_and_output_diffs() {
-        let (base, head) = regression_pair();
-        let diff = diff_runs(&base, &head);
-        let md = render_markdown(&base, &head, &diff);
-        assert!(md.contains("| test | score |"), "score column; got:\n{md}");
-        assert!(md.contains("| t1 | 1.00 → 0.00 |"));
-        assert!(md.contains("<details><summary>Output diffs</summary>"));
-        assert!(md.contains("```diff"));
-        assert!(md.contains("-hello") && md.contains("+goodbye"));
-        assert!(md.contains("> Config changed:"), "drift note; got:\n{md}");
-    }
-
-    #[test]
-    fn markdown_caps_diff_lines_per_case() {
-        let base = run_with(
-            vec![case(
-                "t1",
-                CaseStatus::Pass,
-                1.0,
-                Some(
-                    &(0..50)
-                        .map(|i| format!("a{i}"))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-            )],
-            "d1",
-            serde_json::Value::Null,
-        );
-        let head = run_with(
-            vec![case(
-                "t1",
-                CaseStatus::Fail,
-                0.0,
-                Some(
-                    &(0..50)
-                        .map(|i| format!("b{i}"))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-            )],
-            "d1",
-            serde_json::Value::Null,
-        );
-        let diff = diff_runs(&base, &head);
-        let md = render_markdown(&base, &head, &diff);
-        // 100+ raw diff lines, capped at 30 per case with an inline note.
-        assert!(
-            md.contains("more diff lines"),
-            "per-case cap note; got:\n{md}"
-        );
-        let fence_lines = md
-            .lines()
-            .skip_while(|l| !l.contains("```diff"))
-            .skip(1)
-            .take_while(|l| !l.starts_with("```"))
-            .filter(|l| !l.contains("more diff lines"))
-            .count();
-        assert!(
-            fence_lines <= MD_DIFF_LINES_PER_CASE,
-            "at most {MD_DIFF_LINES_PER_CASE} diff lines in the fence, got {fence_lines}"
-        );
     }
 }

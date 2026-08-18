@@ -7,7 +7,8 @@ use domarinn_core::diff::{diff_runs, RunDiff};
 use domarinn_core::result::{CaseResult, RunResult};
 
 use crate::casedetail;
-use crate::diffrender::{render_markdown, render_table, DiffScope};
+use crate::diffmd::render_markdown;
+use crate::diffrender::{render_table, DiffScope};
 use crate::exit;
 use crate::loadrun::load_run;
 use crate::output::{self, Format};

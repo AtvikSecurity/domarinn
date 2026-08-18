@@ -50,8 +50,10 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
         None => "### domarinn run\n\n".to_string(),
     };
 
-    out.push_str("| metric | value |\n|---|---|\n");
-    out.push_str(&format!("| Result | {} |\n", result_line(s, fallback)));
+    // The verdict leads as its own bold line — the one thing every reader
+    // wants first — and the table below carries only the supporting metrics.
+    out.push_str(&format!("{}\n\n", result_line(s, fallback)));
+    out.push_str("| Metric | Value |\n|---|---|\n");
 
     let rate = domarinn_core::stats::wilson(s.passed, s.total, domarinn_core::stats::Z_95);
     out.push_str(&format!(
@@ -138,7 +140,11 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
     out
 }
 
-/// `✅ 12 passed`, or `❌` plus every nonzero failure bucket.
+/// `**Pass** — 12 passed`, or `**Fail**` plus every nonzero failure bucket.
+///
+/// Words, not glyphs: this line is quoted in PR comments, job summaries and
+/// notification emails, where an emoji verdict reads as noise and renders
+/// inconsistently. Bold is the whole emphasis budget.
 ///
 /// `fallback` is the *graded* fallback count from
 /// [`crate::output::graded_fallback_cases`] — passed in rather than read off
@@ -162,18 +168,18 @@ fn result_line(s: &RunSummary, fallback: u64) -> String {
         parts.push(format!("{} xpassed", s.xpassed));
     }
     // An xpass is a gate failure (strict expect_fail); an xfail is not.
-    let glyph = if s.failed > 0 || s.errored > 0 || s.xpassed > 0 {
-        "❌"
+    let verdict = if s.failed > 0 || s.errored > 0 || s.xpassed > 0 {
+        "Fail"
     } else {
-        "✅"
+        "Pass"
     };
-    let mut line = format!("{glyph} {}", parts.join(", "));
+    let mut line = format!("**{verdict}** — {}", parts.join(", "));
     // Qualifies the verdict rather than joining the bucket list: these cases are
     // already counted as passed/failed above, and a green result somebody else's
     // model produced is a different claim from a green result the configured one
     // produced.
     if fallback > 0 {
-        line.push_str(&format!(" · {fallback} via fallback"));
+        line.push_str(&format!(" ({fallback} via fallback)"));
     }
     line
 }
@@ -190,8 +196,9 @@ pub fn render_failures_md(run: &RunResult) -> String {
         return String::new();
     }
 
-    let mut out =
-        String::from("\n**Failing:**\n\n| test | provider | score | why |\n|---|---|---|---|\n");
+    let mut out = String::from(
+        "\n#### Failing cases\n\n| Test | Provider | Score | Reason |\n|---|---|---|---|\n",
+    );
     for case in failures.iter().take(MD_FAILURE_ROWS) {
         out.push_str(&format!(
             "| {} | {} | {:.2} | {} |\n",
@@ -239,7 +246,7 @@ fn failure_reason(case: &CaseResult) -> String {
 /// extra columns and shreds the table for every row below it; a newline ends the
 /// row outright. Both are entirely reachable — `llm-rubric` reasons quote model
 /// output verbatim.
-fn md_cell(s: &str) -> String {
+pub(crate) fn md_cell(s: &str) -> String {
     s.replace('|', r"\|")
         .replace(['\n', '\r'], " ")
         .trim()
@@ -262,7 +269,10 @@ mod tests {
         let md = render_run_md(&run);
         assert!(md.contains("1 xfailed"), "{md}");
         assert!(md.contains("1 xpassed"), "{md}");
-        assert!(md.contains("❌"), "an xpass is red: {md}");
+        assert!(
+            md.contains("**Fail**"),
+            "an xpass is a failed verdict: {md}"
+        );
 
         let failures = render_failures_md(&run);
         assert!(failures.contains("fixed"), "the xpass row: {failures}");
@@ -283,7 +293,7 @@ mod tests {
         calm.summary.xpassed = 0;
         calm.summary.total = 2;
         let md = render_run_md(&calm);
-        assert!(md.contains("✅"), "{md}");
+        assert!(md.contains("**Pass**"), "{md}");
     }
 
     #[test]
@@ -324,8 +334,8 @@ mod tests {
         };
         let md = render_run_md(&run);
         assert!(md.starts_with("### domarinn run — s\n"));
-        assert!(md.contains("| metric | value |"));
-        assert!(md.contains("| Result | ❌ 3 passed, 1 failed |"));
+        assert!(md.contains("| Metric | Value |"));
+        assert!(md.contains("**Fail** — 3 passed, 1 failed"));
         assert!(md.contains("| Pass rate | 75.0% (95% CI "));
         assert!(md.contains(", n=4) |"));
         // Wall time comes from started_at..finished_at, not the case latencies.
@@ -342,8 +352,8 @@ mod tests {
             ..Default::default()
         };
         let md = render_run_md(&run);
-        assert!(md.contains("| Result | ✅ 4 passed |"));
-        assert!(!md.contains("**Failing:**"));
+        assert!(md.contains("**Pass** — 4 passed"));
+        assert!(!md.contains("Failing cases"));
     }
 
     #[test]
@@ -430,7 +440,7 @@ mod tests {
         };
         let md = render_run_md(&run);
         assert!(
-            md.contains("| Result | ✅ 5 passed, 1 skipped · 4 via fallback |"),
+            md.contains("**Pass** — 5 passed, 1 skipped (4 via fallback)"),
             "got:\n{md}"
         );
         assert!(
@@ -466,17 +476,14 @@ mod tests {
         let md = render_run_md(&run);
         assert!(!md.contains("Answered by fallback"), "got:\n{md}");
         assert!(!md.contains("via fallback"), "got:\n{md}");
-        assert!(
-            md.contains("| Result | ✅ 0 passed, 4 skipped |"),
-            "got:\n{md}"
-        );
+        assert!(md.contains("**Pass** — 0 passed, 4 skipped"), "got:\n{md}");
     }
 
     #[test]
     fn render_run_md_tables_failing_cases_with_the_first_failing_assert() {
         let md = render_run_md(&sample_run());
-        assert!(md.contains("**Failing:**"));
-        assert!(md.contains("| test | provider | score | why |"));
+        assert!(md.contains("#### Failing cases"));
+        assert!(md.contains("| Test | Provider | Score | Reason |"));
         assert!(md.contains("| bad | p | 0.00 | contains: expected \"decline\" |"));
         // Passing cases never appear in the failure table.
         assert!(!md.contains("| ok | p |"));
