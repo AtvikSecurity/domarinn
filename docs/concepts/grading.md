@@ -72,7 +72,7 @@ An `llm-rubric` assertion needs a grader. It is resolved in this order:
 2. Otherwise the **suite-level** `grader:` block.
 3. If **neither** exists, the assertion is an **error** (fail-closed): `llm-rubric assertion has no grader configured (set suite grader or per-assert grader)`.
 
-An errored assertion promotes the case to `error` and drives exit code `3`, not `1`. It is never a silent pass. See [assertions.md](../reference/assertions.md#statuses-fail-closed-and-exit-codes).
+An errored assertion promotes the case to `error` and drives exit code `2` or `3`, never `1`. It is never a silent pass. Which of the two depends on whose problem it is: a grader that broke or could not be reached is the harness's (`3`), while a grader that was never configured — the case above — is the suite's (`2`). Both fail a CI job. See [assertions.md](../reference/assertions.md#statuses-fail-closed-and-exit-codes).
 
 ---
 

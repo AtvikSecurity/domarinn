@@ -192,9 +192,11 @@ The distinction drives the process exit code:
 |--------------------------------------|-------------|-----------|
 | All assertions pass                  | `pass`      | `0`       |
 | A graded/deterministic **failure**   | `fail`      | `1` (assertion) |
-| Any assertion **errored**            | `error`     | `3` (infra) |
+| Any assertion **errored**            | `error`     | `2` or `3` — see below |
 
-An errored assertion promotes the whole case to `error`, and `3` (infra) wins over `1` (assertion) at the process level. In CI, `1` means "the model got worse — block the PR"; `3` means "the harness broke — retry or page an operator." See [cli.md](cli.md#exit-codes).
+An errored assertion promotes the whole case to `error`, and an error outranks an assertion failure at the process level — it is never exit `1`. In CI, `1` means "the model got worse — block the PR"; `3` means "the harness broke — retry or page an operator"; `2` means "the suite is wrong — fix the config."
+
+Which code an error takes is decided by its class. A grader that broke or could not be reached, a provider that failed, a broken `exec` child and an unusable cache are all `3`. An assertion kind with no grader configured, a prompt that will not render, and a local assert that cannot be evaluated (a bad regex) are `2` — those are authoring mistakes, and sending them to an on-call operator is the wrong routing. Both codes fail the check; the [class table in cli.md](cli.md#exit-codes) is the full mapping.
 
 ---
 

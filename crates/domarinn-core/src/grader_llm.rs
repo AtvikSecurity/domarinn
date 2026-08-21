@@ -73,7 +73,7 @@ impl Judge {
                 body.insert("tools".into(), json!([verdict_tool()]));
                 body.insert(
                     "tool_choice".into(),
-                    json!({"type": "tool", "name": "submit_verdict"}),
+                    json!({"type": "tool", "name": VERDICT_TOOL}),
                 );
                 vendor_call(base, request, Json::Object(body))
             }
@@ -147,18 +147,38 @@ impl Judge {
                         signal: "stop_reason=max_tokens",
                     });
                 }
-                let input = payload
-                    .get("content")
-                    .and_then(|c| c.as_array())
+                // Matched on `name`, not just `type`. Taking the first
+                // `tool_use` block of any name meant a stray tool call — a
+                // server-side tool, or a judge that invented one — was read as
+                // the verdict and then reported as a *missing* `pass` field,
+                // sending a reader looking for a schema bug that was not there.
+                let blocks = payload.get("content").and_then(|c| c.as_array());
+                let input = blocks
                     .and_then(|blocks| {
-                        blocks
-                            .iter()
-                            .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                        blocks.iter().find(|b| {
+                            b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                                && b.get("name").and_then(|n| n.as_str()) == Some(VERDICT_TOOL)
+                        })
                     })
                     .and_then(|b| b.get("input"))
                     .cloned()
                     .ok_or_else(|| {
-                        GraderError::InvalidVerdict("no tool_use verdict in response".into())
+                        let saw: Vec<&str> = blocks
+                            .map(|blocks| {
+                                blocks
+                                    .iter()
+                                    .filter_map(|b| b.get("type").and_then(|t| t.as_str()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        GraderError::InvalidVerdict(format!(
+                            "no `{VERDICT_TOOL}` tool_use block in response (content blocks: {})",
+                            if saw.is_empty() {
+                                "none".to_string()
+                            } else {
+                                saw.join(", ")
+                            }
+                        ))
                     })?;
                 (input, crate::anthropic::usage_from_payload(payload))
             }
@@ -293,7 +313,7 @@ fn verdict_schema() -> Json {
 
 fn verdict_tool() -> Json {
     json!({
-        "name": "submit_verdict",
+        "name": VERDICT_TOOL,
         "description": "Submit the grading verdict.",
         "input_schema": verdict_schema()
     })
@@ -333,16 +353,65 @@ impl Verdict {
             .map(str::to_string);
         self
     }
+}
 
+/// The forced tool the Anthropic judge answers through, named once so the
+/// request, the schema and the parser cannot drift apart.
+const VERDICT_TOOL: &str = "submit_verdict";
+
+/// The most characters of a judge's reply to quote back in an error.
+///
+/// Enough to see the shape of a small malformed object, short enough that a
+/// runaway reply does not fill a CI log or a stored `error` string.
+const VERDICT_SNIPPET: usize = 300;
+
+/// A verdict field that is absent, or present with the wrong type.
+///
+/// These were one message — "verdict missing `pass`" — for both cases, which is
+/// actively misleading: `{"pass": "true"}` and `{"pass": 1}` both report as
+/// *missing* a field they plainly contain, and a reader goes looking for a
+/// schema the judge did in fact receive.
+///
+/// The payload rides along because nothing else records it. A grader parse
+/// failure is never written to the request cache (`EntryMeta` is derived from
+/// the parsed verdict, so the write is unreachable on this path), so a re-run
+/// re-samples the judge and the reply that failed is gone. Quoting it here is
+/// the only evidence that survives into the stored run and the JUnit report.
+fn bad_field(v: &Json, field: &str, want: &str) -> GraderError {
+    let saw = match v.get(field) {
+        None => "absent".to_string(),
+        Some(Json::Null) => "null".to_string(),
+        Some(Json::Bool(_)) => "a boolean".to_string(),
+        Some(Json::Number(_)) => "a number".to_string(),
+        Some(Json::String(_)) => "a string".to_string(),
+        Some(Json::Array(_)) => "an array".to_string(),
+        Some(Json::Object(_)) => "an object".to_string(),
+    };
+    let rendered = v.to_string();
+    let snippet: String = if rendered.chars().count() > VERDICT_SNIPPET {
+        rendered
+            .chars()
+            .take(VERDICT_SNIPPET)
+            .chain("…".chars())
+            .collect()
+    } else {
+        rendered
+    };
+    GraderError::InvalidVerdict(format!(
+        "verdict field `{field}` should be {want} but was {saw}; judge returned {snippet}"
+    ))
+}
+
+impl Verdict {
     fn from_json(v: &Json) -> Result<Verdict, GraderError> {
         let pass = v
             .get("pass")
             .and_then(|p| p.as_bool())
-            .ok_or_else(|| GraderError::InvalidVerdict("verdict missing `pass`".into()))?;
+            .ok_or_else(|| bad_field(v, "pass", "a boolean"))?;
         let score = v
             .get("score")
             .and_then(|s| s.as_f64())
-            .ok_or_else(|| GraderError::InvalidVerdict("verdict missing `score`".into()))?
+            .ok_or_else(|| bad_field(v, "score", "a number"))?
             .clamp(0.0, 1.0);
         let reasoning = v
             .get("reasoning")

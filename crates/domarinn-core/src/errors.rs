@@ -56,8 +56,34 @@ pub enum GraderError {
     },
 
     /// The grader call itself failed — network, timeout, non-2xx.
+    ///
+    /// Strictly the *network*. This was once the catch-all for anything that
+    /// was not a verdict problem, which put an `exec` checker exiting non-zero
+    /// and a `--cache-only` miss under "transport" and then under whatever
+    /// class transport happened to carry. Both now have their own variant, so
+    /// this one means what it says.
     #[error("grader transport: {0}")]
     Transport(String),
+
+    /// An `exec` assertion's checker program failed — did not spawn, exited
+    /// non-zero, or wrote stdout the protocol could not read.
+    ///
+    /// Its own variant because it is not a grader call at all: no judge was
+    /// contacted, so classing it with the grader made a broken checker look
+    /// like a broken judge. The checker is the suite author's program, but the
+    /// failure is still the harness's to report — nothing was graded, so the
+    /// case errored rather than failed.
+    #[error("exec assert failed: {0}")]
+    ExecFailed(String),
+
+    /// A `--cache-only` run needed a live call to answer honestly.
+    ///
+    /// Not a failure of anything: the caller asked for offline replay and the
+    /// entry is not there. It is separated from `Transport` so it lands in the
+    /// `cache_miss` class a reader can act on — the fix is to warm the cache or
+    /// drop `--cache-only`, never to look at the network.
+    #[error("{0}")]
+    CacheMiss(String),
 
     /// The grader's credential was rejected (401/403).
     ///
@@ -90,6 +116,44 @@ pub enum GraderError {
     Internal(&'static str),
 }
 
+impl GraderError {
+    /// Whether re-asking the judge could plausibly produce a usable verdict.
+    ///
+    /// Graders had no retry at all until this existed: `with_retry` reached
+    /// only the provider path, so a judge that returned one malformed object
+    /// errored a case permanently and took the whole CI job to exit `3` with
+    /// it. The verdict is *sampled*, so unlike a provider 400 it is genuinely
+    /// worth asking twice.
+    ///
+    /// The `false` arms matter more than the `true` ones. `AuthRejected` will
+    /// fail identically for every remaining case and already poisons the run;
+    /// `Unconfigured` / `Unsupported` / `Misconfigured` are suite bugs that no
+    /// number of attempts will fix; `Internal` is our own bug. Retrying any of
+    /// them would burn the run's budget to reach the same place.
+    ///
+    /// `TruncatedVerdict` is included with a caveat: a re-ask at the same
+    /// `max_tokens` may well truncate again, and the real fix stays the one the
+    /// message names. It is here because truncation can also be a long-reasoning
+    /// blip on one sample, and a bounded retry is cheaper than a failed job.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            GraderError::Transport(_)
+            | GraderError::InvalidVerdict(_)
+            | GraderError::TruncatedVerdict { .. } => true,
+            // A checker that exited non-zero will exit non-zero again, and an
+            // offline run has nothing to re-ask. Retrying either only spends
+            // time to reach the same answer.
+            GraderError::ExecFailed(_)
+            | GraderError::CacheMiss(_)
+            | GraderError::Unconfigured { .. }
+            | GraderError::Unsupported { .. }
+            | GraderError::Misconfigured(_)
+            | GraderError::AuthRejected { .. }
+            | GraderError::Internal(_) => false,
+        }
+    }
+}
+
 impl Classify for GraderError {
     fn class(&self) -> ErrorClass {
         ErrorClass::new(match self {
@@ -101,8 +165,15 @@ impl Classify for GraderError {
             // The credential, not the grader — same distinction the provider
             // path draws, so a rejected key does not land in a flakiness graph.
             GraderError::AuthRejected { .. } => ErrorClass::PROVIDER_AUTH,
-            GraderError::Transport(_)
-            | GraderError::TruncatedVerdict { .. }
+            // A grader that could not be reached is its own class: it is fixed
+            // by waiting or by looking at the network, where the three below
+            // are fixed by looking at what the judge actually returned.
+            GraderError::Transport(_) => ErrorClass::GRADER_UNAVAILABLE,
+            // Not grader classes at all — these say the exec child broke, or
+            // that an offline run had nothing to replay.
+            GraderError::ExecFailed(_) => ErrorClass::EXEC_FAILED,
+            GraderError::CacheMiss(_) => ErrorClass::CACHE_MISS,
+            GraderError::TruncatedVerdict { .. }
             | GraderError::InvalidVerdict(_)
             | GraderError::Internal(_) => ErrorClass::GRADER_FAILED,
         })
@@ -159,10 +230,14 @@ mod tests {
 
     /// The distinction that motivated the type: these are different problems
     /// with different owners, and a `String` could not tell them apart.
+    ///
+    /// `InvalidVerdict` stands in for "the grader failed" here. It used to be
+    /// `Transport`, which now carries its own class — see
+    /// `an_unreachable_grader_is_classed_apart_from_one_that_answered_badly`.
     #[test]
     fn an_unconfigured_grader_is_not_a_failed_one() {
         let missing = GraderError::Unconfigured { kind: "llm-rubric" };
-        let failed = GraderError::Transport("connection reset".into());
+        let failed = GraderError::InvalidVerdict("verdict missing `pass`".into());
         assert_eq!(missing.class().as_str(), ErrorClass::GRADER_MISSING);
         assert_eq!(failed.class().as_str(), ErrorClass::GRADER_FAILED);
         assert_ne!(missing.class(), failed.class());
@@ -180,7 +255,11 @@ mod tests {
     }
 
     /// Grader problems are the suite's or the harness's, never the provider's —
-    /// they must not inflate a provider error-rate spike.
+    /// they must not inflate a provider error-rate spike. This holds for the
+    /// transport variant too, even though it *is* a machine failing: the run
+    /// still learned nothing about the model, which is what the predicate
+    /// answers. Its exit code is a separate question — see
+    /// `a_grader_transport_fault_still_gates_as_a_broken_harness`.
     #[test]
     fn grader_failures_are_not_infrastructure() {
         for e in [
@@ -189,6 +268,70 @@ mod tests {
             GraderError::InvalidVerdict("no content".into()),
         ] {
             assert!(!e.class().is_infrastructure(), "{e}");
+        }
+    }
+
+    /// The transport variant earns its own class because it routes elsewhere:
+    /// waiting or checking the network, rather than reading the judge's reply.
+    #[test]
+    fn an_unreachable_grader_is_classed_apart_from_one_that_answered_badly() {
+        assert_eq!(
+            GraderError::Transport("boom".into()).class().as_str(),
+            ErrorClass::GRADER_UNAVAILABLE
+        );
+        assert_eq!(
+            GraderError::InvalidVerdict("no content".into())
+                .class()
+                .as_str(),
+            ErrorClass::GRADER_FAILED
+        );
+    }
+
+    /// Both grader classes still fail the job at the infra code; the split is
+    /// about who reads the message, not about letting a run through.
+    #[test]
+    fn a_grader_transport_fault_still_gates_as_a_broken_harness() {
+        use domarinn_types::error_class::GateFault;
+        for e in [
+            GraderError::Transport("boom".into()),
+            GraderError::InvalidVerdict("no content".into()),
+        ] {
+            assert_eq!(e.class().gate_fault(), GateFault::Harness, "{e}");
+        }
+        assert_eq!(
+            GraderError::Unconfigured { kind: "similar" }
+                .class()
+                .gate_fault(),
+            GateFault::Suite
+        );
+    }
+
+    /// The axis the retry loop reads. Pinned in both directions because a
+    /// wrong `true` here re-asks a judge that will never answer, and a wrong
+    /// `false` puts a sampling blip back into the CI-failing bucket this whole
+    /// change exists to empty.
+    #[test]
+    fn only_faults_a_second_ask_could_fix_are_retryable() {
+        for e in [
+            GraderError::Transport("boom".into()),
+            GraderError::InvalidVerdict("verdict missing `pass`".into()),
+            GraderError::TruncatedVerdict {
+                signal: "stop_reason=max_tokens",
+            },
+        ] {
+            assert!(e.is_retryable(), "{e} should be retryable");
+        }
+        for e in [
+            GraderError::Unconfigured { kind: "similar" },
+            GraderError::Unsupported {
+                provider: "p".into(),
+                kind: "similar",
+            },
+            GraderError::Misconfigured("thinking + forced tools".into()),
+            GraderError::AuthRejected { status: 401 },
+            GraderError::Internal("local assert reached the grader"),
+        ] {
+            assert!(!e.is_retryable(), "{e} should not be retryable");
         }
     }
 

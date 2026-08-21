@@ -30,6 +30,7 @@ const MD_FAILURE_ROWS: usize = 10;
 /// signal — the same rule `output::stats_line` applies to the terminal footer.
 pub fn render_run_md(run: &RunResult) -> String {
     let mut out = render_run_md_headline(run);
+    out.push_str(&render_errors_md(run));
     out.push_str(&render_failures_md(run));
     out
 }
@@ -78,6 +79,25 @@ pub fn render_run_md_headline(run: &RunResult) -> String {
             .map(|(reason, count)| format!("{} × {count}", md_cell(reason)))
             .collect();
         out.push_str(&format!("| Empty | {empty} ({}) |\n", by_reason.join(", ")));
+    }
+
+    // Beside Empty, and broken down for the same reason: "errored" is a family
+    // too. A judge that returned malformed JSON, a provider that timed out and
+    // a suite naming a grader that does not exist are three different people's
+    // problems, and the bare count sends a reader to none of them. This row is
+    // what a PR comment previously lacked entirely — a run whose baseline
+    // resolved showed "2 errored" and no other trace of what broke.
+    if s.errored > 0 {
+        let by_class = crate::errorstats::error_class_summary(&run.cases);
+        if by_class.is_empty() {
+            out.push_str(&format!("| Errors | {} |\n", s.errored));
+        } else {
+            out.push_str(&format!(
+                "| Errors | {} ({}) |\n",
+                s.errored,
+                md_cell(&by_class)
+            ));
+        }
     }
 
     // `cache_misses` counts every case not served from cache, not lookups the
@@ -184,13 +204,18 @@ fn result_line(s: &RunSummary, fallback: u64) -> String {
     line
 }
 
-/// The failing/errored cases as a table, capped at [`MD_FAILURE_ROWS`]. Empty
-/// when the run is clean.
+/// The failing cases as a table, capped at [`MD_FAILURE_ROWS`]. Empty when the
+/// run is clean.
+///
+/// Errored cases are **not** here — [`render_errors_md`] tables them instead,
+/// with the class column that says whose problem each one is. They used to
+/// share this table, where an error's only column was 80 characters of prose
+/// and a `0.00` score that read as a judgement the grader never made.
 pub fn render_failures_md(run: &RunResult) -> String {
     let failures: Vec<&CaseResult> = run
         .cases
         .iter()
-        .filter(|c| crate::output::is_gate_failing(c.status))
+        .filter(|c| crate::output::is_gate_failing(c.status) && c.status != CaseStatus::Error)
         .collect();
     if failures.is_empty() {
         return String::new();
@@ -216,6 +241,75 @@ pub fn render_failures_md(run: &RunResult) -> String {
         out.push_str(&format!("\n_…and {hidden} more._\n"));
     }
     out
+}
+
+/// The errored cases as a table, capped at [`MD_FAILURE_ROWS`]. Empty when
+/// nothing errored.
+///
+/// Its own section rather than rows in the failure table, because an error is
+/// not a judgement: there is no meaningful score, and the column that matters
+/// is *which kind* of failure it was. `ci-summary` renders this whether or not
+/// a baseline resolved — the bug that prompted it was a PR comment that showed
+/// a clean "no regressions" diff and, because a baseline *had* resolved,
+/// suppressed every trace of the two cases whose grader had fallen over.
+pub fn render_errors_md(run: &RunResult) -> String {
+    let errored: Vec<&CaseResult> = run
+        .cases
+        .iter()
+        .filter(|c| c.status == CaseStatus::Error)
+        .collect();
+    if errored.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from(
+        "\n#### Errored cases\n\n_These graded nothing — their scores are not evidence \
+         either way._\n\n| Test | Provider | Class | Error |\n|---|---|---|---|\n",
+    );
+    for case in errored.iter().take(MD_FAILURE_ROWS) {
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            md_cell(&display_name(case)),
+            md_cell(&case.cell.provider_id),
+            md_cell(
+                case.error_class
+                    .as_ref()
+                    .map(|k| k.as_str())
+                    .unwrap_or(crate::errorstats::UNKNOWN_CLASS)
+            ),
+            md_cell(&truncate(&error_reason(case), 160)),
+        ));
+    }
+    if let Some(hidden) = errored
+        .len()
+        .checked_sub(MD_FAILURE_ROWS)
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!("\n_…and {hidden} more._\n"));
+    }
+    out
+}
+
+/// What stopped an errored case.
+///
+/// Prefers the case-level `error` — the verbatim prose the runner recorded —
+/// and falls back to the first errored assertion, which is where a deferred
+/// grader failure lands.
+fn error_reason(case: &CaseResult) -> String {
+    if let Some(e) = case.error.as_ref().filter(|e| !e.is_empty()) {
+        return e.clone();
+    }
+    if let Some(a) = case
+        .asserts
+        .iter()
+        .find(|a| a.status == AssertStatus::Error)
+    {
+        if a.reason.is_empty() {
+            return a.kind.as_str().to_string();
+        }
+        return format!("{}: {}", a.kind.as_str(), a.reason);
+    }
+    "—".to_string()
 }
 
 /// Why a case failed: its first failing assertion, or the error that stopped it
@@ -491,11 +585,80 @@ mod tests {
 
     #[test]
     fn render_run_md_uses_the_error_text_for_errored_cases() {
+        let mut run = errored_run();
+        run.cases[1].error_class = Some(domarinn_core::error_class::ErrorClass::new(
+            "provider_timeout",
+        ));
+        let md = render_run_md(&run);
+        assert!(
+            md.contains("| bad | p | provider_timeout | provider timed out |"),
+            "{md}"
+        );
+    }
+
+    /// A run with one errored case, `summary.errored` kept consistent with it.
+    fn errored_run() -> domarinn_core::result::RunResult {
         let mut run = sample_run();
         run.cases[1].status = CaseStatus::Error;
         run.cases[1].asserts.clear();
+        run.cases[1].score = 0.0;
         run.cases[1].error = Some("provider timed out".into());
-        assert!(render_run_md(&run).contains("| bad | p | 0.00 | provider timed out |"));
+        run.summary.failed = run.summary.failed.saturating_sub(1);
+        run.summary.errored = 1;
+        run
+    }
+
+    /// An error is not a judgement, so it does not belong in the table of
+    /// judgements. It used to appear there with a `0.00` score the grader never
+    /// assigned, next to cases that genuinely scored zero.
+    #[test]
+    fn errored_cases_are_tabled_apart_from_failing_ones() {
+        let md = render_run_md(&errored_run());
+        assert!(md.contains("#### Errored cases"), "{md}");
+        let errors_at = md.find("#### Errored cases").unwrap();
+        let failing_at = md.find("#### Failing cases");
+        // The errored case must not also be listed as a failure.
+        if let Some(failing_at) = failing_at {
+            assert!(
+                !md[failing_at..].contains("| bad |"),
+                "an errored case leaked into the failing table: {md}"
+            );
+            assert!(errors_at < failing_at, "errors should lead: {md}");
+        }
+    }
+
+    /// The row the PR comment was missing: which *kind* of error, not just how
+    /// many.
+    #[test]
+    fn render_run_md_breaks_errors_down_by_class() {
+        let mut run = errored_run();
+        run.cases[1].error_class =
+            Some(domarinn_core::error_class::ErrorClass::new("grader_failed"));
+        assert!(
+            render_run_md(&run).contains("| Errors | 1 (grader_failed × 1) |"),
+            "{}",
+            render_run_md(&run)
+        );
+    }
+
+    /// A run stored before `error_class` existed still gets a row and a table
+    /// cell — bucketed, never blank.
+    #[test]
+    fn an_errored_case_without_a_class_renders_as_unknown() {
+        let md = render_run_md(&errored_run());
+        assert!(md.contains("| Errors | 1 (unknown × 1) |"), "{md}");
+        assert!(
+            md.contains("| bad | p | unknown | provider timed out |"),
+            "{md}"
+        );
+    }
+
+    /// The "no data, no row" rule the metric table applies to every other row.
+    #[test]
+    fn render_run_md_omits_the_errors_row_when_nothing_errored() {
+        let md = render_run_md(&sample_run());
+        assert!(!md.contains("| Errors |"), "{md}");
+        assert!(!md.contains("#### Errored cases"), "{md}");
     }
 
     /// A pipe inside an assertion reason would otherwise split the row into

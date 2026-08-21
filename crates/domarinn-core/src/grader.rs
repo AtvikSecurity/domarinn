@@ -469,12 +469,12 @@ impl DefaultGrader {
                 model: None,
             },
             |key| {
-                GraderError::Transport(format!(
+                GraderError::CacheMiss(format!(
                     "cache-only: miss for the exec assert `{}` on this case ({key})",
                     command.join(" ")
                 ))
             },
-            async {
+            || async {
                 let value = run_exec_json(
                     command,
                     &BTreeMap::new(),
@@ -483,7 +483,7 @@ impl DefaultGrader {
                     &request,
                 )
                 .await
-                .map_err(|e| GraderError::Transport(format!("exec assert failed: {e}")))?;
+                .map_err(|e| GraderError::ExecFailed(e.to_string()))?;
                 Ok(value)
             },
         )
@@ -596,8 +596,8 @@ impl DefaultGrader {
                 cost_usd: embedded.cost.map(|c| c.to_usd()),
                 model: None,
             },
-            |key| GraderError::Transport(format!("cache-only: miss for an embedding ({key})")),
-            async {
+            |key| GraderError::CacheMiss(format!("cache-only: miss for an embedding ({key})")),
+            || async {
                 embeddings
                     .post(&call.url, &call.body)
                     .await
@@ -782,11 +782,11 @@ impl DefaultGrader {
                 model: verdict.model.clone(),
             },
             |key| {
-                GraderError::Transport(format!(
+                GraderError::CacheMiss(format!(
                     "cache-only: miss for the `{model}` judge on this rubric ({key})"
                 ))
             },
-            async {
+            || async {
                 self.post_judge(
                     judge,
                     &call.url,

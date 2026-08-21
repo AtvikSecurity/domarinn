@@ -230,7 +230,7 @@ async fn graded_verdict(
     // where there is no cache to consult at all — `cache.grader: false` or
     // `--no-grader-cache`.
     if cache.is_none() && ctx.cache_mode == CacheMode::ReadOnlyStrict {
-        return Err(crate::errors::GraderError::Transport(format!(
+        return Err(crate::errors::GraderError::CacheMiss(format!(
             "cache-only: grader caching is off in this run, so a '{}' assertion \
              has nothing to replay",
             assert.kind.name().as_str()

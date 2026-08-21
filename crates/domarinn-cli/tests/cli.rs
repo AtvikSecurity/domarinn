@@ -387,7 +387,7 @@ fn run_out_file_color_always_has_no_ansi() {
 }
 
 #[test]
-fn run_llm_rubric_without_grader_is_infra_error() {
+fn run_llm_rubric_without_grader_is_a_suite_error() {
     let dir = tempfile::tempdir().unwrap();
     write_suite(
         dir.path(),
@@ -404,8 +404,11 @@ tests:
       - {type: llm-rubric, value: "is good"}
 "#,
     );
-    // Fail closed: a deferred assert with no grader is an infra error (exit 3).
-    bin().arg("run").current_dir(dir.path()).assert().code(3);
+    // Fail closed, and name the right owner: a deferred assert with no grader
+    // is the suite's bug, so it exits 2 rather than reporting a broken harness
+    // to whoever is on call. Still a hard failure — the action gates on 2
+    // unconditionally.
+    bin().arg("run").current_dir(dir.path()).assert().code(2);
 }
 
 #[test]

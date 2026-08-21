@@ -190,7 +190,11 @@ impl<T> Served<T> {
 ///   response the verdict did.
 /// - `strict_miss` builds the error a `--cache-only` miss deserves, in the
 ///   caller's own words: "which judge, missing what" is more use than a key.
-pub(crate) async fn cached_exchange<T, F, P, M>(
+///
+/// `live` is a **factory** rather than a future so the call can be made more
+/// than once — see [`ask_live`] for why asking twice is sometimes the right
+/// answer.
+pub(crate) async fn cached_exchange<T, F, Fut, P, M>(
     cache: Option<&RequestCache<'_>>,
     exchange: Exchange<'_>,
     parse: P,
@@ -199,14 +203,15 @@ pub(crate) async fn cached_exchange<T, F, P, M>(
     live: F,
 ) -> Result<Served<T>, GraderError>
 where
-    F: Future<Output = Result<Json, GraderError>>,
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<Json, GraderError>>,
     P: Fn(&Json) -> Result<T, GraderError>,
     M: FnOnce(&T) -> EntryMeta,
 {
     let Some(cache) = cache else {
-        let payload = live.await?;
+        let (_, value) = ask_live(&live, &parse).await?;
         return Ok(Served::Parsed(Parsed {
-            value: parse(&payload)?,
+            value,
             cached: false,
             stored_cost_usd: None,
         }));
@@ -291,8 +296,7 @@ where
         return Err(strict_miss(&key));
     }
 
-    let payload = live.await?;
-    let value = parse(&payload)?;
+    let (payload, value) = ask_live(&live, &parse).await?;
     if cache.mode == CacheMode::ReadWrite {
         let entry = fresh_entry(
             &exchange.canonical,
@@ -310,6 +314,59 @@ where
         cached: false,
         stored_cost_usd: None,
     }))
+}
+
+/// How many times to ask the judge again after an answer that could not be
+/// used.
+///
+/// Two, so a run survives a pair of consecutive bad samples without a
+/// pathological case multiplying the grading bill by more than three.
+const MAX_REASKS: u32 = 2;
+
+/// Make the live call and parse it, re-asking a bounded number of times when
+/// the failure is one a second ask could plausibly fix.
+///
+/// A judge's verdict is *sampled*. Unlike a provider 400, "the model returned
+/// an object without a usable `pass`" is not a fact about the request — the
+/// same request a moment later usually produces a fine verdict. Before this
+/// existed there was no retry on the grader path at all (`with_retry` reaches
+/// only the provider call), so a single malformed sample errored a case
+/// permanently and took the whole CI job to exit 3 with it.
+///
+/// Parsing is inside the loop deliberately: the failure being retried happens
+/// *after* the bytes arrive, so retrying only the call would re-parse the same
+/// reply and fail identically.
+///
+/// Nothing is written to the cache on the failing attempts, and nothing needs
+/// to be — a payload that does not parse can never be stored, because the
+/// entry's metadata is derived from the parsed value. Each attempt is a clean
+/// live call.
+async fn ask_live<T, F, Fut, P>(live: &F, parse: &P) -> Result<(Json, T), GraderError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<Json, GraderError>>,
+    P: Fn(&Json) -> Result<T, GraderError>,
+{
+    let mut attempt = 0;
+    loop {
+        let outcome = match live().await {
+            Ok(payload) => match parse(&payload) {
+                Ok(value) => return Ok((payload, value)),
+                Err(e) => e,
+            },
+            Err(e) => e,
+        };
+        if attempt >= MAX_REASKS || !outcome.is_retryable() {
+            return Err(outcome);
+        }
+        attempt += 1;
+        tracing::warn!(
+            error = %outcome,
+            attempt,
+            max = MAX_REASKS,
+            "grader did not return a usable verdict; asking again"
+        );
+    }
 }
 
 /// Apply the read contract to a found entry. `None` is a miss.

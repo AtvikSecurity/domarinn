@@ -1,9 +1,22 @@
 //! Retry policy and the shared backoff loop.
 //!
-//! Split out of `runner.rs` so the provider path, the LLM grader, and the
-//! embeddings client can share one policy instead of growing three. It is
-//! `pub` rather than `pub(crate)` because [`crate::DefaultGrader`] is public
+//! Split out of `runner.rs` to keep one policy rather than growing several. It
+//! is `pub` rather than `pub(crate)` because [`crate::DefaultGrader`] is public
 //! API and is constructed with a policy by embedders.
+//!
+//! **Scope, precisely:** this governs the *provider* call and nothing else —
+//! its one production caller is the runner's cached provider path. The module
+//! header used to claim the LLM grader and the embeddings client shared it,
+//! which was never true and sent readers looking for a `runner.retries` knob
+//! that does not reach either.
+//!
+//! Grader calls do retry, but on their own terms and not through here: see
+//! `request_cache::ask_live`. The two are deliberately different. A provider
+//! failure is transport-shaped, so it backs off, honours `Retry-After` and
+//! keys on [`ProviderError::Retriable`]. A grader failure is usually
+//! *sampling*-shaped — the judge answered, just not usably — so re-asking
+//! immediately is the point and a backoff would only slow a run down. The
+//! embeddings client still has no retry at all.
 
 use std::future::Future;
 use std::time::{Duration, Instant};

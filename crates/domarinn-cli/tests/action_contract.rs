@@ -105,7 +105,11 @@ const SHELL_STEPS: &[ShellStep] = &[
     ShellStep {
         field: "name",
         value: "Gate on result",
-        env: &[("CODE", ""), ("FAIL_ON_REGRESSION", "true")],
+        env: &[
+            ("CODE", ""),
+            ("FAIL_ON_REGRESSION", "true"),
+            ("ERROR_CLASSES", ""),
+        ],
     },
 ];
 
@@ -474,10 +478,84 @@ fn the_gate_distinguishes_a_regression_from_a_broken_harness() {
         "a broken harness must be annotated as one, got: {infra}"
     );
 
+    let (suite_status, suite) = annotation_for(2);
+    assert_eq!(suite_status, Some(2), "a bad suite fails the job too");
+    assert!(
+        suite.contains("config/usage error (exit 2)"),
+        "a suite fault must be annotated as one, got: {suite}"
+    );
+
     assert_ne!(
         regression, infra,
         "the two failures must be told apart; when they read the same the \
          response to a regression is to re-run rather than investigate"
+    );
+    assert_ne!(
+        suite, infra,
+        "a suite fault and a broken harness go to different people"
+    );
+}
+
+/// The gate says *what* broke, not just that something did.
+///
+/// The annotation used to be a fixed string, so a job that failed because an
+/// LLM judge returned malformed JSON and a job that failed because the results
+/// server was unreachable produced byte-identical output. Reading the class
+/// breakdown meant downloading an artifact.
+#[test]
+fn the_gate_names_the_error_classes_behind_a_failure() {
+    let ws = Workspace::new();
+    let ran = run_step(
+        "Gate on result",
+        &[("CODE", "3"), ("ERROR_CLASSES", "grader_failed × 2")],
+        &ws,
+    );
+    assert_eq!(ran.status, Some(3));
+    assert!(
+        ran.log.contains("infrastructure error (exit 3)"),
+        "got: {}",
+        ran.log
+    );
+    assert!(
+        ran.log.contains("grader_failed × 2"),
+        "the annotation must name the class, got: {}",
+        ran.log
+    );
+
+    // Exit 2 carries it too — that is where a suite-caused error now lands.
+    let ws = Workspace::new();
+    let ran = run_step(
+        "Gate on result",
+        &[("CODE", "2"), ("ERROR_CLASSES", "grader_missing × 1")],
+        &ws,
+    );
+    assert_eq!(ran.status, Some(2));
+    assert!(ran.log.contains("grader_missing × 1"), "got: {}", ran.log);
+}
+
+/// The summary step is skipped whenever the eval step never produced a run, so
+/// its outputs interpolate to the empty string and the gate has no breakdown to
+/// print. It must still render its verdict, and must not trail a bare em dash.
+///
+/// This covers the empty value, which is what Actions actually supplies — the
+/// key stays declared in the step's `env:` block either way. The `${VAR:-}`
+/// default in the script guards the genuinely-unset case, which `set -u` would
+/// otherwise turn into an abort before the `case` ever runs; that path is not
+/// reachable from here because `run_step` seeds every registered env key.
+#[test]
+fn the_gate_renders_cleanly_when_no_class_breakdown_is_available() {
+    let ws = Workspace::new();
+    let ran = run_step("Gate on result", &[("CODE", "3")], &ws);
+    assert_eq!(ran.status, Some(3));
+    assert!(
+        ran.log.contains("infrastructure error (exit 3)"),
+        "got: {}",
+        ran.log
+    );
+    assert!(
+        !ran.log.contains('—'),
+        "an empty breakdown must not leave a trailing dash, got: {}",
+        ran.log
     );
 }
 
