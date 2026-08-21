@@ -308,6 +308,13 @@ pub trait AssertGrader: Send + Sync {
 /// The stable entry point used by the server and embedders: a thin delegate to
 /// [`run_with_progress`] with no progress sink. Its signature is intentionally
 /// unchanged — front-ends that want live progress call `run_with_progress`.
+// `result_large_err`: `RunError`'s largest variant, `NothingToRun(EmptyRun)`,
+// is ~128 bytes. Boxing it would change this signature — the one the doc
+// comment above calls intentionally unchanged for the server and embedders —
+// to buy nothing: a run returns `Err` at most once, after the whole suite has
+// executed. See `call_with_cache` for the same annotation's fuller note on why
+// only the `saml` job reports it.
+#[allow(clippy::result_large_err)]
 pub async fn run(
     suite: &Suite,
     base_dir: &Path,
@@ -325,6 +332,8 @@ pub async fn run(
 /// [`RunOptions`] field on purpose: a trait object is neither `Debug` nor
 /// `Clone`, and `RunOptions` must keep both derives. See [`crate::progress`]
 /// for the full rationale (sync trait, not a channel; core stays UI-agnostic).
+// See `run` above: same `RunError`, same reasoning, same one-per-run cost.
+#[allow(clippy::result_large_err)]
 #[tracing::instrument(name = "run", skip_all, fields(project = ?suite.project, suite = ?suite.suite))]
 pub async fn run_with_progress(
     suite: &Suite,
