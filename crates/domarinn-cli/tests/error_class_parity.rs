@@ -147,8 +147,16 @@ fn every_named_class_has_a_gate_bucket_and_a_well_formed_name() {
 fn both_surfaces_bucket_an_unclassified_error_as_unknown() {
     let ts = read("web/src/lib/errors.ts");
     assert!(
-        ts.contains(r#"c.error_class ?? "unknown""#),
+        ts.contains(r#"c.error_class || "unknown""#),
         "web/src/lib/errors.ts no longer buckets a classless error as `unknown`"
+    );
+    // `??` passes a present-but-empty class straight through to a nameless
+    // chip, while the Rust side buckets it. Both spellings satisfy a naive
+    // "does it mention unknown" grep, which is why this asserts the operator.
+    assert!(
+        !ts.contains(r#"c.error_class ?? "unknown""#),
+        "`??` lets an empty-string class through as its own bucket; the CLI \
+         filters it, so the two surfaces would disagree"
     );
 
     // The CLI's half, read from source for the same reason as the TS half:

@@ -65,7 +65,11 @@ export function aggregateErrorClasses(
   const counts = new Map<string, number>();
   for (const c of cases) {
     if (c.status !== "error") continue;
-    const key = c.error_class ?? "unknown";
+    // `||`, not `??`: an empty-string class is the same absence as a missing
+    // one, and `??` let it through to render a nameless chip. The Rust side
+    // (`errorstats::error_class_counts`) filters it the same way, so the run
+    // page and the PR comment agree about a run neither can classify.
+    const key = c.error_class || "unknown";
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return [...counts.entries()]

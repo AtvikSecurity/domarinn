@@ -172,12 +172,17 @@ impl std::fmt::Display for ErrorClass {
     }
 }
 
-/// Most specific first, for the one site that has several candidates: a case
-/// whose asserts errored for different reasons.
+/// Most specific first, *within a gate tier* — see [`most_specific`], which
+/// applies [`GateFault`] before consulting this list.
 ///
 /// A missing grader explains every downstream failure, so it outranks a grader
 /// that could not be reached, which outranks a grader that answered
 /// unusably, which in turn outranks a local assert blowing up.
+///
+/// Deliberately partial: `exec_failed`, `cache_miss` and the `provider_*`
+/// family are absent because there is no useful "more specific than" ordering
+/// among them and a case rarely carries two. The tiering in [`most_specific`]
+/// is what keeps their absence from mattering.
 pub const PRECEDENCE: &[&str] = &[
     ErrorClass::GRADER_MISSING,
     ErrorClass::GRADER_UNAVAILABLE,
@@ -185,13 +190,43 @@ pub const PRECEDENCE: &[&str] = &[
     ErrorClass::ASSERT_FAILED,
 ];
 
-/// Pick the most specific of several candidate classes.
+/// Pick the class that best explains a case that errored for several reasons.
+///
+/// **A harness fault wins outright.** This collapsed class is not only what a
+/// reader sees — since the exit-code contract moved onto [`ErrorClass`], it is
+/// also what decides whether the run reports a broken harness or a broken
+/// suite. A plain "most specific" ordering defeated that: a case carrying both
+/// an unconfigured grader (`grader_missing`, a suite fault) and an `exec` child
+/// that died (`exec_failed`, a harness fault) collapsed to the suite fault,
+/// because `PRECEDENCE` lists the first and not the second. The run then exited
+/// `2` and told an operator to go fix the config while a process was broken.
+///
+/// So: pick among the harness-gated candidates if there are any, and only
+/// otherwise among the rest. [`PRECEDENCE`] then orders within the chosen tier.
+/// This mirrors the same "a harness fault outranks a suite fault" rule the
+/// run-level gate applies across cases — it has to hold inside a case too, or
+/// the run-level rule is only as good as whichever class happened to survive
+/// this collapse.
 pub fn most_specific(candidates: &[ErrorClass]) -> Option<ErrorClass> {
+    let harness: Vec<&ErrorClass> = candidates
+        .iter()
+        .filter(|c| c.gate_fault() == GateFault::Harness)
+        .collect();
+    let pool: Vec<&ErrorClass> = if harness.is_empty() {
+        candidates.iter().collect()
+    } else {
+        harness
+    };
     PRECEDENCE
         .iter()
-        .find_map(|want| candidates.iter().find(|c| c.as_str() == *want).cloned())
-        // An unrecognized (future) class still beats reporting nothing.
-        .or_else(|| candidates.first().cloned())
+        .find_map(|want| {
+            pool.iter()
+                .find(|c| c.as_str() == *want)
+                .map(|c| (*c).clone())
+        })
+        // A class this build does not rank — including every `provider_*` and
+        // `exec_failed` — still beats reporting nothing.
+        .or_else(|| pool.first().map(|c| (*c).clone()))
 }
 
 #[cfg(test)]
@@ -323,10 +358,67 @@ mod tests {
 
     #[test]
     fn precedence_prefers_the_explanation_over_the_symptom() {
+        // Within one tier the original ordering stands: a missing grader
+        // explains a local assert that then blew up.
         let candidates = [
             ErrorClass::new(ErrorClass::ASSERT_FAILED),
             ErrorClass::new(ErrorClass::GRADER_MISSING),
+        ];
+        assert_eq!(
+            most_specific(&candidates).unwrap().as_str(),
+            ErrorClass::GRADER_MISSING
+        );
+    }
+
+    /// The tier beats the ordering. `grader_missing` used to win this pair,
+    /// which was the right call while this field only chose a sentence for a
+    /// reader — but it now also chooses the exit code, and collapsing to the
+    /// suite fault made the run report "fix your config" while a judge was
+    /// broken.
+    ///
+    /// Nothing is lost from the report: cases collapse independently, so a run
+    /// with both faults still shows `grader_missing × N, grader_failed × M` in
+    /// its breakdown. Only the code changes, to the more serious of the two.
+    #[test]
+    fn a_harness_candidate_wins_over_a_better_ranked_suite_one() {
+        let candidates = [
+            ErrorClass::new(ErrorClass::GRADER_MISSING),
             ErrorClass::new(ErrorClass::GRADER_FAILED),
+        ];
+        assert_eq!(
+            most_specific(&candidates).unwrap().as_str(),
+            ErrorClass::GRADER_FAILED
+        );
+    }
+
+    /// The case the tiering exists for: `exec_failed` is a harness fault that
+    /// `PRECEDENCE` does not rank at all, so a plain "most specific" search
+    /// found the suite fault and the run exited 2 while a child process had
+    /// died.
+    #[test]
+    fn an_unranked_harness_candidate_still_beats_a_ranked_suite_one() {
+        for harness in [
+            ErrorClass::EXEC_FAILED,
+            ErrorClass::PROVIDER_TIMEOUT,
+            ErrorClass::CACHE_MISS,
+        ] {
+            let candidates = [
+                ErrorClass::new(ErrorClass::GRADER_MISSING),
+                ErrorClass::new(harness),
+            ];
+            let picked = most_specific(&candidates).unwrap();
+            assert_eq!(picked.as_str(), harness, "{harness} should win the tier");
+            assert_eq!(picked.gate_fault(), GateFault::Harness);
+        }
+    }
+
+    /// With no harness fault present the suite tier is used unchanged.
+    #[test]
+    fn suite_candidates_are_ordered_among_themselves_when_alone() {
+        let candidates = [
+            ErrorClass::new(ErrorClass::ASSERT_FAILED),
+            ErrorClass::new(ErrorClass::RENDER_FAILED),
+            ErrorClass::new(ErrorClass::GRADER_MISSING),
         ];
         assert_eq!(
             most_specific(&candidates).unwrap().as_str(),

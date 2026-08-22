@@ -192,14 +192,22 @@ impl<T> Served<T> {
 ///   caller's own words: "which judge, missing what" is more use than a key.
 ///
 /// `live` is a **factory** rather than a future so the call can be made more
-/// than once — see [`ask_live`] for why asking twice is sometimes the right
-/// answer.
+/// than once, and `reasks` says how many extra times this particular caller may
+/// use it — see [`ask_live`].
+///
+/// `reasks` is per call site rather than read off the error because
+/// [`GraderError`] cannot tell the two apart: an `llm-rubric` judge that
+/// sampled a bad object and an `exec` checker that deterministically printed
+/// the wrong shape both raise `InvalidVerdict`. Only the judge is worth asking
+/// again; re-running the checker would execute somebody's program three times
+/// for one assertion.
 pub(crate) async fn cached_exchange<T, F, Fut, P, M>(
     cache: Option<&RequestCache<'_>>,
     exchange: Exchange<'_>,
     parse: P,
     meta: M,
     strict_miss: impl FnOnce(&CacheKey) -> GraderError,
+    reasks: u32,
     live: F,
 ) -> Result<Served<T>, GraderError>
 where
@@ -209,7 +217,7 @@ where
     M: FnOnce(&T) -> EntryMeta,
 {
     let Some(cache) = cache else {
-        let (_, value) = ask_live(&live, &parse).await?;
+        let (_, value) = ask_live(&live, &parse, reasks).await?;
         return Ok(Served::Parsed(Parsed {
             value,
             cached: false,
@@ -296,7 +304,7 @@ where
         return Err(strict_miss(&key));
     }
 
-    let (payload, value) = ask_live(&live, &parse).await?;
+    let (payload, value) = ask_live(&live, &parse, reasks).await?;
     if cache.mode == CacheMode::ReadWrite {
         let entry = fresh_entry(
             &exchange.canonical,
@@ -316,32 +324,44 @@ where
     }))
 }
 
-/// How many times to ask the judge again after an answer that could not be
+/// How many times a judge may be asked again after an answer that could not be
 /// used.
 ///
 /// Two, so a run survives a pair of consecutive bad samples without a
 /// pathological case multiplying the grading bill by more than three.
-const MAX_REASKS: u32 = 2;
-
-/// Make the live call and parse it, re-asking a bounded number of times when
-/// the failure is one a second ask could plausibly fix.
 ///
-/// A judge's verdict is *sampled*. Unlike a provider 400, "the model returned
-/// an object without a usable `pass`" is not a fact about the request — the
-/// same request a moment later usually produces a fine verdict. Before this
-/// existed there was no retry on the grader path at all (`with_retry` reaches
-/// only the provider call), so a single malformed sample errored a case
-/// permanently and took the whole CI job to exit 3 with it.
+/// Only the `llm-rubric` judge passes this; the `exec`-assert and embeddings
+/// exchanges pass `0`. Not configurable through `runner.retries`, which governs
+/// the provider path — the two are different mechanisms (see [`crate::retry`])
+/// and sharing a knob would imply a backoff this has not got.
+pub(crate) const MAX_REASKS: u32 = 2;
+
+/// Make the live call and parse it, re-asking up to `reasks` more times when
+/// the failure is one a second *sample* could plausibly fix.
+///
+/// A judge's verdict is sampled. Unlike a provider 400, "the model returned an
+/// object without a usable `pass`" is not a fact about the request — the same
+/// request a moment later usually produces a fine verdict. Before this existed
+/// there was no retry on the grader path at all (`with_retry` reaches only the
+/// provider call), so a single malformed sample errored a case permanently and
+/// took the whole CI job to exit 3 with it.
+///
+/// Two guards, and both are needed. [`GraderError::is_retryable`] excludes the
+/// faults a second ask cannot fix; `reasks` excludes the *callers* for whom no
+/// fault is worth re-asking, because the error type alone cannot tell a
+/// sampled reply from a deterministic program's output.
 ///
 /// Parsing is inside the loop deliberately: the failure being retried happens
 /// *after* the bytes arrive, so retrying only the call would re-parse the same
 /// reply and fail identically.
 ///
-/// Nothing is written to the cache on the failing attempts, and nothing needs
-/// to be — a payload that does not parse can never be stored, because the
-/// entry's metadata is derived from the parsed value. Each attempt is a clean
-/// live call.
-async fn ask_live<T, F, Fut, P>(live: &F, parse: &P) -> Result<(Json, T), GraderError>
+/// Nothing is written to the cache on the failing attempts — a payload that
+/// does not parse can never be stored, because the entry's metadata is derived
+/// from the parsed value. That also means a discarded attempt's tokens never
+/// reach the run summary, so a re-asked case under-reports its grading cost by
+/// whatever the failed samples billed. Bounded by `MAX_REASKS` and only
+/// reachable on an unusable verdict, so the gap is small, but it is real.
+async fn ask_live<T, F, Fut, P>(live: &F, parse: &P, reasks: u32) -> Result<(Json, T), GraderError>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<Json, GraderError>>,
@@ -356,14 +376,14 @@ where
             },
             Err(e) => e,
         };
-        if attempt >= MAX_REASKS || !outcome.is_retryable() {
+        if attempt >= reasks || !outcome.is_retryable() {
             return Err(outcome);
         }
         attempt += 1;
         tracing::warn!(
             error = %outcome,
             attempt,
-            max = MAX_REASKS,
+            max = reasks,
             "grader did not return a usable verdict; asking again"
         );
     }

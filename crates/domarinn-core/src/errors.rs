@@ -117,33 +117,45 @@ pub enum GraderError {
 }
 
 impl GraderError {
-    /// Whether re-asking the judge could plausibly produce a usable verdict.
+    /// Whether asking *the same question again, immediately* could plausibly
+    /// produce a different answer.
     ///
-    /// Graders had no retry at all until this existed: `with_retry` reached
-    /// only the provider path, so a judge that returned one malformed object
-    /// errored a case permanently and took the whole CI job to exit `3` with
-    /// it. The verdict is *sampled*, so unlike a provider 400 it is genuinely
-    /// worth asking twice.
+    /// This is a narrow question, and the narrowness is the point. It means
+    /// "was this answer **sampled**?" — not "might this succeed on a retry in
+    /// general". Only a model's own reply qualifies: an `llm-rubric` judge that
+    /// returned an object without a usable `pass` was not making a statement
+    /// about the request, and a second sample usually parses fine.
     ///
-    /// The `false` arms matter more than the `true` ones. `AuthRejected` will
-    /// fail identically for every remaining case and already poisons the run;
-    /// `Unconfigured` / `Unsupported` / `Misconfigured` are suite bugs that no
-    /// number of attempts will fix; `Internal` is our own bug. Retrying any of
-    /// them would burn the run's budget to reach the same place.
+    /// **`Transport` is deliberately excluded.** It looks retryable and is the
+    /// obvious thing to include, but the caller re-asks with no delay and no
+    /// `Retry-After` handling, so a judge answering `429` would receive three
+    /// back-to-back requests per graded assertion instead of one — multiplied
+    /// by runner concurrency, that adds load to a service already shedding it.
+    /// A transport fault needs backoff, which lives in [`crate::retry`] and
+    /// covers the provider path only; wiring the grader through it is the
+    /// honest fix and is not this.
+    ///
+    /// The other `false` arms: `AuthRejected` will fail identically for every
+    /// remaining case and already poisons the run; `Unconfigured` /
+    /// `Unsupported` / `Misconfigured` are suite bugs no attempt count fixes;
+    /// `ExecFailed` is a program that will behave the same way twice;
+    /// `CacheMiss` has nothing to re-ask; `Internal` is our own bug.
     ///
     /// `TruncatedVerdict` is included with a caveat: a re-ask at the same
     /// `max_tokens` may well truncate again, and the real fix stays the one the
     /// message names. It is here because truncation can also be a long-reasoning
-    /// blip on one sample, and a bounded retry is cheaper than a failed job.
+    /// blip on one sample.
+    ///
+    /// **A `true` here is necessary but not sufficient.** The budget is set per
+    /// call site — see `request_cache::cached_exchange` — because this type
+    /// cannot tell an LLM's sampled reply from a deterministic `exec` checker
+    /// printing the wrong shape. Both raise `InvalidVerdict`; only one is worth
+    /// asking twice.
     pub fn is_retryable(&self) -> bool {
         match self {
+            GraderError::InvalidVerdict(_) | GraderError::TruncatedVerdict { .. } => true,
             GraderError::Transport(_)
-            | GraderError::InvalidVerdict(_)
-            | GraderError::TruncatedVerdict { .. } => true,
-            // A checker that exited non-zero will exit non-zero again, and an
-            // offline run has nothing to re-ask. Retrying either only spends
-            // time to reach the same answer.
-            GraderError::ExecFailed(_)
+            | GraderError::ExecFailed(_)
             | GraderError::CacheMiss(_)
             | GraderError::Unconfigured { .. }
             | GraderError::Unsupported { .. }
@@ -313,7 +325,6 @@ mod tests {
     #[test]
     fn only_faults_a_second_ask_could_fix_are_retryable() {
         for e in [
-            GraderError::Transport("boom".into()),
             GraderError::InvalidVerdict("verdict missing `pass`".into()),
             GraderError::TruncatedVerdict {
                 signal: "stop_reason=max_tokens",
@@ -322,6 +333,8 @@ mod tests {
             assert!(e.is_retryable(), "{e} should be retryable");
         }
         for e in [
+            GraderError::ExecFailed("exited with 7".into()),
+            GraderError::CacheMiss("cache-only: miss".into()),
             GraderError::Unconfigured { kind: "similar" },
             GraderError::Unsupported {
                 provider: "p".into(),
@@ -333,6 +346,15 @@ mod tests {
         ] {
             assert!(!e.is_retryable(), "{e} should not be retryable");
         }
+    }
+
+    /// A transport fault is the obvious thing to retry and is deliberately not
+    /// retried here: this layer re-asks immediately, so a judge shedding load
+    /// with `429` would get three back-to-back requests per assertion instead
+    /// of one. Backoff lives in `retry`, which the grader path does not use.
+    #[test]
+    fn a_transport_fault_is_not_re_asked_because_this_layer_has_no_backoff() {
+        assert!(!GraderError::Transport("connection reset".into()).is_retryable());
     }
 
     #[test]

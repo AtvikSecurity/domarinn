@@ -451,9 +451,15 @@ impl DefaultGrader {
                 },
             },
             |payload| {
-                let resp: AssertResp = serde_json::from_value(payload.clone()).map_err(|e| {
-                    GraderError::InvalidVerdict(format!("bad assert response: {e}"))
-                })?;
+                // `ExecFailed`, not `InvalidVerdict`: the child spawned and
+                // printed something, it just was not the protocol's shape.
+                // There is no judge on this path, so classing it as a grader
+                // fault sent readers looking for a model that misbehaved — and
+                // `InvalidVerdict` is the one class this layer re-asks, which
+                // would re-execute somebody's checker for a deterministic
+                // formatting bug.
+                let resp: AssertResp = serde_json::from_value(payload.clone())
+                    .map_err(|e| GraderError::ExecFailed(format!("bad assert response: {e}")))?;
                 let score = resp.score.unwrap_or(if resp.pass { 1.0 } else { 0.0 });
                 Ok(GradedVerdict::Exec {
                     pass: resp.pass,
@@ -474,6 +480,9 @@ impl DefaultGrader {
                     command.join(" ")
                 ))
             },
+            // No re-asks: the checker is a program, not a sample. Running it
+            // again repeats any side effect it has for one assertion.
+            0,
             || async {
                 let value = run_exec_json(
                     command,
@@ -597,6 +606,9 @@ impl DefaultGrader {
                 model: None,
             },
             |key| GraderError::CacheMiss(format!("cache-only: miss for an embedding ({key})")),
+            // No re-asks: an embedding is deterministic for a given input, so
+            // a second POST returns the same vector and the same parse error.
+            0,
             || async {
                 embeddings
                     .post(&call.url, &call.body)
@@ -786,6 +798,9 @@ impl DefaultGrader {
                     "cache-only: miss for the `{model}` judge on this rubric ({key})"
                 ))
             },
+            // The one exchange whose answer is sampled, and so the only one
+            // where asking again can produce a different result.
+            crate::request_cache::MAX_REASKS,
             || async {
                 self.post_judge(
                     judge,

@@ -305,6 +305,42 @@ async fn a_persistently_unusable_verdict_still_errors() {
     );
 }
 
+/// The quoted reply must not carry the judge's `reasoning`, which restates the
+/// graded output. This message reaches `case.error`, the shared run and the PR
+/// comment, so quoting it verbatim would publish whatever was being graded.
+#[tokio::test]
+async fn the_quoted_verdict_redacts_the_judges_reasoning() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type": "tool_use", "name": "submit_verdict",
+                         "input": {"reasoning": "the customer's SSN is 123-45-6789",
+                                   "score": 0.9}}]
+        })))
+        .mount(&server)
+        .await;
+    std::env::set_var("GRADER_TEST_KEY", "sk-test");
+    let grader = DefaultGrader::new(Some(anthropic_grader(&server.uri())));
+    let msg = grader
+        .grade(
+            &rubric_assert(),
+            &Output::Text("x".into()),
+            &grade_ctx(&json!({}), &TemplateEngine::new()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        !msg.contains("123-45-6789"),
+        "the graded content must not be republished: {msg}"
+    );
+    assert!(!msg.contains("customer"), "{msg}");
+    // The shape still survives, which is what makes the message useful.
+    assert!(msg.contains("redacted"), "{msg}");
+    assert!(msg.contains("\"score\":0.9"), "{msg}");
+    assert!(msg.contains("`pass`"), "{msg}");
+}
+
 /// A `pass` that is present but the wrong type used to report as *missing*,
 /// sending a reader to look for a schema the judge had in fact received.
 #[tokio::test]

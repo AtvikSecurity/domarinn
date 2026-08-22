@@ -1,8 +1,11 @@
 //! Retry policy and the shared backoff loop.
 //!
 //! Split out of `runner.rs` to keep one policy rather than growing several. It
-//! is `pub` rather than `pub(crate)` because [`crate::DefaultGrader`] is public
-//! API and is constructed with a policy by embedders.
+//! is `pub` rather than `pub(crate)` because [`RetryPolicy`] is reachable from
+//! the public `Suite` config an embedder builds — not, as this line used to
+//! say, because `DefaultGrader` is constructed with one. `DefaultGrader::new`
+//! takes an optional grader and nothing else, and the type has no retry policy
+//! at all; see the scope note below.
 //!
 //! **Scope, precisely:** this governs the *provider* call and nothing else —
 //! its one production caller is the runner's cached provider path. The module

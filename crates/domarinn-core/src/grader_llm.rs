@@ -377,6 +377,15 @@ const VERDICT_SNIPPET: usize = 300;
 /// the parsed verdict, so the write is unreachable on this path), so a re-run
 /// re-samples the judge and the reply that failed is gone. Quoting it here is
 /// the only evidence that survives into the stored run and the JUnit report.
+///
+/// **`reasoning` is redacted from that quote.** It is the one field that
+/// paraphrases or quotes the graded model output verbatim, and this message is
+/// no longer just a log line: it lands in `case.error`, which is uploaded by
+/// `--share` and rendered into the PR comment's errored-cases table. A suite
+/// grading sensitive or customer text on a public repository would otherwise
+/// publish it as a side effect of the judge misbehaving. Its length is kept,
+/// because "the judge wrote 4kB of reasoning and no `pass`" is exactly the
+/// shape a reader needs.
 fn bad_field(v: &Json, field: &str, want: &str) -> GraderError {
     let saw = match v.get(field) {
         None => "absent".to_string(),
@@ -387,7 +396,7 @@ fn bad_field(v: &Json, field: &str, want: &str) -> GraderError {
         Some(Json::Array(_)) => "an array".to_string(),
         Some(Json::Object(_)) => "an object".to_string(),
     };
-    let rendered = v.to_string();
+    let rendered = redacted_verdict(v).to_string();
     let snippet: String = if rendered.chars().count() > VERDICT_SNIPPET {
         rendered
             .chars()
@@ -400,6 +409,26 @@ fn bad_field(v: &Json, field: &str, want: &str) -> GraderError {
     GraderError::InvalidVerdict(format!(
         "verdict field `{field}` should be {want} but was {saw}; judge returned {snippet}"
     ))
+}
+
+/// The judge's reply with `reasoning` replaced by a length marker.
+///
+/// Shape-preserving on purpose: every other key, and the fact that `reasoning`
+/// was present at all, is diagnostic. Only its contents are withheld, because
+/// they are the graded material restated.
+fn redacted_verdict(v: &Json) -> Json {
+    let Some(obj) = v.as_object() else {
+        return v.clone();
+    };
+    let mut out = obj.clone();
+    if let Some(reasoning) = out.get_mut("reasoning") {
+        let marker = match reasoning.as_str() {
+            Some(text) => format!("<redacted {} chars>", text.chars().count()),
+            None => "<redacted>".to_string(),
+        };
+        *reasoning = Json::String(marker);
+    }
+    Json::Object(out)
 }
 
 impl Verdict {
