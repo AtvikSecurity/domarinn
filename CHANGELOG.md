@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.5](https://github.com/AtvikSecurity/domarinn/compare/0.10.4...0.10.5) (2026-08-22)
+
+
+### Features
+
+* **cli:** report which error class failed a run, and re-ask an unusable verdict ([#105](https://github.com/AtvikSecurity/domarinn/issues/105)) ([f0894e2](https://github.com/AtvikSecurity/domarinn/commit/f0894e2a8431750989fa4a92ffd124ec2f8769f8))
+
 ## [0.10.4](https://github.com/AtvikSecurity/domarinn/compare/0.10.3...0.10.4) (2026-08-18)
 
 
