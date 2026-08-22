@@ -26,6 +26,15 @@ const SKIP_DIRS: &[&str] = &[
     ".git",
     ".domarinn",
     ".worktrees",
+    // Agent scratch, and — the reason this is here — `.claude/worktrees/`,
+    // where tooling checks the repo out at other revisions. The whole
+    // directory is gitignored, so nothing under it is code this checkout is
+    // responsible for. Worse than merely noisy: `EXCEPTIONS` is matched on
+    // repo-relative paths, so an excepted file reappears under a worktree
+    // prefix that matches nothing and fails the ratchet on a file that is
+    // *already* allowed to be long. Anyone with a stale worktree then has a
+    // permanently red `mise run ci`, which is how a ratchet stops being read.
+    ".claude",
     ".venv",
     "site",
 ];

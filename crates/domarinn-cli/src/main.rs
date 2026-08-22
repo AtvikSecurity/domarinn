@@ -19,6 +19,7 @@ mod cisummary;
 mod diffcmd;
 mod diffmd;
 mod diffrender;
+mod errorstats;
 mod import;
 mod loadrun;
 mod output;

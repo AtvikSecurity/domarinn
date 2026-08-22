@@ -48,16 +48,45 @@ impl ErrorClass {
     pub const PROVIDER_TIMEOUT: &'static str = "provider_timeout";
     /// A 2xx whose body could not be parsed into a response.
     pub const PROVIDER_PROTOCOL: &'static str = "provider_protocol";
-    /// The exec child failed to spawn, exited nonzero, or wrote unparseable
-    /// stdout. The system under test is broken; the model never saw anything.
+    /// An `exec` **provider** child failed to spawn, exited nonzero, or wrote
+    /// unparseable stdout — the system under test is broken and the model
+    /// never saw anything.
+    ///
+    /// This used to cover the `exec` **assertion** checker too, which put a
+    /// suite-authored script in the harness bucket: a typo'd checker path
+    /// exited `3` and paged an operator for a one-line suite fix. The checker
+    /// now has its own class, [`Self::CHECKER_FAILED`], on the suite side of
+    /// the gate — the same side as [`Self::ASSERT_FAILED`], its local-assert
+    /// analogue.
     pub const EXEC_FAILED: &'static str = "exec_failed";
+    /// An `exec` **assertion**'s checker program broke — failed to spawn,
+    /// exited nonzero, or answered off-protocol. Nothing was graded.
+    ///
+    /// The checker is the suite author's own YAML-declared script, so this is
+    /// a suite fault ([`GateFault::Suite`], exit `2`): the fix is in the repo
+    /// under review, not in the harness. Contrast [`Self::EXEC_FAILED`], the
+    /// `exec` *provider* child, which is the harness's problem.
+    pub const CHECKER_FAILED: &'static str = "checker_failed";
     /// Rendering vars or the prompt raised — a template bug in the suite.
     pub const RENDER_FAILED: &'static str = "render_failed";
     /// The grader itself failed. The eval did not run; do not read the score.
     pub const GRADER_FAILED: &'static str = "grader_failed";
+    /// The grader could not be reached at all — a transport or network fault.
+    ///
+    /// Split from [`Self::GRADER_FAILED`] on this module's own test: both mean
+    /// the eval did not run, but one is fixed by waiting or by looking at the
+    /// network and the other by looking at the judge's output. Merged, a
+    /// dashboard cannot tell a grader outage from a judge that answered badly.
+    pub const GRADER_UNAVAILABLE: &'static str = "grader_unavailable";
     /// A deferred assert with no grader configured for its kind.
     pub const GRADER_MISSING: &'static str = "grader_missing";
-    /// A local assert blew up while evaluating (bad regex, exec assert nonzero).
+    /// A local assert blew up while evaluating — a bad regex, an uncompilable
+    /// schema. The suite's bug.
+    ///
+    /// **Not** an `exec` assertion whose checker exited non-zero: that is
+    /// [`Self::EXEC_FAILED`], because the child broke rather than the
+    /// assertion being unevaluable. This doc used to claim otherwise and never
+    /// matched what the runner stored.
     pub const ASSERT_FAILED: &'static str = "assert_failed";
     /// `--cache-only` and the entry was not there. A workflow problem.
     pub const CACHE_MISS: &'static str = "cache_miss";
@@ -75,15 +104,73 @@ impl ErrorClass {
     /// Whether this is an infrastructure fault rather than a judgement about
     /// the system under test.
     ///
-    /// This is the project's existing exit-code contract expressed as a
-    /// predicate: "the harness broke" (exit 3) is categorically different from
-    /// "the model regressed" (exit 1), and an error-rate spike is only
-    /// interesting when it is the former.
+    /// **This is not the exit-code contract** — see [`Self::gate_fault`] for
+    /// that. The docstring here used to claim it was, which was wrong in both
+    /// directions: `grader_failed` is excluded here but exits `3`, and the
+    /// prefix match covers `cache_miss`, which is a workflow problem rather
+    /// than a broken machine. What this answers is narrower and is what an
+    /// error-rate dashboard wants: "was anything about the model or the suite
+    /// implicated, or did a machine simply fail?"
+    ///
+    /// Deliberately excludes every `grader_*` class. A grader fault means the
+    /// eval did not run and the scores beside it are not evidence — that is a
+    /// judgement-shaped problem for a reader even when its cause is a network
+    /// blip, which is why the UI tones them like failures rather than like
+    /// retries. [`crate::error_class`] callers wanting the CI gate's view of
+    /// the same class must use [`Self::gate_fault`].
     pub fn is_infrastructure(&self) -> bool {
         self.0.starts_with("provider_")
             || self.0.starts_with("cache_")
             || self.0 == Self::EXEC_FAILED
     }
+
+    /// Which exit code an errored case of this class drives — **the** CI
+    /// exit-code contract, expressed once.
+    ///
+    /// Before this existed the ladder in `run` treated every errored cell as
+    /// exit `3`, so "the grader returned malformed JSON" and "your suite names
+    /// a grader that does not exist" reached CI as the same sentence. They
+    /// route to different people, so they get different codes.
+    ///
+    /// Both variants still fail the job — [`GateFault::Suite`] maps to exit
+    /// `2`, which the shipped action gates on unconditionally. This split makes
+    /// a red run *legible*; it never makes one green.
+    ///
+    /// An unrecognized class is [`GateFault::Harness`]. The type is open by
+    /// construction (a newer `exec` child can name a class this build has never
+    /// heard of), and failing closed keeps an unknown fault at the code it has
+    /// always had rather than quietly downgrading it.
+    pub fn gate_fault(&self) -> GateFault {
+        // Enumerated on the `Suite` side only. Everything else — every
+        // `provider_*`, every `cache_*`, `exec_failed`, both grader faults, and
+        // any class from a newer child — is `Harness`, which is also the
+        // fail-closed default described above. Listing the `Harness` members
+        // explicitly would be three arms returning the same value and would
+        // quietly stop covering a class the day someone adds one.
+        match self.0.as_str() {
+            Self::GRADER_MISSING
+            | Self::RENDER_FAILED
+            | Self::ASSERT_FAILED
+            | Self::CHECKER_FAILED => GateFault::Suite,
+            _ => GateFault::Harness,
+        }
+    }
+}
+
+/// Who has to act on an errored case, and therefore which exit code it drives.
+///
+/// `Ord` is the tie-break for a run carrying several errored cases: a run that
+/// broke *and* has a bad suite reports as broken, because the suite's verdict
+/// cannot be trusted until the harness is working. [`GateFault::Harness`] is
+/// therefore the greater value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GateFault {
+    /// The suite is wrong — a missing grader, a template that will not render,
+    /// an assert that cannot be evaluated. Exit `2`. Fix the config.
+    Suite,
+    /// The harness broke — a provider, the cache, an `exec` child, or the
+    /// grader. Exit `3`. Retry or page an operator; not the PR's fault.
+    Harness,
 }
 
 impl From<&str> for ErrorClass {
@@ -98,24 +185,62 @@ impl std::fmt::Display for ErrorClass {
     }
 }
 
-/// Most specific first, for the one site that has several candidates: a case
-/// whose asserts errored for different reasons.
+/// Most specific first, *within a gate tier* — see [`most_specific`], which
+/// applies [`GateFault`] before consulting this list.
 ///
 /// A missing grader explains every downstream failure, so it outranks a grader
-/// that ran and failed, which in turn outranks a local assert blowing up.
+/// that could not be reached, which outranks a grader that answered
+/// unusably, which in turn outranks a local assert blowing up.
+///
+/// Deliberately partial: `exec_failed`, `cache_miss` and the `provider_*`
+/// family are absent because there is no useful "more specific than" ordering
+/// among them and a case rarely carries two. The tiering in [`most_specific`]
+/// is what keeps their absence from mattering.
 pub const PRECEDENCE: &[&str] = &[
     ErrorClass::GRADER_MISSING,
+    ErrorClass::GRADER_UNAVAILABLE,
     ErrorClass::GRADER_FAILED,
+    ErrorClass::CHECKER_FAILED,
     ErrorClass::ASSERT_FAILED,
 ];
 
-/// Pick the most specific of several candidate classes.
+/// Pick the class that best explains a case that errored for several reasons.
+///
+/// **A harness fault wins outright.** This collapsed class is not only what a
+/// reader sees — since the exit-code contract moved onto [`ErrorClass`], it is
+/// also what decides whether the run reports a broken harness or a broken
+/// suite. A plain "most specific" ordering defeated that: a case carrying both
+/// an unconfigured grader (`grader_missing`, a suite fault) and an `exec` child
+/// that died (`exec_failed`, a harness fault) collapsed to the suite fault,
+/// because `PRECEDENCE` lists the first and not the second. The run then exited
+/// `2` and told an operator to go fix the config while a process was broken.
+///
+/// So: pick among the harness-gated candidates if there are any, and only
+/// otherwise among the rest. [`PRECEDENCE`] then orders within the chosen tier.
+/// This mirrors the same "a harness fault outranks a suite fault" rule the
+/// run-level gate applies across cases — it has to hold inside a case too, or
+/// the run-level rule is only as good as whichever class happened to survive
+/// this collapse.
 pub fn most_specific(candidates: &[ErrorClass]) -> Option<ErrorClass> {
+    let harness: Vec<&ErrorClass> = candidates
+        .iter()
+        .filter(|c| c.gate_fault() == GateFault::Harness)
+        .collect();
+    let pool: Vec<&ErrorClass> = if harness.is_empty() {
+        candidates.iter().collect()
+    } else {
+        harness
+    };
     PRECEDENCE
         .iter()
-        .find_map(|want| candidates.iter().find(|c| c.as_str() == *want).cloned())
-        // An unrecognized (future) class still beats reporting nothing.
-        .or_else(|| candidates.first().cloned())
+        .find_map(|want| {
+            pool.iter()
+                .find(|c| c.as_str() == *want)
+                .map(|c| (*c).clone())
+        })
+        // A class this build does not rank — including every `provider_*` and
+        // `exec_failed` — still beats reporting nothing.
+        .or_else(|| pool.first().map(|c| (*c).clone()))
 }
 
 #[cfg(test)]
@@ -139,9 +264,11 @@ mod tests {
         assert_eq!(serde_json::to_string(&c).unwrap(), "\"provider_timeout\"");
     }
 
-    /// The distinction the exit-code contract already draws: a rate limit is the
-    /// harness's problem, a failing grader means the eval did not run, and
-    /// neither says anything about the model.
+    /// A dashboard's question: did a machine fail, or was the model or the
+    /// suite implicated? Every `grader_*` class sits on the judgement side even
+    /// when its cause is a network blip, because the scores beside it are not
+    /// evidence either way — the CI gate takes the other view of the same
+    /// class, which is what [`ErrorClass::gate_fault`] is for.
     #[test]
     fn infrastructure_classes_are_separable_from_judgement_ones() {
         for infra in [
@@ -157,6 +284,7 @@ mod tests {
         }
         for other in [
             ErrorClass::GRADER_FAILED,
+            ErrorClass::GRADER_UNAVAILABLE,
             ErrorClass::GRADER_MISSING,
             ErrorClass::RENDER_FAILED,
             ErrorClass::ASSERT_FAILED,
@@ -168,12 +296,148 @@ mod tests {
         }
     }
 
+    /// The exit-code contract, both directions. `Suite` is exit `2` and
+    /// `Harness` is exit `3`; the point of the split is that the two reach
+    /// different people, not that either one lets a run through.
+    #[test]
+    fn the_gate_separates_a_broken_harness_from_a_broken_suite() {
+        for harness in [
+            ErrorClass::PROVIDER_RATE_LIMIT,
+            ErrorClass::PROVIDER_AUTH,
+            ErrorClass::PROVIDER_TIMEOUT,
+            ErrorClass::PROVIDER_UNAVAILABLE,
+            ErrorClass::PROVIDER_PROTOCOL,
+            ErrorClass::PROVIDER_REQUEST,
+            ErrorClass::CACHE_MISS,
+            ErrorClass::CACHE_UNAVAILABLE,
+            ErrorClass::EXEC_FAILED,
+            ErrorClass::GRADER_FAILED,
+            ErrorClass::GRADER_UNAVAILABLE,
+        ] {
+            assert_eq!(
+                ErrorClass::new(harness).gate_fault(),
+                GateFault::Harness,
+                "{harness} should be a harness fault (exit 3)"
+            );
+        }
+        for suite in [
+            ErrorClass::GRADER_MISSING,
+            ErrorClass::RENDER_FAILED,
+            ErrorClass::ASSERT_FAILED,
+            ErrorClass::CHECKER_FAILED,
+        ] {
+            assert_eq!(
+                ErrorClass::new(suite).gate_fault(),
+                GateFault::Suite,
+                "{suite} should be a suite fault (exit 2)"
+            );
+        }
+    }
+
+    /// The type is open, so a class from a newer `exec` child reaches this
+    /// build as a string it has never seen. It must keep the exit code such a
+    /// case has always had rather than be downgraded to the suite's bucket.
+    #[test]
+    fn an_unknown_class_fails_closed_to_the_harness_bucket() {
+        assert_eq!(
+            ErrorClass::new("something_invented_next_year").gate_fault(),
+            GateFault::Harness
+        );
+    }
+
+    /// Pinned because the ladder in `run` takes the max across a run's errored
+    /// cases: a run that is both broken and misconfigured must report as
+    /// broken, since the suite's verdict means nothing until the harness works.
+    #[test]
+    fn a_harness_fault_outranks_a_suite_fault() {
+        assert!(GateFault::Harness > GateFault::Suite);
+        assert_eq!(
+            [GateFault::Suite, GateFault::Harness, GateFault::Suite]
+                .into_iter()
+                .max(),
+            Some(GateFault::Harness)
+        );
+    }
+
+    /// The two predicates answer different questions about the same class, and
+    /// conflating them is the bug this split exists to prevent: a grader fault
+    /// is not infrastructure, and still exits 3.
+    #[test]
+    fn a_grader_fault_is_a_harness_gate_fault_without_being_infrastructure() {
+        for grader in [ErrorClass::GRADER_FAILED, ErrorClass::GRADER_UNAVAILABLE] {
+            let c = ErrorClass::new(grader);
+            assert!(!c.is_infrastructure(), "{grader}");
+            assert_eq!(c.gate_fault(), GateFault::Harness, "{grader}");
+        }
+    }
+
     #[test]
     fn precedence_prefers_the_explanation_over_the_symptom() {
+        // Within one tier the original ordering stands: a missing grader
+        // explains a local assert that then blew up.
         let candidates = [
             ErrorClass::new(ErrorClass::ASSERT_FAILED),
             ErrorClass::new(ErrorClass::GRADER_MISSING),
+        ];
+        assert_eq!(
+            most_specific(&candidates).unwrap().as_str(),
+            ErrorClass::GRADER_MISSING
+        );
+    }
+
+    /// The tier beats the ordering. `grader_missing` used to win this pair,
+    /// which was the right call while this field only chose a sentence for a
+    /// reader — but it now also chooses the exit code, and collapsing to the
+    /// suite fault made the run report "fix your config" while a judge was
+    /// broken.
+    ///
+    /// When the two faults land on *different* cases, nothing is lost: cases
+    /// collapse independently, so the breakdown still shows
+    /// `grader_missing × N, grader_failed × M`. When one case carries both,
+    /// this collapse keeps only the harness class — the per-case breakdown
+    /// then under-reports the suite fault, which is the accepted cost of the
+    /// exit code being right. The errored-cases table compensates by listing
+    /// every distinct class its asserts recorded, not just the collapsed one.
+    #[test]
+    fn a_harness_candidate_wins_over_a_better_ranked_suite_one() {
+        let candidates = [
+            ErrorClass::new(ErrorClass::GRADER_MISSING),
             ErrorClass::new(ErrorClass::GRADER_FAILED),
+        ];
+        assert_eq!(
+            most_specific(&candidates).unwrap().as_str(),
+            ErrorClass::GRADER_FAILED
+        );
+    }
+
+    /// The case the tiering exists for: `exec_failed` is a harness fault that
+    /// `PRECEDENCE` does not rank at all, so a plain "most specific" search
+    /// found the suite fault and the run exited 2 while a child process had
+    /// died.
+    #[test]
+    fn an_unranked_harness_candidate_still_beats_a_ranked_suite_one() {
+        for harness in [
+            ErrorClass::EXEC_FAILED,
+            ErrorClass::PROVIDER_TIMEOUT,
+            ErrorClass::CACHE_MISS,
+        ] {
+            let candidates = [
+                ErrorClass::new(ErrorClass::GRADER_MISSING),
+                ErrorClass::new(harness),
+            ];
+            let picked = most_specific(&candidates).unwrap();
+            assert_eq!(picked.as_str(), harness, "{harness} should win the tier");
+            assert_eq!(picked.gate_fault(), GateFault::Harness);
+        }
+    }
+
+    /// With no harness fault present the suite tier is used unchanged.
+    #[test]
+    fn suite_candidates_are_ordered_among_themselves_when_alone() {
+        let candidates = [
+            ErrorClass::new(ErrorClass::ASSERT_FAILED),
+            ErrorClass::new(ErrorClass::RENDER_FAILED),
+            ErrorClass::new(ErrorClass::GRADER_MISSING),
         ];
         assert_eq!(
             most_specific(&candidates).unwrap().as_str(),

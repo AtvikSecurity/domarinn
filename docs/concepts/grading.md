@@ -72,7 +72,7 @@ An `llm-rubric` assertion needs a grader. It is resolved in this order:
 2. Otherwise the **suite-level** `grader:` block.
 3. If **neither** exists, the assertion is an **error** (fail-closed): `llm-rubric assertion has no grader configured (set suite grader or per-assert grader)`.
 
-An errored assertion promotes the case to `error` and drives exit code `3`, not `1`. It is never a silent pass. See [assertions.md](../reference/assertions.md#statuses-fail-closed-and-exit-codes).
+An errored assertion promotes the case to `error` and drives exit code `2` or `3`, never `1`. It is never a silent pass. Which of the two depends on whose problem it is: a grader that broke or could not be reached is the harness's (`3`), while a grader that was never configured — the case above — is the suite's (`2`). Both fail a CI job. See [assertions.md](../reference/assertions.md#statuses-fail-closed-and-exit-codes).
 
 ---
 
@@ -354,7 +354,7 @@ The figure is reported **separately** from the run's cost:
 
 They are not added together on purpose. `cost_usd` is what a `cost:` assertion budgets, and a grader's price must not move a budget gate on the model being judged. It also stays honest about the common case where the grader is the more expensive model: a merged number would bury that.
 
-A grader call is cached like any other request, and its cost is recorded with it — so a fully-cached run still reports what its grading is worth rather than dropping to zero, re-priced at today's rate. Which calls were actually paid for this time is visible per assertion, via `cached`. `--no-grader-cache` re-asks the grader while still replaying provider responses; see [caching.md](caching.md#cache-modes).
+A grader call is cached like any other request, and its cost is recorded with it — so a fully-cached run still reports what its grading is worth rather than dropping to zero, re-priced at today's rate. One known gap: when an unusable verdict makes the judge re-ask, only the attempt that produced the verdict is priced — the discarded attempts are billed by the provider but not counted here, so a run with re-asks under-reports its grading spend (by at most two calls per affected assertion). Which calls were actually paid for this time is visible per assertion, via `cached`. `--no-grader-cache` re-asks the grader while still replaying provider responses; see [caching.md](caching.md#cache-modes).
 
 An `exec` grader reports nothing: the child spends against whatever endpoint it chose, and the protocol gives it no way to say so. A zero would claim custom grading is free.
 

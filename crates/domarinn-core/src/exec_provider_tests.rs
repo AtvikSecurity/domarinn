@@ -568,6 +568,52 @@ fn an_unnamed_class_still_defaults_to_exec_failed() {
     assert_eq!(err.class().as_str(), ErrorClass::EXEC_FAILED);
 }
 
+/// A provider child may refine *within* the harness tier (`provider_auth`,
+/// a rate limit) but may not claim a suite-tier class: the class now picks the
+/// exit code, and `render_failed` from a broken provider process would turn
+/// "the harness is broken" (exit 3) into "fix your suite" (exit 2) on the
+/// child's say-so. A provider failure is never the suite's fault.
+#[test]
+fn a_child_claiming_a_suite_class_is_clamped_to_exec_failed() {
+    for claimed in [
+        "render_failed",
+        "assert_failed",
+        "grader_missing",
+        "checker_failed",
+    ] {
+        let err = parse(serde_json::json!({
+            "output": "",
+            "error": {"message": "templating blew up", "retriable": false, "class": claimed}
+        }))
+        .unwrap_err();
+        assert_eq!(
+            err.class().as_str(),
+            ErrorClass::EXEC_FAILED,
+            "`{claimed}` is suite-tier and must not survive from a provider child"
+        );
+    }
+    // An unknown class still round-trips: it fails closed to the harness tier
+    // at the gate, so keeping it costs nothing and preserves the diagnosis.
+    let err = parse(serde_json::json!({
+        "output": "",
+        "error": {"message": "boom", "retriable": false, "class": "invented_by_a_newer_child"}
+    }))
+    .unwrap_err();
+    assert_eq!(err.class().as_str(), "invented_by_a_newer_child");
+}
+
+/// `""` is the same as naming nothing — an empty class must not propagate into
+/// stored cases, where it renders as a nameless bucket.
+#[test]
+fn a_childs_empty_class_defaults_like_an_absent_one() {
+    let err = parse(serde_json::json!({
+        "output": "",
+        "error": {"message": "boom", "retriable": false, "class": ""}
+    }))
+    .unwrap_err();
+    assert_eq!(err.class().as_str(), ErrorClass::EXEC_FAILED);
+}
+
 /// All three native providers parse a `Retry-After`; the exec child was the
 /// only one that had to swallow it.
 #[test]

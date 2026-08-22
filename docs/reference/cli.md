@@ -51,9 +51,28 @@ The exit code is a **contract for CI** — it distinguishes "the model got worse
 | `1` | assertion | An assertion failed, an [`expect_fail`](domarinn-yaml.md#inline-and-loaded-test-fields) case passed (`xpass` — the marker is stale and must be removed), or a run regressed against a `--against` baseline. An **expected** failure (`xfail`) never trips this. |
 | `2` | config/usage | Bad config or flags, a suite that fails to load or validate (a *warning* is not one of these), a run that resolved to **zero cases**, a missing / wrong-shaped provider credential, or a `--share` **preflight refusal**: the server stated a result-schema window this CLI is outside of — or no server URL is configured at all — so the run is refused before it spends anything. |
 | `2` | config/usage | A run that **formed no opinion**: every case was skipped by `runner.skip_on_empty_reason`, or every **graded** case — total minus skipped — was answered by a [`fallback:`](providers.md#falling-back-to-another-provider) provider, so the configured one answered nothing. |
-| `3` | infra | Infrastructure error — a provider crashed, a grader was missing/broke, the server was unreachable, a `--cache-only` run could not answer honestly (a miss, or a case whose `latency` assertion always needs a live call), or a **`run --share` upload failed** without `--allow-share-failure`. |
+| `2` | config/usage | A case that **errored because of the suite**: an assertion kind with no grader configured, a prompt that will not render, or a local assert that cannot be evaluated (a bad regex). Nothing was graded for those cases, and the fix is in the config rather than on an operator's pager. |
+| `3` | infra | Infrastructure error — a provider crashed, **the grader broke or could not be reached**, the server was unreachable, a `--cache-only` run could not answer honestly (a miss, or a case whose `latency` assertion always needs a live call), or a **`run --share` upload failed** without `--allow-share-failure`. |
 
-Because `3` outranks `1`, a run whose assertions failed *and* whose upload failed exits `3`: the results are graded but not published, and re-running is the wrong response to either half.
+Because `3` outranks `1`, a run whose assertions failed *and* whose upload failed exits `3`: the results are graded but not published, and re-running is the wrong response to either half. An errored case outranks a failed one for the same reason, and among errored cases a broken harness outranks a broken suite — a suite's verdict means nothing until the harness works.
+
+**An errored case is never exit `1`.** Which of `2` and `3` it takes is decided by the case's **error class**, recorded on every errored case as `error_class` and summarized in the CI comment's `Errors` row:
+
+| Error class | Meaning | Exit |
+|---|---|---|
+| `provider_request` `provider_auth` `provider_rate_limit` `provider_unavailable` `provider_timeout` `provider_protocol` | The provider call failed. | `3` |
+| `exec_failed` | An `exec` **provider** child failed to spawn, exited non-zero, or wrote unparseable stdout — the system under test is broken. | `3` |
+| `cache_miss` `cache_unavailable` | A `--cache-only` run could not answer, or the cache backend errored. | `3` |
+| `grader_failed` | The judge answered, but not usably — a malformed or truncated verdict. | `3` |
+| `grader_unavailable` | The judge could not be reached at all. | `3` |
+| `grader_missing` | No grader is configured for that assertion kind. | `2` |
+| `render_failed` | A prompt or vars template would not render. | `2` |
+| `assert_failed` | A local assert could not be evaluated — a bad regex, an uncompilable schema. | `2` |
+| `checker_failed` | An `exec` **assertion**'s checker program broke — failed to spawn, exited non-zero, or answered off-protocol. The checker is the suite's own script. | `2` |
+
+An unrecognized class — one written by a newer `exec` child, or a run stored before the field existed — is treated as `3`, so an unknown fault keeps the code it has always had.
+
+Both codes fail a CI job; the split exists so the annotation names the right owner rather than reporting every error as "infrastructure". A `grader_failed` is deliberately on the harness side even though the judge is configured in your suite: the eval did not run, so the scores beside it are not evidence, and the usual remedy is to look at what the judge returned rather than to change a rubric.
 
 The two `2`s in the second row are the same argument twice: a green gate would mean the suite ran, not that it passed. A run where every case skipped graded nothing at all; a run answered entirely by fallbacks graded a different system than the one it names. A **partial** fallback stays green on purpose — that is the feature working, and failing on it would make `fallback:` a liability rather than resilience. Use `--no-fallback` where a gate should fail on the primary directly.
 

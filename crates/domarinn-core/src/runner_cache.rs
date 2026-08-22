@@ -183,6 +183,17 @@ pub(super) struct CacheCall<'a> {
 
 /// Call a provider, consulting the cache per `mode` and retrying retriable
 /// errors with backoff.
+// `result_large_err`: `CallFailure` is ~152 bytes, over clippy's 128-byte
+// default. Not boxed — it is deliberately a flat record of one failed call
+// (message, attempts, class, details, key) that several callers destructure,
+// and wrapping it would put an allocation and a deref on all of them to save
+// copying a struct that is built at most once per provider call.
+//
+// Fires only under the `saml` CI job, which runs in a `rust:1-bookworm`
+// container outside mise and so tracks a different clippy than every other
+// job. Annotated rather than chased, so the job stays green across whichever
+// toolchain that floating tag resolves to next.
+#[allow(clippy::result_large_err)]
 #[tracing::instrument(name = "provider_call", skip_all, fields(provider = %provider.id()))]
 pub(super) async fn call_with_cache(
     provider: &dyn Provider,

@@ -483,6 +483,47 @@ async fn cases_carry_and_filter_by_error_class() {
     assert_eq!(grader.json()["cases"].as_array().unwrap().len(), 1);
 }
 
+/// `?error_class=unknown` is the UI's bucket for every case the breakdown
+/// could not classify: NULL (stored before the column existed, or an error
+/// with no class) and the empty string (`ErrorClass` is unvalidated, and an
+/// exec child can emit `""`). The chip counts both, so the filter must match
+/// both — it used to match only NULL, and clicking a `unknown × 1` chip backed
+/// by `""` returned zero cases.
+#[tokio::test]
+async fn the_unknown_filter_matches_null_and_empty_classes() {
+    let (app, _dir) = test_app(Settings::default()).await;
+    let run = make_run(
+        "r-unknown",
+        Some("p"),
+        Some("s"),
+        vec![],
+        Some("main"),
+        0,
+        &[
+            CaseSpec::new("openai", "t1", CaseStatus::Error)
+                .output(None)
+                .error("errored before classes existed"),
+            CaseSpec::new("openai", "t2", CaseStatus::Error)
+                .output(None)
+                .error("child sent an empty class")
+                .error_class(""),
+            CaseSpec::new("openai", "t3", CaseStatus::Error)
+                .output(None)
+                .error("classified")
+                .error_class("provider_timeout"),
+            CaseSpec::new("openai", "t4", CaseStatus::Pass),
+        ],
+    );
+    post_json(&app, "/api/v1/runs", None, &run_value(&run)).await;
+
+    let unknown = get(&app, "/api/v1/runs/r-unknown/cases?error_class=unknown").await;
+    let cases = unknown.json()["cases"].as_array().unwrap().clone();
+    assert_eq!(cases.len(), 2, "NULL and \"\" are the same absence");
+    for c in &cases {
+        assert_eq!(c["status"], "error");
+    }
+}
+
 /// An unrecognized class — from a newer client, or from an `exec` child
 /// domarinn did not compile — must round-trip rather than failing ingest. This
 /// is why the type is an open string newtype and not an enum.

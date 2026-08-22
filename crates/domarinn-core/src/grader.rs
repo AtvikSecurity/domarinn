@@ -451,9 +451,15 @@ impl DefaultGrader {
                 },
             },
             |payload| {
-                let resp: AssertResp = serde_json::from_value(payload.clone()).map_err(|e| {
-                    GraderError::InvalidVerdict(format!("bad assert response: {e}"))
-                })?;
+                // `ExecFailed`, not `InvalidVerdict`: the child spawned and
+                // printed something, it just was not the protocol's shape.
+                // There is no judge on this path, so classing it as a grader
+                // fault sent readers looking for a model that misbehaved — and
+                // `InvalidVerdict` is the one class this layer re-asks, which
+                // would re-execute somebody's checker for a deterministic
+                // formatting bug.
+                let resp: AssertResp = serde_json::from_value(payload.clone())
+                    .map_err(|e| GraderError::ExecFailed(format!("bad assert response: {e}")))?;
                 let score = resp.score.unwrap_or(if resp.pass { 1.0 } else { 0.0 });
                 Ok(GradedVerdict::Exec {
                     pass: resp.pass,
@@ -469,12 +475,15 @@ impl DefaultGrader {
                 model: None,
             },
             |key| {
-                GraderError::Transport(format!(
+                GraderError::CacheMiss(format!(
                     "cache-only: miss for the exec assert `{}` on this case ({key})",
                     command.join(" ")
                 ))
             },
-            async {
+            // No re-asks: the checker is a program, not a sample. Running it
+            // again repeats any side effect it has for one assertion.
+            0,
+            || async {
                 let value = run_exec_json(
                     command,
                     &BTreeMap::new(),
@@ -483,7 +492,7 @@ impl DefaultGrader {
                     &request,
                 )
                 .await
-                .map_err(|e| GraderError::Transport(format!("exec assert failed: {e}")))?;
+                .map_err(|e| GraderError::ExecFailed(e.to_string()))?;
                 Ok(value)
             },
         )
@@ -596,8 +605,11 @@ impl DefaultGrader {
                 cost_usd: embedded.cost.map(|c| c.to_usd()),
                 model: None,
             },
-            |key| GraderError::Transport(format!("cache-only: miss for an embedding ({key})")),
-            async {
+            |key| GraderError::CacheMiss(format!("cache-only: miss for an embedding ({key})")),
+            // No re-asks: an embedding is deterministic for a given input, so
+            // a second POST returns the same vector and the same parse error.
+            0,
+            || async {
                 embeddings
                     .post(&call.url, &call.body)
                     .await
@@ -702,7 +714,11 @@ impl DefaultGrader {
             default_path,
             default_auth,
         )
-        .map_err(|e| GraderError::Transport(e.to_string()))?;
+        // A `request:` block that fails to resolve is suite-authoring, the
+        // same family as a template that will not render — nothing was sent,
+        // so `Transport` ("could not be reached") was a misdiagnosis that also
+        // put it on the wrong side of the gate.
+        .map_err(|e| GraderError::Misconfigured(e.to_string()))?;
         let params = merge_params(params.as_ref(), assert_params.as_ref());
         // Before the cache, not inside the live branch: a suite that asks for
         // extended thinking is misconfigured whether or not a verdict happens to
@@ -782,11 +798,14 @@ impl DefaultGrader {
                 model: verdict.model.clone(),
             },
             |key| {
-                GraderError::Transport(format!(
+                GraderError::CacheMiss(format!(
                     "cache-only: miss for the `{model}` judge on this rubric ({key})"
                 ))
             },
-            async {
+            // The one exchange whose answer is sampled, and so the only one
+            // where asking again can produce a different result.
+            crate::request_cache::MAX_REASKS,
+            || async {
                 self.post_judge(
                     judge,
                     &call.url,

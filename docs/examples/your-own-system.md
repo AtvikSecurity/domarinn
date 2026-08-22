@@ -56,7 +56,7 @@ The contract mirrors the provider one, and the request carries the output, the c
 --8<-- "examples/14-custom-exec-assert/check-total.py"
 ```
 
-Write `reason` for the person reading a red build, not for a log — it is what appears beside the case in the report. And exit `0` whenever you produced a verdict, *including a failing one*: a non-zero exit means the checker itself broke, which domarinn reports as an infrastructure error rather than a test failure.
+Write `reason` for the person reading a red build, not for a log — it is what appears beside the case in the report. And exit `0` whenever you produced a verdict, *including a failing one*: a non-zero exit means the checker itself broke, which domarinn reports as an error (`checker_failed`, exit `2` — the checker is your own script) rather than a test failure.
 
 ---
 

@@ -123,8 +123,13 @@ impl CaseListFilter {
             // backfilled. Those rows hold NULL, and `NULL = 'unknown'` is NULL,
             // so without this branch the breakdown offers a filter that always
             // returns nothing.
+            //
+            // `= ''` rides along because the breakdown counts an empty-string
+            // class under the same bucket (`ErrorClass` is unvalidated and an
+            // exec child can emit `""`): without it the chip says `unknown × 1`
+            // and clicking it filters to zero cases.
             if error_class == UNCLASSIFIED_ERROR {
-                sql.push_str(" AND status = 'error' AND error_class IS NULL");
+                sql.push_str(" AND status = 'error' AND (error_class IS NULL OR error_class = '')");
             } else {
                 args.push(error_class.clone().into());
                 sql.push_str(&format!(" AND error_class = ?{}", args.len()));

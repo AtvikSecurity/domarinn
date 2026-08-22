@@ -111,13 +111,22 @@ pub fn execute(args: CiSummaryArgs, server_url: Option<String>) -> u8 {
     exit::OK
 }
 
-/// The full CI summary: headline metrics, then either the baseline comparison
-/// or this run's own failures, then the links footer.
+/// The full CI summary: headline metrics, the errored cases, then either the
+/// baseline comparison or this run's own failures, then the links footer.
 ///
 /// Shared with `run --summary-md` so a hand-rolled pipeline and the reusable
 /// action emit the same document.
+///
+/// The errored table is **outside** the comparison branch on purpose. A
+/// baseline diff answers "did this branch make things worse", and an errored
+/// case is not an answer to that question — it is the absence of one. When the
+/// two were folded together, a run whose cases errored *and* errored on the
+/// baseline too reported "No regressions" and showed nothing else, which is
+/// exactly true and exactly useless: the job failed on an exit code whose cause
+/// appeared nowhere in the comment.
 pub fn render(run: &RunResult, comparison: Option<(&RunResult, &RunDiff)>) -> String {
     let mut out = outputmd::render_run_md_headline(run);
+    out.push_str(&outputmd::render_errors_md(run));
     match comparison {
         // The comparison tables newly-failing cases with base→head scores,
         // which strictly supersedes the flat failure table.
@@ -203,6 +212,16 @@ fn write_github_output(
         // documented and consumers gate on the exit code, which already goes
         // red on an xpass.
         ("failed-or-errored", (s.failed + s.errored).to_string()),
+        // `grader_failed × 2, provider_timeout × 1`, empty for a run that did
+        // not error. The action interpolates this into its exit-2/exit-3
+        // annotations, which otherwise say only "infrastructure error" and
+        // leave the cause to be dug out of an artifact. Same producer as the
+        // markdown `Errors` row so the comment and the annotation cannot
+        // describe one run two ways.
+        (
+            "error-classes",
+            crate::errorstats::error_class_summary(&run.cases),
+        ),
         // Always written, zeros included, like every counter here.
         ("xfailed", s.xfailed.to_string()),
         ("xpassed", s.xpassed.to_string()),
@@ -272,6 +291,76 @@ fn write_github_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run with one errored case whose `summary` agrees.
+    fn errored_run() -> RunResult {
+        let mut run = crate::output::sample_run();
+        run.cases[1].status = domarinn_core::result::CaseStatus::Error;
+        run.cases[1].asserts.clear();
+        run.cases[1].error = Some("grader returned no usable verdict".into());
+        run.cases[1].error_class =
+            Some(domarinn_core::error_class::ErrorClass::new("grader_failed"));
+        run.summary.failed = run.summary.failed.saturating_sub(1);
+        run.summary.errored = 1;
+        run
+    }
+
+    /// **The regression this change exists to prevent.**
+    ///
+    /// A baseline that resolves used to replace the failure table wholesale, so
+    /// a run whose cases errored — and errored on the baseline too, making the
+    /// diff correctly report no regressions — produced a comment containing the
+    /// word "errored" exactly once, as a count, with no class, no case name and
+    /// no message. The job failed on an exit code whose cause appeared nowhere.
+    #[test]
+    fn errored_cases_survive_a_resolved_baseline() {
+        let run = errored_run();
+        let base = crate::output::sample_run();
+        let diff = domarinn_core::diff_runs(&base, &run);
+        let md = render(&run, Some((&base, &diff)));
+
+        assert!(md.contains("#### Errored cases"), "{md}");
+        assert!(md.contains("grader_failed"), "{md}");
+        assert!(
+            md.contains("grader returned no usable verdict"),
+            "the message must reach the comment, not just the artifact: {md}"
+        );
+        assert!(md.contains("| Errors | 1 (grader_failed × 1) |"), "{md}");
+        // The comparison still renders; this is additive, not a replacement.
+        assert!(md.contains("Comparison with baseline"), "{md}");
+    }
+
+    /// The same detail with no baseline, so the two paths cannot drift.
+    #[test]
+    fn errored_cases_render_without_a_baseline_too() {
+        let md = render(&errored_run(), None);
+        assert!(md.contains("#### Errored cases"), "{md}");
+        assert!(md.contains("grader_failed"), "{md}");
+    }
+
+    /// The annotation the action puts on a red job reads this.
+    #[test]
+    fn github_output_carries_the_error_class_breakdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gh.txt");
+        write_github_output(&path, &errored_run(), None).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            out.contains("error-classes=grader_failed × 1\n"),
+            "got:\n{out}"
+        );
+    }
+
+    /// Always written, like every other counter, so a workflow reading it on a
+    /// clean run gets an empty string rather than a missing key.
+    #[test]
+    fn github_output_writes_an_empty_class_breakdown_for_a_clean_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gh.txt");
+        write_github_output(&path, &crate::output::sample_run(), None).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("error-classes=\n"), "got:\n{out}");
+    }
 
     /// A run document stored by CLI ≤ 0.10.0 counted skipped cases in
     /// `summary.fallback_cases`. The step output a workflow reads must be the

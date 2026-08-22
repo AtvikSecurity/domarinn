@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 use domarinn_core::cache::CacheMode;
+use domarinn_core::error_class::GateFault;
 use domarinn_core::filter::FilterOpts;
 use domarinn_core::progress::ProgressSink;
 use domarinn_core::runner::RunOptions;
@@ -509,14 +510,30 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         }
     }
 
-    // Exit code: infra errors win over everything — including a failed share,
-    // which is infrastructure the same way an errored cell is, and which must
-    // outrank an assertion failure so a red run cannot mask an upload that never
-    // happened. Then an unresolved baseline (the gate could not do its job, so
-    // its silence means nothing), then a run that graded nothing, then assertion
-    // failures and regressions.
-    if result.summary.errored > 0 || share_failed {
+    // Exit code: a broken harness wins over everything — including a failed
+    // share, which is infrastructure the same way an errored cell is, and which
+    // must outrank an assertion failure so a red run cannot mask an upload that
+    // never happened. Then a suite-caused error, then an unresolved baseline
+    // (the gate could not do its job, so its silence means nothing), then a run
+    // that graded nothing, then assertion failures and regressions.
+    //
+    // Errored cells used to land here as one undifferentiated `errored > 0`,
+    // so "the grader returned malformed JSON" and "your suite names a grader
+    // that does not exist" both surfaced in CI as `exit 3, infrastructure
+    // error` and neither said which. Both still fail the job — exit 2 is
+    // ungated in the shipped action too — so this makes a red run legible
+    // without ever making one green.
+    let worst_fault = worst_gate_fault(&result.cases);
+    if share_failed || worst_fault == Some(GateFault::Harness) {
         exit::INFRA
+    } else if worst_fault == Some(GateFault::Suite) {
+        eprintln!(
+            "run error: {} case(s) errored because of the suite, not the system \
+             under test — see the errored cases above. Nothing was graded for \
+             them, so their scores are not evidence either way.",
+            result.summary.errored
+        );
+        exit::USAGE
     } else if baseline_unresolved {
         exit::USAGE
     } else if graded_nothing(&result.summary) {
@@ -545,6 +562,31 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
     } else {
         exit::OK
     }
+}
+
+/// The most serious gate fault among a run's errored cases, or `None` when
+/// nothing errored.
+///
+/// Derived from the cases rather than from a counter on the summary for the
+/// same reason as [`crate::output::graded_fallback_cases`]: it is then correct
+/// for a document of any vintage, and it needs no new always-emitted field —
+/// one of those would shift the content hash the server keys idempotency on
+/// and turn a re-upload into a 409.
+///
+/// An errored case with no `error_class` counts as
+/// [`GateFault::Harness`]. Blobs written before that field existed carry prose
+/// and no class, and a `None` that quietly meant "suite fault" would downgrade
+/// every one of them from the exit code they have always had.
+fn worst_gate_fault(cases: &[domarinn_core::result::CaseResult]) -> Option<GateFault> {
+    cases
+        .iter()
+        .filter(|c| c.status == domarinn_core::result::CaseStatus::Error)
+        .map(|c| {
+            c.error_class
+                .as_ref()
+                .map_or(GateFault::Harness, |k| k.gate_fault())
+        })
+        .max()
 }
 
 /// Every case was skipped, so the run reached the end without grading anything.
@@ -662,5 +704,92 @@ mod tests {
         assert_eq!(split_provider_list("a,,b,"), vec!["a", "b"]);
         assert!(split_provider_list("").is_empty());
         assert!(split_provider_list(" , ").is_empty());
+    }
+
+    /// `CaseResult` has no `Default` and building one by hand here would
+    /// duplicate a 30-field literal that the shared fixture already maintains.
+    fn case_with(status: domarinn_core::result::CaseStatus) -> domarinn_core::result::CaseResult {
+        let mut c = crate::output::sample_run().cases.remove(0);
+        c.status = status;
+        c.error = None;
+        c.error_class = None;
+        c
+    }
+
+    fn errored_case(class: Option<&str>) -> domarinn_core::result::CaseResult {
+        let mut c = case_with(domarinn_core::result::CaseStatus::Error);
+        c.error = Some("boom".into());
+        c.error_class = class.map(domarinn_core::error_class::ErrorClass::new);
+        c
+    }
+
+    /// The ladder's input. A grader that answered unusably is the harness's
+    /// problem (exit 3); a grader the suite never configured is the suite's
+    /// (exit 2). Conflating the two is what this whole split undoes.
+    #[test]
+    fn the_gate_reads_the_worst_fault_across_errored_cases() {
+        use domarinn_core::result::CaseStatus;
+
+        assert_eq!(worst_gate_fault(&[]), None);
+        assert_eq!(
+            worst_gate_fault(&[case_with(CaseStatus::Pass), case_with(CaseStatus::Fail)]),
+            None,
+            "a failing run that errored nowhere has no gate fault"
+        );
+        assert_eq!(
+            worst_gate_fault(&[errored_case(Some("grader_failed"))]),
+            Some(GateFault::Harness)
+        );
+        assert_eq!(
+            worst_gate_fault(&[errored_case(Some("grader_unavailable"))]),
+            Some(GateFault::Harness)
+        );
+        assert_eq!(
+            worst_gate_fault(&[errored_case(Some("grader_missing"))]),
+            Some(GateFault::Suite)
+        );
+        assert_eq!(
+            worst_gate_fault(&[errored_case(Some("render_failed"))]),
+            Some(GateFault::Suite)
+        );
+    }
+
+    /// A run that is both broken and misconfigured reports as broken: the
+    /// suite's verdict means nothing until the harness works.
+    #[test]
+    fn a_harness_fault_anywhere_outranks_a_suite_fault() {
+        assert_eq!(
+            worst_gate_fault(&[
+                errored_case(Some("grader_missing")),
+                errored_case(Some("provider_timeout")),
+                errored_case(Some("render_failed")),
+            ]),
+            Some(GateFault::Harness)
+        );
+    }
+
+    /// Runs stored before `error_class` existed carry prose and no class. They
+    /// must keep the exit code they have always had rather than be quietly
+    /// downgraded into the suite's bucket.
+    #[test]
+    fn an_errored_case_without_a_class_stays_a_harness_fault() {
+        assert_eq!(
+            worst_gate_fault(&[errored_case(None)]),
+            Some(GateFault::Harness)
+        );
+        assert_eq!(
+            worst_gate_fault(&[errored_case(None), errored_case(Some("grader_missing"))]),
+            Some(GateFault::Harness)
+        );
+    }
+
+    /// The type is open, so an `exec` child from a newer build can name a class
+    /// this one has never heard of. Fail closed.
+    #[test]
+    fn an_unknown_class_stays_a_harness_fault() {
+        assert_eq!(
+            worst_gate_fault(&[errored_case(Some("invented_next_year"))]),
+            Some(GateFault::Harness)
+        );
     }
 }

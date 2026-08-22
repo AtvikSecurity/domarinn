@@ -507,7 +507,10 @@ fn a_rejected_grader_credential_is_classified_as_auth() {
     let auth = crate::errors::GraderError::AuthRejected { status: 401 };
     let broke = crate::errors::GraderError::Transport("connection reset".into());
     assert_eq!(auth.class().as_str(), ErrorClass::PROVIDER_AUTH);
-    assert_eq!(broke.class().as_str(), ErrorClass::GRADER_FAILED);
+    // A grader that could not be reached carries its own class — the fix is to
+    // wait or check the network, not to look at what the judge said.
+    assert_eq!(broke.class().as_str(), ErrorClass::GRADER_UNAVAILABLE);
+    assert_ne!(auth.class(), broke.class());
 }
 
 // ── CaseStatus::Skip ─────────────────────────────────────────────────────────

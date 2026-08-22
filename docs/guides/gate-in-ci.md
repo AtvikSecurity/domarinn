@@ -19,10 +19,12 @@ Every domarinn run exits with a code your CI can branch on. **`3` (infra) wins o
 |------|--------------|---------|-------------|
 | `0`  | OK           | Everything passed. | Merge. |
 | `1`  | assertion    | An assertion failed, or a run regressed vs its baseline. | Block the PR (the model got worse). |
-| `2`  | config/usage | Bad config, bad flags, a suite that won't load, or a `--share` preflight refusal (the server's result-schema window excludes this CLI), raised before the run spends anything. | Fix the suite/workflow, or upgrade the side the message names. |
-| `3`  | infra        | A provider crashed, the server was unreachable, an internal error, or a `run --share` upload that failed without `--allow-share-failure`. | Retry / page an operator — **not** the PR's fault. |
+| `2`  | config/usage | Bad config, bad flags, a suite that won't load, or a `--share` preflight refusal (the server's result-schema window excludes this CLI), raised before the run spends anything. **Also a case that errored because of the suite** — an assertion kind with no grader, a prompt that won't render, an assert that can't be evaluated. | Fix the suite/workflow, or upgrade the side the message names. |
+| `3`  | infra        | A provider crashed, **the grader broke or could not be reached**, the server was unreachable, an internal error, or a `run --share` upload that failed without `--allow-share-failure`. | Retry / page an operator — **not** the PR's fault. |
 
 A run that both failed assertions and failed to upload exits `3`: the results are graded but unpublished, and `3` beating `1` is what keeps a broken harness from being blamed on the PR author.
+
+**An errored case never exits `1`,** and which of `2` and `3` it takes depends on its error class — see the [class table in `cli.md`](../reference/cli.md#exit-codes). Both fail the check, so this is not a way for a broken run to slip through; it is how the job's error annotation names the right owner. The action interpolates the breakdown into that annotation, so a failed job reads `domarinn infrastructure error (exit 3) — grader_failed × 2` rather than leaving the cause to be dug out of an artifact.
 
 This is the same contract the CLI documents in [`cli.md`](../reference/cli.md#exit-codes).
 
@@ -137,18 +139,27 @@ It reads a **persisted** run rather than taking one over a pipe, so it can also 
 
 ### What it emits
 
-The Markdown is a verdict line and headline metrics table, then either a baseline comparison (with `--against`) or this run's failing cases, then any links:
+The Markdown is a verdict line and headline metrics table, then any errored cases, then either a baseline comparison (with `--against`) or this run's failing cases, then any links:
 
 ```markdown
 ### domarinn run — content-safety
 
-**Fail** — 1 passed, 2 failed
+**Fail** — 1 passed, 2 failed, 1 errored
 
 | Metric | Value |
 |---|---|
 | Pass rate | 33.3% (95% CI 6.1–79.2%, n=3) |
+| Errors | 1 (grader_failed × 1) |
 | Cache | 2/3 cases from cache (66.7%) |
 | Duration | 4.1s |
+
+#### Errored cases
+
+_These graded nothing — their scores are not evidence either way._
+
+| Test | Provider | Class | Error |
+|---|---|---|---|
+| summarises-safely | gpt-4.1 | grader_failed | llm-rubric assertion errored: verdict field `pass` should be a boolean but was absent; judge returned {"reasoning":"…","score":0.9} |
 
 #### Failing cases
 
@@ -159,6 +170,8 @@ The Markdown is a verdict line and headline metrics table, then either a baselin
 [View run](https://domarinn.example.com/runs/01JD3V9GQ8) · [CI run](https://github.com/acme/widgets/actions/runs/42)
 ```
 
+The errored table is **always** rendered — it is not part of the branch below. An errored case is the absence of a verdict, so a baseline diff has nothing to say about it; folding the two together meant a run whose cases errored on both sides reported `**No regressions**` and showed no other trace of what broke.
+
 With `--against`, the failing-case table is replaced by the comparison: a verdict (`**Regressions detected** — 2 newly failing` or `**No regressions**`), a line identifying both sides — the baseline's run id, finish time and pass count, or its branch and contributing runs for a [branch baseline](#1-store-runs-somewhere-ci-can-reach) — a change table, the newly-failing cases with their base → head scores, and their output diffs collapsed in a `<details>` block.
 
 A few deliberate choices:
@@ -166,7 +179,8 @@ A few deliberate choices:
 - **Words, not glyphs.** The verdict is `**Pass**` / `**Fail**` in plain text — no emoji, nothing that renders differently across GitHub, terminals and email notifications.
 - **Rows that carry no information are omitted.** No `Cost` row when nothing was billed, no `Retries` row when nothing retried, no zero-count rows in the change table. What is printed is what happened.
 - **`Cache` counts *cases*, not lookups.** `cache_misses` counts every case not served from the cache, so under `--no-cache` it equals the case count — there is no lookup total to express a "hit rate" against.
-- **The failing table is capped at 10 rows**, then `…and N more`. The run URL and the JUnit artifact hold the full list; GitHub truncates a huge comment anyway.
+- **The failing table is capped at 10 rows**, then `…and N more`. The run URL and the JUnit artifact hold the full list; GitHub truncates a huge comment anyway. The errored table is capped the same way.
+- **Errors are separated from failures, and broken down by class.** A failure is a judgement about the model; an error means no judgement was reached, so it gets its own table with the class that says whose problem it is rather than a `0.00` score no grader assigned. An errored case with no recorded class is bucketed as `unknown`, never dropped, so the breakdown always adds up to the `errored` count.
 - **Table cells are escaped.** An assertion reason quoting model output that contains a `|` would otherwise shred the table.
 - **Both links degrade.** `View run` needs a run uploaded with `--share`; `CI run` comes from the run's recorded CI metadata, falling back to the ambient workflow environment. Neither present means no links line at all.
 
@@ -179,6 +193,7 @@ passed=1
 failed=2
 errored=0
 failed-or-errored=2
+error-classes=
 total=3
 pass-rate=33.3
 cache-hits=2
@@ -194,7 +209,7 @@ run-url=
 ci-run-url=https://github.com/acme/widgets/actions/runs/42
 ```
 
-Keys are written even when empty, so a workflow referencing one always gets a defined value.
+Keys are written even when empty, so a workflow referencing one always gets a defined value. `error-classes` is the breakdown as `grader_failed × 2, provider_timeout × 1` — empty for a run that errored nowhere, which is why it shows blank above.
 
 ### It never gates
 

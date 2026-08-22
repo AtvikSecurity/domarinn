@@ -754,6 +754,7 @@ mod tests {
                 criteria: None,
                 cached: false,
                 cost_usd: None,
+                error_class: None,
             },
             AssertResult {
                 kind: AssertName::LlmRubric,
@@ -765,6 +766,7 @@ mod tests {
                 criteria: None,
                 cached: false,
                 cost_usd: None,
+                error_class: None,
             },
         ];
 

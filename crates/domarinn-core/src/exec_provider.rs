@@ -285,8 +285,23 @@ fn parse_response(value: Json) -> Result<ProviderResponse, ProviderError> {
         // a rate limit stays distinguishable instead of collapsing into
         // "exec_failed" like every other exec failure. Unknown values are kept
         // verbatim: `ErrorClass` is open by construction, and rejecting a
-        // future vocabulary here would turn a diagnosis into a parse failure.
-        let class = err.class.as_deref().unwrap_or(ErrorClass::EXEC_FAILED);
+        // future vocabulary here would turn a diagnosis into a parse failure —
+        // an unknown class also fails closed to the harness tier at the gate,
+        // so keeping it is safe.
+        //
+        // A *suite-tier* class is the one thing a provider child may not
+        // claim: the class now picks the exit code, and `render_failed` from a
+        // broken provider process would downgrade "the harness is broken"
+        // (exit 3) to "fix your suite" (exit 2) on the child's say-so. A
+        // provider failure is never the suite's fault, so those clamp to
+        // `exec_failed`; an empty string is the same as naming nothing.
+        let class = match err.class.as_deref().filter(|c| !c.is_empty()) {
+            Some(c) if ErrorClass::new(c).gate_fault() == crate::error_class::GateFault::Suite => {
+                ErrorClass::EXEC_FAILED
+            }
+            Some(c) => c,
+            None => ErrorClass::EXEC_FAILED,
+        };
         return Err(if err.retriable {
             let retry_after = err.retry_after_ms.map(Duration::from_millis);
             ProviderError::retriable(class, anyhow::anyhow!(err.message), retry_after)

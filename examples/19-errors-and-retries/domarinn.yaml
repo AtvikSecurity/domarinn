@@ -5,7 +5,15 @@
 # A failed assertion means the system under test got worse. An ERROR means you
 # learned nothing — the call never produced a gradeable answer. Conflating the
 # two is how a gate starts lying, so domarinn keeps them apart end to end:
-# separate case status, separate tally, separate exit code (3, which beats 1).
+# separate case status, separate tally, separate exit code.
+#
+# An error is never exit 1. It is 3 when the harness broke — a provider, the
+# cache, an exec provider child, or the grader — and 2 when the suite is at
+# fault, which covers an assertion kind with no grader configured, a prompt
+# that will not render, a local assert that cannot be evaluated, and an exec
+# assertion whose checker script broke. Both fail a CI job; the split is so
+# the annotation names the right owner. The errors below all come from the
+# exec provider, so this suite exits 3.
 #
 # Three mechanisms appear below.
 #

@@ -19,9 +19,17 @@
 #       fail-on-regression: "true"
 #
 # Exit-code contract (from the CLI): 0 = all pass; 1 = assertion failure or
-# regression; 2 = config/usage error; 3 = infrastructure error. This action maps
-# 1 to a failed check only when `fail-on-regression` is true; 2 and 3 always fail
-# the job. The artifact upload and the PR comment run regardless of the result.
+# regression; 2 = config/usage error, including a case that errored because of
+# the suite; 3 = infrastructure error, including a grader that broke or could
+# not be reached. This action maps 1 to a failed check only when
+# `fail-on-regression` is true; 2 and 3 always fail the job. The artifact upload
+# and the PR comment run regardless of the result.
+#
+# An errored case never arrives as 1, so `fail-on-regression: "false"` does not
+# make one green — it only ever disarms assertion failures and regressions. The
+# gate annotation names the error classes behind a 2 or a 3
+# (`... (exit 3) — grader_failed × 2`), which is also published as the
+# `error-classes` output.
 #
 # With `server-url` set, the run is uploaded and a failed upload is one of those
 # infrastructure errors: the job fails (3) rather than going green over results
@@ -105,7 +113,9 @@ inputs:
     description: >-
       If "true" (default), an assertion failure or regression (CLI exit 1) fails
       the check. If "false", exit 1 is reported as a warning and does not fail
-      the job. Exit 2 (config/usage) and exit 3 (infra) always fail the job.
+      the job. Exit 2 (config/usage) and exit 3 (infra) always fail the job —
+      which includes every errored case, so this input cannot turn a broken
+      grader or a misconfigured suite green.
     required: false
     default: "true"
   comment:
@@ -158,6 +168,13 @@ outputs:
   errored:
     description: Number of test cases that errored (a subset of `failed`).
     value: ${{ steps.summary.outputs.errored }}
+  error-classes:
+    description: >-
+      What kind of errors, as `grader_failed × 2, provider_timeout × 1`. Empty
+      when nothing errored. The exit code says a run broke; this says what
+      broke, which is the difference between paging an operator and fixing a
+      rubric.
+    value: ${{ steps.summary.outputs.error-classes }}
   total:
     description: Total number of test cases.
     value: ${{ steps.summary.outputs.total }}
@@ -446,9 +463,20 @@ runs:
       env:
         CODE: ${{ steps.eval.outputs.exit-code }}
         FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+        ERROR_CLASSES: ${{ steps.summary.outputs.error-classes }}
+        SERVER_URL: ${{ inputs.server-url }}
+        RUN_URL: ${{ steps.summary.outputs.run-url }}
+        SUMMARY_OUTCOME: ${{ steps.summary.outcome }}
       run: |
         set -uo pipefail
         code="${CODE:-3}"
+        # Appended to the exit-2/exit-3 annotations. `${VAR:+ — $VAR}` expands
+        # to nothing when the summary step did not run or the run errored
+        # nowhere, so the message never trails a bare em dash. Defaulted
+        # because `set -u` would otherwise abort the gate on a skipped summary
+        # step — and a gate that dies before its `case` reports no verdict at
+        # all, which is worse than an unadorned one.
+        classes="${ERROR_CLASSES:-}"
         case "$code" in
           0)
             echo "domarinn: all checks passed"
@@ -464,7 +492,11 @@ runs:
             # Also the code for a server whose schema window excludes this CLI,
             # refused before the suite ran: upgrade one side, or set
             # `allow-share-failure: "true"` to run anyway.
-            echo "::error::domarinn config/usage error (exit 2)"
+            # Also how a suite-caused error arrives: a grader the suite never
+            # configured, a prompt that will not render, an assert that cannot
+            # be evaluated. Those are the config's problem, so they land here
+            # rather than in the infra bucket where they used to.
+            echo "::error::domarinn config/usage error (exit 2)${classes:+ — $classes}"
             exit 2
             ;;
           3)
@@ -472,7 +504,19 @@ runs:
             # graded and on the runner (see the artifact) — recovery is a
             # re-share once the server is reachable, not a re-run. Set
             # `allow-share-failure: "true"` to stop gating on the upload.
-            echo "::error::domarinn infrastructure error (exit 3)"
+            #
+            # A failed upload is exit 3 *outside* the error-class model — the
+            # breakdown tallies errored cases, and the upload is not a case —
+            # so it is detected here instead: sharing was requested, the
+            # summary step ran against the stored run, and the run carries no
+            # URL. Without this clause the annotation named only the case
+            # classes (or nothing), and an operator "fixed" those, re-ran, and
+            # was red again on the upload that was never mentioned.
+            upload=""
+            if [ -n "${SERVER_URL:-}" ] && [ "${SUMMARY_OUTCOME:-}" = "success" ] && [ -z "${RUN_URL:-}" ]; then
+              upload=" — results upload failed (re-share when the server is reachable; the run is graded and in the artifact)"
+            fi
+            echo "::error::domarinn infrastructure error (exit 3)${upload}${classes:+ — $classes}"
             exit 3
             ;;
           *)

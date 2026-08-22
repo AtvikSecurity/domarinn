@@ -34,8 +34,11 @@ tests:
       - {type: llm-rubric, value: "is it polite?"}
 "#,
     );
-    // An errored case is infra (exit 3), not an assertion failure.
-    bin().arg("run").current_dir(dir.path()).assert().code(3);
+    // An errored case is never an assertion failure. A *missing* grader is the
+    // suite's bug rather than a broken machine, so it gates at 2 — still
+    // ungated-proof (the action fails the job on 2 unconditionally), but it
+    // sends the reader to the config instead of to an operator.
+    bin().arg("run").current_dir(dir.path()).assert().code(2);
 
     let run = latest_run(dir.path());
     let case = &run.cases[0];
@@ -109,12 +112,59 @@ tests:
       - {type: contains, value: "hello"}
 "#,
     );
-    bin().arg("run").current_dir(dir.path()).assert().code(3);
+    // A template bug is the suite's, so it gates at 2 rather than as infra.
+    bin().arg("run").current_dir(dir.path()).assert().code(2);
 
     let case = &latest_run(dir.path()).cases[0];
     assert_eq!(
         case.error_class.as_ref().map(|c| c.as_str()),
         Some("render_failed")
+    );
+}
+
+/// An `exec` assertion's checker is the suite author's own script, and a
+/// checker that exits non-zero is a suite fault — not a grader one, and not
+/// the harness's either.
+///
+/// Two wrong classifications preceded this one. The grader path used to wrap
+/// every non-verdict problem in `GraderError::Transport`, so a checker exiting
+/// 7 was stored as a *grader* fault and read as though a judge had misbehaved.
+/// Then it shared `exec_failed` with the exec *provider*, which put a typo'd
+/// checker path on the harness side of the gate: exit 3, an operator paged,
+/// for a one-line fix in the suite under review.
+#[test]
+fn an_exec_assert_whose_checker_fails_is_classified_checker_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        r#"
+version: 1
+project: p
+suite: s
+providers:
+  - id: prov
+    type: exec
+    command: ["sh", "-c", "cat >/dev/null; printf '{\"output\":\"hello\"}'"]
+tests:
+  - id: t1
+    vars: {}
+    assert:
+      - {type: exec, command: ["sh", "-c", "exit 7"]}
+"#,
+    );
+    // A broken checker graded nothing, and the checker is the suite's own
+    // script: a suite fault, exit 2.
+    bin().arg("run").current_dir(dir.path()).assert().code(2);
+
+    let case = &latest_run(dir.path()).cases[0];
+    assert_eq!(
+        case.error_class.as_ref().map(|c| c.as_str()),
+        Some("checker_failed")
+    );
+    let prose = case.error.as_deref().unwrap_or_default();
+    assert!(
+        !prose.contains("grader transport"),
+        "a failing checker must not be reported as a grader transport fault: {prose}"
     );
 }
 

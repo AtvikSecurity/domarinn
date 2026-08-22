@@ -227,6 +227,11 @@ async fn truncated_verdict_fails_closed() {
     );
 }
 
+// The verdict-shape family — what the judge returned and how its failures
+// read — lives in its own file to keep this one under the 1000-line cap.
+#[path = "grader_verdict_tests.rs"]
+mod grader_verdict_tests;
+
 #[tokio::test]
 async fn no_grader_configured_fails_closed() {
     let grader = DefaultGrader::new(None);
