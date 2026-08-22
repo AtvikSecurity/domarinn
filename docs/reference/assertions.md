@@ -196,7 +196,7 @@ The distinction drives the process exit code:
 
 An errored assertion promotes the whole case to `error`, and an error outranks an assertion failure at the process level — it is never exit `1`. In CI, `1` means "the model got worse — block the PR"; `3` means "the harness broke — retry or page an operator"; `2` means "the suite is wrong — fix the config."
 
-Which code an error takes is decided by its class. A grader that broke or could not be reached, a provider that failed, a broken `exec` child and an unusable cache are all `3`. An assertion kind with no grader configured, a prompt that will not render, and a local assert that cannot be evaluated (a bad regex) are `2` — those are authoring mistakes, and sending them to an on-call operator is the wrong routing. Both codes fail the check; the [class table in cli.md](cli.md#exit-codes) is the full mapping.
+Which code an error takes is decided by its class. A grader that broke or could not be reached, a provider that failed, a broken `exec` *provider* child and an unusable cache are all `3`. An assertion kind with no grader configured, a prompt that will not render, a local assert that cannot be evaluated (a bad regex), and an `exec` *assertion* whose checker program broke are `2` — those are authoring mistakes, and sending them to an on-call operator is the wrong routing. Both codes fail the check; the [class table in cli.md](cli.md#exit-codes) is the full mapping.
 
 ---
 
@@ -392,7 +392,7 @@ Runs an external command as a custom grader over the **exec assert protocol**. T
 ```
 
 - `pass` (boolean) is required. `score` defaults to `1.0` when `pass` is true, `0.0` otherwise. `reason` and `details` are surfaced in results.
-- A failing assert (`pass: false`) is a normal `fail`, not an `error` — the command should still exit `0`. A **non-zero exit**, a timeout, or unparseable stdout is an infrastructure `error`.
+- A failing assert (`pass: false`) is a normal `fail`, not an `error` — the command should still exit `0`. A **non-zero exit**, a timeout, or unparseable stdout is an `error` classed `checker_failed`: the checker is your own script, so it fails the run with exit `2` (fix the suite), not `3`.
 - The round-trip is cached like any other request, keyed on the command and what it is sent. An optional `cache_salt` on the assertion is a version pin for the grader program, scoped to that assertion's gradings; see [caching.md](../concepts/caching.md#every-knob-once).
 - `tool_calls` is an additive protocol-1 field: a tool-less case's stdin — and so its cache key — is unchanged, while a tool-calling case re-keys and adopts no pre-0.5 verdict. See [protocol.md](protocol.md#kind-assert).
 

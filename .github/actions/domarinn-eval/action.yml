@@ -464,6 +464,9 @@ runs:
         CODE: ${{ steps.eval.outputs.exit-code }}
         FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
         ERROR_CLASSES: ${{ steps.summary.outputs.error-classes }}
+        SERVER_URL: ${{ inputs.server-url }}
+        RUN_URL: ${{ steps.summary.outputs.run-url }}
+        SUMMARY_OUTCOME: ${{ steps.summary.outcome }}
       run: |
         set -uo pipefail
         code="${CODE:-3}"
@@ -501,7 +504,19 @@ runs:
             # graded and on the runner (see the artifact) — recovery is a
             # re-share once the server is reachable, not a re-run. Set
             # `allow-share-failure: "true"` to stop gating on the upload.
-            echo "::error::domarinn infrastructure error (exit 3)${classes:+ — $classes}"
+            #
+            # A failed upload is exit 3 *outside* the error-class model — the
+            # breakdown tallies errored cases, and the upload is not a case —
+            # so it is detected here instead: sharing was requested, the
+            # summary step ran against the stored run, and the run carries no
+            # URL. Without this clause the annotation named only the case
+            # classes (or nothing), and an operator "fixed" those, re-ran, and
+            # was red again on the upload that was never mentioned.
+            upload=""
+            if [ -n "${SERVER_URL:-}" ] && [ "${SUMMARY_OUTCOME:-}" = "success" ] && [ -z "${RUN_URL:-}" ]; then
+              upload=" — results upload failed (re-share when the server is reachable; the run is graded and in the artifact)"
+            fi
+            echo "::error::domarinn infrastructure error (exit 3)${upload}${classes:+ — $classes}"
             exit 3
             ;;
           *)

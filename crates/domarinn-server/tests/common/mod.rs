@@ -415,6 +415,7 @@ fn build_case(spec: &CaseSpec) -> CaseResult {
             criteria: None,
             cached: false,
             cost_usd: None,
+            error_class: None,
         })
         .collect();
     CaseResult {

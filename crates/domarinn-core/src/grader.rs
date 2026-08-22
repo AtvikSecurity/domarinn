@@ -714,7 +714,11 @@ impl DefaultGrader {
             default_path,
             default_auth,
         )
-        .map_err(|e| GraderError::Transport(e.to_string()))?;
+        // A `request:` block that fails to resolve is suite-authoring, the
+        // same family as a template that will not render — nothing was sent,
+        // so `Transport` ("could not be reached") was a misdiagnosis that also
+        // put it on the wrong side of the gate.
+        .map_err(|e| GraderError::Misconfigured(e.to_string()))?;
         let params = merge_params(params.as_ref(), assert_params.as_ref());
         // Before the cache, not inside the live branch: a suite that asks for
         // extended thinking is misconfigured whether or not a verdict happens to

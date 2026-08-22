@@ -147,27 +147,54 @@ impl Judge {
                         signal: "stop_reason=max_tokens",
                     });
                 }
-                // Matched on `name`, not just `type`. Taking the first
+                // Matched on `name` first, not just `type`: taking the first
                 // `tool_use` block of any name meant a stray tool call — a
                 // server-side tool, or a judge that invented one — was read as
                 // the verdict and then reported as a *missing* `pass` field,
                 // sending a reader looking for a schema bug that was not there.
+                //
+                // With one escape hatch: a *sole* `tool_use` block of another
+                // name is still read as the verdict. A suite whose gateway
+                // requires a differently-named tool overrides `tools` /
+                // `tool_choice` via the grader's `request.body` (merged after
+                // our defaults, arrays replaced wholesale), and its every
+                // reply — including previously cached payloads, which
+                // `--cache-only` cannot re-fetch — carries that name. Forced
+                // tool choice means the sole block is unambiguous; only when
+                // several tool calls compete does the name decide.
                 let blocks = payload.get("content").and_then(|c| c.as_array());
-                let input = blocks
-                    .and_then(|blocks| {
-                        blocks.iter().find(|b| {
-                            b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                                && b.get("name").and_then(|n| n.as_str()) == Some(VERDICT_TOOL)
-                        })
+                let tool_uses: Vec<&Json> = blocks
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                            .collect()
                     })
+                    .unwrap_or_default();
+                let chosen = tool_uses
+                    .iter()
+                    .find(|b| b.get("name").and_then(|n| n.as_str()) == Some(VERDICT_TOOL))
+                    .copied()
+                    .or(match tool_uses.as_slice() {
+                        [sole] => Some(*sole),
+                        _ => None,
+                    });
+                let input = chosen
                     .and_then(|b| b.get("input"))
                     .cloned()
                     .ok_or_else(|| {
-                        let saw: Vec<&str> = blocks
+                        let saw: Vec<String> = blocks
                             .map(|blocks| {
                                 blocks
                                     .iter()
-                                    .filter_map(|b| b.get("type").and_then(|t| t.as_str()))
+                                    .map(|b| {
+                                        let kind =
+                                            b.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+                                        match b.get("name").and_then(|n| n.as_str()) {
+                                            Some(name) => format!("{kind}({name})"),
+                                            None => kind.to_string(),
+                                        }
+                                    })
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -252,8 +279,14 @@ impl DefaultGrader {
         let default_env = judge.default_key_env();
         let key = match resolved.auth().needs_credential() {
             true => Some(
+                // A missing credential env var is configuration, not network:
+                // classing it `Transport` annotated CI with "grader
+                // unavailable" and sent an operator to check connectivity when
+                // the fix is exporting one variable. `Misconfigured` puts it
+                // on the suite side of the gate (exit 2), next to every other
+                // "your config names something that is not there" fault.
                 api_key(api_key_env.unwrap_or(&default_env))
-                    .map_err(|e| GraderError::Transport(e.to_string()))?,
+                    .map_err(|e| GraderError::Misconfigured(e.to_string()))?,
             ),
             false => None,
         };
@@ -273,14 +306,28 @@ impl DefaultGrader {
             if code == 401 || code == 403 {
                 return Err(GraderError::AuthRejected { status: code });
             }
-            return Err(GraderError::Transport(format!(
-                "HTTP {code}: {}",
-                resp.text().await.unwrap_or_default()
-            )));
+            let body = resp.text().await.unwrap_or_default();
+            // The status decides the owner. A 429 or 5xx is the judge's side
+            // having a bad moment — genuinely "unavailable", wait or check the
+            // network. Any other 4xx means the endpoint is up and rejected
+            // *this request*: a typo'd `grader.model` (404), a body the API
+            // refused (400/422). Those used to class `grader_unavailable` too,
+            // which paged an operator at exit 3 for a one-line config edit.
+            return Err(if code == 429 || code >= 500 {
+                GraderError::Transport(format!("HTTP {code}: {body}"))
+            } else {
+                GraderError::Misconfigured(format!(
+                    "grader endpoint rejected the request (HTTP {code}): {body}"
+                ))
+            });
         }
+        // Reached, replied 2xx, and the body is not JSON — that is the judge
+        // answering badly, not the judge being unreachable. `InvalidVerdict`
+        // says so, and is retryable within the judge's re-ask budget, which is
+        // right for the usual cause (a gateway hiccup garbling one response).
         resp.json()
             .await
-            .map_err(|e| GraderError::Transport(e.to_string()))
+            .map_err(|e| GraderError::InvalidVerdict(format!("response was not JSON: {e}")))
     }
 }
 
@@ -378,14 +425,15 @@ const VERDICT_SNIPPET: usize = 300;
 /// re-samples the judge and the reply that failed is gone. Quoting it here is
 /// the only evidence that survives into the stored run and the JUnit report.
 ///
-/// **`reasoning` is redacted from that quote.** It is the one field that
-/// paraphrases or quotes the graded model output verbatim, and this message is
-/// no longer just a log line: it lands in `case.error`, which is uploaded by
-/// `--share` and rendered into the PR comment's errored-cases table. A suite
-/// grading sensitive or customer text on a public repository would otherwise
-/// publish it as a side effect of the judge misbehaving. Its length is kept,
-/// because "the judge wrote 4kB of reasoning and no `pass`" is exactly the
-/// shape a reader needs.
+/// **Every string in that quote is redacted.** This message is no longer just
+/// a log line: it lands in `case.error`, which is uploaded by `--share` and
+/// rendered into the PR comment's errored-cases table. A suite grading
+/// sensitive or customer text on a public repository would otherwise publish
+/// it as a side effect of the judge misbehaving — and a misbehaving judge does
+/// not confine the graded text to a well-known `reasoning` key: it restates it
+/// under whatever key it invents, nests it, or returns it as a bare string.
+/// Lengths are kept, because "the judge wrote 4kB of reasoning and no `pass`"
+/// is exactly the shape a reader needs.
 fn bad_field(v: &Json, field: &str, want: &str) -> GraderError {
     let saw = match v.get(field) {
         None => "absent".to_string(),
@@ -411,24 +459,29 @@ fn bad_field(v: &Json, field: &str, want: &str) -> GraderError {
     ))
 }
 
-/// The judge's reply with `reasoning` replaced by a length marker.
+/// The judge's reply with every string value replaced by a length marker.
 ///
-/// Shape-preserving on purpose: every other key, and the fact that `reasoning`
-/// was present at all, is diagnostic. Only its contents are withheld, because
-/// they are the graded material restated.
+/// Shape-preserving on purpose: the keys, nesting, and the types and lengths
+/// of the values are the diagnosis — "an object with `reasoning` and no
+/// `pass`" tells a reader what to fix. The string *contents* are withheld
+/// wherever they sit, because a judge that has already broken schema cannot be
+/// trusted to confine the graded material to one well-known key: it turns up
+/// under `explanation`, inside a nested `verdict` object, or as the entire
+/// payload. Redacting only a listed key is a denylist, and this quote ends up
+/// in public PR comments — so the rule is structural: no string survives.
+/// Numbers and booleans do (`"score": 0.9` is diagnostic, and cannot restate
+/// prose); so do keys, which the judge chose from the schema, not the input.
 fn redacted_verdict(v: &Json) -> Json {
-    let Some(obj) = v.as_object() else {
-        return v.clone();
-    };
-    let mut out = obj.clone();
-    if let Some(reasoning) = out.get_mut("reasoning") {
-        let marker = match reasoning.as_str() {
-            Some(text) => format!("<redacted {} chars>", text.chars().count()),
-            None => "<redacted>".to_string(),
-        };
-        *reasoning = Json::String(marker);
+    match v {
+        Json::String(s) => Json::String(format!("<redacted {} chars>", s.chars().count())),
+        Json::Array(items) => Json::Array(items.iter().map(redacted_verdict).collect()),
+        Json::Object(obj) => Json::Object(
+            obj.iter()
+                .map(|(k, val)| (k.clone(), redacted_verdict(val)))
+                .collect(),
+        ),
+        _ => v.clone(),
     }
-    Json::Object(out)
 }
 
 impl Verdict {

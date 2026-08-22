@@ -271,12 +271,7 @@ pub fn render_errors_md(run: &RunResult) -> String {
             "| {} | {} | {} | {} |\n",
             md_cell(&display_name(case)),
             md_cell(&case.cell.provider_id),
-            md_cell(
-                case.error_class
-                    .as_ref()
-                    .map(|k| k.as_str())
-                    .unwrap_or(crate::errorstats::UNKNOWN_CLASS)
-            ),
+            md_cell(&crate::errorstats::case_classes(case)),
             md_cell(&truncate(&error_reason(case), 160)),
         ));
     }

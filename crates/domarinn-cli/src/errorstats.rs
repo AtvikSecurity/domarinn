@@ -32,15 +32,48 @@ pub(crate) const UNKNOWN_CLASS: &str = "unknown";
 pub(crate) fn error_class_counts(cases: &[CaseResult]) -> BTreeMap<String, u64> {
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     for c in cases.iter().filter(|c| c.status == CaseStatus::Error) {
-        let key = c
-            .error_class
-            .as_ref()
-            .map(|k| k.as_str())
-            .filter(|k| !k.is_empty())
-            .unwrap_or(UNKNOWN_CLASS);
-        *counts.entry(key.to_string()).or_default() += 1;
+        *counts.entry(class_or_unknown(c).to_string()).or_default() += 1;
     }
     counts
+}
+
+/// The one spelling of "which bucket does this case's class land in".
+///
+/// `None` and `""` are the same absence — `ErrorClass` is an unvalidated
+/// transparent string, and an exec child can (and did) emit an empty class.
+/// This rule used to live twice: here with the empty-string filter and in the
+/// errored-cases table without it, so one PR comment said `unknown × 1` in its
+/// metric row beside a blank Class cell for the very same case.
+pub(crate) fn class_or_unknown(case: &CaseResult) -> &str {
+    case.error_class
+        .as_ref()
+        .map(|k| k.as_str())
+        .filter(|k| !k.is_empty())
+        .unwrap_or(UNKNOWN_CLASS)
+}
+
+/// Every distinct class an errored case recorded, collapsed-first.
+///
+/// The case-level `error_class` is a *collapse*: when asserts of both gate
+/// tiers error on one case, `most_specific` keeps only the harness class so
+/// the exit code is right — and the suite fault would otherwise vanish from
+/// every report. The per-assert rows still carry it, so the errored-cases
+/// table lists them all: the collapsed class first (it explains the exit
+/// code), then any others in stable order.
+pub(crate) fn case_classes(case: &CaseResult) -> String {
+    let primary = class_or_unknown(case);
+    let mut out = vec![primary.to_string()];
+    let mut extras: Vec<&str> = case
+        .asserts
+        .iter()
+        .filter_map(|a| a.error_class.as_ref())
+        .map(|k| k.as_str())
+        .filter(|k| !k.is_empty() && *k != primary)
+        .collect();
+    extras.sort_unstable();
+    extras.dedup();
+    out.extend(extras.iter().map(|k| k.to_string()));
+    out.join(", ")
 }
 
 /// The tally as one line: `grader_failed × 2, provider_timeout × 1`.
@@ -135,5 +168,44 @@ mod tests {
     fn a_blank_class_is_treated_as_unknown() {
         let cases = [case(CaseStatus::Error, Some(""))];
         assert_eq!(error_class_summary(&cases), "unknown × 1");
+    }
+
+    /// One case, two tiers: the case-level class is a collapse (harness wins,
+    /// so the exit code is right), and the suite fault it drops survives only
+    /// on the per-assert rows. `case_classes` is what puts it back in front of
+    /// a reader — collapsed class first, the rest in stable order.
+    #[test]
+    fn case_classes_lists_the_classes_the_collapse_dropped() {
+        use domarinn_core::asserts::AssertName;
+        use domarinn_core::result::{AssertResult, AssertStatus};
+
+        fn errored_assert(class: &str) -> AssertResult {
+            AssertResult {
+                kind: AssertName::Exec,
+                status: AssertStatus::Error,
+                score: 0.0,
+                weight: 1.0,
+                reason: "boom".into(),
+                details: None,
+                criteria: None,
+                cached: false,
+                cost_usd: None,
+                error_class: Some(ErrorClass::new(class)),
+            }
+        }
+
+        let mut c = case(CaseStatus::Error, Some("exec_failed"));
+        c.asserts.push(errored_assert("grader_missing"));
+        assert_eq!(case_classes(&c), "exec_failed, grader_missing");
+
+        // A lone class renders bare — no trailing separator, no duplicate when
+        // the assert row repeats the collapsed class.
+        let mut c = case(CaseStatus::Error, Some("grader_failed"));
+        c.asserts.push(errored_assert("grader_failed"));
+        assert_eq!(case_classes(&c), "grader_failed");
+
+        // No class anywhere is still the unknown bucket.
+        let c = case(CaseStatus::Error, None);
+        assert_eq!(case_classes(&c), "unknown");
     }
 }

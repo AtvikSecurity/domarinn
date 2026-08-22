@@ -110,7 +110,11 @@ pub(super) async fn evaluate_asserts(
             } else {
                 AssertStatus::from_pass(outcome.passed)
             };
-            results[i] = Some(assert_result(assert, &outcome, status));
+            let mut result = assert_result(assert, &outcome, status);
+            if status == AssertStatus::Error {
+                result.error_class = Some(ErrorClass::new(ErrorClass::ASSERT_FAILED));
+            }
+            results[i] = Some(result);
         } else {
             deferred_indices.push(i);
         }
@@ -131,7 +135,11 @@ pub(super) async fn evaluate_asserts(
         // rejected must not each pay for their own 401 to find out.
         if let Some(reason) = ctx.aborted.reason() {
             classes.push(ErrorClass::new(ErrorClass::PROVIDER_AUTH));
-            results[i] = Some(error_assert(assert, reason));
+            results[i] = Some(error_assert(
+                assert,
+                reason,
+                ErrorClass::new(ErrorClass::PROVIDER_AUTH),
+            ));
             continue;
         }
         match ctx.grader {
@@ -163,7 +171,7 @@ pub(super) async fn evaluate_asserts(
                         ctx.aborted.poison(e.to_string());
                     }
                     classes.push(e.class());
-                    results[i] = Some(error_assert(assert, e.to_string()));
+                    results[i] = Some(error_assert(assert, e.to_string(), e.class()));
                 }
             },
             None => {
@@ -175,6 +183,7 @@ pub(super) async fn evaluate_asserts(
                         "no grader available for '{}' assertions in this run",
                         assert.kind.name().as_str()
                     ),
+                    ErrorClass::new(ErrorClass::GRADER_MISSING),
                 ));
             }
         }
@@ -291,10 +300,14 @@ fn assert_result(assert: &Assert, outcome: &AssertOutcome, status: AssertStatus)
         criteria: assert_criteria(assert),
         cached: false,
         cost_usd: None,
+        error_class: None,
     }
 }
 
-fn error_assert(assert: &Assert, reason: String) -> AssertResult {
+/// `class` rides on the assert row as well as in the case-level collection:
+/// the case collapses to one class (harness tier winning), and the per-assert
+/// record is what keeps a mixed case's other classes reportable at all.
+fn error_assert(assert: &Assert, reason: String, class: ErrorClass) -> AssertResult {
     AssertResult {
         kind: assert.kind.name(),
         status: AssertStatus::Error,
@@ -305,6 +318,7 @@ fn error_assert(assert: &Assert, reason: String) -> AssertResult {
         criteria: assert_criteria(assert),
         cached: false,
         cost_usd: None,
+        error_class: Some(class),
     }
 }
 
@@ -319,6 +333,7 @@ fn skipped_result(assert: &Assert) -> AssertResult {
         criteria: assert_criteria(assert),
         cached: false,
         cost_usd: None,
+        error_class: None,
     }
 }
 
@@ -374,6 +389,7 @@ mod tests {
             criteria: None,
             cached: false,
             cost_usd: None,
+            error_class: None,
         }
     }
 

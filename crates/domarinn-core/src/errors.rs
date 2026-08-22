@@ -70,9 +70,11 @@ pub enum GraderError {
     ///
     /// Its own variant because it is not a grader call at all: no judge was
     /// contacted, so classing it with the grader made a broken checker look
-    /// like a broken judge. The checker is the suite author's program, but the
-    /// failure is still the harness's to report — nothing was graded, so the
-    /// case errored rather than failed.
+    /// like a broken judge. The checker is the suite author's own program, so
+    /// its class is `checker_failed` — a suite fault (exit `2`), like the
+    /// unevaluable local assert it is the exec analogue of. It used to share
+    /// `exec_failed` with the exec *provider*, which routed a typo'd checker
+    /// path to the harness bucket and paged an operator for a suite fix.
     #[error("exec assert failed: {0}")]
     ExecFailed(String),
 
@@ -181,9 +183,12 @@ impl Classify for GraderError {
             // by waiting or by looking at the network, where the three below
             // are fixed by looking at what the judge actually returned.
             GraderError::Transport(_) => ErrorClass::GRADER_UNAVAILABLE,
-            // Not grader classes at all — these say the exec child broke, or
-            // that an offline run had nothing to replay.
-            GraderError::ExecFailed(_) => ErrorClass::EXEC_FAILED,
+            // Not grader classes at all. The checker is the suite's own
+            // script, so it collapses with the suite-side faults (exit 2) —
+            // distinct from `exec_failed`, the exec *provider* child, which is
+            // the harness's problem. A cache miss says an offline run had
+            // nothing to replay.
+            GraderError::ExecFailed(_) => ErrorClass::CHECKER_FAILED,
             GraderError::CacheMiss(_) => ErrorClass::CACHE_MISS,
             GraderError::TruncatedVerdict { .. }
             | GraderError::InvalidVerdict(_)

@@ -122,15 +122,18 @@ tests:
     );
 }
 
-/// An `exec` assertion's checker is a child process, and a child that exits
-/// non-zero is an exec failure — not a grader one.
+/// An `exec` assertion's checker is the suite author's own script, and a
+/// checker that exits non-zero is a suite fault — not a grader one, and not
+/// the harness's either.
 ///
-/// The grader path used to wrap every non-verdict problem in
-/// `GraderError::Transport`, so a checker exiting 7 was stored as a *grader*
-/// fault and read as though a judge had misbehaved. No judge is involved here
-/// at all.
+/// Two wrong classifications preceded this one. The grader path used to wrap
+/// every non-verdict problem in `GraderError::Transport`, so a checker exiting
+/// 7 was stored as a *grader* fault and read as though a judge had misbehaved.
+/// Then it shared `exec_failed` with the exec *provider*, which put a typo'd
+/// checker path on the harness side of the gate: exit 3, an operator paged,
+/// for a one-line fix in the suite under review.
 #[test]
-fn an_exec_assert_whose_checker_fails_is_classified_exec_failed() {
+fn an_exec_assert_whose_checker_fails_is_classified_checker_failed() {
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -149,13 +152,14 @@ tests:
       - {type: exec, command: ["sh", "-c", "exit 7"]}
 "#,
     );
-    // A broken checker graded nothing, so the harness code stands: exit 3.
-    bin().arg("run").current_dir(dir.path()).assert().code(3);
+    // A broken checker graded nothing, and the checker is the suite's own
+    // script: a suite fault, exit 2.
+    bin().arg("run").current_dir(dir.path()).assert().code(2);
 
     let case = &latest_run(dir.path()).cases[0];
     assert_eq!(
         case.error_class.as_ref().map(|c| c.as_str()),
-        Some("exec_failed")
+        Some("checker_failed")
     );
     let prose = case.error.as_deref().unwrap_or_default();
     assert!(

@@ -47,94 +47,99 @@ fn tone_fn() -> String {
     rest[..end].to_string()
 }
 
-/// Every class the Rust predicate calls infrastructure must be amber in the
-/// web UI, and every class it does not must not be.
+/// Every quoted argument of `pattern("` in `src`, in order.
 ///
-/// Asserted through the real predicate rather than a copied list, so this
-/// cannot pass by agreeing with a stale transcription of it.
+/// Textual on purpose — the web bundle cannot be executed from here — but
+/// *extractive* rather than probe-based: a probe (`contains`) can only prove a
+/// listed arm exists, so an arm someone *adds* is invisible to it. Extracting
+/// everything and comparing sets fails in both directions.
+fn quoted_args(src: &str, pattern: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(at) = rest.find(pattern) {
+        rest = &rest[at + pattern.len()..];
+        if let Some(end) = rest.find('"') {
+            out.push(rest[..end].to_string());
+            rest = &rest[end..];
+        }
+    }
+    out
+}
+
+/// Every class constant `error_class.rs` declares, read from its source.
+///
+/// Derived rather than hand-listed because a hand list checked against itself
+/// is how the last version of this guard could not see a newly added class at
+/// all: the compiler does not enforce exhaustiveness over associated consts,
+/// so the only place the full set exists is the declaration site.
+fn declared_classes() -> Vec<String> {
+    let src = read("crates/domarinn-types/src/error_class.rs");
+    let names = quoted_args(&src, ": &'static str = \"");
+    assert!(
+        names.len() >= 13,
+        "expected the error-class constants in error_class.rs, found {names:?} — \
+         did the declaration shape change?"
+    );
+    names
+}
+
+/// The web tone rule and the Rust infrastructure predicate agree — in both
+/// directions, over every class the Rust side declares.
+///
+/// The TS arms are *extracted* (every `startsWith(...)` and `=== "..."` in the
+/// function) and compared as sets against what `is_infrastructure` actually
+/// returns, so this fails when either side adds, removes, or widens an arm —
+/// including a new `startsWith` prefix, which a `contains` probe of the known
+/// arms would never see.
 #[test]
 fn the_web_tone_rule_matches_the_rust_infrastructure_predicate() {
     use domarinn_core::error_class::ErrorClass;
 
     let tone = tone_fn();
+    let prefixes = quoted_args(&tone, "startsWith(\"");
+    let exact: Vec<String> = quoted_args(&tone, "=== \"");
 
-    // The prefix arms, spelled as the TS writes them.
-    for prefix in ["provider_", "cache_"] {
+    // Direction 1: every TS arm must be justified by the Rust predicate.
+    for prefix in &prefixes {
         assert!(
-            tone.contains(&format!("startsWith(\"{prefix}\")")),
-            "web/src/lib/errors.ts no longer treats `{prefix}*` as infrastructure, \
-             but ErrorClass::is_infrastructure still does:\n{tone}"
+            ErrorClass::new(format!("{prefix}x")).is_infrastructure(),
+            "web/src/lib/errors.ts treats `{prefix}*` as infrastructure, but \
+             ErrorClass::is_infrastructure does not:\n{tone}"
+        );
+    }
+    for name in &exact {
+        assert!(
+            ErrorClass::new(name.clone()).is_infrastructure(),
+            "web/src/lib/errors.ts lists `{name}` as an exact-match amber case, \
+             but ErrorClass::is_infrastructure says it is not infrastructure:\n{tone}"
         );
     }
 
-    // Every named constant, checked against the predicate itself.
-    let named = [
-        ErrorClass::EXEC_FAILED,
-        ErrorClass::RENDER_FAILED,
-        ErrorClass::GRADER_FAILED,
-        ErrorClass::GRADER_UNAVAILABLE,
-        ErrorClass::GRADER_MISSING,
-        ErrorClass::ASSERT_FAILED,
-    ];
-    for class in named {
-        let rust_says_infra = ErrorClass::new(class).is_infrastructure();
-        let web_says_infra = tone.contains(&format!("=== \"{class}\""));
+    // Direction 2: every class Rust calls infrastructure must be reachable by
+    // some TS arm, and every class it does not must be reachable by none.
+    for class in declared_classes() {
+        let rust_says = ErrorClass::new(class.clone()).is_infrastructure();
+        let web_says =
+            prefixes.iter().any(|p| class.starts_with(p.as_str())) || exact.contains(&class);
         assert_eq!(
-            rust_says_infra,
-            web_says_infra,
-            "`{class}`: Rust is_infrastructure() = {rust_says_infra}, but \
-             web/src/lib/errors.ts {} it as an exact-match amber case. One side \
-             changed without the other.\n{tone}",
-            if web_says_infra {
-                "does list"
-            } else {
-                "does not list"
-            }
+            rust_says,
+            web_says,
+            "`{class}`: Rust is_infrastructure() = {rust_says}, but the web \
+             tone rule renders it {} — one side changed without the other.\n{tone}",
+            if web_says { "amber" } else { "red" }
         );
     }
 }
 
-/// Every named class is well-formed and reaches a gate bucket.
-///
-/// Weaker than the tone check above on purpose: which bucket a class belongs in
-/// is `error_class.rs`'s own table test. What this adds is that the list here
-/// must be extended when a constant is added — the compiler does not enforce
-/// exhaustiveness over associated consts, so a new class would otherwise be
-/// invisible to every cross-surface guard in this file.
+/// Every declared class is snake_case — derived from source, so a class added
+/// tomorrow is covered without anyone remembering this file exists.
 #[test]
-fn every_named_class_has_a_gate_bucket_and_a_well_formed_name() {
-    use domarinn_core::error_class::{ErrorClass, GateFault};
-
-    // Every constant this build knows, so adding one to `error_class.rs`
-    // without considering its gate bucket fails here rather than silently
-    // defaulting.
-    let all = [
-        ErrorClass::PROVIDER_REQUEST,
-        ErrorClass::PROVIDER_AUTH,
-        ErrorClass::PROVIDER_RATE_LIMIT,
-        ErrorClass::PROVIDER_UNAVAILABLE,
-        ErrorClass::PROVIDER_TIMEOUT,
-        ErrorClass::PROVIDER_PROTOCOL,
-        ErrorClass::EXEC_FAILED,
-        ErrorClass::RENDER_FAILED,
-        ErrorClass::GRADER_FAILED,
-        ErrorClass::GRADER_UNAVAILABLE,
-        ErrorClass::GRADER_MISSING,
-        ErrorClass::ASSERT_FAILED,
-        ErrorClass::CACHE_MISS,
-        ErrorClass::CACHE_UNAVAILABLE,
-    ];
-    for class in all {
-        let c = ErrorClass::new(class);
-        // Not an assertion about which bucket — that is `error_class.rs`'s own
-        // table test. This asserts only that the class is spelled the way the
-        // constants are, so the two lists cannot drift apart by a typo.
+fn every_declared_class_is_well_formed() {
+    for class in declared_classes() {
         assert!(
             !class.is_empty() && class.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
             "`{class}` is not a snake_case class name"
         );
-        // Exercised so a new class must at least be reachable from here.
-        let _: GateFault = c.gate_fault();
     }
 }
 

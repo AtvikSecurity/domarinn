@@ -48,15 +48,25 @@ impl ErrorClass {
     pub const PROVIDER_TIMEOUT: &'static str = "provider_timeout";
     /// A 2xx whose body could not be parsed into a response.
     pub const PROVIDER_PROTOCOL: &'static str = "provider_protocol";
-    /// An exec child failed to spawn, exited nonzero, or wrote unparseable
-    /// stdout.
+    /// An `exec` **provider** child failed to spawn, exited nonzero, or wrote
+    /// unparseable stdout — the system under test is broken and the model
+    /// never saw anything.
     ///
-    /// Covers both exec children: an `exec` **provider**, where the system
-    /// under test is broken and the model never saw anything, and an `exec`
-    /// **assertion**, where the checker program broke and nothing was graded.
-    /// Either way the case errored rather than failed — there is no verdict to
-    /// read, only a process that did not work.
+    /// This used to cover the `exec` **assertion** checker too, which put a
+    /// suite-authored script in the harness bucket: a typo'd checker path
+    /// exited `3` and paged an operator for a one-line suite fix. The checker
+    /// now has its own class, [`Self::CHECKER_FAILED`], on the suite side of
+    /// the gate — the same side as [`Self::ASSERT_FAILED`], its local-assert
+    /// analogue.
     pub const EXEC_FAILED: &'static str = "exec_failed";
+    /// An `exec` **assertion**'s checker program broke — failed to spawn,
+    /// exited nonzero, or answered off-protocol. Nothing was graded.
+    ///
+    /// The checker is the suite author's own YAML-declared script, so this is
+    /// a suite fault ([`GateFault::Suite`], exit `2`): the fix is in the repo
+    /// under review, not in the harness. Contrast [`Self::EXEC_FAILED`], the
+    /// `exec` *provider* child, which is the harness's problem.
+    pub const CHECKER_FAILED: &'static str = "checker_failed";
     /// Rendering vars or the prompt raised — a template bug in the suite.
     pub const RENDER_FAILED: &'static str = "render_failed";
     /// The grader itself failed. The eval did not run; do not read the score.
@@ -138,7 +148,10 @@ impl ErrorClass {
         // explicitly would be three arms returning the same value and would
         // quietly stop covering a class the day someone adds one.
         match self.0.as_str() {
-            Self::GRADER_MISSING | Self::RENDER_FAILED | Self::ASSERT_FAILED => GateFault::Suite,
+            Self::GRADER_MISSING
+            | Self::RENDER_FAILED
+            | Self::ASSERT_FAILED
+            | Self::CHECKER_FAILED => GateFault::Suite,
             _ => GateFault::Harness,
         }
     }
@@ -187,6 +200,7 @@ pub const PRECEDENCE: &[&str] = &[
     ErrorClass::GRADER_MISSING,
     ErrorClass::GRADER_UNAVAILABLE,
     ErrorClass::GRADER_FAILED,
+    ErrorClass::CHECKER_FAILED,
     ErrorClass::ASSERT_FAILED,
 ];
 
@@ -310,6 +324,7 @@ mod tests {
             ErrorClass::GRADER_MISSING,
             ErrorClass::RENDER_FAILED,
             ErrorClass::ASSERT_FAILED,
+            ErrorClass::CHECKER_FAILED,
         ] {
             assert_eq!(
                 ErrorClass::new(suite).gate_fault(),
@@ -376,9 +391,13 @@ mod tests {
     /// suite fault made the run report "fix your config" while a judge was
     /// broken.
     ///
-    /// Nothing is lost from the report: cases collapse independently, so a run
-    /// with both faults still shows `grader_missing × N, grader_failed × M` in
-    /// its breakdown. Only the code changes, to the more serious of the two.
+    /// When the two faults land on *different* cases, nothing is lost: cases
+    /// collapse independently, so the breakdown still shows
+    /// `grader_missing × N, grader_failed × M`. When one case carries both,
+    /// this collapse keeps only the harness class — the per-case breakdown
+    /// then under-reports the suite fault, which is the accepted cost of the
+    /// exit code being right. The errored-cases table compensates by listing
+    /// every distinct class its asserts recorded, not just the collapsed one.
     #[test]
     fn a_harness_candidate_wins_over_a_better_ranked_suite_one() {
         let candidates = [

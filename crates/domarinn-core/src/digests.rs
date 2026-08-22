@@ -296,6 +296,7 @@ prompts:
             criteria: Some(criteria),
             cached: false,
             cost_usd: None,
+            error_class: None,
         }
     }
 

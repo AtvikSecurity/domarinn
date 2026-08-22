@@ -61,13 +61,14 @@ Because `3` outranks `1`, a run whose assertions failed *and* whose upload faile
 | Error class | Meaning | Exit |
 |---|---|---|
 | `provider_request` `provider_auth` `provider_rate_limit` `provider_unavailable` `provider_timeout` `provider_protocol` | The provider call failed. | `3` |
-| `exec_failed` | An `exec` child failed to spawn, exited non-zero, or wrote unparseable stdout. | `3` |
+| `exec_failed` | An `exec` **provider** child failed to spawn, exited non-zero, or wrote unparseable stdout — the system under test is broken. | `3` |
 | `cache_miss` `cache_unavailable` | A `--cache-only` run could not answer, or the cache backend errored. | `3` |
 | `grader_failed` | The judge answered, but not usably — a malformed or truncated verdict. | `3` |
 | `grader_unavailable` | The judge could not be reached at all. | `3` |
 | `grader_missing` | No grader is configured for that assertion kind. | `2` |
 | `render_failed` | A prompt or vars template would not render. | `2` |
 | `assert_failed` | A local assert could not be evaluated — a bad regex, an uncompilable schema. | `2` |
+| `checker_failed` | An `exec` **assertion**'s checker program broke — failed to spawn, exited non-zero, or answered off-protocol. The checker is the suite's own script. | `2` |
 
 An unrecognized class — one written by a newer `exec` child, or a run stored before the field existed — is treated as `3`, so an unknown fault keeps the code it has always had.
 

@@ -574,6 +574,7 @@ pub(crate) fn sample_run() -> RunResult {
             criteria: None,
             cached: false,
             cost_usd: None,
+            error_class: None,
         }],
         _ => vec![],
     };

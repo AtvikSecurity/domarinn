@@ -109,6 +109,9 @@ const SHELL_STEPS: &[ShellStep] = &[
             ("CODE", ""),
             ("FAIL_ON_REGRESSION", "true"),
             ("ERROR_CLASSES", ""),
+            ("SERVER_URL", ""),
+            ("RUN_URL", ""),
+            ("SUMMARY_OUTCOME", ""),
         ],
     },
 ];
@@ -449,115 +452,13 @@ fn the_provider_input_never_globs_against_the_workspace() {
     );
 }
 
-/// The contract: `1` means the model regressed and the PR is to blame, `3`
-/// means the harness broke and it is not. A CI consumer sees that distinction
-/// only here, so the two must not render the same.
-#[test]
-fn the_gate_distinguishes_a_regression_from_a_broken_harness() {
-    let annotation_for = |code: i32| {
-        let ws = Workspace::new();
-        let observed = eval_step_with(code, &ws)
-            .output("exit-code")
-            .unwrap_or_default()
-            .to_string();
-        let ran = run_step("Gate on result", &[("CODE", &observed)], &ws);
-        (ran.status, ran.log.trim().to_string())
-    };
-
-    let (regression_status, regression) = annotation_for(1);
-    assert_eq!(regression_status, Some(1), "a regression fails the job");
-    assert!(
-        regression.contains("regressions (exit 1)"),
-        "a regression must be annotated as one, got: {regression}"
-    );
-
-    let (infra_status, infra) = annotation_for(3);
-    assert_eq!(infra_status, Some(3), "a broken harness fails the job too");
-    assert!(
-        infra.contains("infrastructure error (exit 3)"),
-        "a broken harness must be annotated as one, got: {infra}"
-    );
-
-    let (suite_status, suite) = annotation_for(2);
-    assert_eq!(suite_status, Some(2), "a bad suite fails the job too");
-    assert!(
-        suite.contains("config/usage error (exit 2)"),
-        "a suite fault must be annotated as one, got: {suite}"
-    );
-
-    assert_ne!(
-        regression, infra,
-        "the two failures must be told apart; when they read the same the \
-         response to a regression is to re-run rather than investigate"
-    );
-    assert_ne!(
-        suite, infra,
-        "a suite fault and a broken harness go to different people"
-    );
-}
-
-/// The gate says *what* broke, not just that something did.
-///
-/// The annotation used to be a fixed string, so a job that failed because an
-/// LLM judge returned malformed JSON and a job that failed because the results
-/// server was unreachable produced byte-identical output. Reading the class
-/// breakdown meant downloading an artifact.
-#[test]
-fn the_gate_names_the_error_classes_behind_a_failure() {
-    let ws = Workspace::new();
-    let ran = run_step(
-        "Gate on result",
-        &[("CODE", "3"), ("ERROR_CLASSES", "grader_failed × 2")],
-        &ws,
-    );
-    assert_eq!(ran.status, Some(3));
-    assert!(
-        ran.log.contains("infrastructure error (exit 3)"),
-        "got: {}",
-        ran.log
-    );
-    assert!(
-        ran.log.contains("grader_failed × 2"),
-        "the annotation must name the class, got: {}",
-        ran.log
-    );
-
-    // Exit 2 carries it too — that is where a suite-caused error now lands.
-    let ws = Workspace::new();
-    let ran = run_step(
-        "Gate on result",
-        &[("CODE", "2"), ("ERROR_CLASSES", "grader_missing × 1")],
-        &ws,
-    );
-    assert_eq!(ran.status, Some(2));
-    assert!(ran.log.contains("grader_missing × 1"), "got: {}", ran.log);
-}
-
-/// The summary step is skipped whenever the eval step never produced a run, so
-/// its outputs interpolate to the empty string and the gate has no breakdown to
-/// print. It must still render its verdict, and must not trail a bare em dash.
-///
-/// This covers the empty value, which is what Actions actually supplies — the
-/// key stays declared in the step's `env:` block either way. The `${VAR:-}`
-/// default in the script guards the genuinely-unset case, which `set -u` would
-/// otherwise turn into an abort before the `case` ever runs; that path is not
-/// reachable from here because `run_step` seeds every registered env key.
-#[test]
-fn the_gate_renders_cleanly_when_no_class_breakdown_is_available() {
-    let ws = Workspace::new();
-    let ran = run_step("Gate on result", &[("CODE", "3")], &ws);
-    assert_eq!(ran.status, Some(3));
-    assert!(
-        ran.log.contains("infrastructure error (exit 3)"),
-        "got: {}",
-        ran.log
-    );
-    assert!(
-        !ran.log.contains('—'),
-        "an empty breakdown must not leave a trailing dash, got: {}",
-        ran.log
-    );
-}
+// The gate-step behavior tests — what each exit code renders and names — live
+// in a subdirectory file to keep this one under the 1000-line cap. A
+// subdirectory of `tests/` is not compiled as its own integration-test crate,
+// so `#[path]` is the same private-child-module pattern `grader_tests.rs`
+// uses in src.
+#[path = "action_contract/gate_tests.rs"]
+mod gate_tests;
 
 /// `version: latest` has to become a concrete tag before a download URL
 /// exists, and the redirect it reads that from is a network call that can
