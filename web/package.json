@@ -60,7 +60,7 @@
     "typescript": "^6.0.3",
     "typescript-7": "npm:typescript@^7.0.2",
     "typescript-eslint": "^8.67.0",
-    "vite": "^8.2.1",
+    "vite": "^8.2.2",
     "vitest": "^4.1.11"
   },
   "//typescript": "typescript-7 is an alias for the real TypeScript 7 and is what actually type-checks this project (see the build/typecheck scripts). The plain `typescript` dep is held at 6.x solely because typescript-eslint throws at module load on TS 7 -- its peer range is `typescript >=4.8.4 <6.1.0` and TS 7 support is tracked upstream for TS >=7.1 in typescript-eslint/typescript-eslint#10940. When that ships: drop the typescript-7 alias, move `typescript` to 7.x, and restore the scripts to a plain `tsc -b`."
