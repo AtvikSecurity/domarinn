@@ -72,7 +72,7 @@ tempfile = "3"
 # postgres container; `mise run test-pg` provides one shared server instead
 # so the ~30 test binaries don't each pay container startup.
 testcontainers = { version = "0.25", features = ["blocking"] }
-testcontainers-modules = { version = "0.13", features = ["postgres"] }
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 flate2 = "1"
 ulid = { workspace = true }
 rusqlite = { version = "0.40", features = ["bundled"] }
