@@ -48,7 +48,7 @@ zstd = "0.13"
 sha2 = { workspace = true }
 hex = "0.4"
 subtle = "2"
-argon2 = "0.5"
+argon2 = "0.6"
 cookie = "0.18"
 rand = "0.10"
 ulid = { workspace = true }
