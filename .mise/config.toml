@@ -40,7 +40,7 @@ pnpm = "11"
 # hooks come from home-operations/.github's lefthook.common.toml (see
 # .lefthook.toml) and are installed automatically by the postinstall hook at
 # the bottom of this file whenever `mise install` runs.
-lefthook = "2.1.10"
+lefthook = "2.1.12"
 # `oxfmt` is distributed only via the npm backend (`mise registry oxfmt` →
 # `npm:oxfmt`); node is pinned above, so the npm backend always uses mise's
 # own node+npm rather than whatever is on PATH.
