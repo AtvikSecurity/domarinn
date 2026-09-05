@@ -34,7 +34,7 @@ compile = false
 # (not checksum-pinned; mise's core:rust backend delegates to rustup).
 rust = "stable"
 node = "24"
-pnpm = "11"
+pnpm = "12"
 
 # Git hooks + shared formatters (same setup as home-operations/kopiur): the
 # hooks come from home-operations/.github's lefthook.common.toml (see
