@@ -135,9 +135,8 @@ mod tests {
     use super::*;
 
     fn case(yaml: &str) -> TestCase {
-        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
-        let desugared = crate::val::desugar_tags(value);
-        serde_yaml_ng::from_value(desugared).unwrap()
+        let value = crate::yaml::parse_suite_value(yaml).unwrap();
+        serde_json::from_value(value).unwrap()
     }
 
     fn ids(cases: &[TestCase]) -> Vec<String> {

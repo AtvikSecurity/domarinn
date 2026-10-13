@@ -21,7 +21,7 @@
 //! own `${…}` placeholders in, say, an http body survive verbatim). Only the
 //! `${env:` sigil is claimed here.
 
-use serde_yaml_ng::Value as Yaml;
+use crate::yaml::Yaml;
 
 use crate::loader::LoadError;
 
@@ -55,7 +55,7 @@ where
 /// composed suite document. Mutates `raw` in place. Test `vars` are never
 /// touched (see the module docs).
 pub fn interpolate_env(raw: &mut Yaml, env: &impl EnvResolver) -> Result<(), LoadError> {
-    if let Some(Yaml::Sequence(providers)) = raw.get_mut("providers") {
+    if let Some(Yaml::Array(providers)) = raw.get_mut("providers") {
         for (i, provider) in providers.iter_mut().enumerate() {
             interp_subtree(provider, &format!("providers[{i}]"), env)?;
         }
@@ -69,7 +69,7 @@ pub fn interpolate_env(raw: &mut Yaml, env: &impl EnvResolver) -> Result<(), Loa
     if let Some(asserts) = raw
         .get_mut("defaults")
         .and_then(|d| d.get_mut("assert"))
-        .and_then(Yaml::as_sequence_mut)
+        .and_then(Yaml::as_array_mut)
     {
         for (j, entry) in asserts.iter_mut().enumerate() {
             interp_grader_provider(
@@ -79,9 +79,9 @@ pub fn interpolate_env(raw: &mut Yaml, env: &impl EnvResolver) -> Result<(), Loa
             )?;
         }
     }
-    if let Some(tests) = raw.get_mut("tests").and_then(Yaml::as_sequence_mut) {
+    if let Some(tests) = raw.get_mut("tests").and_then(Yaml::as_array_mut) {
         for (i, test) in tests.iter_mut().enumerate() {
-            if let Some(asserts) = test.get_mut("assert").and_then(Yaml::as_sequence_mut) {
+            if let Some(asserts) = test.get_mut("assert").and_then(Yaml::as_array_mut) {
                 for (j, entry) in asserts.iter_mut().enumerate() {
                     interp_grader_provider(
                         entry.get_mut("grader"),
@@ -125,20 +125,18 @@ fn interp_subtree(value: &mut Yaml, path: &str, env: &impl EnvResolver) -> Resul
             }
             Ok(())
         }
-        Yaml::Sequence(seq) => {
+        Yaml::Array(seq) => {
             for (i, item) in seq.iter_mut().enumerate() {
                 interp_subtree(item, &format!("{path}[{i}]"), env)?;
             }
             Ok(())
         }
-        Yaml::Mapping(map) => {
-            for (k, v) in map.iter_mut() {
-                let key = k.as_str().unwrap_or("?");
+        Yaml::Object(map) => {
+            for (key, v) in map.iter_mut() {
                 interp_subtree(v, &format!("{path}.{key}"), env)?;
             }
             Ok(())
         }
-        Yaml::Tagged(tagged) => interp_subtree(&mut tagged.value, path, env),
         _ => Ok(()),
     }
 }
@@ -351,7 +349,7 @@ mod tests {
     #[test]
     fn walks_nested_headers_and_params() {
         let env = resolver(&[("TOKEN", "secret123"), ("MODEL", "llama3")]);
-        let mut doc: Yaml = serde_yaml_ng::from_str(
+        let mut doc: Yaml = crate::yaml::parse_suite_value(
             r#"
 providers:
   - id: p
@@ -383,7 +381,7 @@ providers:
     #[test]
     fn test_vars_are_never_interpolated() {
         let env = resolver(&[("SECRET", "leaked")]);
-        let mut doc: Yaml = serde_yaml_ng::from_str(
+        let mut doc: Yaml = crate::yaml::parse_suite_value(
             r#"
 providers:
   - {id: p, type: openai, model: "${env:SECRET}"}
@@ -406,7 +404,7 @@ tests:
     #[test]
     fn grader_and_cache_subtrees_are_interpolated() {
         let env = resolver(&[("GRADER_KEY", "GK"), ("S3_ENDPOINT", "http://minio:9000")]);
-        let mut doc: Yaml = serde_yaml_ng::from_str(
+        let mut doc: Yaml = crate::yaml::parse_suite_value(
             r#"
 providers: [{id: p, type: exec, command: ["x"]}]
 grader:

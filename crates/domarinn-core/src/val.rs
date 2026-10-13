@@ -9,8 +9,8 @@
 //!   (JSON / CSV / JSONL, which have no tags).
 //! * anything else — a normal value that is rendered through the template engine.
 //!
-//! YAML tags only exist in YAML, so [`desugar_tags`] rewrites `!raw x` into
-//! `{$raw: x}` (and `!file "p"` into `{$file: "p"}`) before deserialization.
+//! YAML tags only exist in YAML, so [`crate::yaml::parse_suite_value`] rewrites `!raw x` into
+//! `{$raw: x}` (and `!file "p"` into `{$file: "p"}`) while it parses.
 //! After that single normalization every source format flows through one code
 //! path: [`Val`]'s custom `Deserialize` recognizes the `{$raw: …}` object and
 //! marks the value raw, and the resolver recognizes `{$file: …}` file-content
@@ -103,48 +103,6 @@ impl schemars::JsonSchema for Val {
     }
 }
 
-/// Recursively rewrite the sugar YAML tags into their format-agnostic wrapper
-/// objects: `!raw <value>` → `{$raw: <value>}` and `!file "<path>"` →
-/// `{$file: "<path>"}`.
-///
-/// `serde_yaml_ng` surfaces a YAML tag as [`serde_yaml_ng::Value::Tagged`]. We
-/// normalize the known tags (with or without the leading `!`) into the wrapper
-/// object so the rest of deserialization is format-agnostic. All other tags are
-/// left intact (their inner value is still walked).
-pub fn desugar_tags(value: serde_yaml_ng::Value) -> serde_yaml_ng::Value {
-    use serde_yaml_ng::Value as Yaml;
-    match value {
-        Yaml::Tagged(tagged) => {
-            let tag = tagged.tag.to_string();
-            let inner = desugar_tags(tagged.value);
-            let wrapper_key = match tag.as_str() {
-                "!raw" | "raw" => Some(RAW_KEY),
-                "!file" | "file" => Some(FILE_KEY),
-                _ => None,
-            };
-            match wrapper_key {
-                Some(key) => {
-                    let mut map = serde_yaml_ng::Mapping::new();
-                    map.insert(Yaml::String(key.to_string()), inner);
-                    Yaml::Mapping(map)
-                }
-                // Preserve unknown tags but keep walking their contents.
-                None => Yaml::Tagged(Box::new(serde_yaml_ng::value::TaggedValue {
-                    tag: tagged.tag,
-                    value: inner,
-                })),
-            }
-        }
-        Yaml::Sequence(seq) => Yaml::Sequence(seq.into_iter().map(desugar_tags).collect()),
-        Yaml::Mapping(map) => Yaml::Mapping(
-            map.into_iter()
-                .map(|(k, v)| (desugar_tags(k), desugar_tags(v)))
-                .collect(),
-        ),
-        other => other,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,9 +110,8 @@ mod tests {
     /// Parse suite-style YAML the way the loader will: desugar `!raw`, then
     /// deserialize into the target type.
     fn from_yaml<T: for<'de> Deserialize<'de>>(text: &str) -> T {
-        let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(text).unwrap();
-        let desugared = desugar_tags(raw);
-        serde_yaml_ng::from_value(desugared).unwrap()
+        let raw = crate::yaml::parse_suite_value(text).unwrap();
+        serde_json::from_value(raw).unwrap()
     }
 
     #[test]

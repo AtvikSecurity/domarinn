@@ -787,16 +787,16 @@ mod tests {
     /// "enabled, and here is why".
     #[test]
     fn expect_fail_accepts_a_bool_or_a_reason_string() {
-        let on: TestCase = serde_yaml_ng::from_str("expect_fail: true").unwrap();
+        let on: TestCase = crate::yaml::from_str("expect_fail: true").unwrap();
         assert!(on.expect_fail_enabled());
         assert_eq!(on.expect_fail_reason(), None);
 
-        let off: TestCase = serde_yaml_ng::from_str("expect_fail: false").unwrap();
+        let off: TestCase = crate::yaml::from_str("expect_fail: false").unwrap();
         assert!(!off.expect_fail_enabled());
         assert_eq!(off.expect_fail_reason(), None);
 
         let why: TestCase =
-            serde_yaml_ng::from_str(r#"expect_fail: "known bug: leaks ids""#).unwrap();
+            crate::yaml::from_str(r#"expect_fail: "known bug: leaks ids""#).unwrap();
         assert!(why.expect_fail_enabled());
         assert_eq!(why.expect_fail_reason(), Some("known bug: leaks ids"));
 
@@ -814,7 +814,7 @@ mod tests {
     /// `deny_unknown_fields` still catches a typo of the new key.
     #[test]
     fn a_typo_of_expect_fail_is_still_a_hard_parse_error() {
-        assert!(serde_yaml_ng::from_str::<TestCase>("expect_failure: true").is_err());
+        assert!(crate::yaml::from_str::<TestCase>("expect_failure: true").is_err());
     }
 
     #[test]

@@ -587,6 +587,9 @@ async fn a_middle_link_erroring_untriggered_never_makes_the_case_worse() {
 // ── `fallback_only:` — a provider that exists only to be handed to ──────────
 
 /// Like `run_suite`, but for the paths where the run itself must refuse.
+// `result_large_err`: this passes `runner::run`'s `RunError` straight through,
+// so it carries the same allow as `run` itself (see its note in `runner.rs`).
+#[allow(clippy::result_large_err)]
 async fn try_run_suite(
     yaml: &str,
     opts: RunOptions,

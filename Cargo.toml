@@ -37,7 +37,7 @@ domarinn-logging = { path = "crates/domarinn-logging" }
 # serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml_ng = "0.10"
+serde-saphyr = "1.3.0"
 serde_path_to_error = "0.1"
 schemars = { version = "1.0", features = ["preserve_order", "chrono04"] }
 

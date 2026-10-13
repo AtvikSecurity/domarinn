@@ -1,17 +1,16 @@
 //! Loading and structural validation of a suite from YAML.
 //!
-//! The load path is deliberately ordered: parse into a `serde_yaml_ng::Value`
-//! (which preserves YAML tags), normalize sugar (`!raw`, `not-*` asserts), then
-//! deserialize into [`Suite`]. Parsing straight into `Suite` would lose the tags
-//! before we could act on them.
+//! The load path is deliberately ordered: parse into a generic value while
+//! desugaring the YAML tags (`!raw`, `!file`; see [`crate::yaml`]), compose and
+//! interpolate, then deserialize into [`Suite`]. Parsing straight into `Suite`
+//! would lose the tags before we could act on them.
 
 use std::path::{Path, PathBuf};
 
-use serde_yaml_ng::Value as Yaml;
+use crate::yaml::Yaml;
 
 use crate::config::Suite;
 use crate::interp::{interpolate_env, ProcessEnv};
-use crate::val::desugar_tags;
 
 // `Issue` and `validate` live in `loader_validate`; re-export here so the
 // `crate::loader::validate` / `crate::loader::Issue` paths (and the crate-root
@@ -27,7 +26,7 @@ pub enum LoadError {
         source: std::io::Error,
     },
     #[error("parsing YAML: {0}")]
-    Yaml(#[from] serde_yaml_ng::Error),
+    Yaml(#[from] crate::yaml::Error),
     /// A well-formed YAML document that does not match the [`Suite`] schema
     /// (a wrong type, a missing required field, or — most usefully — an
     /// unknown/typo'd key). The message is pre-rendered with the file name (if
@@ -77,7 +76,7 @@ pub fn load_str(text: &str) -> Result<Suite, LoadError> {
 /// from. [`validate`] needs the raw shape to check for unknown keys in the
 /// `flatten`ed provider/assert mappings (which serde cannot deny).
 pub fn load_str_raw(text: &str) -> Result<(Suite, Yaml), LoadError> {
-    let mut raw = normalize(serde_yaml_ng::from_str(text)?);
+    let mut raw = crate::yaml::parse_suite_value(text)?;
     // Resolve `${env:VAR}` in provider-bearing subtrees before deserialize, so
     // the `Suite` (and the `raw` shape `validate` inspects) sees final values.
     interpolate_env(&mut raw, &ProcessEnv)?;
@@ -122,7 +121,7 @@ fn load_and_compose(file: &Path, stack: &mut Vec<PathBuf>) -> Result<Yaml, LoadE
         path: file.to_path_buf(),
         source,
     })?;
-    let mut value = normalize(serde_yaml_ng::from_str(text.as_str())?);
+    let mut value = crate::yaml::parse_suite_value(&text)?;
     let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
 
     let extends = take_string(&mut value, "extends");
@@ -155,8 +154,8 @@ fn resolve_ref(spec: &str, base_dir: &Path) -> PathBuf {
 }
 
 fn take_string(value: &mut Yaml, key: &str) -> Option<String> {
-    if let Yaml::Mapping(map) = value {
-        if let Some(Yaml::String(s)) = map.remove(Yaml::String(key.to_string())) {
+    if let Yaml::Object(map) = value {
+        if let Some(Yaml::String(s)) = map.remove(key) {
             return Some(s);
         }
     }
@@ -164,8 +163,8 @@ fn take_string(value: &mut Yaml, key: &str) -> Option<String> {
 }
 
 fn take_string_seq(value: &mut Yaml, key: &str) -> Vec<String> {
-    if let Yaml::Mapping(map) = value {
-        if let Some(Yaml::Sequence(seq)) = map.remove(Yaml::String(key.to_string())) {
+    if let Yaml::Object(map) = value {
+        if let Some(Yaml::Array(seq)) = map.remove(key) {
             return seq
                 .into_iter()
                 .filter_map(|v| match v {
@@ -183,11 +182,11 @@ fn take_string_seq(value: &mut Yaml, key: &str) -> Vec<String> {
 /// scalars are replaced by `over`.
 fn deep_merge(base: Yaml, over: Yaml) -> Yaml {
     match (base, over) {
-        (Yaml::Mapping(mut base_map), Yaml::Mapping(over_map)) => {
+        (Yaml::Object(mut base_map), Yaml::Object(over_map)) => {
             for (k, over_val) in over_map {
                 let merged = match base_map.remove(&k) {
                     Some(base_val) => {
-                        if matches!(&k, Yaml::String(s) if s == "assert") {
+                        if k == "assert" {
                             append_sequences(base_val, over_val)
                         } else {
                             deep_merge(base_val, over_val)
@@ -197,7 +196,7 @@ fn deep_merge(base: Yaml, over: Yaml) -> Yaml {
                 };
                 base_map.insert(k, merged);
             }
-            Yaml::Mapping(base_map)
+            Yaml::Object(base_map)
         }
         (_, over) => over,
     }
@@ -205,9 +204,9 @@ fn deep_merge(base: Yaml, over: Yaml) -> Yaml {
 
 fn append_sequences(base: Yaml, over: Yaml) -> Yaml {
     match (base, over) {
-        (Yaml::Sequence(mut a), Yaml::Sequence(b)) => {
+        (Yaml::Array(mut a), Yaml::Array(b)) => {
             a.extend(b);
-            Yaml::Sequence(a)
+            Yaml::Array(a)
         }
         (_, over) => over,
     }
@@ -239,14 +238,6 @@ pub fn suite_base_dir(suite_file: &Path) -> PathBuf {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
     }
-}
-
-/// Apply every YAML-level normalization pass.
-/// `not-<kind>` desugaring deliberately does *not* happen here any more: it
-/// lives in `Assert`'s own `Deserialize`, so it reaches every test source
-/// rather than only the composed suite file. See that impl for why.
-fn normalize(value: Yaml) -> Yaml {
-    desugar_tags(value)
 }
 
 #[cfg(test)]
