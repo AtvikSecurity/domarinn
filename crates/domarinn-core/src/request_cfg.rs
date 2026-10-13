@@ -558,7 +558,7 @@ mod tests {
     use serde_json::json;
 
     fn cfg_from(yaml: &str) -> RequestCfg {
-        serde_yaml_ng::from_str(yaml).expect("test fixture parses")
+        crate::yaml::from_str(yaml).expect("test fixture parses")
     }
 
     fn resolve_bare(cfg: &RequestCfg, default_path: &str, auth: AuthMode) -> ResolvedRequest {

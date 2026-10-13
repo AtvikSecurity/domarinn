@@ -259,14 +259,14 @@ fn the_annotated_reference_example_sets_every_top_level_suite_key() {
     let dir = "38-annotated-reference-suite";
     let file = examples_root().join(dir).join("domarinn.yaml");
     let text = std::fs::read_to_string(&file).expect("the annotated example ships");
-    let doc: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&text).expect("the annotated example is valid YAML");
-    let mapping = doc.as_mapping().expect("a suite file is a YAML mapping");
+    let doc =
+        domarinn_core::yaml::parse_suite_value(&text).expect("the annotated example is valid YAML");
+    let mapping = doc.as_object().expect("a suite file is a YAML mapping");
 
     let missing: Vec<&str> = keys
         .iter()
         .copied()
-        .filter(|key| !mapping.contains_key(serde_yaml_ng::Value::String((*key).to_string())))
+        .filter(|key| !mapping.contains_key(*key))
         .collect();
     assert!(
         missing.is_empty(),

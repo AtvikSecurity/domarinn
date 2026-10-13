@@ -13,7 +13,7 @@ use crate::config::{Assert, Defaults, GeneratorSpec, Suite, TestCase, TestSource
 use crate::filevars::{resolve_assert_file_vals, resolve_digest_salts, resolve_file_vars};
 use crate::matrix::expand_matrix;
 use crate::sandbox::{self, SandboxError};
-use crate::val::{desugar_tags, Val};
+use crate::val::Val;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveError {
@@ -220,23 +220,18 @@ fn load_test_file(path: &Path) -> Result<Vec<TestCase>, ResolveError> {
 
 /// Accept either a top-level sequence of tests or a mapping with a `tests:` key.
 fn parse_yaml_tests(text: &str, path: &Path) -> Result<Vec<TestCase>, ResolveError> {
-    let value: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(text).map_err(|e| parse_err(path, e))?;
-    let value = desugar_tags(value);
+    let value = crate::yaml::parse_suite_value(text).map_err(|e| parse_err(path, e))?;
     let seq = match value {
-        serde_yaml_ng::Value::Sequence(seq) => seq,
-        serde_yaml_ng::Value::Mapping(mut map) => {
-            match map.remove(serde_yaml_ng::Value::String("tests".into())) {
-                Some(serde_yaml_ng::Value::Sequence(seq)) => seq,
-                _ => {
-                    return Err(ResolveError::Parse {
-                        path: path.display().to_string(),
-                        message: "expected a sequence of tests or a mapping with a 'tests' list"
-                            .into(),
-                    })
-                }
+        Json::Array(seq) => seq,
+        Json::Object(mut map) => match map.remove("tests") {
+            Some(Json::Array(seq)) => seq,
+            _ => {
+                return Err(ResolveError::Parse {
+                    path: path.display().to_string(),
+                    message: "expected a sequence of tests or a mapping with a 'tests' list".into(),
+                })
             }
-        }
+        },
         _ => {
             return Err(ResolveError::Parse {
                 path: path.display().to_string(),
@@ -245,7 +240,7 @@ fn parse_yaml_tests(text: &str, path: &Path) -> Result<Vec<TestCase>, ResolveErr
         }
     };
     seq.into_iter()
-        .map(|v| serde_yaml_ng::from_value(v).map_err(|e| parse_err(path, e)))
+        .map(|v| serde_json::from_value(v).map_err(|e| parse_err(path, e)))
         .collect()
 }
 

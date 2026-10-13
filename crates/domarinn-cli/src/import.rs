@@ -17,9 +17,7 @@ pub fn execute(path: PathBuf) -> u8 {
             return exit::USAGE;
         }
     };
-    let src: Json = match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text)
-        .and_then(|v| serde_json::to_value(v).map_err(serde::de::Error::custom))
-    {
+    let src: Json = match domarinn_core::yaml::parse_value(&text) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: parsing promptfoo config: {e}");
@@ -30,7 +28,7 @@ pub fn execute(path: PathBuf) -> u8 {
     let mut notes: Vec<String> = Vec::new();
     let suite = convert(&src, &mut notes);
 
-    match serde_yaml_ng::to_string(&suite) {
+    match to_yaml(&suite) {
         Ok(yaml) => {
             println!("# Converted from a promptfoo config by `domarinn import promptfoo`.");
             println!("# yaml-language-server: $schema=./domarinn.schema.json");
@@ -45,6 +43,16 @@ pub fn execute(path: PathBuf) -> u8 {
             exit::INFRA
         }
     }
+}
+
+/// Emit `v` as YAML. serde-saphyr folds single-line strings longer than 80
+/// characters into `>-` blocks by default; turn that off so a long prompt or
+/// rubric stays on one line, as the user wrote it.
+fn to_yaml<T: serde::Serialize>(v: &T) -> Result<String, serde_saphyr::SerializeError> {
+    // `SerializerOptions` is `#[non_exhaustive]`: mutate a default, don't build a literal.
+    let mut o = serde_saphyr::SerializerOptions::default();
+    o.folded_wrap_chars = usize::MAX;
+    serde_saphyr::to_string_with_options(v, o)
 }
 
 fn convert(src: &Json, notes: &mut Vec<String>) -> Json {

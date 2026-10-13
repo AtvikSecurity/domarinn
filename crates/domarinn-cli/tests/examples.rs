@@ -406,7 +406,7 @@ fn example_39_the_committed_conversion_is_the_converters_output_and_runs() {
     // sequences. Neither changes the suite, and a byte comparison would reject
     // the file for saying what it is.
     let parse = |what: &str, text: &str| {
-        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text)
+        domarinn_core::yaml::parse_suite_value(text)
             .unwrap_or_else(|e| panic!("{what} is not valid YAML: {e}"))
     };
     assert_eq!(

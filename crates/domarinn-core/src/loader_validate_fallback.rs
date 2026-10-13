@@ -172,7 +172,7 @@ mod tests {
     use super::*;
 
     fn suite_from(yaml: &str) -> Suite {
-        serde_yaml_ng::from_str(yaml).expect("test fixture must parse")
+        crate::yaml::from_str(yaml).expect("test fixture must parse")
     }
 
     fn check_yaml(yaml: &str) -> Vec<Issue> {

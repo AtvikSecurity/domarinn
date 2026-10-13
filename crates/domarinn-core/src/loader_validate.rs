@@ -10,7 +10,7 @@
 //! keys inside the bare `ProviderKind` a grader carries. Both key sets come from
 //! the generated JSON Schema, so they can never drift from the code.
 
-use serde_yaml_ng::Value as Yaml;
+use crate::yaml::Yaml;
 
 use crate::config::Suite;
 
@@ -393,7 +393,7 @@ fn check_unknown_flatten_keys(raw: &Yaml, issues: &mut Vec<Issue>) {
     // so its key set has no common fields — only the per-`type` variant keys.
     let provider_kind_keys = VariantKeys::from_schema(&schema, "ProviderKind");
 
-    if let Some(providers) = raw.get("providers").and_then(Yaml::as_sequence) {
+    if let Some(providers) = raw.get("providers").and_then(Yaml::as_array) {
         for (i, entry) in providers.iter().enumerate() {
             check_flatten_entry(
                 entry,
@@ -411,7 +411,7 @@ fn check_unknown_flatten_keys(raw: &Yaml, issues: &mut Vec<Issue>) {
     if let Some(asserts) = raw
         .get("defaults")
         .and_then(|d| d.get("assert"))
-        .and_then(Yaml::as_sequence)
+        .and_then(Yaml::as_array)
     {
         for (j, entry) in asserts.iter().enumerate() {
             let path = format!("defaults.assert[{j}]");
@@ -425,14 +425,14 @@ fn check_unknown_flatten_keys(raw: &Yaml, issues: &mut Vec<Issue>) {
         }
     }
 
-    if let Some(tests) = raw.get("tests").and_then(Yaml::as_sequence) {
+    if let Some(tests) = raw.get("tests").and_then(Yaml::as_array) {
         for (i, test) in tests.iter().enumerate() {
             // Only inline test cases carry an `assert` list; a `file://` glob is
             // a string and a generator source is a `{generator: ...}` mapping.
-            if test.as_mapping().is_none() || test.get("generator").is_some() {
+            if test.as_object().is_none() || test.get("generator").is_some() {
                 continue;
             }
-            if let Some(asserts) = test.get("assert").and_then(Yaml::as_sequence) {
+            if let Some(asserts) = test.get("assert").and_then(Yaml::as_array) {
                 for (j, entry) in asserts.iter().enumerate() {
                     let path = format!("tests[{i}].assert[{j}]");
                     check_flatten_entry(entry, &assert_keys, &path, "assert", issues);
@@ -482,7 +482,7 @@ fn check_flatten_entry(
     kind: &str,
     issues: &mut Vec<Issue>,
 ) {
-    let Some(map) = entry.as_mapping() else {
+    let Some(map) = entry.as_object() else {
         return;
     };
     let Some(ty) = entry.get("type").and_then(|v| v.as_str()) else {
@@ -496,8 +496,8 @@ fn check_flatten_entry(
     let Some(variant) = keys.by_type.get(ty) else {
         return;
     };
-    for (k, _) in map {
-        let Some(key) = k.as_str() else { continue };
+    for key in map.keys() {
+        let key = key.as_str();
         if !keys.common.contains(key) && !variant.contains(key) {
             issues.push(Issue::new(
                 path.to_string(),

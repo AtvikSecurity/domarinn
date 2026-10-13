@@ -68,6 +68,7 @@ pub mod stats;
 pub mod template;
 pub mod template_fns;
 pub mod val;
+pub mod yaml;
 
 pub use config::Suite;
 pub use diff::{diff_runs, RunDiff};

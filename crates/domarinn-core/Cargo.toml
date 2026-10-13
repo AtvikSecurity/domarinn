@@ -13,7 +13,7 @@ domarinn-protocol = { workspace = true }
 domarinn-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml_ng = { workspace = true }
+serde-saphyr = { workspace = true }
 serde_path_to_error = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { version = "12", features = ["serde-json-impl", "chrono-impl", "no-serde-warnings"] }

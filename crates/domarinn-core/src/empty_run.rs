@@ -416,7 +416,7 @@ mod tests {
     }
 
     fn mixed_suite() -> Vec<crate::config::Provider> {
-        serde_yaml_ng::from_str(
+        crate::yaml::from_str(
             "- id: primary\n  type: exec\n  command: [x]\n\
              - id: reserve\n  fallback_only: true\n  type: exec\n  command: [x]\n\
              - id: embedder\n  type: embeddings\n  model: m\n",

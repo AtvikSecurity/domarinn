@@ -518,7 +518,7 @@ mod request_overlay_tests {
 
     fn resolved(yaml: &str) -> crate::request_cfg::ResolvedRequest {
         let cfg: crate::config::RequestCfg =
-            serde_yaml_ng::from_str(yaml).expect("test fixture parses");
+            crate::yaml::from_str(yaml).expect("test fixture parses");
         crate::request_cfg::resolve(
             "grader.provider",
             Some(&cfg),

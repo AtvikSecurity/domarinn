@@ -211,7 +211,7 @@ mod tests {
     use crate::result::AssertStatus;
 
     fn suite_of(yaml: &str) -> Suite {
-        serde_yaml_ng::from_str(yaml).expect("suite parses")
+        crate::yaml::from_str(yaml).expect("suite parses")
     }
 
     const BASE: &str = r#"

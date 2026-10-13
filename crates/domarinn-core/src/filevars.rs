@@ -318,7 +318,7 @@ fn load_file_var(spec: &FileSpec, base_dir: &Path) -> Result<Val, ResolveError> 
                 message: e.to_string(),
             })?,
             "yaml" | "yml" => {
-                serde_yaml_ng::from_str::<Json>(&text).map_err(|e| ResolveError::Parse {
+                crate::yaml::from_str::<Json>(&text).map_err(|e| ResolveError::Parse {
                     path: resolved.display().to_string(),
                     message: e.to_string(),
                 })?

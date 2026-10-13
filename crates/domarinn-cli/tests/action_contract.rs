@@ -130,21 +130,21 @@ fn repo_root() -> PathBuf {
         .expect("the repository root resolves from crates/domarinn-cli")
 }
 
-fn action() -> serde_yaml_ng::Value {
+fn action() -> serde_json::Value {
     let path = repo_root().join(ACTION);
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {ACTION}: {e}"));
-    serde_yaml_ng::from_str(&raw).unwrap_or_else(|e| panic!("parsing {ACTION}: {e}"))
+    domarinn_core::yaml::parse_value(&raw).unwrap_or_else(|e| panic!("parsing {ACTION}: {e}"))
 }
 
-fn steps() -> Vec<serde_yaml_ng::Value> {
+fn steps() -> Vec<serde_json::Value> {
     action()["runs"]["steps"]
-        .as_sequence()
+        .as_array()
         .expect("runs.steps is a list")
         .clone()
 }
 
 /// The step whose `field` is `value`.
-fn step(field: &str, value: &str) -> serde_yaml_ng::Value {
+fn step(field: &str, value: &str) -> serde_json::Value {
     steps()
         .into_iter()
         .find(|s| s[field].as_str() == Some(value))
@@ -647,10 +647,10 @@ fn the_shape_this_test_assumes_still_holds() {
         );
 
         let mut declared: Vec<&str> = step["env"]
-            .as_mapping()
+            .as_object()
             .unwrap_or_else(|| panic!("{name} declares an `env` block"))
             .keys()
-            .filter_map(|k| k.as_str())
+            .map(String::as_str)
             .collect();
         let mut covered: Vec<&str> = registered.env.iter().map(|(k, _)| *k).collect();
         declared.sort_unstable();
@@ -814,10 +814,10 @@ fn every_run_flag_is_an_input_or_a_written_down_exception() {
 #[test]
 fn every_declared_input_is_classified_and_consumed() {
     let inputs: BTreeSet<String> = action()["inputs"]
-        .as_mapping()
+        .as_object()
         .expect("the action declares inputs")
         .keys()
-        .filter_map(|k| k.as_str().map(String::from))
+        .cloned()
         .collect();
 
     let classified: BTreeSet<String> = INPUT_TO_RUN_ARGV

@@ -328,7 +328,7 @@ pub fn resolve_history(
         HistorySpec::File(path) => {
             let text = load_content(path, base_dir)?;
             let turns: Vec<Message> =
-                serde_yaml_ng::from_str(&text).map_err(|e| RenderError::BadTranscript {
+                crate::yaml::from_str(&text).map_err(|e| RenderError::BadTranscript {
                     path: path.clone(),
                     message: e.to_string(),
                 })?;

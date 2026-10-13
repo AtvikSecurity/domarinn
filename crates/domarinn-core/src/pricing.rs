@@ -35,7 +35,7 @@ use crate::types::TokenUsage;
 
 /// The rate table, authored in `pricing.yaml` next to this file.
 ///
-/// Data rather than a `const` table for two reasons: `serde_yaml_ng` is already
+/// Data rather than a `const` table for two reasons: a YAML parser is already
 /// a dependency so it costs no new crate, and a `.yaml` is outside the
 /// per-file line ratchet's extension list — so the table can grow with the
 /// model catalogue without dragging this module toward the cap or mixing churny
@@ -120,7 +120,7 @@ struct RateTable {
 }
 
 static TABLE: LazyLock<RateTable> = LazyLock::new(|| {
-    serde_yaml_ng::from_str(TABLE_YAML).expect("pricing.yaml is well-formed (pinned by a test)")
+    crate::yaml::from_str(TABLE_YAML).expect("pricing.yaml is well-formed (pinned by a test)")
 });
 
 /// Strip the vendor-neutral decorations an id can pick up in transit.
