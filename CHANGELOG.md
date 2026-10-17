@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.6](https://github.com/AtvikSecurity/domarinn/compare/0.10.5...0.10.6) (2026-10-17)
+
+
+### Bug Fixes
+
+* **deps:** replace unmaintained serde_yaml_ng with serde-saphyr ([#154](https://github.com/AtvikSecurity/domarinn/issues/154)) ([664c3d8](https://github.com/AtvikSecurity/domarinn/commit/664c3d868f3f3840f035f0fee64c9e357b73b7b6))
+
 ## [0.10.5](https://github.com/AtvikSecurity/domarinn/compare/0.10.4...0.10.5) (2026-08-22)
 
 
