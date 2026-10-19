@@ -32,7 +32,7 @@ env:
 jobs:
   build:
     name: build docs site
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The build is seconds of mkdocs plus a cached `cargo doc`; anything near
     # this is a hang, not slowness.
     timeout-minutes: 15
@@ -84,7 +84,7 @@ jobs:
     # be widened by a change to the trigger list.
     if: github.ref == 'refs/heads/main'
     needs: [build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     environment:
       name: github-pages

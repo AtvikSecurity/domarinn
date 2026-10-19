@@ -39,7 +39,7 @@ env:
 jobs:
   fmt:
     name: rustfmt
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
@@ -53,7 +53,7 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
@@ -66,7 +66,7 @@ jobs:
 
   test:
     name: test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The suite runs in seconds; anything approaching this is a hang. Bounded
     # for the same reason as the `web` job below, and more sharply needed here:
     # these tests spawn subprocesses and bind sockets, and a stub waiting on a
@@ -86,7 +86,7 @@ jobs:
 
   test-pg:
     name: test-pg
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Same suite as `test`, against the Postgres backend. The runner's Docker
     # hosts the database; a per-test CREATE DATABASE keeps tests isolated.
     timeout-minutes: 20
@@ -104,7 +104,7 @@ jobs:
 
   saml:
     name: saml (feature-gated tests)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # rust:bookworm brings its own toolchain + the apt packages samael's
     # xmlsec backend needs at build time; mise is not used here.
     container: rust:1-bookworm
@@ -139,7 +139,7 @@ jobs:
     # their messages can be checked. Skipped on push to main itself — by then
     # the commit has landed and there is nothing left to gate.
     if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/renovate/')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     env:
       MISE_DISABLE_TOOLS: rust
@@ -187,7 +187,7 @@ jobs:
 
   web-lint:
     name: web lint
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
       # `mise run` auto-installs every tool in .mise/config.toml, which would
@@ -203,7 +203,7 @@ jobs:
 
   web-build:
     name: web build (typecheck)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
       MISE_DISABLE_TOOLS: rust
@@ -218,7 +218,7 @@ jobs:
 
   web-test:
     name: web unit tests (vitest)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The suite takes seconds; anything approaching this is a hang, not
     # slowness. Without a bound a wedged run burned ~14 minutes and still
     # produced no logs, which is the worst of both — slow *and* undiagnosable.
@@ -234,7 +234,7 @@ jobs:
 
   e2e:
     name: web e2e (playwright)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The suite itself is fast; the budget is dominated by the chromium
     # download. Bounded for the same reason as the `web` job — a wedged
     # browser launch produces no logs, so it must fail rather than hang.
@@ -264,7 +264,7 @@ jobs:
 
   schema-check:
     name: schema is up to date
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
@@ -281,7 +281,7 @@ jobs:
 
   gen-types-check:
     name: generated TS types are up to date
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
         with:
@@ -298,7 +298,7 @@ jobs:
 
   workflow-lint:
     name: workflows pass zizmor
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # .lefthook.toml runs zizmor on staged workflow files pre-commit, but a
     # fork PR never runs our hooks — on a public repo this job is the only
     # thing standing between a malicious workflow edit and a merge.
