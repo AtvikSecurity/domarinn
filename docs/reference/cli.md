@@ -99,8 +99,8 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--no-fallback` | Do not let a provider hand off to its [`fallback:`](providers.md#falling-back-to-another-provider) chain. **The right posture for a gate**: fallback is resilience, and a CI job usually wants to learn that its primary provider is broken rather than have the result quietly produced by a different model. It disables chain *walking* only: a [`fallback_only`](providers.md#fallback_only-a-provider-that-is-reachable-but-never-a-cell) provider stays out of the matrix, since membership is suite configuration and not something a resilience flag should move. `DOMARINN_NO_FALLBACK=true` sets the same thing; the flag wins, and a value that is not a boolean **refuses the run** (exit `2`) naming the value, rather than being guessed at — a typo'd `DOMARINN_NO_FALLBACK=ture` must not quietly leave fallback on in the gate that set it. |
 | `--repeat <N>` | Run each cell N times (variance / pass@k). |
 | `-j`, `--concurrency <N>` | Max concurrent provider calls (overrides `runner.concurrency`). |
-| `--format <F>` | Output format, repeatable: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`, on stdout. |
-| `--out <FILE>` | Write the primary output to a file instead of stdout. |
+| `--format <FMT>[=<PATH>]` | Output format: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`. A bare format goes to `--out`, or stdout; `FMT=PATH` writes that format to its own file. Repeatable, but **every format needs its own destination**: two bare formats with one `--out` (each write would truncate the last) or on stdout (concatenated, unparseable) are a usage error (exit `2`), refused before the run spends anything — write `--format json=results.json --format junit=results.xml` instead. |
+| `--out <FILE>` | Write the bare `--format` (or the default table) to a file instead of stdout. A usage error when every `--format` already names its own file, since nothing would be written to it. |
 | `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |
 | `--no-progress` | Disable the live progress bar (see below). |
 | `--allow-empty` | Succeed even if the run resolves to zero cases. Without it that is exit 2, because a green result over no cells is indistinguishable from a green result over every cell. Pass it for a sharded matrix where a shard legitimately has no work. |
@@ -114,6 +114,7 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 ```sh
 domarinn run examples/12-render-health                 # run, print a table
 domarinn run --tag safety -j 8 --format junit --out results.xml
+domarinn run --format json=results.json --format junit=results.xml   # both from one run
 domarinn run --against server:baseline --summary-md summary.md
 domarinn run --note "retry backoff, 3rd attempt"    # label this run
 ```
