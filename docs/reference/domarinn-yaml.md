@@ -516,10 +516,11 @@ Execution controls for the whole run.
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `concurrency` | int | `1` | Number of provider calls in flight at once. |
-| `retries` | object | none | Retry policy for failing provider calls (below). |
-| `rate_limit` | object | none | `{ rps: <float> }` — cap requests per second. |
-| `timeout_ms` | int | none | Overall per-call timeout in milliseconds. |
-| `short_circuit` | bool | `true` | When true, a failing deterministic assertion short-circuits (skips) the LLM grader for that case. |
+| `retries` | object | `{max: 2}` | Retry policy for retriable provider failures (below). **On by default**: with no `retries` block, a 429, 5xx or timeout is retried twice. Set `max: 0` to turn retrying off. `--retries N` overrides `max` for one run. |
+| `rate_limit` | object | none | `{ rps: <float> }` — cap on outgoing provider requests per second, run-wide and across every provider. Requests are spaced `1 / rps` apart with no burst. Every live attempt takes a slot, including retries and `fallback:` links; cache hits take none. Grader and embedding calls are not limited. `rps` must be positive — `validate` rejects `0` or a negative rate. Time spent waiting for a slot is not counted in `latency_ms`. |
+| `timeout_ms` | int | none | Per-request timeout for provider calls, in milliseconds. Replaces each provider's default — 120 s for `anthropic`, `openai` and `http`; 60 s for `exec` and the embeddings client. An `exec` provider's own `timeout_ms` is more specific and wins. Applies to each attempt, not to the retry loop. A timed-out `exec` child is killed. An expiry is a retriable `provider_timeout`. Graders are not covered: they use [`grader.timeout_ms`](#grader). Must be greater than `0`. |
+| `short_circuit` | bool | `true` | When `true`, graded assertions (`llm-rubric`, `similar`, `exec`) are skipped once the deterministic ones have already decided the case. Set `false` to grade every assertion anyway — a full per-assertion report, at the cost of the judge calls the default saves. It never changes a case's verdict. See [assertions.md](assertions.md#evaluation-order-and-short-circuiting). |
+| `skip_on_empty_reason` | list of strings | `[]` | [Empty reasons](../concepts/grading.md#empty-outputs-and-grading) that mark a case `skip` instead of grading it, e.g. `[tool_use_only]`. A skipped case is counted separately and does not lower the pass rate. Opt-in, because which reasons qualify depends on the suite. |
 | `refusal_patterns` | list of regex | `[]` | Outputs matching any of these are treated as a refusal even though the vendor did not say so. Opt-in; a false positive silently hands the case to a `fallback:` provider, so anchor them. An invalid regex is a `validate` error. See [providers.md](providers.md#prose-refusals-runnerrefusal_patterns). |
 | `fallback_on_empty_reason` | list of strings | `["refusal", "content_filter"]` | Which [empty reasons](../concepts/grading.md#empty-outputs-and-grading) make a provider hand off to its `fallback:` chain. Set `[]` to hand off only on hard call failures. Hard failures are a fixed list and are not configurable here. |
 
@@ -527,10 +528,11 @@ Execution controls for the whole run.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `max` | int | **yes** | Maximum retry attempts. |
-| `initial_ms` | int | no | Initial backoff delay. |
-| `max_ms` | int | no | Backoff ceiling. |
-| `jitter` | bool | no (default `false`) | Randomize backoff to avoid thundering herds. |
+| `max` | int | **yes** | Retries after the first attempt. Required inside a `retries` block; with no block at all it defaults to `2`. `0` disables retrying. |
+| `initial_ms` | int | no (default `500`) | Initial backoff delay, doubling each retry. |
+| `max_ms` | int | no (default `8000`) | Ceiling on that exponential backoff. Does not cap a server's `Retry-After`. |
+| `jitter` | bool | no (default `false`) | Randomize backoff to avoid thundering herds. Never applied to a server's `Retry-After`. |
+| `retry_after_max_ms` | int | no (default `120000`) | Largest server-supplied `Retry-After` to honor. A longer one errors the case instead of retrying early, which would only earn another 429. |
 
 ```yaml
 --8<-- "examples/20-runner-tuning/domarinn.yaml:runner"

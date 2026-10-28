@@ -311,8 +311,8 @@ The HTTP-backed providers (`anthropic`, `openai`, `http`, and the embeddings cli
 Details:
 
 - **`Retry-After` is honored.** On a `429`/`5xx` carrying a `Retry-After` header (delta-seconds form), that delay is used before the next attempt; otherwise the runner's exponential backoff applies.
-- **Retries are opt-in.** The default is no retries (`runner.retries.max = 0`). Configure `runner.retries` to enable backoff (default initial 500 ms, max 8000 ms). A retriable error that exhausts attempts becomes a case `error` (exit code `3`); a fatal error becomes a case `error` immediately.
-- **Default request timeout** for `anthropic`, `openai`, and `http` is **120 s**; the embeddings client uses **60 s**. The `exec` provider uses its own `timeout_ms` (default 60000 ms).
+- **Retries are on by default.** With no `runner.retries` block, a retriable error is retried **twice**, backing off from 500 ms up to 8000 ms. Set `runner.retries.max: 0` to turn retrying off, or pass `--retries N` for one run. A retriable error that exhausts attempts becomes a case `error` (exit code `3`); a fatal error becomes a case `error` immediately.
+- **Default request timeout** for `anthropic`, `openai`, and `http` is **120 s**; the embeddings client uses **60 s**. The `exec` provider uses its own `timeout_ms` (default 60000 ms). `runner.timeout_ms` replaces all of these defaults for the run, but an `exec` provider's own `timeout_ms` still wins. A timed-out `exec` child is killed and reported as `provider_timeout`.
 - **API keys never appear in cache keys.** The key hashes the *redacted* request: credentials live in headers, which the keyed envelope excludes structurally, and an `exec` provider's declared `env` enters as a digest — precisely because `env` is a credential channel, so the values never reach the stored entry. What the key does cover for `exec` is the command and its args plus the document sent to the child.
 
 The two failure classes map to `ProviderError::Retriable { retry_after }` and `ProviderError::Fatal` internally, which is what the runner's retry loop keys off.
