@@ -5,8 +5,13 @@
 //! `me`) inspect the request [`Identity`] directly; the management endpoints use
 //! the [`Scoped`] extractors so they obey the active [`crate::AuthMode`].
 
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::Utc;
@@ -26,6 +31,131 @@ use crate::AppState;
 
 /// Minimum acceptable password length.
 const MIN_PASSWORD_LEN: usize = 8;
+
+// ---------------------------------------------------------------------------
+// Failed-password throttling
+// ---------------------------------------------------------------------------
+
+/// Password attempts allowed per key per [`THROTTLE_WINDOW`].
+const MAX_PASSWORD_ATTEMPTS: u32 = 5;
+/// How long a key's attempts are remembered, measured from its first one.
+const THROTTLE_WINDOW: Duration = Duration::from_secs(15 * 60);
+/// Cap on tracked keys, so a spray of random usernames cannot grow the map
+/// without bound.
+const MAX_THROTTLE_KEYS: usize = 10_000;
+
+struct Attempts {
+    count: u32,
+    window_start: Instant,
+}
+
+/// In-memory, per-process backoff for password checks: at most
+/// [`MAX_PASSWORD_ATTEMPTS`] unsuccessful attempts per key in a
+/// [`THROTTLE_WINDOW`], after which the key gets a 429 with `Retry-After`
+/// until the window lapses. A success clears the key.
+///
+/// [`Self::begin`] counts the attempt *before* the password is checked, so N
+/// concurrent guesses cannot all slip past a check that has not yet seen any
+/// of them fail; the successful path then [`Self::clear`]s it.
+///
+/// Per-process, like the MCP rate limiter: several replicas behind one load
+/// balancer each allow their own budget. That still turns an online guessing
+/// attack from unbounded into a handful of tries per quarter hour.
+#[derive(Default)]
+pub(crate) struct LoginThrottle {
+    entries: Mutex<HashMap<String, Attempts>>,
+}
+
+impl LoginThrottle {
+    /// Record an attempt for `key`, or `Err(retry_after)` when it is out of
+    /// attempts for the current window.
+    pub(crate) fn begin(&self, key: &str, now: Instant) -> Result<(), Duration> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if entries.len() >= MAX_THROTTLE_KEYS && !entries.contains_key(key) {
+            entries.retain(|_, a| now.saturating_duration_since(a.window_start) < THROTTLE_WINDOW);
+            if entries.len() >= MAX_THROTTLE_KEYS {
+                // Still full of live windows: drop the oldest, which is the
+                // closest to expiring anyway.
+                if let Some(oldest) = entries
+                    .iter()
+                    .min_by_key(|(_, a)| a.window_start)
+                    .map(|(k, _)| k.clone())
+                {
+                    entries.remove(&oldest);
+                }
+            }
+        }
+        let attempts = entries.entry(key.to_string()).or_insert(Attempts {
+            count: 0,
+            window_start: now,
+        });
+        let elapsed = now.saturating_duration_since(attempts.window_start);
+        if elapsed >= THROTTLE_WINDOW {
+            attempts.count = 0;
+            attempts.window_start = now;
+        }
+        if attempts.count >= MAX_PASSWORD_ATTEMPTS {
+            let remaining = THROTTLE_WINDOW.saturating_sub(elapsed);
+            // Round up so a client that honors `Retry-After` always gets in.
+            return Err(Duration::from_secs(
+                remaining.as_secs_f64().ceil().max(1.0) as u64
+            ));
+        }
+        attempts.count += 1;
+        Ok(())
+    }
+
+    /// Forget `key` after a successful password check.
+    pub(crate) fn clear(&self, key: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(key);
+    }
+}
+
+/// The throttle key for a login attempt.
+///
+/// The peer address comes from axum's `ConnectInfo`, which is only present
+/// when the server is served with `into_make_service_with_connect_info`; when
+/// it is absent (and under the `oneshot` test harness) the key degrades to the
+/// username alone. Forwarding headers are deliberately ignored: the server has
+/// no trusted-proxy setting, so `X-Forwarded-For` is whatever the attacker
+/// says it is, and honoring it would hand every guess a fresh bucket.
+fn login_throttle_key(peer: Option<SocketAddr>, username: &str) -> String {
+    match peer {
+        Some(addr) => format!("login\0{}\0{username}", addr.ip()),
+        None => format!("login\0-\0{username}"),
+    }
+}
+
+/// A 429 carrying `Retry-After` in whole seconds.
+fn throttled_response(retry_after: Duration) -> Response {
+    let mut response = ApiError::status(
+        StatusCode::TOO_MANY_REQUESTS,
+        format!(
+            "too many failed password attempts; try again in {} seconds",
+            retry_after.as_secs()
+        ),
+    )
+    .into_response();
+    response.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        HeaderValue::from(retry_after.as_secs()),
+    );
+    response
+}
+
+/// A real argon2 hash (default parameters, so the same cost as any stored
+/// one) of a password nobody holds, verified against when the username has no
+/// usable hash. Computed once, on first use.
+fn dummy_hash() -> &'static str {
+    static DUMMY: LazyLock<String> = LazyLock::new(|| {
+        auth::hash_password(&auth::generate_session_token())
+            .expect("hashing the timing-equalizer password")
+    });
+    DUMMY.as_str()
+}
 
 // ---------------------------------------------------------------------------
 // Setup / login / logout / me
@@ -63,30 +193,113 @@ pub(crate) async fn setup(
 }
 
 /// `POST /auth/login` — exchange username + password for a session token.
+///
+/// Throttled per (peer address, username) by [`LoginThrottle`], and
+/// constant-shape for every failure: an unknown username, an SSO-only
+/// account, and a disabled account all pay for one argon2 verify (against
+/// [`dummy_hash`] when there is no real one) and get the same 401, so neither
+/// the status nor the latency tells a caller which usernames exist.
 pub(crate) async fn login(
     State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
-    let invalid = || ApiError::status(StatusCode::UNAUTHORIZED, "invalid credentials");
-    let Some(user) = state
+    let key = login_throttle_key(
+        peer.map(|Extension(ConnectInfo(addr))| addr),
+        &body.username,
+    );
+    if let Err(retry_after) = state.login_throttle.begin(&key, Instant::now()) {
+        return Ok(throttled_response(retry_after));
+    }
+    let user = state
         .storage
         .get_user_by_username(body.username.clone())
-        .await?
-    else {
-        return Err(invalid());
+        .await?;
+    // SSO-only accounts carry the empty-string password sentinel, which
+    // `verify_password` would reject instantly; they verify against the dummy
+    // hash instead, like an unknown username, so they cost the same.
+    let stored = user
+        .as_ref()
+        .map(|u| u.password_hash.as_str())
+        .filter(|h| !h.is_empty());
+    let password_ok = auth::verify_password(stored.unwrap_or_else(|| dummy_hash()), &body.password);
+    let user = match user {
+        Some(user) if stored.is_some() && password_ok && !user.disabled => user,
+        _ => {
+            return Err(ApiError::status(
+                StatusCode::UNAUTHORIZED,
+                "invalid credentials",
+            ))
+        }
     };
-    // SSO-only accounts have the empty-string password sentinel; reject them
-    // here so a caller can never brute-force their way past `verify_password`
-    // (which already fails closed on a non-PHC hash — this is defense in
-    // depth and avoids account enumeration via a distinct error).
-    if user.password_hash.is_empty()
-        || user.disabled
-        || !auth::verify_password(&user.password_hash, &body.password)
-    {
-        return Err(invalid());
-    }
+    state.login_throttle.clear(&key);
     let token = issue_session(&state, &user.id).await?;
     Ok(session_response(&state, StatusCode::OK, token, &user))
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChangePasswordBody {
+    current_password: String,
+    new_password: String,
+}
+
+/// `POST /me/password` — change the caller's own password.
+///
+/// Requires the current password even though the caller is already
+/// authenticated: a borrowed laptop or a stolen session cookie must not be
+/// enough to take the account over for good. Every *other* session of the
+/// user is revoked; the presenting one survives, so the browser that made the
+/// change stays signed in. Wrong guesses at `current_password` count against
+/// the same [`LoginThrottle`] as login, keyed on the account.
+pub(crate) async fn change_password(
+    scope: Scoped<Read>,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<ChangePasswordBody>,
+) -> ApiResult<Response> {
+    // `Read` is open to anonymous callers outside `closed` mode; there is no
+    // "own password" to change without a credential, so say so with a 401
+    // (as `logout` does) rather than `require_user`'s 403.
+    if !scope.identity.is_authenticated() {
+        return Err(ApiError::status(
+            StatusCode::UNAUTHORIZED,
+            "authentication required",
+        ));
+    }
+    let user_id = require_user(&scope.identity)?;
+    let user = state
+        .storage
+        .get_user_by_id(user_id.clone())
+        .await?
+        .ok_or_else(|| not_found("user"))?;
+    if user.password_hash.is_empty() {
+        return Err(ApiError::status(
+            StatusCode::BAD_REQUEST,
+            "this account signs in through SSO and has no local password to change",
+        ));
+    }
+    validate_password(&body.new_password)?;
+
+    let key = format!("password-change\0{}", user_id.as_str());
+    if let Err(retry_after) = state.login_throttle.begin(&key, Instant::now()) {
+        return Ok(throttled_response(retry_after));
+    }
+    // 403, not 401: the caller *is* authenticated, and the web client treats
+    // any 401 as "your session is gone" and prompts for a new credential.
+    if !auth::verify_password(&user.password_hash, &body.current_password) {
+        return Err(ApiError::status(
+            StatusCode::FORBIDDEN,
+            "current password is incorrect",
+        ));
+    }
+    state.login_throttle.clear(&key);
+
+    let hash = auth::hash_password(&body.new_password)?;
+    state
+        .storage
+        .update_password_keeping_session(user_id, hash, scope.identity.session_token_hash.clone())
+        .await?;
+    Ok(Json(OkResponse { ok: true }).into_response())
 }
 
 /// `POST /auth/logout` — revoke the presenting session and clear the session
@@ -284,8 +497,12 @@ pub(crate) async fn create_user(
 }
 
 /// `PATCH /users/{id}` — change role, enabled state, and/or password.
+///
+/// A password reset revokes all of the target's sessions, and so does
+/// disabling the account (in storage, alongside the flag). An admin resetting
+/// their *own* password keeps the session they made the request with.
 pub(crate) async fn patch_user(
-    _scope: Scoped<Admin>,
+    scope: Scoped<Admin>,
     State(state): State<AppState>,
     Path(id): Path<UserId>,
     ApiJson(body): ApiJson<PatchUserBody>,
@@ -316,7 +533,15 @@ pub(crate) async fn patch_user(
     if let Some(password) = &body.password {
         validate_password(password)?;
         let hash = auth::hash_password(password)?;
-        state.storage.update_password(id.clone(), hash).await?;
+        let keep = if scope.identity.user_id.as_ref() == Some(&id) {
+            scope.identity.session_token_hash.clone()
+        } else {
+            None
+        };
+        state
+            .storage
+            .update_password_keeping_session(id.clone(), hash, keep)
+            .await?;
     }
     let updated = state
         .storage
@@ -412,4 +637,93 @@ fn validate_password(password: &str) -> ApiResult<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sixth_attempt_in_a_window_is_refused_with_the_remaining_wait() {
+        let throttle = LoginThrottle::default();
+        let start = Instant::now();
+        for i in 0..MAX_PASSWORD_ATTEMPTS {
+            assert!(throttle.begin("k", start).is_ok(), "attempt {i}");
+        }
+        let later = start + Duration::from_secs(60);
+        let wait = throttle.begin("k", later).unwrap_err();
+        assert_eq!(wait, THROTTLE_WINDOW - Duration::from_secs(60));
+    }
+
+    #[test]
+    fn the_window_lapsing_restores_the_budget() {
+        let throttle = LoginThrottle::default();
+        let start = Instant::now();
+        for _ in 0..MAX_PASSWORD_ATTEMPTS {
+            throttle.begin("k", start).unwrap();
+        }
+        assert!(throttle.begin("k", start).is_err());
+        assert!(throttle.begin("k", start + THROTTLE_WINDOW).is_ok());
+    }
+
+    #[test]
+    fn a_success_clears_the_key_and_keys_are_independent() {
+        let throttle = LoginThrottle::default();
+        let now = Instant::now();
+        for _ in 0..MAX_PASSWORD_ATTEMPTS {
+            throttle.begin("a", now).unwrap();
+        }
+        assert!(throttle.begin("a", now).is_err());
+        assert!(throttle.begin("b", now).is_ok());
+        throttle.clear("a");
+        assert!(throttle.begin("a", now).is_ok());
+    }
+
+    #[test]
+    fn retry_after_rounds_up_and_is_never_zero() {
+        let throttle = LoginThrottle::default();
+        let start = Instant::now();
+        for _ in 0..MAX_PASSWORD_ATTEMPTS {
+            throttle.begin("k", start).unwrap();
+        }
+        let nearly = start + THROTTLE_WINDOW - Duration::from_millis(1);
+        assert_eq!(
+            throttle.begin("k", nearly).unwrap_err(),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn the_map_is_bounded() {
+        let throttle = LoginThrottle::default();
+        let now = Instant::now();
+        for i in 0..MAX_THROTTLE_KEYS + 50 {
+            throttle.begin(&format!("k{i}"), now).unwrap();
+        }
+        assert_eq!(throttle.entries.lock().unwrap().len(), MAX_THROTTLE_KEYS);
+    }
+
+    #[test]
+    fn the_key_ignores_the_port_and_degrades_to_username_without_a_peer() {
+        let a: SocketAddr = "10.0.0.1:4000".parse().unwrap();
+        let b: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+        assert_eq!(
+            login_throttle_key(Some(a), "root"),
+            login_throttle_key(Some(b), "root")
+        );
+        assert_ne!(
+            login_throttle_key(Some(a), "root"),
+            login_throttle_key(None, "root")
+        );
+        assert_ne!(
+            login_throttle_key(None, "root"),
+            login_throttle_key(None, "rooT")
+        );
+    }
+
+    #[test]
+    fn the_dummy_hash_is_a_real_argon2_hash() {
+        assert!(dummy_hash().starts_with("$argon2"));
+        assert!(!auth::verify_password(dummy_hash(), ""));
+    }
 }
