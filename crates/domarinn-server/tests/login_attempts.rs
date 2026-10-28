@@ -153,13 +153,25 @@ async fn prune_drops_only_rows_whose_windows_and_locks_have_lapsed() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+/// The race this guards is N guesses all reading "9 failures so far" and all
+/// being let through. One `Storage` handle cannot show it: `Db::write`
+/// serialises every closure behind that handle's writer mutex, so even a
+/// non-atomic read-then-write would pass. The attempts are therefore spread
+/// over four handles (four writers, as four replicas would have), leaving the
+/// database itself (SQLite's file lock, Postgres's row lock) as the only thing
+/// serialising them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn concurrent_begins_never_exceed_the_budget() {
-    let (s, _dir) = storage().await;
+    let (handles, _dir) = common::test_storage_handles(4).await;
+    let start = std::sync::Arc::new(tokio::sync::Barrier::new(20));
     let tasks: Vec<_> = (0..20)
-        .map(|_| {
-            let s = s.clone();
-            tokio::spawn(async move { begin(&s, "acct:race", T0).await })
+        .map(|i| {
+            let s = handles[i % handles.len()].clone();
+            let start = start.clone();
+            tokio::spawn(async move {
+                start.wait().await;
+                begin(&s, "acct:race", T0).await
+            })
         })
         .collect();
     let mut allowed = 0;

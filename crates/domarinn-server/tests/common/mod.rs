@@ -79,30 +79,45 @@ pub async fn test_app_with_storage(
     (app, storage, dir)
 }
 
-/// Two independent [`Storage`] handles onto one fresh database, with no app.
-/// Each handle has its own writer, so this stands in for two server replicas
-/// sharing a database: state that must hold across replicas is only proven
-/// when one handle's write is visible through the other. Backend follows
-/// `DOMARINN_TEST_BACKEND`, as in [`test_app_with_storage`].
-pub async fn test_storage_pair() -> (Storage, Storage, TempDir) {
+/// `n` independent [`Storage`] handles onto one fresh database, with no app.
+/// Each handle has its own writer (and its own writer mutex), so this stands
+/// in for `n` server replicas sharing a database: state that must hold across
+/// replicas is only proven when concurrent writes through *different* handles
+/// still agree. Backend follows `DOMARINN_TEST_BACKEND`, as in
+/// [`test_app_with_storage`].
+pub async fn test_storage_handles(n: usize) -> (Vec<Storage>, TempDir) {
     let dir = TempDir::new().expect("tempdir");
+    let mut handles = Vec::with_capacity(n);
     if pg::backend_is_postgres() {
         let url = tokio::task::spawn_blocking(pg::fresh_database_url)
             .await
             .expect("create postgres test database");
-        let a = Storage::open_postgres(url.clone()).await.expect("open a");
-        let b = Storage::open_postgres(url).await.expect("open b");
-        (a, b, dir)
+        for _ in 0..n {
+            handles.push(
+                Storage::open_postgres(url.clone())
+                    .await
+                    .expect("open storage handle"),
+            );
+        }
     } else {
         seed_sqlite_from_template(dir.path()).await;
-        let a = Storage::open(dir.path().to_path_buf())
-            .await
-            .expect("open a");
-        let b = Storage::open(dir.path().to_path_buf())
-            .await
-            .expect("open b");
-        (a, b, dir)
+        for _ in 0..n {
+            handles.push(
+                Storage::open(dir.path().to_path_buf())
+                    .await
+                    .expect("open storage handle"),
+            );
+        }
     }
+    (handles, dir)
+}
+
+/// [`test_storage_handles`] with two handles.
+pub async fn test_storage_pair() -> (Storage, Storage, TempDir) {
+    let (mut handles, dir) = test_storage_handles(2).await;
+    let b = handles.pop().expect("second handle");
+    let a = handles.pop().expect("first handle");
+    (a, b, dir)
 }
 
 /// Copy pre-migrated SQLite files into `dir` — the SQLite analogue of the
