@@ -75,6 +75,16 @@ impl AnthropicProvider {
         }
     }
 
+    /// Replace the default per-request timeout (`runner.timeout_ms`).
+    ///
+    /// The whole exchange — connect, send, and reading the body — has to finish
+    /// inside it. Expiry is retriable and classified `provider_timeout`, like any
+    /// other transport timeout; see [`crate::net::transport_error`].
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.client = http_client(timeout);
+        self
+    }
+
     /// Apply the suite's `request:` block and `cache_salt`.
     ///
     /// A builder rather than two more parameters on [`Self::new`] because it is
