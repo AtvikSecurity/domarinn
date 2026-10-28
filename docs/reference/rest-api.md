@@ -78,7 +78,7 @@ The scope gate is `read` rather than `write` so a `viewer` account can mint the 
 |--------|-------------------------|---------|-------|
 | GET    | `/api/v1/users`         | `admin` | List all accounts. |
 | POST   | `/api/v1/users`         | `admin` | Create an account: `{username, password, role}` (`role` = `admin`\|`member`\|`viewer`). |
-| PATCH  | `/api/v1/users/{id}`    | `admin` | Update `role`, `disabled`, and/or `password` (any subset). Setting `password` revokes all of the account's sessions (an admin resetting their own keeps the presenting one); `disabled: true` revokes them all too, so re-enabling never revives an old login. API keys are untouched. |
+| PATCH  | `/api/v1/users/{id}`    | `admin` | Update `role`, `disabled`, and/or `password` (any subset). Setting `password` revokes all of the account's sessions (an admin resetting their own keeps the presenting one); `disabled: true` revokes them all too, so re-enabling never revives an old login. API keys are untouched. Refuses (`409`) a demotion or disable that would leave no enabled admin. |
 | DELETE | `/api/v1/users/{id}`    | `admin` | Delete an account. Refuses the **last admin** (`409`). |
 
 ## Runs
