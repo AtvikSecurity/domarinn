@@ -307,6 +307,8 @@ pub struct AppState {
     pub(crate) auth: Arc<dyn Authenticator>,
     pub(crate) api_key_auth: Arc<ApiKeyAuthenticator>,
     pub(crate) session_auth: Arc<SessionAuthenticator>,
+    /// Failed-password backoff for `/auth/login` and `/me/password`.
+    pub(crate) login_throttle: Arc<accounts::LoginThrottle>,
     pub(crate) auth_mode: AuthMode,
     pub(crate) public_url: Option<String>,
     pub(crate) cache_limits: CacheLimits,
@@ -379,6 +381,7 @@ impl AppState {
         Ok(AppState {
             api_key_auth: Arc::new(ApiKeyAuthenticator::new(storage.clone())),
             session_auth: Arc::new(SessionAuthenticator::new(storage.clone())),
+            login_throttle: Arc::default(),
             storage,
             auth: Arc::new(authenticator),
             auth_mode,
@@ -738,6 +741,7 @@ fn spawn_cache_retention(state: AppState) {
             if let Err(e) = state.storage.sso_gc().await {
                 tracing::warn!(error = %e, "sso gc failed");
             }
+            state.storage.sweep_expired_sessions().await;
             // Opt-in: `None` never deletes a run. See storage::retention.
             if let Some(days) = state.run_max_age_days {
                 match state.storage.sweep_runs(days).await {
@@ -786,7 +790,9 @@ fn spawn_cache_retention(state: AppState) {
 pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError> {
     use ts_rs::Config;
 
-    use crate::accounts::{CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody};
+    use crate::accounts::{
+        ChangePasswordBody, CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody,
+    };
     use crate::baselines::BaselineBody;
     use crate::domain::{
         CacheSort, CacheTier, CachedFilter, OriginFilter, RunStatusFilter, SortOrder,
@@ -858,6 +864,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     CreateUserBody::export_all(&cfg)?;
     PatchUserBody::export_all(&cfg)?;
     CreateKeyBody::export_all(&cfg)?;
+    ChangePasswordBody::export_all(&cfg)?;
     BaselineBody::export_all(&cfg)?;
     SetGrantUpsert::export_all(&cfg)?;
 

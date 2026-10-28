@@ -240,20 +240,57 @@ impl Storage {
                     "UPDATE users SET role = ?2, disabled = ?3 WHERE id = ?1",
                     &params![id, new_role, new_disabled as i64],
                 )?;
+                // Disabling revokes every session outright. Lookups already
+                // refuse a disabled user's sessions, but leaving the rows would
+                // resurrect them all the moment the account is re-enabled —
+                // re-enabling should mean "may log in again", not "every
+                // browser that was signed in last month is back".
+                if new_disabled && !cur_disabled {
+                    tx.execute("DELETE FROM sessions WHERE user_id = ?1", &params![id])?;
+                }
                 tx.commit()?;
                 Ok(UpdateUserOutcome::Updated)
             })
             .await
     }
 
+    /// Replace a user's password hash and revoke **every** session they hold,
+    /// atomically. A password change that left existing sessions alive would
+    /// not lock out whoever prompted it — the usual reason to change one.
     pub async fn update_password(&self, id: UserId, password_hash: String) -> anyhow::Result<bool> {
+        self.update_password_keeping_session(id, password_hash, None)
+            .await
+    }
+
+    /// [`Self::update_password`], but spare the one session whose token hash
+    /// is `keep` — the caller's own, for a self-service change or an admin
+    /// resetting their own password. Every other session of the user is
+    /// revoked in the same transaction as the hash update.
+    pub async fn update_password_keeping_session(
+        &self,
+        id: UserId,
+        password_hash: String,
+        keep: Option<String>,
+    ) -> anyhow::Result<bool> {
         self.runs
             .write(move |conn| {
-                let n = conn.execute(
+                let mut tx = conn.immediate_tx()?;
+                let n = tx.execute(
                     "UPDATE users SET password_hash = ?2 WHERE id = ?1",
                     &params![id, password_hash],
                 )?;
-                Ok(n > 0)
+                if n == 0 {
+                    return Ok(false);
+                }
+                match keep {
+                    Some(keep) => tx.execute(
+                        "DELETE FROM sessions WHERE user_id = ?1 AND token_hash != ?2",
+                        &params![id, keep],
+                    )?,
+                    None => tx.execute("DELETE FROM sessions WHERE user_id = ?1", &params![id])?,
+                };
+                tx.commit()?;
+                Ok(true)
             })
             .await
     }
@@ -420,6 +457,22 @@ impl Storage {
                     )?;
                 }
                 Ok(found)
+            })
+            .await
+    }
+
+    /// Delete every session past its expiry; returns how many went. Expired
+    /// sessions are already refused by [`Self::lookup_session`], so this is
+    /// disk hygiene — without it the table grows by one row per login,
+    /// forever. Called by the hourly retention task via
+    /// [`Self::sweep_expired_sessions`].
+    pub async fn prune_expired_sessions(&self) -> anyhow::Result<u64> {
+        self.runs
+            .write(|conn| {
+                conn.execute(
+                    "DELETE FROM sessions WHERE expires_at <= ?1",
+                    &params![now_ms()],
+                )
             })
             .await
     }

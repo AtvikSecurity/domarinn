@@ -56,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(accounts::login))
         .route("/api/v1/auth/logout", post(accounts::logout))
         .route("/api/v1/auth/me", get(accounts::me))
+        .route("/api/v1/me/password", post(accounts::change_password))
         // SSO login flows (unauthenticated by design — they are the way in).
         .route(
             "/api/v1/auth/oidc/{provider}/start",
