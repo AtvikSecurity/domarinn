@@ -570,6 +570,42 @@ export function useDeleteRun() {
   });
 }
 
+/**
+ * Fetch a run's original document (`GET /runs/{id}/export`) and save it as a
+ * file.
+ *
+ * Through `apiRequest` rather than a plain `<a href download>`: a link sends
+ * the session cookie but not a bearer token pasted in Settings, so on a server
+ * reached by token the link would save a 401 body instead of the run.
+ */
+export function useExportRun() {
+  return useMutation({
+    mutationFn: async (runId: string) => {
+      const doc = await apiRequest<unknown>(
+        `/runs/${encodeURIComponent(runId)}/export`,
+      );
+      saveJsonFile(`${runId}.json`, doc);
+    },
+  });
+}
+
+/** Hand `data` to the browser as a JSON file download. */
+function saveJsonFile(filename: string, data: unknown): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on the next tick: some browsers start the download asynchronously
+  // and an immediately revoked URL aborts it.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 export function useCacheStats() {
   return useQuery({
     queryKey: qk.cacheStats,

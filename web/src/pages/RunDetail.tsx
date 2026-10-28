@@ -7,8 +7,13 @@ import {
   useRunCases,
   useRuns,
   useSetBaseline,
+  useSetSuite,
   useDeleteRun,
+  useExportRun,
 } from "@/api/queries";
+import { ApiError } from "@/api/client";
+import { apiErrorMessage } from "@/api/errorMessage";
+import { canPinBaseline } from "@/lib/baselineAccess";
 import { mergeParams, parseCaseFilters } from "@/lib/filters";
 import { parseSort, serializeSort } from "@/lib/sort";
 import { distinctProviders, distinctPrompts } from "@/lib/matrix";
@@ -45,6 +50,7 @@ import { CaseGrid } from "./run-detail/CaseGrid";
 import { CaseDrawer } from "./run-detail/CaseDrawer";
 import { ErrorBreakdown } from "./run-detail/ErrorBreakdown";
 import { MatrixView } from "./run-detail/MatrixView";
+import { UnpinBaselineButton } from "./sets/UnpinBaselineButton";
 
 const STATUS_CHIPS: { value: string; label: string }[] = [
   { value: "", label: "All" },
@@ -98,7 +104,14 @@ export function RunDetail() {
   useFillViewport();
   const baseline = useSetBaseline(run.data?.project ?? "", run.data?.suite ?? "");
   const auth = useAuthView();
+  // The suite's set detail: whether it is restricted, the caller's grant on
+  // it, and what is pinned — the three facts the baseline controls need.
+  const suiteSet = useSetSuite(
+    run.data?.project ?? undefined,
+    run.data?.suite ?? undefined,
+  );
   const deleteRun = useDeleteRun();
+  const exportRun = useExportRun();
   // Its own query, unfiltered by whatever the grid is showing: the breakdown
   // describes the *run*, so it must not change when someone narrows the grid.
   const erroredCases = useRunCases(id, { status: "error" });
@@ -267,6 +280,17 @@ export function RunDetail() {
   // Undefined when `r` is the oldest loaded run in its suite — the real
   // server has no target-less compare route, so the button is hidden.
   const compareTarget = previousRun(siblingRuns, r.id);
+  // A run that declared no project/suite has no baseline route to call. A set
+  // detail that failed to load is `null`: the scope check still applies and
+  // the server decides the rest.
+  const mayPin =
+    !!r.project &&
+    !!r.suite &&
+    canPinBaseline(auth, suiteSet.data ?? (suiteSet.isError ? null : undefined));
+  const isPinnedBaseline = suiteSet.data?.baseline_run_id === r.id;
+  // "Retry" is wrong advice for a refusal: the same request fails the same way.
+  const baselineRefused =
+    baseline.error instanceof ApiError && baseline.error.status === 403;
 
   return (
     // A flex column inside the filled shell: the header and filters take their
@@ -349,24 +373,60 @@ export function RunDetail() {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setConfirmDelete(true)}
+                onClick={() => {
+                  // A failure from an earlier attempt is not this attempt's
+                  // answer; without this it greeted every reopen.
+                  deleteRun.reset();
+                  setConfirmDelete(true);
+                }}
                 disabled={deleteRun.isPending}
               >
                 Delete run
               </Button>
             ) : null}
+            {/* Through the API rather than a plain link, so a bearer token
+                pasted in Settings is carried — a link sends only the cookie. */}
             <Button
-              variant="secondary"
+              variant="ghost"
               size="sm"
-              onClick={() => baseline.mutate({ runId: r.id })}
-              disabled={baseline.isPending}
+              onClick={() => exportRun.mutate(r.id)}
+              disabled={exportRun.isPending}
+              title="Download the stored run document as JSON"
             >
-              {justSetBaseline
-                ? "Baseline set ✓"
-                : baseline.isError
-                  ? "Could not set — retry"
-                  : "Set baseline"}
+              {exportRun.isPending ? "Downloading…" : "Download JSON"}
             </Button>
+            {exportRun.isError ? (
+              <span role="alert" className="text-xs text-fail">
+                {apiErrorMessage(exportRun.error, "Could not download the run.")}
+              </span>
+            ) : null}
+            {baseline.isError ? (
+              <span role="alert" className="text-xs text-fail">
+                {apiErrorMessage(baseline.error, "Could not set the baseline.")}
+              </span>
+            ) : null}
+            {/* Hidden from anyone the server would refuse: write scope, plus
+                an upload grant when the suite's set is restricted. */}
+            {mayPin && isPinnedBaseline && !justSetBaseline ? (
+              <UnpinBaselineButton
+                project={r.project ?? ""}
+                suite={r.suite ?? ""}
+                pinned={r.id}
+              />
+            ) : mayPin ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => baseline.mutate({ runId: r.id })}
+                disabled={baseline.isPending || justSetBaseline}
+              >
+                {justSetBaseline
+                  ? "Baseline set ✓"
+                  : baseline.isError && !baselineRefused
+                    ? "Could not set — retry"
+                    : "Set baseline"}
+              </Button>
+            ) : null}
             {compareTarget ? (
               <Link
                 to={`/runs/${encodeURIComponent(compareTarget.id)}/compare/${encodeURIComponent(r.id)}`}
@@ -657,7 +717,9 @@ export function RunDetail() {
         }
       >
         {deleteRun.isError ? (
-          <p className="text-sm text-fail">Could not delete the run. Try again.</p>
+          <p role="alert" className="text-sm text-fail">
+            {apiErrorMessage(deleteRun.error, "Could not delete the run. Try again.")}
+          </p>
         ) : null}
         <ModalActions
           onCancel={() => setConfirmDelete(false)}

@@ -442,6 +442,16 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
     if (method === "DELETE" && seg.length === 2) {
       return new Response(null, { status: 204 });
     }
+    // GET /runs/:id/export — the server returns the stored run document. The
+    // fixtures keep no such document, so the detail stands in: the UI only
+    // saves whatever JSON comes back.
+    if (seg[2] === "export" && method === "GET" && seg.length === 3) {
+      try {
+        return json(fx.runDetail(runId));
+      } catch {
+        return notFound();
+      }
+    }
     if (seg[2] === "cases") {
       // GET /runs/:id/cases
       if (method === "GET" && seg.length === 3) {
