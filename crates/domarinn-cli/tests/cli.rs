@@ -386,6 +386,73 @@ fn run_out_file_color_always_has_no_ansi() {
     assert!(String::from_utf8_lossy(&bytes).contains("PASS"));
 }
 
+/// `FMT=PATH` gives each format its own file, so one run can feed a JUnit
+/// reporter and a JSON consumer at once. A bare format beside them still
+/// takes `--out` — the composite action's `--format junit --out results.xml`
+/// shape, unchanged.
+#[test]
+fn run_paired_formats_each_write_their_own_file() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    bin()
+        .args([
+            "run",
+            "--format",
+            "junit",
+            "--out",
+            "results.xml",
+            "--format",
+            "json=results.json",
+            "--format",
+            "jsonl=cases.jsonl",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+    let xml = std::fs::read_to_string(dir.path().join("results.xml")).unwrap();
+    assert!(xml.starts_with("<?xml"), "{xml}");
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("results.json")).unwrap()).unwrap();
+    assert_eq!(json["summary"]["passed"], 1);
+    let jsonl = std::fs::read_to_string(dir.path().join("cases.jsonl")).unwrap();
+    assert_eq!(jsonl.lines().count(), 1);
+    serde_json::from_str::<serde_json::Value>(jsonl.trim()).unwrap();
+}
+
+/// Two bare formats and one `--out` used to truncate the file once per format,
+/// keeping only the last; two bare formats on stdout concatenated into
+/// something neither parser reads. Both are refused as usage errors, before the
+/// suite runs — nothing is persisted and no output file is created.
+#[test]
+fn run_two_formats_sharing_a_destination_refuse_before_running() {
+    let dir = tempfile::tempdir().unwrap();
+    write_suite(dir.path(), PASSING_SUITE);
+    bin()
+        .args(["run", "--format", "json", "--format", "junit", "--out", "f"])
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("only the last would survive"))
+        .stderr(predicate::str::contains(
+            "--format json=results.json --format junit=results.xml",
+        ));
+    assert!(!dir.path().join("f").exists());
+
+    bin()
+        .args(["run", "--format", "json", "--format", "junit"])
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("stdout"));
+
+    assert!(
+        !dir.path().join(".domarinn").join("runs").exists(),
+        "a refused invocation must not have run the suite"
+    );
+}
+
 #[test]
 fn run_llm_rubric_without_grader_is_a_suite_error() {
     let dir = tempfile::tempdir().unwrap();

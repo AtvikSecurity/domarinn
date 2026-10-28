@@ -52,7 +52,13 @@ fn cache_gc_without_any_bound_refuses_and_names_clear() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("--older-than 30d"))
-        .stderr(predicate::str::contains("cache clear"));
+        .stderr(predicate::str::contains("cache clear"))
+        // The hint must not offer `--newer-than` as a bound on its own: the
+        // guard below refuses exactly that, so following the advice would
+        // walk the operator straight into a second error.
+        .stderr(predicate::str::contains(
+            "--newer-than only narrows an --older-than window",
+        ));
 
     assert_eq!(
         cache_stats(dir.path()),

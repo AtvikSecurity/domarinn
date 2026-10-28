@@ -80,7 +80,7 @@ The two `2`s in the second row are the same argument twice: a green gate would m
 
 ## `domarinn run [PATH] [flags]`
 
-Execute a suite: render prompts, call providers, evaluate assertions, report results, and persist the run under `.domarinn/runs/<id>/`.
+Execute a suite: render prompts, call providers, evaluate assertions, report results, and persist the run under `.domarinn/runs/<id>/`. `DOMARINN_RUNS_DIR` moves that run store (relative to the working directory, like the default); every command that reads runs back — `diff`, `view`, `runs`, `share`, `ci-summary`, `--against latest` / `branch:<name>` — reads from the same place.
 
 - `PATH` — a suite file or a directory containing `domarinn.yaml` (default `.`).
 
@@ -99,8 +99,11 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--no-fallback` | Do not let a provider hand off to its [`fallback:`](providers.md#falling-back-to-another-provider) chain. **The right posture for a gate**: fallback is resilience, and a CI job usually wants to learn that its primary provider is broken rather than have the result quietly produced by a different model. It disables chain *walking* only: a [`fallback_only`](providers.md#fallback_only-a-provider-that-is-reachable-but-never-a-cell) provider stays out of the matrix, since membership is suite configuration and not something a resilience flag should move. `DOMARINN_NO_FALLBACK=true` sets the same thing; the flag wins, and a value that is not a boolean **refuses the run** (exit `2`) naming the value, rather than being guessed at — a typo'd `DOMARINN_NO_FALLBACK=ture` must not quietly leave fallback on in the gate that set it. |
 | `--repeat <N>` | Run each cell N times (variance / pass@k). |
 | `-j`, `--concurrency <N>` | Max concurrent provider calls (overrides `runner.concurrency`). |
-| `--format <F>` | Output format, repeatable: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`, on stdout. |
-| `--out <FILE>` | Write the primary output to a file instead of stdout. |
+| `--retries <N>` | Retry transient provider failures up to `N` times (overrides [`runner.retries.max`](domarinn-yaml.md#runner)). Conflicts with `--no-retries`. |
+| `--no-retries` | Do not retry transient provider failures at all, whatever the suite's `runner.retries` says. |
+| `--fallback-on-empty-reason [<R>,…]` | Which [empty-output reasons](../concepts/grading.md#empty-outputs-and-grading) make a provider hand off to its [`fallback:`](providers.md#falling-back-to-another-provider) chain, overriding the suite's [`runner.fallback_on_empty_reason`](domarinn-yaml.md#runner) (default `refusal,content_filter`). Comma-separated or repeated. Pass the flag **with no value** to hand off only on hard call failures. `DOMARINN_FALLBACK_ON_EMPTY_REASON` (comma-separated) sets the same thing; the flag wins. Hard call failures always hand off and are not configurable here; `--no-fallback` turns the chain off entirely. |
+| `--format <FMT>[=<PATH>]` | Output format: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`. A bare format goes to `--out`, or stdout; `FMT=PATH` writes that format to its own file. Repeatable, but **every format needs its own destination**: two bare formats with one `--out` (each write would truncate the last) or on stdout (concatenated, unparseable) are a usage error (exit `2`), refused before the run spends anything — write `--format json=results.json --format junit=results.xml` instead. |
+| `--out <FILE>` | Write the bare `--format` (or the default table) to a file instead of stdout. A usage error when every `--format` already names its own file, since nothing would be written to it. |
 | `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |
 | `--no-progress` | Disable the live progress bar (see below). |
 | `--allow-empty` | Succeed even if the run resolves to zero cases. Without it that is exit 2, because a green result over no cells is indistinguishable from a green result over every cell. Pass it for a sharded matrix where a shard legitimately has no work. |
@@ -114,6 +117,7 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 ```sh
 domarinn run examples/12-render-health                 # run, print a table
 domarinn run --tag safety -j 8 --format junit --out results.xml
+domarinn run --format json=results.json --format junit=results.xml   # both from one run
 domarinn run --against server:baseline --summary-md summary.md
 domarinn run --note "retry backoff, 3rd attempt"    # label this run
 ```
@@ -292,7 +296,7 @@ Manage the **local** content-addressed cache. All of these take a suite path (de
 
 Three rules, each of which exists because the obvious alternative deletes something nobody asked for:
 
-- **At least one bound is required — any one of the three.** A bare `domarinn cache gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so. The error names `cache clear`.
+- **A bound is required: `--older-than` or `--empty-reason`.** `--newer-than` only narrows an `--older-than` window, so it does not count on its own (see the next rule). A bare `domarinn cache gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so. The error names `cache clear`.
 - **`--newer-than` needs `--older-than`.** Alone it would read "delete everything since", which is a whole-store wipe in the vocabulary of housekeeping. Requiring the other end makes that reading unconstructible rather than merely discouraged.
 - **No environment variables here.** `DOMARINN_CACHE_STORE_EMPTY_OUTPUTS` and `DOMARINN_NO_FALLBACK` exist because they are standing *policy*. A `gc` predicate is a one-shot destructive operation, and an environment that silently widens one is how an operator deletes a corpus they never named. That is the line, not "environment variables are bad": run-scoping selection like [`DOMARINN_PROVIDER`](#domarinn-run-path-flags) is allowed on the run side — the flag still wins, and the worst an unnoticed one does is run *fewer* cells, which the next invocation undoes.
 
