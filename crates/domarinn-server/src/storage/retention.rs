@@ -52,6 +52,19 @@ impl Storage {
             Err(e) => tracing::warn!(error = %e, "session retention failed"),
         }
     }
+
+    /// The hourly task's login-attempt sweep: drops throttle rows that can no
+    /// longer affect a verdict (see [`Self::prune_login_attempts`]). Without
+    /// it, every username an attacker sprays leaves a row behind forever.
+    /// Logs rather than erroring, for the same reason as
+    /// [`Self::sweep_expired_sessions`].
+    pub async fn sweep_login_attempts(&self) {
+        match self.prune_login_attempts(super::now_ms()).await {
+            Ok(0) => {}
+            Ok(pruned) => tracing::info!(pruned, "login-attempt retention swept stale rows"),
+            Err(e) => tracing::warn!(error = %e, "login-attempt retention failed"),
+        }
+    }
 }
 
 /// Runs that must survive any sweep: every pinned baseline, plus the newest run
