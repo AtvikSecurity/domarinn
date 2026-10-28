@@ -22,6 +22,7 @@ export { caseDetail } from "./fixtures/caseDetail";
 export { searchFixtures } from "./fixtures/search";
 export {
   caseHistory,
+  clearSuiteBaseline,
   defaultCompareTarget,
   pinSuiteBaselineBranch,
   setSuiteBaseline,

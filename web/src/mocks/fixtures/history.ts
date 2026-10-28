@@ -114,6 +114,17 @@ export function pinSuiteBaselineBranch(
   BASELINE_BRANCH_BY_SUITE.set(`${project}/${suite}`, branch);
 }
 
+/**
+ * `DELETE .../baseline`: drop whichever pin the suite holds. `false` when
+ * there was none, which the server answers with a 404.
+ */
+export function clearSuiteBaseline(project: string, suite: string): boolean {
+  const key = `${project}/${suite}`;
+  const hadRun = BASELINE_BY_SUITE.delete(key);
+  const hadBranch = BASELINE_BRANCH_BY_SUITE.delete(key);
+  return hadRun || hadBranch;
+}
+
 export function defaultCompareTarget(runId: string): string | undefined {
   const meta = RUN_META_BY_ID.get(runId);
   if (!meta) return undefined;

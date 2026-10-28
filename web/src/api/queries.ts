@@ -377,6 +377,31 @@ export function useSetBaseline(project: string, suite: string) {
   });
 }
 
+/**
+ * Unpin a suite's baseline (`DELETE .../baseline`), whichever kind it was.
+ *
+ * Same gate as pinning: write scope, plus an upload grant on a restricted set.
+ * Invalidates exactly what {@link useSetBaseline} does, since it undoes it.
+ */
+export function useClearBaseline(project: string, suite: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiRequest(
+        `/projects/${encodeURIComponent(project)}/suites/${encodeURIComponent(
+          suite,
+        )}/baseline`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: qk.suites(project) });
+      void client.invalidateQueries({ queryKey: ["compare"] });
+      void client.invalidateQueries({ queryKey: qk.sets() });
+      void client.invalidateQueries({ queryKey: ["caseHistory"] });
+    },
+  });
+}
+
 // --- Run sets --------------------------------------------------------------
 
 /**

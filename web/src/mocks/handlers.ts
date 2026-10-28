@@ -512,12 +512,36 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       if (method === "GET" && seg.length === 3) {
         return json({ project, suites: fx.suiteSummaries(project) });
       }
-      // PUT /projects/:project/suites/:suite/baseline
-      if (method === "PUT" && seg[4] === "baseline" && seg.length === 5) {
+      // PUT/DELETE /projects/:project/suites/:suite/baseline — write scope,
+      // like the server's `Scoped<Write>` (the restricted-set upload grant on
+      // top of it is not modelled here).
+      if (
+        (method === "PUT" || method === "DELETE") &&
+        seg[4] === "baseline" &&
+        seg.length === 5
+      ) {
         const suite = seg[3];
         if (suite === undefined) return notFound();
-        const runId = readJson<{ run_id?: string }>(init).run_id ?? "";
-        if (!runId) return json({ error: "run_id required" }, 400);
+        const { me } = auth.resolveAuth(bearer(init));
+        if (!scopeAtLeast(me.scope ?? undefined, "write")) {
+          return json({ error: "this action requires write scope" }, 403);
+        }
+        if (method === "DELETE") {
+          return fx.clearSuiteBaseline(project, suite)
+            ? noContent()
+            : json({ error: "baseline not found" }, 404);
+        }
+        // `BaselineBody`: exactly one of the two pin kinds.
+        const body = readJson<{ run_id?: string; branch?: string }>(init);
+        const branch = body.branch?.trim();
+        if (branch && !body.run_id) {
+          fx.pinSuiteBaselineBranch(project, suite, branch);
+          return json({ project, suite, branch });
+        }
+        const runId = body.run_id ?? "";
+        if (!runId) {
+          return json({ error: "exactly one of `run_id` or `branch` must be set" }, 400);
+        }
         fx.setSuiteBaseline(project, suite, runId);
         return json({ project, suite, run_id: runId });
       }
