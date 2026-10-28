@@ -716,6 +716,7 @@ fn spawn_cache_retention(state: AppState) {
             if let Err(e) = state.storage.sso_gc().await {
                 tracing::warn!(error = %e, "sso gc failed");
             }
+            state.storage.sweep_expired_sessions().await;
             // Opt-in: `None` never deletes a run. See storage::retention.
             if let Some(days) = state.run_max_age_days {
                 match state.storage.sweep_runs(days).await {
