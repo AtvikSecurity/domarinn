@@ -4,10 +4,15 @@
 
 mod common;
 
-use axum::http::{header, StatusCode};
+use std::net::SocketAddr;
+
+use axum::body::Body;
+use axum::extract::ConnectInfo;
+use axum::http::{header, Request, StatusCode};
 use axum::Router;
 use common::*;
 use serde_json::{json, Value};
+use tower::ServiceExt;
 
 use domarinn_server::auth;
 use domarinn_server::domain::Role;
@@ -163,6 +168,88 @@ async fn a_successful_login_resets_the_failure_count() {
         );
     }
     assert_eq!(login(&app, "root", ADMIN_PW).await.status, StatusCode::OK);
+}
+
+/// A login as if it arrived over a real socket from `peer`: the `oneshot`
+/// harness has no `ConnectInfo`, so it is injected as a request extension,
+/// which is exactly where `into_make_service_with_connect_info` puts it.
+async fn login_from(app: &Router, peer: SocketAddr, username: &str, password: &str) -> StatusCode {
+    let body = serde_json::to_vec(&json!({ "username": username, "password": password })).unwrap();
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo(peer));
+    app.clone().oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_peer_spraying_usernames_trips_the_per_peer_bucket() {
+    let (app, _dir) = test_app(protected()).await;
+    setup_admin(&app).await;
+    let attacker: SocketAddr = "203.0.113.7:40000".parse().unwrap();
+
+    // Every username is a fresh (peer, username) bucket, so only the
+    // per-peer budget can stop this. Fire them concurrently: each one still
+    // pays for an argon2 verify, which now runs on the blocking pool.
+    let mut set = tokio::task::JoinSet::new();
+    for i in 0..30 {
+        let app = app.clone();
+        set.spawn(
+            async move { login_from(&app, attacker, &format!("ghost{i}"), "nope-nope").await },
+        );
+    }
+    while let Some(status) = set.join_next().await {
+        assert_eq!(status.unwrap(), StatusCode::UNAUTHORIZED);
+    }
+
+    // A 31st username from the same peer is refused before any verify — even
+    // with the right password for a real account...
+    assert_eq!(
+        login_from(&app, attacker, "root", ADMIN_PW).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // ...from any port on that address...
+    let same_host: SocketAddr = "203.0.113.7:50000".parse().unwrap();
+    assert_eq!(
+        login_from(&app, same_host, "ghost-new", "nope-nope").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // ...while another peer is unaffected.
+    let bystander: SocketAddr = "198.51.100.9:40000".parse().unwrap();
+    assert_eq!(
+        login_from(&app, bystander, "root", ADMIN_PW).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn successes_do_not_launder_a_peers_failures() {
+    let (app, _dir) = test_app(protected()).await;
+    setup_admin(&app).await;
+    let peer: SocketAddr = "203.0.113.8:40000".parse().unwrap();
+    // Interleave a valid login with failures against other names: the
+    // success refunds only its own attempt, so the budget still runs out
+    // after 30 failures.
+    for i in 0..30 {
+        assert_eq!(
+            login_from(&app, peer, &format!("ghost{i}"), "nope-nope").await,
+            StatusCode::UNAUTHORIZED,
+            "failure {i}"
+        );
+        if i % 10 == 0 {
+            assert_eq!(
+                login_from(&app, peer, "root", ADMIN_PW).await,
+                StatusCode::OK
+            );
+        }
+    }
+    assert_eq!(
+        login_from(&app, peer, "ghost-last", "nope-nope").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
 }
 
 // ---------------------------------------------------------------------------

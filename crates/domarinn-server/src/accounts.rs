@@ -6,7 +6,7 @@
 //! the [`Scoped`] extractors so they obey the active [`crate::AuthMode`].
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::Utc;
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 use ts_rs::TS;
 
 use crate::auth::{self, Admin, Identity, Read, Scope, Scoped};
@@ -38,6 +39,12 @@ const MIN_PASSWORD_LEN: usize = 8;
 
 /// Password attempts allowed per key per [`THROTTLE_WINDOW`].
 const MAX_PASSWORD_ATTEMPTS: u32 = 5;
+/// Failed login attempts allowed per peer address per [`THROTTLE_WINDOW`],
+/// across every username. Higher than the per-username budget so a NAT full
+/// of colleagues fumbling passwords is not locked out together, but low
+/// enough that spraying random usernames (each a fresh per-username bucket)
+/// cannot buy unbounded argon2 work.
+const MAX_PEER_FAILURES: u32 = 30;
 /// How long a key's attempts are remembered, measured from its first one.
 const THROTTLE_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// Cap on tracked keys, so a spray of random usernames cannot grow the map
@@ -49,27 +56,21 @@ struct Attempts {
     window_start: Instant,
 }
 
-/// In-memory, per-process backoff for password checks: at most
-/// [`MAX_PASSWORD_ATTEMPTS`] unsuccessful attempts per key in a
-/// [`THROTTLE_WINDOW`], after which the key gets a 429 with `Retry-After`
-/// until the window lapses. A success clears the key.
-///
-/// [`Self::begin`] counts the attempt *before* the password is checked, so N
-/// concurrent guesses cannot all slip past a check that has not yet seen any
-/// of them fail; the successful path then [`Self::clear`]s it.
-///
-/// Per-process, like the MCP rate limiter: several replicas behind one load
-/// balancer each allow their own budget. That still turns an online guessing
-/// attack from unbounded into a handful of tries per quarter hour.
-#[derive(Default)]
-pub(crate) struct LoginThrottle {
+/// One bounded map of fixed-window attempt counters.
+struct Buckets {
+    limit: u32,
     entries: Mutex<HashMap<String, Attempts>>,
 }
 
-impl LoginThrottle {
-    /// Record an attempt for `key`, or `Err(retry_after)` when it is out of
-    /// attempts for the current window.
-    pub(crate) fn begin(&self, key: &str, now: Instant) -> Result<(), Duration> {
+impl Buckets {
+    fn new(limit: u32) -> Self {
+        Self {
+            limit,
+            entries: Mutex::default(),
+        }
+    }
+
+    fn begin(&self, key: &str, now: Instant) -> Result<(), Duration> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         if entries.len() >= MAX_THROTTLE_KEYS && !entries.contains_key(key) {
             entries.retain(|_, a| now.saturating_duration_since(a.window_start) < THROTTLE_WINDOW);
@@ -94,7 +95,7 @@ impl LoginThrottle {
             attempts.count = 0;
             attempts.window_start = now;
         }
-        if attempts.count >= MAX_PASSWORD_ATTEMPTS {
+        if attempts.count >= self.limit {
             let remaining = THROTTLE_WINDOW.saturating_sub(elapsed);
             // Round up so a client that honors `Retry-After` always gets in.
             return Err(Duration::from_secs(
@@ -105,12 +106,89 @@ impl LoginThrottle {
         Ok(())
     }
 
-    /// Forget `key` after a successful password check.
-    pub(crate) fn clear(&self, key: &str) {
+    fn clear(&self, key: &str) {
         self.entries
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(key);
+    }
+
+    /// Give back one attempt that turned out not to be a failure.
+    fn refund(&self, key: &str) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(attempts) = entries.get_mut(key) {
+            attempts.count = attempts.count.saturating_sub(1);
+        }
+    }
+}
+
+/// In-memory, per-process backoff for password checks, in two layers:
+///
+/// - per key (an account, or a peer + username for login): at most
+///   [`MAX_PASSWORD_ATTEMPTS`] unsuccessful attempts per [`THROTTLE_WINDOW`];
+///   a success clears the key.
+/// - per peer address, login only: at most [`MAX_PEER_FAILURES`] failures per
+///   window across all usernames, checked first. A success refunds its own
+///   attempt but never erases earlier failures, so holding one valid account
+///   does not launder a spray against others.
+///
+/// Either layer answers a 429 with `Retry-After` until its window lapses.
+/// Attempts are counted *before* the password is checked, so N concurrent
+/// guesses cannot all slip past a check that has not yet seen any of them
+/// fail; the successful path then clears (or refunds) them.
+///
+/// Per-process, like the MCP rate limiter: several replicas behind one load
+/// balancer each allow their own budget. That still turns an online guessing
+/// attack from unbounded into a handful of tries per quarter hour.
+pub(crate) struct LoginThrottle {
+    keys: Buckets,
+    peers: Buckets,
+}
+
+impl Default for LoginThrottle {
+    fn default() -> Self {
+        Self {
+            keys: Buckets::new(MAX_PASSWORD_ATTEMPTS),
+            peers: Buckets::new(MAX_PEER_FAILURES),
+        }
+    }
+}
+
+impl LoginThrottle {
+    /// Record an attempt for `key`, or `Err(retry_after)` when it is out of
+    /// attempts for the current window.
+    pub(crate) fn begin(&self, key: &str, now: Instant) -> Result<(), Duration> {
+        self.keys.begin(key, now)
+    }
+
+    /// Forget `key` after a successful password check.
+    pub(crate) fn clear(&self, key: &str) {
+        self.keys.clear(key);
+    }
+
+    /// Record a login attempt from `peer`, or `Err(retry_after)` when that
+    /// address is out of failures for the current window.
+    pub(crate) fn begin_peer(&self, peer: IpAddr, now: Instant) -> Result<(), Duration> {
+        self.peers.begin(&peer_bucket(peer), now)
+    }
+
+    /// Take back an attempt [`Self::begin_peer`] counted that did not end in
+    /// a wrong password (it succeeded, or a later check refused it unverified).
+    pub(crate) fn refund_peer(&self, peer: IpAddr) {
+        self.peers.refund(&peer_bucket(peer));
+    }
+}
+
+/// The per-peer bucket for an address. IPv6 clients are bucketed by their
+/// /64, which is what one host or one customer is normally handed, so cycling
+/// through the interface identifier does not mint fresh budgets.
+fn peer_bucket(peer: IpAddr) -> String {
+    match peer.to_canonical() {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
     }
 }
 
@@ -157,6 +235,47 @@ fn dummy_hash() -> &'static str {
     DUMMY.as_str()
 }
 
+/// Bounds how many argon2 computations run at once. Each one costs ~19 MiB
+/// and a core for tens of milliseconds; unbounded, a burst of password
+/// requests would exhaust memory and the blocking pool long before the
+/// throttle's budgets ran out across many keys.
+fn hash_permits() -> &'static Semaphore {
+    static PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
+        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        Semaphore::new(cores.max(2))
+    });
+    &PERMITS
+}
+
+/// Run an argon2 computation off the async workers, behind [`hash_permits`],
+/// so password checks never stall unrelated requests such as `/health`.
+async fn run_argon2<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> ApiResult<T> {
+    let _permit = hash_permits()
+        .acquire()
+        .await
+        .map_err(|e| ApiError::from(anyhow::anyhow!("password hashing unavailable: {e}")))?;
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| ApiError::from(anyhow::anyhow!("password hashing task failed: {e}")))
+}
+
+/// [`auth::hash_password`] on the blocking pool.
+async fn hash_password(password: &str) -> ApiResult<String> {
+    let password = password.to_string();
+    Ok(run_argon2(move || auth::hash_password(&password)).await??)
+}
+
+/// [`auth::verify_password`] on the blocking pool; `None` verifies against
+/// [`dummy_hash`] so a missing hash costs the same as a real one.
+async fn verify_password(stored: Option<String>, password: &str) -> ApiResult<bool> {
+    let password = password.to_string();
+    run_argon2(move || {
+        let stored = stored.as_deref().unwrap_or_else(|| dummy_hash());
+        auth::verify_password(stored, &password)
+    })
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Setup / login / logout / me
 // ---------------------------------------------------------------------------
@@ -182,7 +301,7 @@ pub(crate) async fn setup(
     }
     let username = validate_username(&body.username)?;
     validate_password(&body.password)?;
-    let hash = auth::hash_password(&body.password)?;
+    let hash = hash_password(&body.password).await?;
     let user = state
         .storage
         .create_user(username, hash, Role::Admin)
@@ -194,8 +313,8 @@ pub(crate) async fn setup(
 
 /// `POST /auth/login` — exchange username + password for a session token.
 ///
-/// Throttled per (peer address, username) by [`LoginThrottle`], and
-/// constant-shape for every failure: an unknown username, an SSO-only
+/// Throttled per peer address and then per (peer address, username) by
+/// [`LoginThrottle`], and constant-shape for every failure: an unknown username, an SSO-only
 /// account, and a disabled account all pay for one argon2 verify (against
 /// [`dummy_hash`] when there is no real one) and get the same 401, so neither
 /// the status nor the latency tells a caller which usernames exist.
@@ -204,11 +323,19 @@ pub(crate) async fn login(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
-    let key = login_throttle_key(
-        peer.map(|Extension(ConnectInfo(addr))| addr),
-        &body.username,
-    );
-    if let Err(retry_after) = state.login_throttle.begin(&key, Instant::now()) {
+    let peer = peer.map(|Extension(ConnectInfo(addr))| addr);
+    let now = Instant::now();
+    if let Some(addr) = peer {
+        if let Err(retry_after) = state.login_throttle.begin_peer(addr.ip(), now) {
+            return Ok(throttled_response(retry_after));
+        }
+    }
+    let key = login_throttle_key(peer, &body.username);
+    if let Err(retry_after) = state.login_throttle.begin(&key, now) {
+        // Refused before any password was checked: not a peer failure.
+        if let Some(addr) = peer {
+            state.login_throttle.refund_peer(addr.ip());
+        }
         return Ok(throttled_response(retry_after));
     }
     let user = state
@@ -220,11 +347,12 @@ pub(crate) async fn login(
     // hash instead, like an unknown username, so they cost the same.
     let stored = user
         .as_ref()
-        .map(|u| u.password_hash.as_str())
+        .map(|u| u.password_hash.clone())
         .filter(|h| !h.is_empty());
-    let password_ok = auth::verify_password(stored.unwrap_or_else(|| dummy_hash()), &body.password);
+    let has_password = stored.is_some();
+    let password_ok = verify_password(stored, &body.password).await?;
     let user = match user {
-        Some(user) if stored.is_some() && password_ok && !user.disabled => user,
+        Some(user) if has_password && password_ok && !user.disabled => user,
         _ => {
             return Err(ApiError::status(
                 StatusCode::UNAUTHORIZED,
@@ -233,6 +361,9 @@ pub(crate) async fn login(
         }
     };
     state.login_throttle.clear(&key);
+    if let Some(addr) = peer {
+        state.login_throttle.refund_peer(addr.ip());
+    }
     let token = issue_session(&state, &user.id).await?;
     Ok(session_response(&state, StatusCode::OK, token, &user))
 }
@@ -286,7 +417,7 @@ pub(crate) async fn change_password(
     }
     // 403, not 401: the caller *is* authenticated, and the web client treats
     // any 401 as "your session is gone" and prompts for a new credential.
-    if !auth::verify_password(&user.password_hash, &body.current_password) {
+    if !verify_password(Some(user.password_hash.clone()), &body.current_password).await? {
         return Err(ApiError::status(
             StatusCode::FORBIDDEN,
             "current password is incorrect",
@@ -294,7 +425,7 @@ pub(crate) async fn change_password(
     }
     state.login_throttle.clear(&key);
 
-    let hash = auth::hash_password(&body.new_password)?;
+    let hash = hash_password(&body.new_password).await?;
     state
         .storage
         .update_password_keeping_session(user_id, hash, scope.identity.session_token_hash.clone())
@@ -487,7 +618,7 @@ pub(crate) async fn create_user(
 ) -> ApiResult<Response> {
     let username = validate_username(&body.username)?;
     validate_password(&body.password)?;
-    let hash = auth::hash_password(&body.password)?;
+    let hash = hash_password(&body.password).await?;
     let user = state
         .storage
         .create_user(username, hash, body.role)
@@ -532,7 +663,7 @@ pub(crate) async fn patch_user(
     }
     if let Some(password) = &body.password {
         validate_password(password)?;
-        let hash = auth::hash_password(password)?;
+        let hash = hash_password(password).await?;
         let keep = if scope.identity.user_id.as_ref() == Some(&id) {
             scope.identity.session_token_hash.clone()
         } else {
@@ -700,7 +831,10 @@ mod tests {
         for i in 0..MAX_THROTTLE_KEYS + 50 {
             throttle.begin(&format!("k{i}"), now).unwrap();
         }
-        assert_eq!(throttle.entries.lock().unwrap().len(), MAX_THROTTLE_KEYS);
+        assert_eq!(
+            throttle.keys.entries.lock().unwrap().len(),
+            MAX_THROTTLE_KEYS
+        );
     }
 
     #[test]
@@ -719,6 +853,47 @@ mod tests {
             login_throttle_key(None, "root"),
             login_throttle_key(None, "rooT")
         );
+    }
+
+    #[test]
+    fn the_peer_bucket_trips_across_usernames_and_successes_only_refund() {
+        let throttle = LoginThrottle::default();
+        let now = Instant::now();
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        for i in 0..MAX_PEER_FAILURES {
+            throttle.begin(&format!("user{i}"), now).unwrap();
+            assert!(throttle.begin_peer(ip, now).is_ok(), "attempt {i}");
+        }
+        assert!(throttle.begin_peer(ip, now).is_err());
+        assert!(throttle
+            .begin_peer("10.0.0.2".parse().unwrap(), now)
+            .is_ok());
+        // A refund gives back exactly one attempt, not the whole budget.
+        throttle.refund_peer(ip);
+        assert!(throttle.begin_peer(ip, now).is_ok());
+        assert!(throttle.begin_peer(ip, now).is_err());
+        assert!(throttle.begin_peer(ip, now + THROTTLE_WINDOW).is_ok());
+    }
+
+    #[test]
+    fn ipv6_peers_share_a_bucket_per_64_and_mapped_v4_is_v4() {
+        let a: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        let c: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_eq!(peer_bucket(a), peer_bucket(b));
+        assert_ne!(peer_bucket(a), peer_bucket(c));
+        let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert_eq!(peer_bucket(mapped), "10.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn argon2_runs_off_the_async_workers() {
+        let hash = hash_password("correct horse").await.ok().unwrap();
+        assert!(verify_password(Some(hash), "correct horse")
+            .await
+            .ok()
+            .unwrap());
+        assert!(!verify_password(None, "").await.ok().unwrap());
     }
 
     #[test]
