@@ -400,19 +400,34 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         None
     };
 
-    let run_result = runtime.block_on(domarinn_core::run_with_progress(
-        &suite,
-        &base_dir,
-        cache.as_ref(),
-        Some(&grader),
-        &opts,
-        progress.as_ref().map(|p| p as &dyn ProgressSink),
-    ));
+    // Ctrl-C is handled rather than left to the default disposition. Exec
+    // children run in their own process group, so the terminal's SIGINT no
+    // longer reaches them; what stops them is dropping the run future, whose
+    // guards kill each child's whole group. Dying on the signal instead would
+    // skip those drops and leave a live exec provider spending on its own.
+    let run_result = runtime.block_on(async {
+        tokio::select! {
+            r = domarinn_core::run_with_progress(
+                &suite,
+                &base_dir,
+                cache.as_ref(),
+                Some(&grader),
+                &opts,
+                progress.as_ref().map(|p| p as &dyn ProgressSink),
+            ) => Some(r),
+            _ = tokio::signal::ctrl_c() => None,
+        }
+    });
     // Unconditionally clear the bar: an error path must never leave it stuck, and
     // clearing an already-finished bar is a no-op.
     if let Some(bar) = &progress {
         bar.finish();
     }
+    let Some(run_result) = run_result else {
+        eprintln!("interrupted: run cancelled, nothing persisted");
+        // 128 + SIGINT, the code a shell reports for a process killed by Ctrl-C.
+        return 130;
+    };
 
     let mut result = match run_result {
         Ok(r) => r,
