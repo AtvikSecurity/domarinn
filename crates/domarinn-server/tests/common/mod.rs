@@ -112,6 +112,38 @@ pub async fn test_storage_handles(n: usize) -> (Vec<Storage>, TempDir) {
     (handles, dir)
 }
 
+/// Two routers, each with its own `AppState` (its own storage handles and
+/// in-memory limiters), over one fresh database: two server replicas sharing
+/// a backend. Backend follows `DOMARINN_TEST_BACKEND`, as in
+/// [`test_app_with_storage`].
+pub async fn test_app_pair(
+    mut settings: Settings,
+    auth_mode: domarinn_server::AuthMode,
+) -> (Router, Router, TempDir) {
+    let dir = TempDir::new().expect("tempdir");
+    if pg::backend_is_postgres() {
+        settings.database_url = Some(
+            tokio::task::spawn_blocking(pg::fresh_database_url)
+                .await
+                .expect("create postgres test database"),
+        );
+    } else {
+        seed_sqlite_from_template(dir.path()).await;
+    }
+    let config = ServerConfig {
+        port: 0,
+        data_dir: dir.path().to_path_buf(),
+        auth_mode,
+    };
+    let (a, _) = build_app(&config, settings.clone())
+        .await
+        .expect("build first app");
+    let (b, _) = build_app(&config, settings)
+        .await
+        .expect("build second app");
+    (a, b, dir)
+}
+
 /// [`test_storage_handles`] with two handles.
 pub async fn test_storage_pair() -> (Storage, Storage, TempDir) {
     let (mut handles, dir) = test_storage_handles(2).await;

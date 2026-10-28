@@ -5,12 +5,10 @@
 //! `me`) inspect the request [`Identity`] directly; the management endpoints use
 //! the [`Scoped`] extractors so they obey the active [`crate::AuthMode`].
 
-use std::net::SocketAddr;
 use std::sync::{Arc, LazyLock};
-use std::time::Instant;
 
-use axum::extract::{ConnectInfo, Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::Utc;
@@ -19,6 +17,7 @@ use tokio::sync::Semaphore;
 use ts_rs::TS;
 
 use crate::auth::{self, Admin, Identity, Read, Scope, Scoped};
+use crate::clientip::ClientIp;
 use crate::domain::{ApiKeyId, Role, UserId};
 use crate::dto::accounts::{
     ApiKeyCreatedResponse, ApiKeyListResponse, ApiKeyView, AuthSessionResponse, MeResponse, MeUser,
@@ -32,12 +31,12 @@ use crate::AppState;
 /// Minimum acceptable password length.
 const MIN_PASSWORD_LEN: usize = 8;
 
-#[allow(dead_code)]
 mod device;
-mod throttle;
+mod guard;
 
-pub(crate) use throttle::LoginThrottle;
-use throttle::{login_throttle_key, throttled_response};
+use device::DeviceCookie;
+pub(crate) use guard::LoginGuard;
+use guard::{throttled, Refusal};
 
 // ---------------------------------------------------------------------------
 // Password hashing
@@ -57,7 +56,7 @@ fn dummy_hash() -> &'static str {
 /// Bounds how many argon2 computations run at once. Each one costs ~19 MiB
 /// and a core for tens of milliseconds; unbounded, a burst of password
 /// requests would exhaust memory and the blocking pool long before the
-/// throttle's budgets ran out across many keys.
+/// per-client limit could refuse a spray spread across many addresses.
 fn hash_permits() -> &'static Arc<Semaphore> {
     static PERMITS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
@@ -125,11 +124,18 @@ pub(crate) struct CredentialsBody {
 }
 
 /// `POST /auth/setup` — create the first admin. Open, but only while zero users
-/// exist; afterwards it is a 409.
+/// exist; afterwards it is a 409. Behind the per-client limit like login, since
+/// it hashes a password for anyone who asks. The admin has just signed in from
+/// this browser, so it gets a device cookie as a login would.
 pub(crate) async fn setup(
     State(state): State<AppState>,
+    client: Option<Extension<ClientIp>>,
     ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
+    let client = client.map(|Extension(c)| c);
+    if let Err(refused) = state.login_guard.check_client(client.as_ref()) {
+        return Ok(refused);
+    }
     if state.storage.count_users().await? > 0 {
         return Err(ApiError::status(
             StatusCode::CONFLICT,
@@ -145,30 +151,70 @@ pub(crate) async fn setup(
         .await?
         .ok_or_else(|| ApiError::status(StatusCode::CONFLICT, "username already exists"))?;
     let token = issue_session(&state, &user.id).await?;
-    Ok(session_response(&state, StatusCode::CREATED, token, &user))
+    let device = state.login_guard.device_key.fresh(&user.id);
+    Ok(session_response(
+        &state,
+        StatusCode::CREATED,
+        token,
+        &user,
+        &device,
+    ))
 }
 
 /// `POST /auth/login` — exchange username + password for a session token.
 ///
-/// Throttled per (client address, username) by [`LoginThrottle`], and
-/// constant-shape for every failure: an unknown username, an SSO-only
+/// Throttled by [`LoginGuard`]: first per client address, before any storage
+/// or argon2 work; then per account for browsers without a device cookie for
+/// it, or per device for a browser that has one. The attempt is reserved
+/// before the password is checked (so concurrent guesses cannot all slip
+/// under the limit) and cleared on success. A locked counter is refused
+/// without verifying anything.
+///
+/// Constant-shape for every failure: an unknown username, an SSO-only
 /// account, and a disabled account all pay for one argon2 verify (against
-/// [`dummy_hash`] when there is no real one) and get the same 401, so neither
-/// the status nor the latency tells a caller which usernames exist.
+/// [`dummy_hash`] when there is no real one) and get the same 401, and an
+/// unknown username has an account counter like any other, so neither the
+/// status, the body, the latency nor the lockout tells a caller which
+/// usernames exist.
+///
+/// Every success sets the device cookie: a fresh one, or the presented one
+/// again, which refreshes its lifetime.
 pub(crate) async fn login(
     State(state): State<AppState>,
-    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    client: Option<Extension<ClientIp>>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
-    let peer = peer.map(|Extension(ConnectInfo(addr))| addr);
-    let key = login_throttle_key(peer, &body.username);
-    if let Err(retry_after) = state.login_throttle.begin(&key, Instant::now()) {
-        return Ok(throttled_response(retry_after));
+    let client = client.map(|Extension(c)| c);
+    let login_guard = &state.login_guard;
+    if let Err(refused) = login_guard.check_client(client.as_ref()) {
+        return Ok(refused);
     }
+    let username = body.username.trim();
     let user = state
         .storage
-        .get_user_by_username(body.username.clone())
+        .get_user_by_username(username.to_string())
         .await?;
+    let device = device::recognised(
+        &headers,
+        &login_guard.device_key,
+        user.as_ref().map(|u| &u.id),
+    );
+    let (counter, policy, refusal) = match &device {
+        Some(known) => (
+            guard::device_key(&known.nonce),
+            guard::DEVICE,
+            Refusal::Device,
+        ),
+        None => (
+            guard::account_key(username),
+            guard::UNTRUSTED,
+            Refusal::Untrusted,
+        ),
+    };
+    if let Some(wait) = guard::begin_attempt(&state.storage, counter.clone(), policy).await? {
+        return Ok(throttled(refusal, wait, client.as_ref()));
+    }
     // SSO-only accounts carry the empty-string password sentinel, which
     // `verify_password` would reject instantly; they verify against the dummy
     // hash instead, like an unknown username, so they cost the same.
@@ -177,9 +223,14 @@ pub(crate) async fn login(
         .map(|u| u.password_hash.clone())
         .filter(|h| !h.is_empty());
     let has_password = stored.is_some();
+    #[cfg(test)]
+    login_guard
+        .verifies
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let password_ok = verify_password(stored, &body.password).await?;
     let user = match user {
         Some(user) if has_password && password_ok && !user.disabled => user,
+        // The reserved attempt stays counted.
         _ => {
             return Err(ApiError::status(
                 StatusCode::UNAUTHORIZED,
@@ -187,9 +238,16 @@ pub(crate) async fn login(
             ))
         }
     };
-    state.login_throttle.clear(&key);
+    state.storage.clear_login_attempts(counter).await?;
     let token = issue_session(&state, &user.id).await?;
-    Ok(session_response(&state, StatusCode::OK, token, &user))
+    let device = device.unwrap_or_else(|| login_guard.device_key.fresh(&user.id));
+    Ok(session_response(
+        &state,
+        StatusCode::OK,
+        token,
+        &user,
+        &device,
+    ))
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -206,10 +264,13 @@ pub(crate) struct ChangePasswordBody {
 /// enough to take the account over for good. Every *other* session of the
 /// user is revoked; the presenting one survives, so the browser that made the
 /// change stays signed in. Wrong guesses at `current_password` count against
-/// the same [`LoginThrottle`] as login, keyed on the account.
+/// a per-account counter of their own ([`guard::PASSWORD_CHANGE`]) in the
+/// same store as login's. There is no per-client limit: the caller is
+/// authenticated, and the counter can only ever lock out themselves.
 pub(crate) async fn change_password(
     scope: Scoped<Read>,
     State(state): State<AppState>,
+    client: Option<Extension<ClientIp>>,
     ApiJson(body): ApiJson<ChangePasswordBody>,
 ) -> ApiResult<Response> {
     // `Read` is open to anonymous callers outside `closed` mode; there is no
@@ -235,9 +296,12 @@ pub(crate) async fn change_password(
     }
     validate_password(&body.new_password)?;
 
-    let key = format!("password-change\0{}", user_id.as_str());
-    if let Err(retry_after) = state.login_throttle.begin(&key, Instant::now()) {
-        return Ok(throttled_response(retry_after));
+    let counter = guard::password_change_key(&user_id);
+    if let Some(wait) =
+        guard::begin_attempt(&state.storage, counter.clone(), guard::PASSWORD_CHANGE).await?
+    {
+        let client = client.map(|Extension(c)| c);
+        return Ok(throttled(Refusal::PasswordChange, wait, client.as_ref()));
     }
     // 403, not 401: the caller *is* authenticated, and the web client treats
     // any 401 as "your session is gone" and prompts for a new credential.
@@ -247,7 +311,7 @@ pub(crate) async fn change_password(
             "current password is incorrect",
         ));
     }
-    state.login_throttle.clear(&key);
+    state.storage.clear_login_attempts(counter).await?;
 
     let hash = hash_password(&body.new_password).await?;
     state
@@ -455,7 +519,9 @@ pub(crate) async fn create_user(
 ///
 /// A password reset revokes all of the target's sessions, and so does
 /// disabling the account (in storage, alongside the flag). An admin resetting
-/// their *own* password keeps the session they made the request with.
+/// their *own* password keeps the session they made the request with. A reset
+/// also lifts the account's untrusted sign-in lockout: it is how an owner
+/// with no known browser gets back in while the account is under attack.
 pub(crate) async fn patch_user(
     scope: Scoped<Admin>,
     State(state): State<AppState>,
@@ -463,9 +529,9 @@ pub(crate) async fn patch_user(
     ApiJson(body): ApiJson<PatchUserBody>,
 ) -> ApiResult<Json<UserView>> {
     // Confirm the target exists before applying any partial update.
-    if state.storage.get_user_by_id(id.clone()).await?.is_none() {
+    let Some(target) = state.storage.get_user_by_id(id.clone()).await? else {
         return Err(not_found("user"));
-    }
+    };
     // Role/disabled changes go through the guarded, transactional path so a
     // demotion or a disable can never remove the instance's last enabled admin
     // (the same invariant `delete_user` enforces).
@@ -496,6 +562,10 @@ pub(crate) async fn patch_user(
         state
             .storage
             .update_password_keeping_session(id.clone(), hash, keep)
+            .await?;
+        state
+            .storage
+            .clear_login_attempts(guard::account_key(&target.username))
             .await?;
     }
     let updated = state
@@ -540,12 +610,14 @@ pub(crate) async fn issue_session(state: &AppState, user_id: &UserId) -> ApiResu
 }
 
 /// A login/setup success: the session token in the JSON body (scripting
-/// consumers) *and* as the `Set-Cookie` session cookie (browsers, SSO).
+/// consumers) *and* as the `Set-Cookie` session cookie (browsers, SSO), plus
+/// the device cookie marking this browser as one the user signs in from.
 fn session_response(
     state: &AppState,
     status: StatusCode,
     token: String,
     user: &crate::storage::UserRow,
+    device: &DeviceCookie,
 ) -> Response {
     let cookie = auth::session_cookie(&token, state.cookie_secure);
     let mut response = (
@@ -556,9 +628,13 @@ fn session_response(
         }),
     )
         .into_response();
-    response
-        .headers_mut()
-        .append(axum::http::header::SET_COOKIE, cookie);
+    let device = device::set_cookie(
+        &state.login_guard.device_key.encode(device),
+        state.cookie_secure,
+    );
+    let headers = response.headers_mut();
+    headers.append(axum::http::header::SET_COOKIE, cookie);
+    headers.append(axum::http::header::SET_COOKIE, device);
     response
 }
 

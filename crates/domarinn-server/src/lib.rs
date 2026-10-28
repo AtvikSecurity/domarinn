@@ -315,8 +315,8 @@ pub struct AppState {
     pub(crate) auth: Arc<dyn Authenticator>,
     pub(crate) api_key_auth: Arc<ApiKeyAuthenticator>,
     pub(crate) session_auth: Arc<SessionAuthenticator>,
-    /// Failed-password backoff for `/auth/login` and `/me/password`.
-    pub(crate) login_throttle: Arc<accounts::LoginThrottle>,
+    /// Throttling and device cookies for the password endpoints.
+    pub(crate) login_guard: Arc<accounts::LoginGuard>,
     pub(crate) auth_mode: AuthMode,
     pub(crate) public_url: Option<String>,
     pub(crate) cache_limits: CacheLimits,
@@ -351,6 +351,7 @@ impl AppState {
             StaticTokenAuthenticator::from_env_value(settings.tokens.as_deref().unwrap_or(""));
 
         bootstrap_admin(&storage, &settings).await?;
+        let login_guard = Arc::new(accounts::LoginGuard::load(&storage).await?);
 
         let auth_mode = resolve_mode(config.auth_mode, settings.auth_mode);
         let trusted_proxies = clientip::TrustedProxies::parse(settings.trusted_proxies.as_deref())?;
@@ -392,7 +393,7 @@ impl AppState {
         Ok(AppState {
             api_key_auth: Arc::new(ApiKeyAuthenticator::new(storage.clone())),
             session_auth: Arc::new(SessionAuthenticator::new(storage.clone())),
-            login_throttle: Arc::default(),
+            login_guard,
             storage,
             auth: Arc::new(authenticator),
             auth_mode,
@@ -656,6 +657,7 @@ fn spawn_cache_retention(state: AppState) {
                 tracing::warn!(error = %e, "sso gc failed");
             }
             state.storage.sweep_expired_sessions().await;
+            state.storage.sweep_login_attempts().await;
             // Opt-in: `None` never deletes a run. See storage::retention.
             if let Some(days) = state.run_max_age_days {
                 match state.storage.sweep_runs(days).await {
