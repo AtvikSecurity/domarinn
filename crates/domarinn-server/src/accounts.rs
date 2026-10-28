@@ -32,6 +32,8 @@ use crate::AppState;
 /// Minimum acceptable password length.
 const MIN_PASSWORD_LEN: usize = 8;
 
+#[allow(dead_code)]
+mod device;
 mod throttle;
 
 pub(crate) use throttle::LoginThrottle;
