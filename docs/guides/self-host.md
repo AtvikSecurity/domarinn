@@ -193,9 +193,10 @@ spec:
             - name: DOMARINN_PUBLIC_URL
               value: https://domarinn.example.com
             # The ingress controller's pod network, so the server reads the
-            # real client from X-Forwarded-For. Use your cluster's pod CIDR.
+            # real client from X-Forwarded-For. Placeholder: substitute your
+            # cluster's pod CIDR, and never a range your users are in.
             - name: DOMARINN_TRUSTED_PROXIES
-              value: 10.0.0.0/8
+              value: 10.244.0.0/16
             - name: DOMARINN_TOKENS
               valueFrom:
                 secretKeyRef: { name: domarinn-secrets, key: tokens }
@@ -232,7 +233,7 @@ spec:
 
 Expose it with a plain `Service` + `Ingress`. Give it a **hostname of its own** (`domarinn.example.com`), **not a path prefix** — the app assumes it is served at the web root, and `DOMARINN_PUBLIC_URL` should be that hostname's URL.
 
-**Set `DOMARINN_TRUSTED_PROXIES` to the network the ingress controller's pods run in.** Behind an ingress, every request reaches the server from the controller, so without the setting every client has the controller's address. They then share one per-client sign-in budget of 10 attempts a minute on each replica, and one stranger spraying passwords keeps everyone out of password sign-in. With the controller's network listed, the server takes the client from the `X-Forwarded-For` header the controller adds, and ignores that header from anyone else. `10.0.0.0/8` above is a placeholder: use your cluster's pod CIDR, or narrower if the controller has a range of its own. The server logs a warning naming the setting if it sees a private-range peer forwarding for someone while the setting is empty.
+**Set `DOMARINN_TRUSTED_PROXIES` to the network the ingress controller's pods run in.** Behind an ingress, every request reaches the server from the controller, so without the setting every client has the controller's address. They then share one per-client sign-in budget of 10 attempts a minute on each replica, and one stranger spraying passwords keeps everyone out of password sign-in. With the controller's network listed, the server takes the client from the `X-Forwarded-For` header the controller adds, and ignores that header from anyone else. `10.244.0.0/16` above is a placeholder: substitute your cluster's pod CIDR, or narrower if the controller has a range of its own. List only the proxies themselves. Any address inside the list can claim to be anyone, so a range that also covers your users (a broad `10.0.0.0/8` on a network where people sit on 10.x addresses, say) lets them choose their own client address and escape the per-client limit. The server logs a warning naming the setting if it sees a private-range peer forwarding for someone while the setting is empty.
 
 ## Postgres
 
@@ -324,7 +325,7 @@ The cleanest setup is to **set `DOMARINN_PUBLIC_URL`** to the exact external bas
 
 When `DOMARINN_PUBLIC_URL` is *unset*, the server derives the base URL for share links from the request's `Host` header and the `X-Forwarded-Proto` header (defaulting to `http`). Since a client can forge those headers on a directly-exposed instance, **set `DOMARINN_PUBLIC_URL` behind any proxy** and ensure your proxy sets `X-Forwarded-Proto` correctly if you rely on the fallback. The app is designed to be served at the web root, so route a whole hostname to it rather than a sub-path.
 
-**Tell the server which proxies to believe.** Password sign-in is throttled per client address, and the MCP rate limit keys callers without an account on it too. Behind a proxy the TCP peer is the proxy, so list the proxy's address or network in `DOMARINN_TRUSTED_PROXIES` (comma-separated IPs or CIDRs, such as `10.0.0.0/8`). The server then reads the client from `X-Forwarded-For`, from the right, skipping hops that are themselves listed, and only when the request arrives from a listed peer. `Forwarded` is not read, so make sure the proxy sets `X-Forwarded-For` (ingress-nginx, Traefik, and Caddy do by default; plain nginx needs `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`). Leave it unset on a directly-exposed instance: there the peer already is the client, and believing the header would let anyone choose their own address. The full rules are in [Behind a reverse proxy](../reference/server.md#behind-a-reverse-proxy).
+**Tell the server which proxies to believe.** Password sign-in is throttled per client address, and the MCP rate limit keys callers without an account on it too. Behind a proxy the TCP peer is the proxy, so list the proxy's address or network in `DOMARINN_TRUSTED_PROXIES` (comma-separated IPs or CIDRs, such as `10.244.0.0/16`). List only the proxies: any address inside the list can claim to be anyone, so a range that also covers your users lets them choose their own client address. The server then reads the client from `X-Forwarded-For`, from the right, skipping hops that are themselves listed, and only when the request arrives from a listed peer. `Forwarded` is not read, so make sure the proxy sets `X-Forwarded-For` (ingress-nginx, Traefik, and Caddy do by default; plain nginx needs `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`). Leave it unset on a directly-exposed instance: there the peer already is the client, and believing the header would let anyone choose their own address. The full rules are in [Behind a reverse proxy](../reference/server.md#behind-a-reverse-proxy).
 
 ## Backups
 
