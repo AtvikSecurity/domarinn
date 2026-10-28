@@ -18,15 +18,27 @@ environment variables, logging, and storage. For Docker/Kubernetes/backups, see
 `domarinn server` runs the results server: a JSON API under `/api/v1` **and** the embedded React web UI, served from the **same binary**. There is no separate frontend to deploy, no sidecar database, and no runtime dependency — the binary is the eval engine, the CLI, the server, and its own container healthcheck.
 
 ```sh
-domarinn server [--port 8321] [--data-dir /data]
+domarinn server [--port 8321] [--bind 0.0.0.0] [--data-dir /data]
 ```
 
-| Flag         | Default | Effect |
-|--------------|---------|--------|
-| `--port`     | `8321`  | Listen port. The server always binds `0.0.0.0`. |
-| `--data-dir` | `/data` | State directory (also `DOMARINN_DATA_DIR`). Holds the SQLite databases. |
+| Flag         | Default   | Effect |
+|--------------|-----------|--------|
+| `--port`     | `8321`    | Listen port (also `DOMARINN_PORT`). |
+| `--bind`     | `0.0.0.0` | Listen address, IPv4 or IPv6 (also `DOMARINN_BIND`). The default is every IPv4 interface, which a container needs; `127.0.0.1` or `::1` keeps a bare-metal server off the network, and `::` listens on IPv6. |
+| `--data-dir` | `/data`   | State directory (also `DOMARINN_DATA_DIR`). Holds the SQLite databases. |
 
-The server runs until Ctrl-C (graceful shutdown). Health is exposed at both `/health` and `/api/v1/health`. See [`cli.md`](cli.md) for the rest of the binary's subcommands and [Self-hosting](../guides/self-host.md) for Docker/Kubernetes hosting.
+**Shutdown.** The server stops gracefully on **SIGTERM** (what `docker stop` and a Kubernetes pod termination send) or **Ctrl-C/SIGINT**: it stops accepting connections, lets in-flight requests finish, so their database writes commit, and exits `0`. The log line `shutting down: draining in-flight requests` names the signal that triggered it. The container runs the binary as PID 1 with no init, which is why it handles SIGTERM itself. Leave your orchestrator's grace period at its default (Docker 10s, Kubernetes 30s) or longer if large run uploads are common.
+
+**Health and readiness.** Two unauthenticated probes, both reachable in every auth mode:
+
+| Route | Meaning | Use it for |
+|-------|---------|------------|
+| `GET /health`, `GET /api/v1/health` | **Liveness.** `200 {"status":"ok"}` whenever the process serves HTTP. It does not touch storage. | Container `HEALTHCHECK`, Kubernetes `livenessProbe`. |
+| `GET /api/v1/ready` | **Readiness.** `200 {"status":"ready"}` when both databases answer a `SELECT 1`, else `503 {"status":"unavailable"}`. The cause is logged at `warn`, never returned. | Kubernetes `readinessProbe`, load-balancer health checks. |
+
+Keep liveness on `/health`: restarting a server because its Postgres is briefly unreachable does not help, but taking it out of rotation does.
+
+See [`cli.md`](cli.md) for the rest of the binary's subcommands and [Self-hosting](../guides/self-host.md) for Docker/Kubernetes hosting.
 
 - [Quick start](#quick-start)
 - [Accounts & auth model](#accounts--auth-model)
@@ -235,6 +247,8 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 
 | Variable                        | Default        | Purpose |
 |---------------------------------|----------------|---------|
+| `DOMARINN_PORT`               | `8321`         | Listen port. Also settable with `--port`. `domarinn healthcheck` reads it too, so setting it (rather than passing `--port`) keeps the image `HEALTHCHECK` pointed at the right port. |
+| `DOMARINN_BIND`               | `0.0.0.0`      | Listen address, IPv4 or IPv6 (`127.0.0.1`, `::1`, `::`). Also settable with `--bind`. `domarinn healthcheck` probes this address when it names one interface, and loopback otherwise. |
 | `DOMARINN_DATA_DIR`           | `/data`        | State directory. Holds `domarinn.db` and `cache.db` (SQLite mode); still required under Postgres, where it keeps only the local cache tier. Also settable with `--data-dir`. |
 | `DOMARINN_DATABASE_URL`       | (unset)        | Postgres connection URL. When set, **all durable state** — runs, users, sessions, API keys, baselines, and the shared cache — lives in that one database instead of SQLite files under the data dir, and running **multiple replicas** becomes supported. TLS follows the URL's `sslmode` (`disable` \| `prefer` \| `require`). See [Storage](#storage). |
 | `DOMARINN_TOKENS`             | (unset)        | Static bearer tokens as `scope:secret` pairs, comma-separated. Grants access but never changes the mode. |
