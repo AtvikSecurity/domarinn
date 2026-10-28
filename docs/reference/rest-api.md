@@ -99,7 +99,7 @@ The scope gate is `read` rather than `write` so a `viewer` account can mint the 
 `GET /runs/{id}` reports two cost figures, and they are never summed: `cost_usd` is what the systems under test cost, `grader_cost_usd` is what grading them cost. It also carries `cache_read_tokens`, `cache_write_tokens` and `cache_savings_usd`. All four are `null` for runs ingested before the columns existed — which is **not** the same as zero, and readers render it as unknown rather than as "no activity". There is no backfill; see the migration note in `storage/schema.rs` for why.
 
 <a id="run-ingest"></a>**Ingest** (`POST /api/v1/runs`) accepts a `RunResult`
-JSON document (see [`protocol.md`](protocol.md) and `domarinn schema result`). A body that is not JSON, or has no integer `schema_version`, is a `400`. A `schema_version` outside the supported window (`result_schema_version - 1 ..= result_schema_version`, as advertised by [`/meta`](#health-meta)) is a `422` whose message says whether the CLI or the server is the one to upgrade, and a document that does not parse as a `RunResult` is also a `422`. Ingest is **idempotent by content**:
+JSON document (see [`protocol.md`](protocol.md) and `domarinn schema result`). A body that is not JSON, or has no integer `schema_version`, is a `400`. A `schema_version` outside the supported window (`result_schema_version - 1 ..= result_schema_version`, as advertised by [`/meta`](#health--meta)) is a `422` whose message says whether the CLI or the server is the one to upgrade, and a document that does not parse as a `RunResult` is also a `422`. Ingest is **idempotent by content**:
 
 | Status | Meaning |
 |--------|---------|
@@ -306,7 +306,7 @@ Both operate on the **server** tier. A `?tier=local` browsing tier is read-only,
 | GET | `/api/v1/cache/entries/{key}/runs` | `read` | Cases whose provider call was addressed by this key, newest run first. Cursor paginated. |
 | GET | `/api/v1/cache/facets` | `admin` | Values the `kind`, `model` and `empty_reason` filters can take, with counts, plus `total` / `unindexed` / `unparseable`. Takes `tier` as the list does. |
 
-`tier` is `server` (the default) or `local`, from the `cache_tiers` that [`/meta`](#health-meta) advertises. Asking for `local` on an instance with no local directory mounted is a `404`, not a `400`: the request is well-formed, the tier just is not here. `…/runs` takes no `tier`; it reads the server's own run records.
+`tier` is `server` (the default) or `local`, from the `cache_tiers` that [`/meta`](#health--meta) advertises. Asking for `local` on an instance with no local directory mounted is a `404`, not a `400`: the request is well-formed, the tier just is not here. `…/runs` takes no `tier`; it reads the server's own run records.
 
 **Listing is `admin`; reading one entry is `read`.** That asymmetry is deliberate.
 A key is `sha256(canonical_json({request, repeat, salts}))` — the only way to
