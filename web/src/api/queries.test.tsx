@@ -5,6 +5,8 @@ import type { ReactNode } from "react";
 import {
   qk,
   useApiKeys,
+  useClearBaseline,
+  useDeleteCacheEntry,
   useDeleteRun,
   useDeleteUser,
   useRun,
@@ -160,6 +162,42 @@ describe("mutations invalidate every view of what they changed", () => {
       result.current.mutateAsync({ id: "u_member", patch: { role: "viewer" } }),
     );
     expect(keys()).toEqual(expect.arrayContaining([qk.users, qk.me]));
+  });
+
+  it("useClearBaseline invalidates what useSetBaseline does", async () => {
+    const { stableWrapper, keys } = withSpiedClient();
+    const before = fx.suiteBaseline("checkout-agent/regression");
+    fx.pinSuiteBaselineBranch("checkout-agent", "regression", "main");
+    const { result } = renderHook(
+      () => useClearBaseline("checkout-agent", "regression"),
+      { wrapper: stableWrapper },
+    );
+    await act(() => result.current.mutateAsync());
+    expect(keys()).toEqual(
+      expect.arrayContaining([
+        qk.suites("checkout-agent"),
+        ["compare"],
+        qk.sets(),
+        ["caseHistory"],
+      ]),
+    );
+    // Clearing drops the seeded run pin along with the branch.
+    if (before) fx.setSuiteBaseline("checkout-agent", "regression", before);
+  });
+
+  it("useDeleteCacheEntry drops the entry's own queries and refetches the rest", async () => {
+    const { client, stableWrapper, keys } = withSpiedClient();
+    const key = fx.cacheEntryList()[0]!.key;
+    client.setQueryData(qk.cacheEntry(key, false), { key });
+    client.setQueryData(qk.cacheEntryRuns(key), { cases: [] });
+    const { result } = renderHook(() => useDeleteCacheEntry(), {
+      wrapper: stableWrapper,
+    });
+    await act(() => result.current.mutateAsync(key));
+    // Removed, not invalidated: a refetch would 404 under the open drawer.
+    expect(client.getQueryData(qk.cacheEntry(key, false))).toBeUndefined();
+    expect(client.getQueryData(qk.cacheEntryRuns(key))).toBeUndefined();
+    expect(keys()).toEqual([["cache"]]);
   });
 
   it("useDeleteUser refetches the set browser, whose access lists named them", async () => {

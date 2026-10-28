@@ -625,6 +625,27 @@ export function usePruneCache() {
 }
 
 /**
+ * Delete one cache entry (`DELETE /cache/entries/{key}`, admin scope).
+ *
+ * The entry's own queries are removed rather than invalidated: invalidating
+ * would refetch the open drawer's entry into a 404 in the moment before the
+ * drawer closes. Everything else under `["cache"]` is refetched — the entry is
+ * gone from the list, the stats and the facet counts.
+ */
+export function useDeleteCacheEntry() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) =>
+      apiRequest(`/cache/entries/${encodeURIComponent(key)}`, { method: "DELETE" }),
+    onSuccess: (_data, key) => {
+      client.removeQueries({ queryKey: ["cache", "entry", key] });
+      client.removeQueries({ queryKey: qk.cacheEntryRuns(key) });
+      void client.invalidateQueries({ queryKey: ["cache"] });
+    },
+  });
+}
+
+/**
  * The entries list. Keyed on the MAPPED filters so cache identity equals
  * request identity — `?sort` absent and `?sort=-created` are the same request
  * and must not be two entries.

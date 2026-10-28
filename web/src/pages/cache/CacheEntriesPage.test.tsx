@@ -2,8 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { AuthProvider } from "@/auth/AuthProvider";
 import { TooltipProvider } from "@/components/ui/Tooltip";
+import { createUser, login, resetMockAuth } from "@/mocks/authState";
 import { shortCacheKey } from "@/lib/format";
 import * as fx from "@/mocks/fixtures";
 import { CacheEntriesPage } from "./CacheEntriesPage";
@@ -12,6 +14,7 @@ import { installVirtualizerShims } from "@/test/virtualizer";
 // Without these the virtualizer sees a zero-height viewport and renders no
 // rows, so every assertion below would pass against an empty grid.
 beforeAll(() => installVirtualizerShims());
+beforeEach(() => resetMockAuth());
 
 function renderPage(initialEntry = "/cache/entries") {
   const client = new QueryClient({
@@ -19,11 +22,13 @@ function renderPage(initialEntry = "/cache/entries") {
   });
   return render(
     <QueryClientProvider client={client}>
-      <TooltipProvider>
-        <MemoryRouter initialEntries={[initialEntry]}>
-          <CacheEntriesPage />
-        </MemoryRouter>
-      </TooltipProvider>
+      <AuthProvider>
+        <TooltipProvider>
+          <MemoryRouter initialEntries={[initialEntry]}>
+            <CacheEntriesPage />
+          </MemoryRouter>
+        </TooltipProvider>
+      </AuthProvider>
     </QueryClientProvider>,
   );
 }
@@ -119,6 +124,35 @@ describe("CacheEntriesPage", () => {
     expect(
       await screen.findByText(/No entries match these filters/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("CacheEntryDrawer delete", () => {
+  it("deletes the entry after confirming, then closes the drawer", async () => {
+    const user = userEvent.setup();
+    const entry = fx.cacheEntryList().find((e) => e.parseable === true);
+    renderPage(`/cache/entries?entry=${encodeURIComponent(entry!.key)}`);
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      await within(dialog).findByRole("button", { name: "Delete entry…" }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Confirm delete" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("is not offered to a non-admin", async () => {
+    // Write scope is not enough: deleting from the shared corpus is the power
+    // a prune has, so the server gates it at admin.
+    createUser("writer", "writerpass", "member");
+    login("writer", "writerpass");
+    const entry = fx.cacheEntryList().find((e) => e.parseable === true);
+    renderPage(`/cache/entries?entry=${encodeURIComponent(entry!.key)}`);
+
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByRole("button", { name: /Used by runs/i });
+    expect(within(dialog).queryByRole("button", { name: /Delete entry/ })).toBeNull();
   });
 });
 

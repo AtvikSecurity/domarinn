@@ -711,6 +711,19 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       const res: PruneResponse = { pruned: 128 };
       return json(res);
     }
+    // DELETE /cache/entries/:key — admin scope, 204 or 404 like the server.
+    // The fixture corpus is regenerated per request, so the entry is not
+    // actually removed; the UI's job is to close the drawer and refetch.
+    if (method === "DELETE" && seg[1] === "entries" && seg.length === 3) {
+      const { me } = auth.resolveAuth(bearer(init));
+      if (!scopeAtLeast(me.scope ?? undefined, "admin")) {
+        return json({ error: "this action requires admin scope" }, 403);
+      }
+      const key = decodeURIComponent(seg[2] as string);
+      return fx.cacheEntryList().some((e) => e.key === key)
+        ? noContent()
+        : json({ error: "cache entry not found" }, 404);
+    }
   }
 
   return notFound();
