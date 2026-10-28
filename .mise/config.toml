@@ -240,6 +240,10 @@ else
 fi
 '''
 
+[tasks.forge-e2e]
+description = "End-to-end test of the Gitea/Forgejo domarinn-eval actions on a real forge + runner in Docker (the Forge e2e workflow). Arg: gitea, forgejo or all (default). Builds a static binary unless DOMARINN_E2E_BIN is set; KEEP=1 leaves the stack up. See scripts/forge-e2e/README.md."
+run = "scripts/forge-e2e/run.sh"
+
 [tasks.workflow-lint]
 description = "Static-analyse the GitHub Actions workflows, and the Gitea/Forgejo copies of the composite action, with zizmor (the CI workflow-lint job). Offline, so it matches the pre-commit hook in .lefthook.toml byte for byte."
 run = "zizmor --offline .github/workflows/*.yml .github/actions/*/action.yml .gitea/actions/*/action.yml .forgejo/actions/*/action.yml"

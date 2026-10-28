@@ -1,0 +1,121 @@
+name: Forge e2e
+
+# The Gitea and Forgejo copies of the domarinn-eval composite action, run for
+# real: a pinned Gitea / Forgejo and that forge's own runner come up in Docker,
+# and a pull request drives the action end to end (scripts/forge-e2e/README.md).
+# Nothing else in CI executes those files on a forge; action_contract.rs runs
+# their shell against stubs.
+#
+# Path-filtered, unlike ci.yml: it builds a static binary and boots two forges,
+# a few minutes of runner time that only buys anything when one of the inputs
+# below changed. The CLI behaviour the action leans on (the summary and its CI
+# link) is listed by file; a change elsewhere in the CLI that breaks the action
+# is still caught by action_contract.rs and on the next run here.
+on:
+  push:
+    # `renovate/**` for the same reason as ci.yml: Renovate's automerge
+    # branches never become pull requests, and this is where an image bump in
+    # scripts/forge-e2e/compose.yaml gets tested before it lands.
+    branches: [main, "renovate/**"]
+    paths:
+      - .gitea/**
+      - .forgejo/**
+      - .github/actions/domarinn-eval/**
+      - .github/workflows/forge-e2e.yml
+      - scripts/forge-e2e/**
+      - examples/echo-provider.py
+      - crates/domarinn-core/src/provenance.rs
+      - crates/domarinn-cli/src/cisummary.rs
+  pull_request:
+    paths:
+      - .gitea/**
+      - .forgejo/**
+      - .github/actions/domarinn-eval/**
+      - .github/workflows/forge-e2e.yml
+      - scripts/forge-e2e/**
+      - examples/echo-provider.py
+      - crates/domarinn-core/src/provenance.rs
+      - crates/domarinn-cli/src/cisummary.rs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # One static binary for both forges: it is published as a release asset on
+  # each, exactly as release.yml publishes it on github.com.
+  binary:
+    name: static musl binary
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          install_args: rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3 # pin to SHA
+        with:
+          key: x86_64-unknown-linux-musl
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - run: mise run musl-build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 # pin to SHA
+        with:
+          name: domarinn-musl
+          path: target/x86_64-unknown-linux-musl/release/domarinn
+          retention-days: 1
+
+  forge:
+    name: ${{ matrix.forge }}
+    needs: binary
+    runs-on: ubuntu-26.04
+    # A pass is about a minute per forge once the images are pulled; each of
+    # the three workflow runs waits at most RUN_TIMEOUT (below) on its own.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        forge: [gitea, forgejo]
+    env:
+      # The harness needs docker, curl, git and python3 from the runner image
+      # and none of the mise toolchain; mise is here only so the job runs the
+      # same `mise run forge-e2e` a developer does.
+      MISE_TASK_RUN_AUTO_INSTALL: "false"
+      RUN_TIMEOUT: "600"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          install: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: domarinn-musl
+          path: ${{ runner.temp }}/domarinn-musl
+      - name: Run the ${{ matrix.forge }} scenario
+        env:
+          FORGE: ${{ matrix.forge }}
+        run: |
+          export DOMARINN_E2E_BIN="${RUNNER_TEMP}/domarinn-musl/domarinn"
+          chmod +x "${DOMARINN_E2E_BIN}"
+          mise run forge-e2e "${FORGE}"
+      # Forge and runner logs plus every job log the harness read; written on
+      # success too, but only worth keeping when something broke.
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 # pin to SHA
+        with:
+          name: forge-e2e-logs-${{ matrix.forge }}
+          path: scripts/forge-e2e/.work/${{ matrix.forge }}/logs/
+          retention-days: 7

@@ -145,6 +145,8 @@ Everything that decides the verdict — resolving the binary, the run, the summa
 
 Both copies also take **`release-base-url`** for an instance that cannot reach github.com: mirror this repository, with its releases, onto the forge, and point the input at the mirror. `version: latest` is then resolved through the forge's own release API, and the source-build fallback clones the mirror too.
 
+Both copies are tested on real forges, not only against stubs: CI boots **Gitea 28.2.0** with its runner 5.2.4 and **Forgejo 17.0.1** with Forgejo Runner 13.2.0, publishes the binary as a release on a mirror there, and drives a pull request through the action by its URL form with `release-base-url` and `version: latest`. It checks the job's verdict and outputs, that the comment is created once and then updated in place while a reviewer's comments carrying the marker are left alone, the uploaded artifact, and that the summary's `CI run` link opens that run's page. The harness is in [`scripts/forge-e2e`](https://github.com/AtvikSecurity/domarinn/tree/main/scripts/forge-e2e); `mise run forge-e2e` runs it locally.
+
 ### Gitea
 
 ```yaml
@@ -172,7 +174,7 @@ jobs:
 
 A bare `owner/repo/path@ref` resolves against the instance's `[actions] DEFAULT_ACTIONS_URL`, which is github.com unless an administrator changed it. On an instance set to `self`, use the URL form — `uses: https://github.com/AtvikSecurity/domarinn/.gitea/actions/domarinn-eval@<version>`, or the URL of a mirror.
 
-**Artifacts:** the upload uses `actions/upload-artifact` v3 (the `-node20` build, pinned by SHA). Every v4+ release aborts on a host that is not github.com — it takes the host for GitHub Enterprise Server, which it does not support — and Gitea has served the v3 protocol for as long as it has had Actions. Gitea 1.22+ also has a v4 backend, but reaching it still takes a patched fork of the action; a pinned first-party release is the smaller trust surface. On an instance whose `DEFAULT_ACTIONS_URL` is `self`, that action needs mirroring as well.
+**Artifacts:** the upload uses `actions/upload-artifact` v3 (the `-node20` build, pinned by SHA). Every v4+ release aborts on a host that is not github.com — it takes the host for GitHub Enterprise Server, which it does not support — and Gitea has served the v3 protocol for as long as it has had Actions. Gitea 1.22+ also has a v4 backend, but reaching it still takes a patched fork of the action; a pinned first-party release is the smaller trust surface. On an instance whose `DEFAULT_ACTIONS_URL` is `self`, that action needs mirroring as well. The artifact shows on the run page and downloads from there, but Gitea's REST artifacts API (`/repos/{owner}/{repo}/actions/artifacts`) lists only v4 artifacts, so a script that fetches results through the API will not find it.
 
 ### Forgejo
 
