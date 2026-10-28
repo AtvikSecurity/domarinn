@@ -6,7 +6,7 @@
 //! suite loads, so a command that would have overwritten one format with
 //! another costs no provider calls.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::output::Format;
 
@@ -83,18 +83,35 @@ pub fn plan_emissions(specs: &[FormatSpec], out: Option<&Path>) -> Result<Vec<Em
             out: s.path.clone().or_else(|| out.map(Path::to_path_buf)),
         })
         .collect();
+    // Compared by where they land, not by how they are spelled: `./r.json`,
+    // `r.json` and `out/../r.json` are one file.
+    let keys: Vec<Option<PathBuf>> = emissions
+        .iter()
+        .map(|e| e.out.as_deref().map(destination_key))
+        .collect();
     for (i, later) in emissions.iter().enumerate() {
-        let Some(earlier) = emissions[..i].iter().find(|e| e.out == later.out) else {
+        let Some(earlier) = (0..i)
+            .find(|&j| same_destination(&keys[j], &keys[i]))
+            .map(|j| &emissions[j])
+        else {
             continue;
         };
         let (a, b) = (earlier.format, later.format);
-        let clash = match &later.out {
-            None => "would both write to stdout, interleaving into output neither parser can read"
-                .to_string(),
-            Some(path) => format!(
+        let clash = match (&earlier.out, &later.out) {
+            (Some(first), Some(second)) if first != second => format!(
+                "would both write one file ({} and {} are the same path), and only the \
+                 last would survive",
+                first.display(),
+                second.display()
+            ),
+            (_, Some(path)) => format!(
                 "would both write {}, and only the last would survive",
                 path.display()
             ),
+            (_, None) => {
+                "would both write to stdout, interleaving into output neither parser can read"
+                    .to_string()
+            }
         };
         let remedy = if a == b {
             format!("pass --format {} once", a.name())
@@ -114,6 +131,65 @@ pub fn plan_emissions(specs: &[FormatSpec], out: Option<&Path>) -> Result<Vec<Em
         ));
     }
     Ok(emissions)
+}
+
+/// What a destination path names, as near as can be told before writing it.
+///
+/// Absolute against the current directory, with `.` dropped and `..` resolved
+/// lexically. Where the parent directory exists it is canonicalized as well, so
+/// a symlinked directory and its target compare equal. A lexical `..` can be
+/// wrong under a symlink — the price is refusing a combination that would in
+/// fact have been safe, never allowing one that overwrites.
+fn destination_key(path: &Path) -> PathBuf {
+    let absolute = match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path.to_path_buf(),
+    };
+    let mut lexical = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                lexical.pop();
+            }
+            other => lexical.push(other),
+        }
+    }
+    match (lexical.parent(), lexical.file_name()) {
+        (Some(parent), Some(name)) => match parent.canonicalize() {
+            Ok(parent) => parent.join(name),
+            Err(_) => lexical,
+        },
+        _ => lexical,
+    }
+}
+
+/// Two destination keys name one place: both stdout, the same normalized
+/// path, or — when both files already exist — the same file under two names
+/// (a symlink, or a hard link on Unix).
+fn same_destination(a: &Option<PathBuf>, b: &Option<PathBuf>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a == b || same_existing_file(a, b),
+        _ => false,
+    }
+}
+
+#[cfg(unix)]
+fn same_existing_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_existing_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +266,39 @@ mod tests {
         assert!(err.contains("would both write r"), "{err}");
         let err = plan(&["json", "json"], None).unwrap_err();
         assert!(err.contains("pass --format json once"), "{err}");
+    }
+
+    /// The same file spelled two ways is still one file: comparing spellings
+    /// let one format silently overwrite the other.
+    #[test]
+    fn plan_refuses_one_file_spelled_two_ways() {
+        let err = plan(&["json=./r.json", "junit=r.json"], None).unwrap_err();
+        assert!(err.contains("only the last would survive"), "{err}");
+        assert!(
+            err.contains("./r.json and r.json are the same path"),
+            "the user's own spellings are quoted: {err}"
+        );
+        // A bare format takes `--out`, which can collide with a paired path.
+        let err = plan(&["json=r.json", "junit"], Some("./r.json")).unwrap_err();
+        assert!(err.contains("r.json and ./r.json"), "{err}");
+        let err = plan(&["json=out/../r.json", "md=r.json"], None).unwrap_err();
+        assert!(err.contains("only the last would survive"), "{err}");
+        // Normalizing must not merge files that really are different.
+        plan(&["json=a/r.json", "junit=b/r.json"], None).unwrap();
+    }
+
+    /// Two names for one existing file — a symlink — are caught too.
+    #[cfg(unix)]
+    #[test]
+    fn plan_refuses_a_symlink_to_another_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("r.json");
+        let link = dir.path().join("link.json");
+        std::fs::write(&real, "{}").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let (real, link) = (real.display().to_string(), link.display().to_string());
+        let err = plan(&[&format!("json={real}"), &format!("md={link}")], None).unwrap_err();
+        assert!(err.contains("only the last would survive"), "{err}");
     }
 
     #[test]
