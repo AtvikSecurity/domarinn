@@ -497,7 +497,9 @@ pub enum AssertKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<ParamMap>,
     },
-    /// Total cost in USD must be <= max. Bypasses the cache.
+    /// Total cost in USD must be <= max. Served from the cache like any other
+    /// assertion: a hit is re-priced from its stored token usage at today's
+    /// rate. Only `latency` bypasses the cache.
     Cost {
         max: f64,
     },
@@ -570,13 +572,30 @@ pub struct Grader {
 pub struct Runner {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<usize>,
+    /// Retry policy for retriable provider failures (429, 5xx, timeouts).
+    /// Retries are on by default — 2 of them, backing off from 500 ms to at
+    /// most 8 s — so omitting this block is not the same as `max: 0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retries: Option<RetryCfg>,
+    /// Cap on outgoing provider requests per second, across the whole run.
+    ///
+    /// Every live attempt takes a slot — retries and `fallback:` links
+    /// included — while cache hits take none. Grader and embedding calls are
+    /// not limited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<RateLimit>,
+    /// Per-request timeout for provider calls, in milliseconds.
+    ///
+    /// Replaces each provider kind's default (120 s for `anthropic`, `openai`
+    /// and `http`; 60 s for `exec` and the embeddings client). An `exec`
+    /// provider's own `timeout_ms` wins over this. Applies to each attempt, not
+    /// to the retry loop as a whole. Graders are not covered: they have
+    /// `grader.timeout_ms`. An expiry is a retriable `provider_timeout`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
-    /// Whether deterministic asserts short-circuit the grader. Default true.
+    /// Skip graded asserts once the deterministic ones have decided the case.
+    /// Default true. `false` grades every assertion anyway, for a full
+    /// per-assertion report — at the cost of the judge calls this saves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short_circuit: Option<bool>,
     /// Empty reasons that mark a case `skip` instead of grading it.
@@ -639,9 +658,13 @@ pub struct Runner {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RetryCfg {
+    /// Retries after the first attempt. Required inside a `retries:` block;
+    /// with no block at all the default is 2. `0` turns retrying off.
     pub max: u32,
+    /// First backoff delay in milliseconds (default 500), doubling per retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_ms: Option<u64>,
+    /// Ceiling on the exponential backoff, in milliseconds (default 8000).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ms: Option<u64>,
     /// Spread concurrent retries so rate-limited cells do not all wake at once.
@@ -661,6 +684,8 @@ pub struct RetryCfg {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimit {
+    /// Requests per second; must be positive. Requests are spaced `1 / rps`
+    /// apart, with no burst allowance.
     pub rps: f64,
 }
 

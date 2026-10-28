@@ -135,6 +135,26 @@ pub struct RetryStats {
 /// `op` receives the 1-based attempt number.
 pub async fn with_retry<T, F, Fut>(
     policy: &RetryPolicy,
+    op: F,
+) -> (Result<T, ProviderError>, RetryStats)
+where
+    F: FnMut(u32) -> Fut,
+    Fut: Future<Output = Result<T, ProviderError>>,
+{
+    with_retry_limited(policy, None, op).await
+}
+
+/// [`with_retry`], waiting on `limiter` before **every** attempt.
+///
+/// Per attempt rather than once per call, because each retry is another
+/// request against the same quota — a 429 retried without asking the limiter
+/// is the burst it exists to prevent. The wait happens before the attempt's
+/// clock starts, so like a backoff sleep it is never charged to
+/// [`RetryStats::in_flight`], and a `latency` assertion cannot fail because the
+/// run was throttling itself.
+pub async fn with_retry_limited<T, F, Fut>(
+    policy: &RetryPolicy,
+    limiter: Option<&crate::rate_limit::RateLimiter>,
     mut op: F,
 ) -> (Result<T, ProviderError>, RetryStats)
 where
@@ -145,6 +165,9 @@ where
     let mut in_flight = Duration::ZERO;
     loop {
         attempts += 1;
+        if let Some(limiter) = limiter {
+            limiter.acquire().await;
+        }
         let started = Instant::now();
         let outcome = op(attempts).await;
         in_flight += started.elapsed();
@@ -399,5 +422,63 @@ mod tests {
             seen.insert(d.as_millis());
         }
         assert!(seen.len() > 1, "jitter produced a single value");
+    }
+
+    /// Pinned because the reference docs said the opposite for a long time:
+    /// retries are on by default (two of them), not opt-in. See the comment on
+    /// [`RetryPolicy::default`] for why that default is safe.
+    #[test]
+    fn the_default_policy_retries_twice() {
+        let suite = crate::load_str("version: 1\nproviders: [{id: p, type: exec, command: [x]}]\n")
+            .unwrap();
+        let policy = RetryPolicy::from_suite(&suite);
+        assert_eq!(policy.max, 2);
+        assert_eq!(policy.initial_ms, 500);
+        assert_eq!(policy.max_ms, 8_000);
+        assert_eq!(policy.retry_after_max_ms, 120_000);
+    }
+
+    /// Every attempt — retries included — waits its turn at the limiter, and
+    /// none of that wait is charged to the call's in-flight time.
+    #[tokio::test(start_paused = true)]
+    async fn a_limiter_gates_every_attempt_and_stays_out_of_in_flight() {
+        let policy = RetryPolicy {
+            max: 2,
+            initial_ms: 0,
+            max_ms: 0,
+            ..Default::default()
+        };
+        let limiter = crate::rate_limit::RateLimiter::per_second(1.0).unwrap();
+        let start = tokio::time::Instant::now();
+        let seen = std::sync::Mutex::new(Vec::new());
+        let (result, stats) = with_retry_limited(&policy, Some(&limiter), |_| {
+            seen.lock()
+                .unwrap()
+                .push(tokio::time::Instant::now() - start);
+            async {
+                Err::<(), _>(ProviderError::retriable(
+                    ErrorClass::PROVIDER_RATE_LIMIT,
+                    anyhow::anyhow!("429"),
+                    None,
+                ))
+            }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(stats.attempts, 3);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                Duration::ZERO,
+                Duration::from_secs(1),
+                Duration::from_secs(2)
+            ],
+            "each attempt is one limiter interval after the last"
+        );
+        assert!(
+            stats.in_flight < Duration::from_millis(100),
+            "limiter waits leaked into in_flight: {:?}",
+            stats.in_flight
+        );
     }
 }

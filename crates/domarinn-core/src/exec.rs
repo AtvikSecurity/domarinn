@@ -225,6 +225,11 @@ pub async fn run_exec_raw(
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // Without this a timed-out child outlives its timeout: the `wait` future
+    // below is dropped, but tokio's `Child` does not kill on drop by default,
+    // so the process keeps running — and keeps spending — after the call has
+    // already been reported as failed. Every early return below relies on it.
+    cmd.kill_on_drop(true);
 
     let mut child = cmd.spawn().map_err(|source| ExecError::Spawn {
         command: command.to_vec(),
@@ -345,5 +350,30 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ExecError::Spawn { .. }));
         assert!(err.is_retriable());
+    }
+
+    /// A timed-out child is killed, not abandoned. The script would create
+    /// `marker` a second after it started; the timeout fires long before that,
+    /// so if the marker appears later the process outlived its own failure.
+    #[tokio::test]
+    async fn a_timed_out_child_is_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let script = format!("sleep 1; touch '{}'", marker.display());
+        let err = run_exec_json(
+            &["sh".to_string(), "-c".to_string(), script],
+            &BTreeMap::new(),
+            None,
+            Duration::from_millis(100),
+            &json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ExecError::Timeout { ms: 100, .. }), "{err}");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !marker.exists(),
+            "the child kept running after its timeout was reported"
+        );
     }
 }

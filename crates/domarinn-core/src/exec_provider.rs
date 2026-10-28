@@ -166,7 +166,16 @@ impl Provider for ExecProvider {
         let response = run_exec_json(&self.command, &self.env, cwd, self.timeout, &request)
             .await
             .map_err(|e| {
-                if e.is_retriable() {
+                // A child that ran out of time is a timeout like any HTTP one —
+                // same class, same retry and fallback behaviour — rather than
+                // `exec_failed`, which says the system under test broke.
+                if matches!(e, crate::exec::ExecError::Timeout { .. }) {
+                    ProviderError::retriable(
+                        ErrorClass::PROVIDER_TIMEOUT,
+                        anyhow::Error::new(e),
+                        None,
+                    )
+                } else if e.is_retriable() {
                     ProviderError::retriable(ErrorClass::EXEC_FAILED, anyhow::Error::new(e), None)
                 } else {
                     ProviderError::fatal(ErrorClass::EXEC_FAILED, anyhow::Error::new(e))

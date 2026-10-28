@@ -64,6 +64,13 @@ impl EmbeddingsProvider {
         }
     }
 
+    /// Replace the default 60 s per-request timeout (`runner.timeout_ms`). See
+    /// [`crate::anthropic::AnthropicProvider::with_timeout`].
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.client = http_client(timeout);
+        self
+    }
+
     /// Apply the suite's `request:` block and `cache_salt`. See
     /// [`crate::anthropic::AnthropicProvider::with_request`] for why this is a
     /// builder rather than two more constructor parameters.

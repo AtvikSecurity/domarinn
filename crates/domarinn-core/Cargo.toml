@@ -56,6 +56,9 @@ whoami = "2"
 jsonschema = { version = "0.59", default-features = false }
 
 [dev-dependencies]
+# `test-util` for paused time: the rate limiter's tests measure the delay it
+# imposes without sleeping for it.
+tokio = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true }
 tempfile = "3"
 wiremock = "0.6"

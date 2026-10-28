@@ -179,6 +179,9 @@ pub(super) struct ChainOutcome<'a> {
 pub(super) struct ChainCtx<'a> {
     pub cache: CacheCall<'a>,
     pub retry_cfg: &'a RetryPolicy,
+    /// `runner.rate_limit`, shared by every link: a fallback is another request
+    /// against somebody's quota, and spends a slot like the primary did.
+    pub limiter: Option<&'a crate::rate_limit::RateLimiter>,
     pub empty_policy: &'a EmptyPolicy,
     pub fallback: &'a FallbackPolicy,
     pub include_raw: bool,
@@ -233,7 +236,8 @@ pub(super) async fn call_chain<'a>(
         // second run state.
         let mut cache = chain.cache;
         cache.probe_legacy = i == 0;
-        let outcome = call_with_cache(provider, req, ctx, cache, chain.retry_cfg).await;
+        let outcome =
+            call_with_cache(provider, req, ctx, cache, chain.retry_cfg, chain.limiter).await;
 
         let attempt = Attempt {
             provider,

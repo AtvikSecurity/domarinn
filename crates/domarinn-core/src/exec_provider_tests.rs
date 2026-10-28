@@ -630,3 +630,24 @@ fn a_child_can_supply_a_retry_after() {
         other => panic!("expected a retriable error, got {other:?}"),
     }
 }
+
+/// A child that runs out of time is a timeout, not a broken system under test:
+/// `provider_timeout`, retriable, the same as an HTTP provider that stopped
+/// answering.
+#[tokio::test]
+async fn a_timed_out_child_is_classified_as_a_provider_timeout() {
+    let provider = ExecProvider::new(
+        "slow",
+        vec!["sh".into(), "-c".into(), "sleep 5".into()],
+        BTreeMap::new(),
+        Some(100),
+        None,
+        None,
+    );
+    let err = provider
+        .call(&request("x"), &CallCtx::default())
+        .await
+        .unwrap_err();
+    assert_eq!(err.class().as_str(), ErrorClass::PROVIDER_TIMEOUT);
+    assert!(matches!(err, ProviderError::Retriable { .. }), "{err:?}");
+}

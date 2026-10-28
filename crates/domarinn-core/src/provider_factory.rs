@@ -36,6 +36,42 @@ pub enum FactoryError {
     },
 }
 
+/// `with_timeout`, when there is one to apply.
+///
+/// A local trait over the four HTTP-backed kinds rather than an `Option`
+/// parameter on each of their builders, so a provider constructed directly keeps
+/// the plain `with_timeout(Duration)` and this file keeps one-line call sites.
+trait WithTimeoutOpt: Sized {
+    fn timeout(self, timeout: std::time::Duration) -> Self;
+    fn with_timeout_opt(self, timeout: Option<std::time::Duration>) -> Self {
+        match timeout {
+            Some(t) => self.timeout(t),
+            None => self,
+        }
+    }
+}
+
+impl WithTimeoutOpt for AnthropicProvider {
+    fn timeout(self, timeout: std::time::Duration) -> Self {
+        self.with_timeout(timeout)
+    }
+}
+impl WithTimeoutOpt for OpenAiProvider {
+    fn timeout(self, timeout: std::time::Duration) -> Self {
+        self.with_timeout(timeout)
+    }
+}
+impl WithTimeoutOpt for HttpProvider {
+    fn timeout(self, timeout: std::time::Duration) -> Self {
+        self.with_timeout(timeout)
+    }
+}
+impl WithTimeoutOpt for EmbeddingsProvider {
+    fn timeout(self, timeout: std::time::Duration) -> Self {
+        self.with_timeout(timeout)
+    }
+}
+
 /// Build a provider trait object from its config.
 ///
 /// `base_dir` is the suite's directory — the cwd every `exec` child is spawned
@@ -46,6 +82,21 @@ pub fn build_provider(
     cfg: &ProviderCfg,
     base_dir: Option<&std::path::Path>,
 ) -> Result<Box<dyn Provider>, FactoryError> {
+    build_provider_with_timeout(cfg, base_dir, None)
+}
+
+/// [`build_provider`], with the suite's `runner.timeout_ms` applied.
+///
+/// `runner_timeout_ms` replaces each kind's built-in per-request default
+/// (120 s for `anthropic`, `openai` and `http`; 60 s for `exec`). An `exec`
+/// provider's own `timeout_ms` is more specific and still wins. `None` keeps
+/// every default, which is exactly what [`build_provider`] does.
+pub fn build_provider_with_timeout(
+    cfg: &ProviderCfg,
+    base_dir: Option<&std::path::Path>,
+    runner_timeout_ms: Option<u64>,
+) -> Result<Box<dyn Provider>, FactoryError> {
+    let timeout = runner_timeout_ms.map(std::time::Duration::from_millis);
     match &cfg.kind {
         ProviderKind::Exec {
             command,
@@ -66,7 +117,7 @@ pub fn build_provider(
                 cfg.id.clone(),
                 command.clone(),
                 env.clone(),
-                *timeout_ms,
+                timeout_ms.or(runner_timeout_ms),
                 cache_salt,
                 base_dir,
             )))
@@ -88,6 +139,7 @@ pub fn build_provider(
                 params.clone(),
                 pricing.as_deref().cloned(),
             )
+            .with_timeout_opt(timeout)
             .with_request(request.as_deref(), cache_salt.clone())
             .map_err(|source| FactoryError::Request {
                 id: cfg.id.clone(),
@@ -111,6 +163,7 @@ pub fn build_provider(
                 params.clone(),
                 pricing.as_deref().cloned(),
             )
+            .with_timeout_opt(timeout)
             .with_request(request.as_deref(), cache_salt.clone())
             .map_err(|source| FactoryError::Request {
                 id: cfg.id.clone(),
@@ -132,6 +185,7 @@ pub fn build_provider(
                 body.clone(),
                 output_expr.clone(),
             )
+            .with_timeout_opt(timeout)
             .with_global_headers()
             .map_err(|source| FactoryError::Request {
                 id: cfg.id.clone(),
@@ -147,7 +201,16 @@ pub fn build_provider(
 
 /// Build the embeddings provider (for `similar` assertions) from the first
 /// `type: embeddings` provider in the suite, if any.
+///
+/// `runner.timeout_ms` applies here too: an embedding call is an HTTP request
+/// to a provider the suite declared, and a suite that raised the ceiling for a
+/// slow gateway means it for every call to that gateway.
 pub fn build_embeddings(suite: &Suite) -> Option<EmbeddingsProvider> {
+    let runner_timeout = suite
+        .runner
+        .as_ref()
+        .and_then(|r| r.timeout_ms)
+        .map(std::time::Duration::from_millis);
     suite.providers.iter().find_map(|p| match &p.kind {
         ProviderKind::Embeddings {
             model,
@@ -165,6 +228,7 @@ pub fn build_embeddings(suite: &Suite) -> Option<EmbeddingsProvider> {
             params.clone(),
             pricing.as_deref(),
         )
+        .with_timeout_opt(runner_timeout)
         .with_request(&p.id, request.as_deref(), cache_salt.clone())
         // A template that will not render is reported when the `similar`
         // assertion runs, where the grader can surface it: this function has no
@@ -312,5 +376,95 @@ providers: [{id: e, type: embeddings, model: m}]
             .err()
             .expect("a `$digest:` salt without a suite dir must fail the build");
         assert!(err.to_string().contains("suite directory"), "{err}");
+    }
+
+    fn bare_request() -> crate::provider::ProviderRequest {
+        crate::provider::ProviderRequest {
+            tools: Vec::new(),
+            prompt: None,
+            vars: Default::default(),
+            params: serde_json::Map::new(),
+            test: Default::default(),
+            case_salt: None,
+        }
+    }
+
+    /// `runner.timeout_ms` replaces the HTTP client's 120 s default, and an
+    /// expiry is a retriable `provider_timeout`.
+    #[tokio::test]
+    async fn the_runner_timeout_bounds_an_http_provider() {
+        use wiremock::{matchers::any, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("late")
+                    .set_delay(std::time::Duration::from_secs(5)),
+            )
+            .mount(&server)
+            .await;
+        let suite = crate::load_str(&format!(
+            "version: 1\nproviders: [{{id: h, type: http, url: \"{}/x\"}}]\n",
+            server.uri()
+        ))
+        .unwrap();
+        let provider = build_provider_with_timeout(&suite.providers[0], None, Some(200)).unwrap();
+        let started = std::time::Instant::now();
+        let err = provider
+            .call(&bare_request(), &Default::default())
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(4),
+            "the 120 s default applied instead of runner.timeout_ms"
+        );
+        assert_eq!(
+            err.class().as_str(),
+            crate::error_class::ErrorClass::PROVIDER_TIMEOUT
+        );
+        assert!(matches!(
+            err,
+            crate::provider::ProviderError::Retriable { .. }
+        ));
+    }
+
+    /// An `exec` provider without its own `timeout_ms` takes the runner's.
+    #[tokio::test]
+    async fn an_exec_provider_inherits_the_runner_timeout() {
+        let suite = crate::load_str(
+            "version: 1\nproviders: [{id: p, type: exec, command: [sh, -c, \"sleep 5\"]}]\n",
+        )
+        .unwrap();
+        let provider = build_provider_with_timeout(&suite.providers[0], None, Some(100)).unwrap();
+        let err = provider
+            .call(&bare_request(), &Default::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.class().as_str(),
+            crate::error_class::ErrorClass::PROVIDER_TIMEOUT
+        );
+    }
+
+    /// ...but its own `timeout_ms` is more specific, and wins.
+    #[tokio::test]
+    async fn an_exec_providers_own_timeout_beats_the_runners() {
+        let suite = crate::load_str(
+            r#"
+version: 1
+providers:
+  - id: p
+    type: exec
+    timeout_ms: 10000
+    command: ["sh", "-c", "cat >/dev/null; sleep 0.3; printf '{\"output\":\"ok\"}'"]
+"#,
+        )
+        .unwrap();
+        let provider = build_provider_with_timeout(&suite.providers[0], None, Some(50)).unwrap();
+        let resp = provider
+            .call(&bare_request(), &Default::default())
+            .await
+            .expect("the provider's 10 s applies, not the runner's 50 ms");
+        assert_eq!(resp.output, crate::types::Output::Text("ok".into()));
     }
 }

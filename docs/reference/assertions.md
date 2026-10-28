@@ -160,7 +160,7 @@ tests:
         command: ["./expensive-grader.py"]
 ```
 
-Short-circuiting is **on by default**. The `runner.short_circuit` field (default `true`) is the switch for this optimization; the runner short-circuits whenever a case's outcome is already decided by the deterministic pass.
+Short-circuiting is **on by default**: the runner skips the graded assertions whenever the deterministic pass has already decided the case. Set `runner.short_circuit: false` to grade every assertion anyway. You get a verdict for each assertion, and you pay for the judge calls the default would have skipped. The case's verdict does not change.
 
 > Skipped graded assertions appear in results with `status: "skipped"` and the
 > reason `skipped: outcome already decided`. They do not count as failures.
