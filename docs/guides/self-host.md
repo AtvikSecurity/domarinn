@@ -209,7 +209,7 @@ spec:
             httpGet: { path: /api/v1/health, port: 8321 }
             initialDelaySeconds: 5
           readinessProbe:
-            httpGet: { path: /api/v1/health, port: 8321 }
+            httpGet: { path: /api/v1/ready, port: 8321 }
       volumes:
         - name: data
           persistentVolumeClaim:
