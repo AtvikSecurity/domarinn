@@ -188,6 +188,21 @@
       allowedVersions: "<8.0.0",
     },
 
+    // The Gitea copy of the composite action pins `actions/upload-artifact`
+    // to the v3 line on purpose: every v4+ release refuses to run on a host
+    // that is not github.com (see the header of
+    // .gitea/actions/domarinn-eval/action.yml). Left alone, Renovate would
+    // "upgrade" it to the release that breaks it — and nothing in this repo's
+    // CI runs that action on a Gitea runner, so the break would land green.
+    // Held to the `-node20` builds because the plain v3 tags run on Node 16.
+    {
+      description: "Keep the Gitea action's upload-artifact on the v3 -node20 line",
+      matchManagers: ["github-actions"],
+      matchFileNames: [".gitea/**"],
+      matchDepNames: ["actions/upload-artifact"],
+      allowedVersions: "/^v3\\.\\d+\\.\\d+-node20$/",
+    },
+
     // --- Manager quirks ---------------------------------------------------
     {
       description: "Bump the manifest range (package.json), not just the lockfile, so both update together. npm's default rangeStrategy ('replace') leaves a caret range untouched when the new version still satisfies it, so in-range minor/patch updates would otherwise only change the lockfile.",

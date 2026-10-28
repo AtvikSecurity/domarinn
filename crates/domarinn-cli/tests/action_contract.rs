@@ -35,6 +35,15 @@
 //! all of them: if a step stops declaring `shell: bash`, or grows an input, the
 //! interpreter and environment reproduced here have silently stopped matching
 //! the runner's and the other tests would be asserting about nothing.
+//!
+//! # Three actions, one contract
+//!
+//! The action ships three times: for GitHub, and for Gitea and Forgejo Actions
+//! under `.gitea/` and `.forgejo/`, whose runners are act-based and expand
+//! `shell: bash` the same way. Every test here runs against each of
+//! [`ACTIONS`], so a clause verified on one copy is verified on all of them.
+//! What the copies may and may not differ in is pinned separately, in
+//! `action_contract/forge_tests.rs`.
 
 #![cfg(unix)]
 
@@ -43,7 +52,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const ACTION: &str = ".github/actions/domarinn-eval/action.yml";
+const GITHUB_ACTION: &str = ".github/actions/domarinn-eval/action.yml";
+const GITEA_ACTION: &str = ".gitea/actions/domarinn-eval/action.yml";
+const FORGEJO_ACTION: &str = ".forgejo/actions/domarinn-eval/action.yml";
+
+/// Every copy of the action. Looping over this is what makes a test prove its
+/// clause for a Gitea or Forgejo runner as well as GitHub's: the shell steps
+/// are meant to be identical, and "meant to be" is the claim a test checks
+/// rather than assumes.
+const ACTIONS: &[&str] = &[GITHUB_ACTION, GITEA_ACTION, FORGEJO_ACTION];
 
 /// The interpreter GitHub runs a `shell: bash` step under, verbatim from its
 /// documented default: `bash --noprofile --norc -e -o pipefail {0}`.
@@ -68,13 +85,21 @@ struct ShellStep {
     env: &'static [(&'static str, &'static str)],
 }
 
-/// Every `run:` step in the action. Adding a step to `action.yml` without
-/// adding it here fails [`every_shell_step_is_exercised_here`].
+/// Every `run:` step the three actions share. Adding a step to an
+/// `action.yml` without adding it here (or to [`FORGE_SHELL_STEPS`]) fails
+/// [`every_shell_step_is_exercised_here`].
 const SHELL_STEPS: &[ShellStep] = &[
     ShellStep {
         field: "id",
         value: "bin",
-        env: &[("INPUT_BINARY_PATH", ""), ("INPUT_VERSION", "latest")],
+        env: &[
+            ("INPUT_BINARY_PATH", ""),
+            ("INPUT_VERSION", "latest"),
+            (
+                "INPUT_RELEASE_BASE_URL",
+                "https://github.com/AtvikSecurity/domarinn",
+            ),
+        ],
     },
     ShellStep {
         field: "id",
@@ -116,11 +141,37 @@ const SHELL_STEPS: &[ShellStep] = &[
     },
 ];
 
-fn registered(value: &str) -> &'static ShellStep {
-    SHELL_STEPS
-        .iter()
+/// `run:` steps only the Gitea and Forgejo actions have: the PR comment, which
+/// on GitHub is `actions/github-script` and so not shell at all. `API_URL` is
+/// empty by default so a test that forgets its stub server makes no request.
+const FORGE_SHELL_STEPS: &[ShellStep] = &[ShellStep {
+    field: "id",
+    value: "comment",
+    env: &[
+        ("SUMMARY_PATH", "summary.md"),
+        ("COMMENT_TOKEN", "t0ken"),
+        ("API_URL", ""),
+        ("REPOSITORY", "acme/widgets"),
+        ("PR_NUMBER", "7"),
+    ],
+}];
+
+/// The registry for one action: the shared steps, plus the forge-only ones on
+/// a forge copy.
+fn registry(action: &str) -> Vec<&'static ShellStep> {
+    let forge_only = if action == GITHUB_ACTION {
+        &[][..]
+    } else {
+        FORGE_SHELL_STEPS
+    };
+    SHELL_STEPS.iter().chain(forge_only).collect()
+}
+
+fn registered(action: &str, value: &str) -> &'static ShellStep {
+    registry(action)
+        .into_iter()
         .find(|s| s.value == value)
-        .unwrap_or_else(|| panic!("SHELL_STEPS has no entry for {value}"))
+        .unwrap_or_else(|| panic!("{action}: the registry has no entry for {value}"))
 }
 
 fn repo_root() -> PathBuf {
@@ -130,31 +181,35 @@ fn repo_root() -> PathBuf {
         .expect("the repository root resolves from crates/domarinn-cli")
 }
 
-fn action() -> serde_json::Value {
-    let path = repo_root().join(ACTION);
-    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {ACTION}: {e}"));
-    domarinn_core::yaml::parse_value(&raw).unwrap_or_else(|e| panic!("parsing {ACTION}: {e}"))
+fn raw_action(action: &str) -> String {
+    std::fs::read_to_string(repo_root().join(action))
+        .unwrap_or_else(|e| panic!("reading {action}: {e}"))
 }
 
-fn steps() -> Vec<serde_json::Value> {
-    action()["runs"]["steps"]
+fn parsed(action: &str) -> serde_json::Value {
+    domarinn_core::yaml::parse_value(&raw_action(action))
+        .unwrap_or_else(|e| panic!("parsing {action}: {e}"))
+}
+
+fn steps(action: &str) -> Vec<serde_json::Value> {
+    parsed(action)["runs"]["steps"]
         .as_array()
         .expect("runs.steps is a list")
         .clone()
 }
 
 /// The step whose `field` is `value`.
-fn step(field: &str, value: &str) -> serde_json::Value {
-    steps()
+fn step(action: &str, field: &str, value: &str) -> serde_json::Value {
+    steps(action)
         .into_iter()
         .find(|s| s[field].as_str() == Some(value))
-        .unwrap_or_else(|| panic!("{ACTION} has no step with {field}: {value}"))
+        .unwrap_or_else(|| panic!("{action} has no step with {field}: {value}"))
 }
 
-fn script_of(field: &str, value: &str) -> String {
-    step(field, value)["run"]
+fn script_of(action: &str, field: &str, value: &str) -> String {
+    step(action, field, value)["run"]
         .as_str()
-        .unwrap_or_else(|| panic!("the {value} step has a `run:` script"))
+        .unwrap_or_else(|| panic!("{action}: the {value} step has a `run:` script"))
         .to_string()
 }
 
@@ -222,10 +277,10 @@ impl Workspace {
 /// `overrides` replace entries of the step's [`ShellStep::env`]; every other
 /// declared variable keeps its default, so `set -u` sees the environment the
 /// runner would have built.
-fn run_step(value: &str, overrides: &[(&str, &str)], ws: &Workspace) -> Ran {
-    let registered = registered(value);
+fn run_step(action: &str, value: &str, overrides: &[(&str, &str)], ws: &Workspace) -> Ran {
+    let registered = registered(action, value);
     let script = ws.path().join("step.sh");
-    std::fs::write(&script, script_of(registered.field, value)).unwrap();
+    std::fs::write(&script, script_of(action, registered.field, value)).unwrap();
 
     let mut env: BTreeMap<String, String> = registered
         .env
@@ -256,13 +311,24 @@ fn run_step(value: &str, overrides: &[(&str, &str)], ws: &Workspace) -> Ran {
         ),
     );
 
-    let out: Output = Command::new("bash")
-        .args(GITHUB_BASH)
+    // A forge runner may not set the summary file at all; a test asks for that
+    // by overriding it to the empty string, and gets it truly unset.
+    let unset_summary = overrides
+        .iter()
+        .any(|(k, v)| *k == "GITHUB_STEP_SUMMARY" && v.is_empty());
+    if unset_summary {
+        env.remove("GITHUB_STEP_SUMMARY");
+    }
+
+    let mut cmd = Command::new("bash");
+    cmd.args(GITHUB_BASH)
         .arg(&script)
         .current_dir(ws.path())
-        .envs(&env)
-        .output()
-        .expect("bash is on PATH");
+        .envs(&env);
+    if unset_summary {
+        cmd.env_remove("GITHUB_STEP_SUMMARY");
+    }
+    let out: Output = cmd.output().expect("bash is on PATH");
 
     Ran {
         status: out.status.code(),
@@ -287,11 +353,25 @@ fn path_str(path: &Path) -> String {
 
 /// Run the eval step against a stub CLI that writes its report and exits
 /// `code`, so the step sees a real non-zero exit rather than a missing binary.
-fn eval_step_with(code: i32, ws: &Workspace) -> Ran {
+fn eval_step_with(action: &str, code: i32, ws: &Workspace) -> Ran {
     let stub = ws.stub_cli(&format!(
         "printf '<testsuites/>' > results.xml\nexit {code}\n"
     ));
-    run_step("eval", &[("DOMARINN_BIN", &stub)], ws)
+    run_step(action, "eval", &[("DOMARINN_BIN", &stub)], ws)
+}
+
+/// The line the eval step logs before invoking the CLI with `overrides`.
+fn eval_invocation(action: &str, overrides: &[(&str, &str)]) -> String {
+    let ws = Workspace::new();
+    let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
+    let mut all = vec![("DOMARINN_BIN", stub.as_str())];
+    all.extend_from_slice(overrides);
+    let ran = run_step(action, "eval", &all, &ws);
+    ran.log
+        .lines()
+        .find(|line| line.starts_with("Running: domarinn "))
+        .unwrap_or_else(|| panic!("{action}: the step logs the command it ran:\n{}", ran.log))
+        .to_string()
 }
 
 /// Every exit code the CLI documents must survive as a step output.
@@ -301,26 +381,28 @@ fn eval_step_with(code: i32, ws: &Workspace) -> Ran {
 /// it worth having.
 #[test]
 fn the_eval_step_writes_its_outputs_for_every_exit_code() {
-    for code in [0, 1, 2, 3] {
-        let ws = Workspace::new();
-        let ran = eval_step_with(code, &ws);
+    for action in ACTIONS {
+        for code in [0, 1, 2, 3] {
+            let ws = Workspace::new();
+            let ran = eval_step_with(action, code, &ws);
 
-        assert_eq!(
-            ran.output("exit-code"),
-            Some(code.to_string().as_str()),
-            "exit {code} must reach the gate step; the eval step logged:\n{}",
-            ran.log
-        );
-        assert_eq!(
-            ran.output("results-path"),
-            Some("results.xml"),
-            "exit {code} must still publish the report for the upload step"
-        );
-        assert!(
-            ran.log.contains(&format!("domarinn exited with {code}")),
-            "the step log must name the code a reader will see annotated: {}",
-            ran.log
-        );
+            assert_eq!(
+                ran.output("exit-code"),
+                Some(code.to_string().as_str()),
+                "{action}: exit {code} must reach the gate step; the eval step logged:\n{}",
+                ran.log
+            );
+            assert_eq!(
+                ran.output("results-path"),
+                Some("results.xml"),
+                "{action}: exit {code} must still publish the report for the upload step"
+            );
+            assert!(
+                ran.log.contains(&format!("domarinn exited with {code}")),
+                "{action}: the step log must name the code a reader will see annotated: {}",
+                ran.log
+            );
+        }
     }
 }
 
@@ -334,60 +416,53 @@ fn the_eval_step_writes_its_outputs_for_every_exit_code() {
 /// tolerant would fail it with a usage error instead.
 #[test]
 fn the_share_opt_out_only_travels_with_share() {
-    let invocation = |server: &str, opt_out: &str| {
-        let ws = Workspace::new();
-        let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
-        let ran = run_step(
-            "eval",
-            &[
-                ("DOMARINN_BIN", &stub),
-                ("DOMARINN_SERVER_URL", server),
-                ("INPUT_ALLOW_SHARE_FAILURE", opt_out),
-            ],
-            &ws,
+    for action in ACTIONS {
+        let invocation = |server: &str, opt_out: &str| {
+            eval_invocation(
+                action,
+                &[
+                    ("DOMARINN_SERVER_URL", server),
+                    ("INPUT_ALLOW_SHARE_FAILURE", opt_out),
+                ],
+            )
+        };
+
+        let server = "https://evals.example";
+
+        let gated = invocation(server, "false");
+        assert!(
+            gated.contains("--share"),
+            "{action}: a server means an upload: {gated}"
         );
-        ran.log
-            .lines()
-            .find(|line| line.starts_with("Running: domarinn "))
-            .unwrap_or_else(|| panic!("the step logs the command it ran:\n{}", ran.log))
-            .to_string()
-    };
+        assert!(
+            !gated.contains("--allow-share-failure"),
+            "{action}: the default must keep gating the job on the upload: {gated}"
+        );
 
-    let server = "https://evals.example";
+        let opted_out = invocation(server, "true");
+        assert!(
+            opted_out.contains("--share") && opted_out.contains("--allow-share-failure"),
+            "{action}: the opt-out must reach the CLI; without it exit 3 is \
+             unavoidable and ungated: {opted_out}"
+        );
 
-    let gated = invocation(server, "false");
-    assert!(
-        gated.contains("--share"),
-        "a server means an upload: {gated}"
-    );
-    assert!(
-        !gated.contains("--allow-share-failure"),
-        "the default must keep gating the job on the upload: {gated}"
-    );
-
-    let opted_out = invocation(server, "true");
-    assert!(
-        opted_out.contains("--share") && opted_out.contains("--allow-share-failure"),
-        "the opt-out must reach the CLI; without it exit 3 is unavoidable and \
-         ungated: {opted_out}"
-    );
-
-    let no_server = invocation("", "true");
-    assert!(
-        !no_server.contains("--share"),
-        "no server, no upload: {no_server}"
-    );
-    // Asserted separately, and not as `!contains("--share")`: `--share` is not
-    // a substring of `--allow-share-failure`, so the line above passes just as
-    // happily against a step that emitted the opt-out with nothing to qualify.
-    // That is the exact regression worth catching — clap rejects the flag on
-    // its own, so the result is exit 2 on every run, unconditionally fatal at
-    // the gate.
-    assert!(
-        !no_server.contains("--allow-share-failure"),
-        "the opt-out requires --share; alone it is a usage error the gate \
-         always fails on: {no_server}"
-    );
+        let no_server = invocation("", "true");
+        assert!(
+            !no_server.contains("--share"),
+            "{action}: no server, no upload: {no_server}"
+        );
+        // Asserted separately, and not as `!contains("--share")`: `--share` is
+        // not a substring of `--allow-share-failure`, so the line above passes
+        // just as happily against a step that emitted the opt-out with nothing
+        // to qualify. That is the exact regression worth catching — clap
+        // rejects the flag on its own, so the result is exit 2 on every run,
+        // unconditionally fatal at the gate.
+        assert!(
+            !no_server.contains("--allow-share-failure"),
+            "{action}: the opt-out requires --share; alone it is a usage error \
+             the gate always fails on: {no_server}"
+        );
+    }
 }
 
 /// The `provider:` input expands to repeated `--provider` flags — the only
@@ -396,35 +471,24 @@ fn the_share_opt_out_only_travels_with_share() {
 /// still runs the whole matrix.
 #[test]
 fn the_provider_input_expands_to_repeated_flags() {
-    let running = |provider: &str| {
-        let ws = Workspace::new();
-        let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
-        let ran = run_step(
-            "eval",
-            &[("DOMARINN_BIN", &stub), ("INPUT_PROVIDER", provider)],
-            &ws,
-        );
-        ran.log
-            .lines()
-            .find(|line| line.starts_with("Running: domarinn "))
-            .unwrap_or_else(|| panic!("the step logs the command it ran:\n{}", ran.log))
-            .to_string()
-    };
+    for action in ACTIONS {
+        let running = |provider: &str| eval_invocation(action, &[("INPUT_PROVIDER", provider)]);
 
-    assert!(
-        !running("").contains("--provider"),
-        "an empty input must not shrink the matrix"
-    );
-    let comma = running("primary,canary");
-    assert!(
-        comma.contains("--provider primary") && comma.contains("--provider canary"),
-        "comma-separated ids become repeated flags: {comma}"
-    );
-    let spaced = running("primary canary");
-    assert!(
-        spaced.contains("--provider primary") && spaced.contains("--provider canary"),
-        "space-separated ids become repeated flags: {spaced}"
-    );
+        assert!(
+            !running("").contains("--provider"),
+            "{action}: an empty input must not shrink the matrix"
+        );
+        let comma = running("primary,canary");
+        assert!(
+            comma.contains("--provider primary") && comma.contains("--provider canary"),
+            "{action}: comma-separated ids become repeated flags: {comma}"
+        );
+        let spaced = running("primary canary");
+        assert!(
+            spaced.contains("--provider primary") && spaced.contains("--provider canary"),
+            "{action}: space-separated ids become repeated flags: {spaced}"
+        );
+    }
 }
 
 /// Splitting must not also glob. An unquoted `$var` in a bash for-loop expands
@@ -433,118 +497,42 @@ fn the_provider_input_expands_to_repeated_flags() {
 /// provider than the one the workflow named.
 #[test]
 fn the_provider_input_never_globs_against_the_workspace() {
-    let ws = Workspace::new();
-    std::fs::write(ws.path().join("model-a"), "").expect("a decoy file the glob would match");
-    let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
-    let ran = run_step(
-        "eval",
-        &[("DOMARINN_BIN", &stub), ("INPUT_PROVIDER", "model-[a]")],
-        &ws,
-    );
-    let line = ran
-        .log
-        .lines()
-        .find(|line| line.starts_with("Running: domarinn "))
-        .unwrap_or_else(|| panic!("the step logs the command it ran:\n{}", ran.log));
-    assert!(
-        line.contains("--provider model-[a]") && !line.contains("--provider model-a "),
-        "the id must reach the CLI verbatim, not glob-matched: {line}"
-    );
+    for action in ACTIONS {
+        let ws = Workspace::new();
+        std::fs::write(ws.path().join("model-a"), "").expect("a decoy file the glob would match");
+        let stub = ws.stub_cli("printf '<testsuites/>' > results.xml\n");
+        let ran = run_step(
+            action,
+            "eval",
+            &[("DOMARINN_BIN", &stub), ("INPUT_PROVIDER", "model-[a]")],
+            &ws,
+        );
+        let line = ran
+            .log
+            .lines()
+            .find(|line| line.starts_with("Running: domarinn "))
+            .unwrap_or_else(|| panic!("{action}: the step logs the command it ran:\n{}", ran.log));
+        assert!(
+            line.contains("--provider model-[a]") && !line.contains("--provider model-a "),
+            "{action}: the id must reach the CLI verbatim, not glob-matched: {line}"
+        );
+    }
 }
 
 // The gate-step behavior tests — what each exit code renders and names — live
 // in a subdirectory file to keep this one under the 1000-line cap. A
 // subdirectory of `tests/` is not compiled as its own integration-test crate,
 // so `#[path]` is the same private-child-module pattern `grader_tests.rs`
-// uses in src.
+// uses in src. The binary-resolution tests and the Gitea/Forgejo drift and
+// PR-comment tests are split the same way.
 #[path = "action_contract/gate_tests.rs"]
 mod gate_tests;
 
-/// `version: latest` has to become a concrete tag before a download URL
-/// exists, and the redirect it reads that from is a network call that can
-/// fail. When it does, the step must say so and exit 3 — the same
-/// infrastructure code its other two dead ends already use.
-///
-/// The abort this catches is quieter than the eval step's: the CLI never runs,
-/// so there is no run to summarize and no report to upload, and the operator
-/// gets a red step whose only content is the shell's own exit status.
-#[test]
-fn an_unresolvable_latest_release_is_an_infrastructure_error() {
-    let ws = Workspace::new();
-    // What `curl -f` does for a 404, and near enough what it does for a DNS or
-    // TLS failure: a non-zero exit and nothing on stdout.
-    ws.shim("curl", "exit 22\n");
+#[path = "action_contract/bin_tests.rs"]
+mod bin_tests;
 
-    let ran = run_step("bin", &[("INPUT_VERSION", "latest")], &ws);
-
-    assert!(
-        ran.log.contains("::error::"),
-        "a failed release lookup must be annotated, not left to the shell; \
-         the step logged:\n{}",
-        ran.log
-    );
-    assert!(
-        ran.log
-            .contains("could not resolve the latest domarinn release tag"),
-        "the annotation must name what failed, got:\n{}",
-        ran.log
-    );
-    assert_eq!(
-        ran.status,
-        Some(3),
-        "the action documents 3 for an infrastructure error; curl's own exit \
-         code is not one of the four the gate step knows how to render"
-    );
-}
-
-/// An arch with no release asset is the binary step's other infrastructure
-/// dead end. It already behaves; it is here so a fix to the `latest` path
-/// cannot regress it.
-#[test]
-fn an_unsupported_architecture_is_an_infrastructure_error() {
-    let ws = Workspace::new();
-    ws.shim("uname", "echo riscv64\n");
-
-    let ran = run_step("bin", &[], &ws);
-
-    assert_eq!(ran.status, Some(3));
-    assert!(
-        ran.log.contains("::error::unsupported arch riscv64"),
-        "got:\n{}",
-        ran.log
-    );
-}
-
-/// A concrete version with no downloadable asset is *not* an error: the step
-/// falls back to building from source. That tolerance comes from wrapping the
-/// download in `if curl …`, which is the shape the `latest` lookup lacks — so
-/// this pins the working half of the same step.
-#[test]
-fn a_missing_release_asset_falls_back_to_a_source_build() {
-    let ws = Workspace::new();
-    ws.shim("curl", "exit 22\n");
-    ws.shim("cargo", "exit 0\n");
-
-    let ran = run_step("bin", &[("INPUT_VERSION", "0.9.9")], &ws);
-
-    assert_eq!(
-        ran.status,
-        Some(0),
-        "a missing asset is recoverable; the step logged:\n{}",
-        ran.log
-    );
-    assert!(
-        ran.log.contains("::warning::no release asset for 0.9.9"),
-        "the fallback must be visible in the log, got:\n{}",
-        ran.log
-    );
-    assert!(
-        ran.output("path")
-            .is_some_and(|p| p.ends_with("/bin/domarinn")),
-        "the built binary's path is what every later step invokes, got: {:?}",
-        ran.output("path")
-    );
-}
+#[path = "action_contract/forge_tests.rs"]
+mod forge_tests;
 
 /// The summary step is a reporter: the gate step owns the verdict, and this one
 /// failing turns a clean pass or a legible regression into a red job with a
@@ -557,46 +545,75 @@ fn a_missing_release_asset_falls_back_to_a_source_build() {
 /// the `cat`.
 #[test]
 fn the_summary_step_never_owns_the_verdict() {
-    for (case, body) in [
-        ("ci-summary failed", "exit 1\n"),
-        ("ci-summary exited 0 but wrote nothing", "exit 0\n"),
-        ("ci-summary wrote an empty file", ": > summary.md\nexit 0\n"),
-    ] {
-        let ws = Workspace::new();
-        let stub = ws.stub_cli(body);
-        let ran = run_step("summary", &[("DOMARINN_BIN", &stub)], &ws);
+    for action in ACTIONS {
+        for (case, body) in [
+            ("ci-summary failed", "exit 1\n"),
+            ("ci-summary exited 0 but wrote nothing", "exit 0\n"),
+            ("ci-summary wrote an empty file", ": > summary.md\nexit 0\n"),
+        ] {
+            let ws = Workspace::new();
+            let stub = ws.stub_cli(body);
+            let ran = run_step(action, "summary", &[("DOMARINN_BIN", &stub)], &ws);
 
-        assert_eq!(
-            ran.status,
-            Some(0),
-            "{case}: the reporter must not fail the job; it logged:\n{}",
-            ran.log
-        );
-        assert_eq!(
-            ran.output("summary-path"),
-            Some("summary.md"),
-            "{case}: the PR comment and the artifact upload both read this path"
-        );
-        assert!(
-            !ran.step_summary.trim().is_empty(),
-            "{case}: a blank job summary reads as 'nothing ran'; say what happened"
-        );
+            assert_eq!(
+                ran.status,
+                Some(0),
+                "{action}: {case}: the reporter must not fail the job; it logged:\n{}",
+                ran.log
+            );
+            assert_eq!(
+                ran.output("summary-path"),
+                Some("summary.md"),
+                "{action}: {case}: the PR comment and the artifact upload both read this path"
+            );
+            assert!(
+                !ran.step_summary.trim().is_empty(),
+                "{action}: {case}: a blank job summary reads as 'nothing ran'; say what happened"
+            );
+        }
     }
 }
 
 /// A summary the CLI did produce is passed through untouched.
 #[test]
 fn the_summary_step_publishes_what_the_cli_wrote() {
-    let ws = Workspace::new();
-    let stub = ws.stub_cli("printf '### domarinn eval\\n\\n12 passed\\n' > summary.md\n");
-    let ran = run_step("summary", &[("DOMARINN_BIN", &stub)], &ws);
+    for action in ACTIONS {
+        let ws = Workspace::new();
+        let stub = ws.stub_cli("printf '### domarinn eval\\n\\n12 passed\\n' > summary.md\n");
+        let ran = run_step(action, "summary", &[("DOMARINN_BIN", &stub)], &ws);
 
-    assert_eq!(ran.status, Some(0));
-    assert!(
-        ran.step_summary.contains("12 passed"),
-        "the real summary must survive to the job summary, got: {:?}",
-        ran.step_summary
-    );
+        assert_eq!(ran.status, Some(0), "{action}: {}", ran.log);
+        assert!(
+            ran.step_summary.contains("12 passed"),
+            "{action}: the real summary must survive to the job summary, got: {:?}",
+            ran.step_summary
+        );
+    }
+}
+
+/// A Gitea or Forgejo runner need not set `$GITHUB_STEP_SUMMARY` at all, and
+/// under `set -u` the bare `>> "$GITHUB_STEP_SUMMARY"` the step used to have
+/// aborts the reporter on the unset name — a red job over a page nothing would
+/// have rendered. The step is shared verbatim, so every copy is held to it.
+#[test]
+fn the_summary_step_survives_a_runner_without_a_step_summary_file() {
+    for action in ACTIONS {
+        let ws = Workspace::new();
+        let stub = ws.stub_cli("printf '### domarinn eval\\n\\n12 passed\\n' > summary.md\n");
+        let ran = run_step(
+            action,
+            "summary",
+            &[("DOMARINN_BIN", &stub), ("GITHUB_STEP_SUMMARY", "")],
+            &ws,
+        );
+        assert_eq!(
+            ran.status,
+            Some(0),
+            "{action}: an absent step summary is not an error; the step logged:\n{}",
+            ran.log
+        );
+        assert_eq!(ran.output("summary-path"), Some("summary.md"));
+    }
 }
 
 /// Errexit applies to every step, so the registry must cover every step.
@@ -606,25 +623,31 @@ fn the_summary_step_publishes_what_the_cli_wrote() {
 /// a time reproduces that; this fails until the registry names them all.
 #[test]
 fn every_shell_step_is_exercised_here() {
-    let in_action: BTreeSet<String> = steps()
-        .iter()
-        .filter(|s| s["run"].as_str().is_some())
-        .map(|s| {
-            s["id"]
-                .as_str()
-                .or_else(|| s["name"].as_str())
-                .expect("a `run:` step has an id or a name")
-                .to_string()
-        })
-        .collect();
-    let registered: BTreeSet<String> = SHELL_STEPS.iter().map(|s| s.value.to_string()).collect();
+    for action in ACTIONS {
+        let in_action: BTreeSet<String> = steps(action)
+            .iter()
+            .filter(|s| s["run"].as_str().is_some())
+            .map(|s| {
+                s["id"]
+                    .as_str()
+                    .or_else(|| s["name"].as_str())
+                    .expect("a `run:` step has an id or a name")
+                    .to_string()
+            })
+            .collect();
+        let registered: BTreeSet<String> = registry(action)
+            .iter()
+            .map(|s| s.value.to_string())
+            .collect();
 
-    assert_eq!(
-        in_action, registered,
-        "a `run:` step this file never executes is a step whose behaviour under \
-         `bash -e` is unverified — the exact gap that shipped the bug this file \
-         exists for. Add it to SHELL_STEPS and give it a test."
-    );
+        assert_eq!(
+            in_action, registered,
+            "{action}: a `run:` step this file never executes is a step whose \
+             behaviour under `bash -e` is unverified — the exact gap that \
+             shipped the bug this file exists for. Add it to SHELL_STEPS (or \
+             FORGE_SHELL_STEPS) and give it a test."
+        );
+    }
 }
 
 /// What every test above assumes about the steps it executes.
@@ -635,32 +658,35 @@ fn every_shell_step_is_exercised_here() {
 /// while asserting about a step the runner no longer runs.
 #[test]
 fn the_shape_this_test_assumes_still_holds() {
-    for registered in SHELL_STEPS {
-        let step = step(registered.field, registered.value);
-        let name = registered.value;
+    for action in ACTIONS {
+        for registered in registry(action) {
+            let step = step(action, registered.field, registered.value);
+            let name = registered.value;
 
-        assert_eq!(
-            step["shell"].as_str(),
-            Some("bash"),
-            "{name}: GITHUB_BASH is the expansion of exactly this string; \
-             changing the shell means changing it here too"
-        );
+            assert_eq!(
+                step["shell"].as_str(),
+                Some("bash"),
+                "{action}: {name}: GITHUB_BASH is the expansion of exactly this \
+                 string; changing the shell means changing it here too"
+            );
 
-        let mut declared: Vec<&str> = step["env"]
-            .as_object()
-            .unwrap_or_else(|| panic!("{name} declares an `env` block"))
-            .keys()
-            .map(String::as_str)
-            .collect();
-        let mut covered: Vec<&str> = registered.env.iter().map(|(k, _)| *k).collect();
-        declared.sort_unstable();
-        covered.sort_unstable();
+            let mut declared: Vec<&str> = step["env"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{action}: {name} declares an `env` block"))
+                .keys()
+                .map(String::as_str)
+                .collect();
+            let mut covered: Vec<&str> = registered.env.iter().map(|(k, _)| *k).collect();
+            declared.sort_unstable();
+            covered.sort_unstable();
 
-        assert_eq!(
-            declared, covered,
-            "{name}: an input the step reads but this test never sets is an \
-             input whose effect on the exit-code contract is untested"
-        );
+            assert_eq!(
+                declared, covered,
+                "{action}: {name}: an input the step reads but this test never \
+                 sets is an input whose effect on the exit-code contract is \
+                 untested"
+            );
+        }
     }
 }
 
@@ -698,10 +724,16 @@ const INPUT_TO_ENV_EXPORT: &[(&str, &str)] = &[
 const ACTION_LEVEL_INPUTS: &[&str] = &[
     "binary-path",
     "version",
+    "release-base-url",
     "fail-on-regression",
     "comment",
     "artifact-name",
 ];
+
+/// Action-level inputs only the Gitea and Forgejo copies declare. On GitHub
+/// the comment is posted by `actions/github-script` with the job token, so
+/// there is nothing to configure.
+const FORGE_ONLY_INPUTS: &[&str] = &["comment-token"];
 
 /// `domarinn run` flags deliberately not exposed as inputs, with the reason.
 /// An entry here is a decision, not a default — a new flag lands in this list
@@ -773,34 +805,38 @@ fn every_run_flag_is_an_input_or_a_written_down_exception() {
         "parsing `run -h` found no --provider; the parser is broken: {flags:?}"
     );
 
-    let script = script_of("id", "eval");
-    let mut covered = BTreeSet::new();
-    for (input, argv_text) in INPUT_TO_RUN_ARGV {
-        assert!(
-            script.contains(argv_text),
-            "input `{input}` claims to reach the CLI as `{argv_text}`, but the \
-             eval script never says it — the mapping is aspirational"
-        );
-        if let Some(flag) = argv_text.strip_prefix("--") {
-            covered.insert(format!("--{flag}"));
-        }
-    }
-
     let excepted: BTreeSet<String> = RUN_FLAGS_WITHOUT_AN_INPUT
         .iter()
         .map(|(f, _)| f.to_string())
         .collect();
 
-    if let Some(flag) = covered.intersection(&excepted).next() {
-        panic!("{flag} is both wired to an input and excepted; pick one");
-    }
-    for flag in &flags {
-        assert!(
-            covered.contains(flag) || excepted.contains(flag),
-            "`domarinn run {flag}` is reachable from a shell but not from the \
-             action. Either add an input that forwards it, or add it to \
-             RUN_FLAGS_WITHOUT_AN_INPUT with the reason it stays CLI-only."
-        );
+    for action in ACTIONS {
+        let script = script_of(action, "id", "eval");
+        let mut covered = BTreeSet::new();
+        for (input, argv_text) in INPUT_TO_RUN_ARGV {
+            assert!(
+                script.contains(argv_text),
+                "{action}: input `{input}` claims to reach the CLI as \
+                 `{argv_text}`, but the eval script never says it — the \
+                 mapping is aspirational"
+            );
+            if let Some(flag) = argv_text.strip_prefix("--") {
+                covered.insert(format!("--{flag}"));
+            }
+        }
+
+        if let Some(flag) = covered.intersection(&excepted).next() {
+            panic!("{flag} is both wired to an input and excepted; pick one");
+        }
+        for flag in &flags {
+            assert!(
+                covered.contains(flag) || excepted.contains(flag),
+                "{action}: `domarinn run {flag}` is reachable from a shell but \
+                 not from the action. Either add an input that forwards it, or \
+                 add it to RUN_FLAGS_WITHOUT_AN_INPUT with the reason it stays \
+                 CLI-only."
+            );
+        }
     }
     for flag in &excepted {
         assert!(
@@ -813,42 +849,52 @@ fn every_run_flag_is_an_input_or_a_written_down_exception() {
 
 #[test]
 fn every_declared_input_is_classified_and_consumed() {
-    let inputs: BTreeSet<String> = action()["inputs"]
-        .as_object()
-        .expect("the action declares inputs")
-        .keys()
-        .cloned()
-        .collect();
+    for action in ACTIONS {
+        let inputs: BTreeSet<String> = parsed(action)["inputs"]
+            .as_object()
+            .expect("the action declares inputs")
+            .keys()
+            .cloned()
+            .collect();
 
-    let classified: BTreeSet<String> = INPUT_TO_RUN_ARGV
-        .iter()
-        .map(|(i, _)| i.to_string())
-        .chain(INPUT_TO_ENV_EXPORT.iter().map(|(i, _)| i.to_string()))
-        .chain(ACTION_LEVEL_INPUTS.iter().map(|i| i.to_string()))
-        .collect();
+        let forge_only: &[&str] = if *action == GITHUB_ACTION {
+            &[]
+        } else {
+            FORGE_ONLY_INPUTS
+        };
+        let classified: BTreeSet<String> = INPUT_TO_RUN_ARGV
+            .iter()
+            .map(|(i, _)| i.to_string())
+            .chain(INPUT_TO_ENV_EXPORT.iter().map(|(i, _)| i.to_string()))
+            .chain(ACTION_LEVEL_INPUTS.iter().map(|i| i.to_string()))
+            .chain(forge_only.iter().map(|i| i.to_string()))
+            .collect();
 
-    for input in &inputs {
-        assert!(
-            classified.contains(input),
-            "input `{input}` is declared but unclassified here; say whether it \
-             reaches the CLI (INPUT_TO_RUN_ARGV / INPUT_TO_ENV_EXPORT) or \
-             stays action-level (ACTION_LEVEL_INPUTS)"
-        );
-    }
-    for input in &classified {
-        assert!(
-            inputs.contains(input),
-            "`{input}` is classified here but action.yml no longer declares it"
-        );
-    }
+        for input in &inputs {
+            assert!(
+                classified.contains(input),
+                "{action}: input `{input}` is declared but unclassified here; \
+                 say whether it reaches the CLI (INPUT_TO_RUN_ARGV / \
+                 INPUT_TO_ENV_EXPORT) or stays action-level \
+                 (ACTION_LEVEL_INPUTS, or FORGE_ONLY_INPUTS for a forge copy)"
+            );
+        }
+        for input in &classified {
+            assert!(
+                inputs.contains(input),
+                "{action}: `{input}` is classified here but the action no \
+                 longer declares it"
+            );
+        }
 
-    // A declared input nothing interpolates is dead weight a caller will still
-    // try to use.
-    let raw = std::fs::read_to_string(repo_root().join(ACTION)).expect("action.yml reads");
-    for input in &inputs {
-        assert!(
-            raw.contains(&format!("inputs.{input}")),
-            "input `{input}` is declared but never interpolated anywhere"
-        );
+        // A declared input nothing interpolates is dead weight a caller will
+        // still try to use.
+        let raw = raw_action(action);
+        for input in &inputs {
+            assert!(
+                raw.contains(&format!("inputs.{input}")),
+                "{action}: input `{input}` is declared but never interpolated anywhere"
+            );
+        }
     }
 }
