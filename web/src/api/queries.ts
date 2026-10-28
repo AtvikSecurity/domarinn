@@ -370,6 +370,9 @@ export function useSetBaseline(project: string, suite: string) {
       void client.invalidateQueries({ queryKey: ["compare"] });
       // The set browser surfaces the pin as a chip at both detail levels.
       void client.invalidateQueries({ queryKey: qk.sets() });
+      // The case drawer's history rail marks the baseline run from
+      // `baseline_run_id` on this response.
+      void client.invalidateQueries({ queryKey: ["caseHistory"] });
     },
   });
 }
@@ -533,6 +536,11 @@ export function useDeleteRun() {
       void client.invalidateQueries({ queryKey: ["suites"] });
       void client.invalidateQueries({ queryKey: ["projects"] });
       void client.invalidateQueries({ queryKey: ["compare"] });
+      // The set browser's counts and sparklines, search hits that link to it,
+      // and every case timeline it was a point on.
+      void client.invalidateQueries({ queryKey: qk.sets() });
+      void client.invalidateQueries({ queryKey: ["search"] });
+      void client.invalidateQueries({ queryKey: ["caseHistory"] });
     },
   });
 }
@@ -696,7 +704,12 @@ export function useUpdateUser() {
         method: "PATCH",
         body: input.patch,
       }),
-    onSuccess: () => client.invalidateQueries({ queryKey: qk.users }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: qk.users });
+      // An admin can change their own role; `/auth/me` carries it, and with
+      // it every canWrite/canAdmin gate in the UI.
+      void client.invalidateQueries({ queryKey: qk.me });
+    },
   });
 }
 
@@ -705,6 +718,10 @@ export function useDeleteUser() {
   return useMutation({
     mutationFn: (id: string) =>
       apiRequest(`/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
-    onSuccess: () => client.invalidateQueries({ queryKey: qk.users }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: qk.users });
+      // Their grants went with them, and access panels list grants by name.
+      void client.invalidateQueries({ queryKey: qk.sets() });
+    },
   });
 }

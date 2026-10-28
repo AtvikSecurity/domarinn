@@ -1,9 +1,19 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { useApiKeys, useRun, useUsers } from "./queries";
+import {
+  qk,
+  useApiKeys,
+  useDeleteRun,
+  useDeleteUser,
+  useRun,
+  useSetBaseline,
+  useUpdateUser,
+  useUsers,
+} from "./queries";
 import { resetMockAuth } from "@/mocks/authState";
+import * as fx from "@/mocks/fixtures";
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = new QueryClient({
@@ -84,5 +94,78 @@ describe("useRun keeps the previous run's data while navigating between runs", (
       expect(result.current.data?.id).toBe("checkout-agent-regression-11"),
     );
     expect(result.current.isPlaceholderData).toBe(false);
+  });
+});
+
+/**
+ * Render `hook` under a client whose `invalidateQueries` is spied, and return
+ * the keys it was called with. The keys are the contract: a mutation that
+ * forgets one leaves that page rendering what the server just changed.
+ */
+function withSpiedClient() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const spy = vi.spyOn(client, "invalidateQueries");
+  const stableWrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const keys = () => spy.mock.calls.map(([filters]) => filters?.queryKey);
+  return { client, stableWrapper, keys };
+}
+
+describe("mutations invalidate every view of what they changed", () => {
+  it("useDeleteRun refetches sets, search and case history too", async () => {
+    const { stableWrapper, keys } = withSpiedClient();
+    const { result } = renderHook(() => useDeleteRun(), { wrapper: stableWrapper });
+    await act(() => result.current.mutateAsync("checkout-agent-regression-12"));
+    expect(keys()).toEqual(
+      expect.arrayContaining([
+        ["runs"],
+        ["suites"],
+        ["projects"],
+        ["compare"],
+        qk.sets(),
+        ["search"],
+        ["caseHistory"],
+      ]),
+    );
+  });
+
+  it("useSetBaseline refetches case history, which carries baseline_run_id", async () => {
+    const { stableWrapper, keys } = withSpiedClient();
+    const before = fx.suiteBaseline("checkout-agent/regression");
+    const { result } = renderHook(
+      () => useSetBaseline("checkout-agent", "regression"),
+      { wrapper: stableWrapper },
+    );
+    await act(() =>
+      result.current.mutateAsync({ runId: "checkout-agent-regression-11" }),
+    );
+    expect(keys()).toEqual(
+      expect.arrayContaining([
+        qk.suites("checkout-agent"),
+        ["compare"],
+        qk.sets(),
+        ["caseHistory"],
+      ]),
+    );
+    if (before) fx.setSuiteBaseline("checkout-agent", "regression", before);
+  });
+
+  it("useUpdateUser refetches /auth/me, since the caller may be the target", async () => {
+    const { stableWrapper, keys } = withSpiedClient();
+    const { result } = renderHook(() => useUpdateUser(), { wrapper: stableWrapper });
+    await act(() =>
+      result.current.mutateAsync({ id: "u_member", patch: { role: "viewer" } }),
+    );
+    expect(keys()).toEqual(expect.arrayContaining([qk.users, qk.me]));
+  });
+
+  it("useDeleteUser refetches the set browser, whose access lists named them", async () => {
+    const { stableWrapper, keys } = withSpiedClient();
+    const { result } = renderHook(() => useDeleteUser(), { wrapper: stableWrapper });
+    await act(() => result.current.mutateAsync("u_member"));
+    expect(keys()).toEqual(expect.arrayContaining([qk.users, qk.sets()]));
   });
 });
