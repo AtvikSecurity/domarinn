@@ -23,7 +23,7 @@ domarinn server [--port 8321] [--bind 0.0.0.0] [--data-dir /data]
 
 | Flag         | Default   | Effect |
 |--------------|-----------|--------|
-| `--port`     | `8321`    | Listen port (also `DOMARINN_PORT`). |
+| `--port`     | `8321`    | Listen port (also `DOMARINN_LISTEN_PORT`). |
 | `--bind`     | `0.0.0.0` | Listen address, IPv4 or IPv6 (also `DOMARINN_BIND`). The default is every IPv4 interface, which a container needs; `127.0.0.1` or `::1` keeps a bare-metal server off the network, and `::` listens on IPv6. |
 | `--data-dir` | `/data`   | State directory (also `DOMARINN_DATA_DIR`). Holds the SQLite databases. |
 
@@ -249,7 +249,7 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 
 | Variable                        | Default        | Purpose |
 |---------------------------------|----------------|---------|
-| `DOMARINN_PORT`               | `8321`         | Listen port. Also settable with `--port`. `domarinn healthcheck` reads it too, so setting it (rather than passing `--port`) keeps the image `HEALTHCHECK` pointed at the right port. |
+| `DOMARINN_LISTEN_PORT`               | `8321`         | Listen port. Also settable with `--port`. `domarinn healthcheck` reads it too, so setting it (rather than passing `--port`) keeps the image `HEALTHCHECK` pointed at the right port. Deliberately not `DOMARINN_PORT`: Kubernetes injects `<SERVICE>_PORT=tcp://…` into every pod for each Service, so a Service named `domarinn` would hand the server an unparseable port and crash-loop it. |
 | `DOMARINN_BIND`               | `0.0.0.0`      | Listen address, IPv4 or IPv6 (`127.0.0.1`, `::1`, `::`). Also settable with `--bind`. `domarinn healthcheck` probes this address when it names one interface, and loopback otherwise. |
 | `DOMARINN_DATA_DIR`           | `/data`        | State directory. Holds `domarinn.db` and `cache.db` (SQLite mode); still required under Postgres, where it keeps only the local cache tier. Also settable with `--data-dir`. |
 | `DOMARINN_DATABASE_URL`       | (unset)        | Postgres connection URL. When set, **all durable state** — runs, users, sessions, API keys, baselines, and the shared cache — lives in that one database instead of SQLite files under the data dir, and running **multiple replicas** becomes supported. TLS follows the URL's `sslmode` (`disable` \| `prefer` \| `require`). See [Storage](#storage). |

@@ -152,8 +152,8 @@ enum Command {
     /// Stops gracefully on SIGTERM or Ctrl-C: in-flight requests finish before
     /// the process exits.
     Server {
-        /// Listen port (env: DOMARINN_PORT).
-        #[arg(long, env = "DOMARINN_PORT", default_value_t = 8321)]
+        /// Listen port (env: DOMARINN_LISTEN_PORT).
+        #[arg(long, env = "DOMARINN_LISTEN_PORT", default_value_t = 8321)]
         port: u16,
         /// Listen address, IPv4 or IPv6 (env: DOMARINN_BIND). The default,
         /// 0.0.0.0, is every IPv4 interface — what a container needs; use
@@ -182,9 +182,9 @@ enum Command {
     /// Sends an HTTP GET and exits 0 on a 2xx response, 3 otherwise (refused,
     /// timed out after 3s, or a non-2xx status).
     Healthcheck {
-        /// Port the server listens on (env: DOMARINN_PORT — the same variable
+        /// Port the server listens on (env: DOMARINN_LISTEN_PORT — the same variable
         /// `server` reads, so one setting moves both).
-        #[arg(long, env = "DOMARINN_PORT", default_value_t = 8321)]
+        #[arg(long, env = "DOMARINN_LISTEN_PORT", default_value_t = 8321)]
         port: u16,
         /// Host or IP to probe. Defaults to loopback, or to DOMARINN_BIND when
         /// that names a specific address (a server bound to one interface is

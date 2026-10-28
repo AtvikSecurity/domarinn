@@ -13,7 +13,7 @@ use predicates::prelude::*;
 fn bin() -> Command {
     let mut cmd = Command::cargo_bin("domarinn").unwrap();
     // The ambient environment must not steer the probe or the server.
-    cmd.env_remove("DOMARINN_PORT")
+    cmd.env_remove("DOMARINN_LISTEN_PORT")
         .env_remove("DOMARINN_BIND")
         .env_remove("DOMARINN_DATABASE_URL")
         .env_remove("DOMARINN_AUTH_MODE");
@@ -41,13 +41,13 @@ impl Drop for ServerGuard {
     }
 }
 
-/// Start `domarinn server` on loopback, with its port from `DOMARINN_PORT`
+/// Start `domarinn server` on loopback, with its port from `DOMARINN_LISTEN_PORT`
 /// (exercising the env binding), and wait until `healthcheck` passes.
 fn start_server(data_dir: &std::path::Path, port: u16) -> ServerGuard {
     let child = bin()
         .args(["server", "--bind", "127.0.0.1", "--data-dir"])
         .arg(data_dir)
-        .env("DOMARINN_PORT", port.to_string())
+        .env("DOMARINN_LISTEN_PORT", port.to_string())
         .env("DOMARINN_LOG_FORMAT", "compact")
         .env("RUST_LOG", "info")
         .stdout(Stdio::null())
@@ -114,13 +114,32 @@ fn healthcheck_fails_on_a_non_2xx_response() {
 }
 
 #[test]
-fn healthcheck_reads_the_port_from_domarinn_port() {
+fn healthcheck_reads_the_port_from_domarinn_listen_port() {
     // Nothing on this port either way; the error names the URL it tried, which
     // proves the env var — not the 8321 default — chose it.
     let port = free_port();
     bin()
         .arg("healthcheck")
-        .env("DOMARINN_PORT", port.to_string())
+        .env("DOMARINN_LISTEN_PORT", port.to_string())
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(format!(
+            "127.0.0.1:{port}/api/v1/health"
+        )));
+}
+
+/// Kubernetes injects `<SERVICE>_PORT=tcp://<ip>:<port>` into every pod for
+/// each Service in the namespace, so a Service named `domarinn` sets
+/// `DOMARINN_PORT` to a value no `u16` parser accepts. Reading that variable
+/// crash-looped the pod on its first restart after the Service existed; the
+/// port is read from `DOMARINN_LISTEN_PORT` instead, and this pins that the
+/// injected one is ignored.
+#[test]
+fn a_kubernetes_service_link_variable_does_not_steer_the_port() {
+    let port = free_port();
+    bin()
+        .args(["healthcheck", "--port", &port.to_string()])
+        .env("DOMARINN_PORT", "tcp://10.96.0.12:8321")
         .assert()
         .code(3)
         .stderr(predicate::str::contains(format!(

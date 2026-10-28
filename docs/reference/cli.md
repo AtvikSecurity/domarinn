@@ -348,7 +348,7 @@ Run the self-hostable results server + embedded web UI. See [server.md](server.m
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `--port <N>` | `8321` | Listen port (also `DOMARINN_PORT`). |
+| `--port <N>` | `8321` | Listen port (also `DOMARINN_LISTEN_PORT`). |
 | `--bind <ADDR>` | `0.0.0.0` | Listen address, IPv4 or IPv6 (also `DOMARINN_BIND`). Use `127.0.0.1` or `::1` to stay off the network. |
 | `--data-dir <DIR>` | `/data` | State directory (also `DOMARINN_DATA_DIR`). |
 
@@ -381,10 +381,10 @@ Send an HTTP `GET /api/v1/health` to a local server and exit `0` on a `2xx` resp
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `--port <N>` | `8321` | Port to probe (also `DOMARINN_PORT`, the same variable `server` reads). |
+| `--port <N>` | `8321` | Port to probe (also `DOMARINN_LISTEN_PORT`, the same variable `server` reads). |
 | `--host <HOST>` | loopback | Host or IP to probe. When unset: `DOMARINN_BIND` if it names a specific address (a server bound to one interface does not answer on loopback), else `127.0.0.1`, or `::1` when `DOMARINN_BIND` is `::`. |
 
-Because both commands read the same variables, configure a container's port and address through `DOMARINN_PORT` and `DOMARINN_BIND`. If you pass `--port` to `server` as an argument, the image's `HEALTHCHECK` keeps probing `8321` and the container reports unhealthy.
+Because both commands read the same variables, configure a container's port and address through `DOMARINN_LISTEN_PORT` and `DOMARINN_BIND`. If you pass `--port` to `server` as an argument, the image's `HEALTHCHECK` keeps probing `8321` and the container reports unhealthy.
 
 ## `domarinn completions <SHELL>`
 
