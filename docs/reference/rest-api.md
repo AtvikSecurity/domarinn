@@ -31,7 +31,8 @@ Request-body size is capped at **64 MiB**; request bodies may be gzip/deflate co
 | Method | Path                    | Scope | Notes |
 |--------|-------------------------|-------|-------|
 | POST   | `/api/v1/auth/setup`    | —     | Create the first admin. Open only while zero users exist, else `409`. Returns a session token. |
-| POST   | `/api/v1/auth/login`    | —     | Exchange `{username, password}` for a session token. `401` on bad/disabled credentials. |
+| POST   | `/api/v1/auth/login`    | —     | Exchange `{username, password}` for a session token. `401` on bad/disabled/unknown credentials — the same response, at the same cost, whichever it was. After 5 attempts without a success for one username within 15 minutes: `429` with `Retry-After` (seconds), even for the right password, until the window lapses. A success resets the count. |
+| POST   | `/api/v1/me/password`   | (account) | Change your own password: `{current_password, new_password}` (new ≥ 8 chars). `200 {ok: true}`. Revokes every **other** session of the account; the presenting session stays signed in. `403` wrong `current_password` (5 wrong guesses in 15 minutes → `429` + `Retry-After`); `400` short new password, or an SSO-only account (no local password); `403` for a static token; `401` anonymous. |
 | POST   | `/api/v1/auth/logout`   | (authenticated) | Revoke the presenting session + clear the cookie. No-op `200` for token/API-key callers; `401` for anonymous. |
 | GET    | `/api/v1/auth/me`       | —     | Report the current identity: `{authenticated, user, source, scope}`. `source` is `anonymous` \| `static` \| `apikey` \| `session`. |
 
@@ -63,7 +64,7 @@ The scope gate is `read` rather than `write` so a `viewer` account can mint the 
 |--------|-------------------------|---------|-------|
 | GET    | `/api/v1/users`         | `admin` | List all accounts. |
 | POST   | `/api/v1/users`         | `admin` | Create an account: `{username, password, role}` (`role` = `admin`\|`member`\|`viewer`). |
-| PATCH  | `/api/v1/users/{id}`    | `admin` | Update `role`, `disabled`, and/or `password` (any subset). |
+| PATCH  | `/api/v1/users/{id}`    | `admin` | Update `role`, `disabled`, and/or `password` (any subset). Setting `password` revokes all of the account's sessions (an admin resetting their own keeps the presenting one); `disabled: true` revokes them all too, so re-enabling never revives an old login. API keys are untouched. |
 | DELETE | `/api/v1/users/{id}`    | `admin` | Delete an account. Refuses the **last admin** (`409`). |
 
 ## Runs
