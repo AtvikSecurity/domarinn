@@ -39,6 +39,7 @@ pub mod accounts;
 pub mod auth;
 pub mod baselines;
 pub mod cachebrowse;
+pub mod clientip;
 mod csrf;
 pub mod domain;
 pub mod dto;
@@ -208,6 +209,10 @@ pub struct Settings {
     /// environment variable rather than a `ServerConfig` field, per that
     /// struct's documented contract (see `local_cache_dir`).
     pub database_url: Option<String>,
+    /// Reverse proxies whose `X-Forwarded-For` is believed
+    /// (`DOMARINN_TRUSTED_PROXIES`, comma-separated IPs/CIDRs). Unset trusts
+    /// nobody, and the TCP peer is the client; see [`clientip`].
+    pub trusted_proxies: Option<String>,
 }
 
 impl Settings {
@@ -238,6 +243,7 @@ impl Settings {
             local_cache_max_scan: env("DOMARINN_LOCAL_CACHE_MAX_SCAN").and_then(|v| v.parse().ok()),
             cache_sweep_empty_reason: env("DOMARINN_CACHE_SWEEP_EMPTY_REASON"),
             database_url: env("DOMARINN_DATABASE_URL"),
+            trusted_proxies: env("DOMARINN_TRUSTED_PROXIES"),
         })
     }
 }
@@ -328,6 +334,8 @@ pub struct AppState {
     /// — the default — sweeps none, and the prune that would carry them is not
     /// issued at all.
     pub(crate) cache_sweep_empty_reason: Vec<String>,
+    /// Peers allowed to name the client via `X-Forwarded-For`.
+    pub(crate) trusted_proxies: Arc<clientip::TrustedProxies>,
 }
 
 impl AppState {
@@ -344,6 +352,7 @@ impl AppState {
         bootstrap_admin(&storage, &settings).await?;
 
         let auth_mode = resolve_mode(config.auth_mode, settings.auth_mode);
+        let trusted_proxies = clientip::TrustedProxies::parse(settings.trusted_proxies.as_deref())?;
         let cache_limits = CacheLimits {
             max_entry_bytes: settings
                 .cache_max_entry_bytes
@@ -396,6 +405,7 @@ impl AppState {
             cache_sweep_empty_reason: parse_sweep_empty_reasons(
                 settings.cache_sweep_empty_reason.as_deref(),
             ),
+            trusted_proxies: Arc::new(trusted_proxies),
         })
     }
 }
@@ -508,10 +518,10 @@ pub async fn serve_on(config: ServerConfig, bind: std::net::IpAddr) -> anyhow::R
     // the port and this line is the only place it is reported.
     let local = listener.local_addr().unwrap_or(addr);
     tracing::info!("domarinn server listening on http://{local}");
-    // With connect info, so the login throttle can key on the peer address;
-    // without it every bucket degrades to the username alone, and anyone could
-    // lock a known account out of password login. Behind a reverse proxy the
-    // peer is the proxy, which degrades to the same username-only key.
+    // With connect info, so the peer address can feed `ClientIp`: it is the
+    // client itself, or — when it is a `DOMARINN_TRUSTED_PROXIES` entry — the
+    // proxy whose `X-Forwarded-For` names the client. Without it no request
+    // gets a `ClientIp` at all, and nothing can be limited per client.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

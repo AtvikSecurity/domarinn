@@ -153,6 +153,8 @@ pub fn router(state: AppState) -> Router {
     // reads that id into the span; PropagateRequestId copies the id onto the
     // response before it reaches TraceLayer's `on_response`. Auth, body-limit,
     // and decompression stay inner so their early responses still carry the id.
+    // The client-address layer sits just outside TraceLayer, so the span can
+    // record the resolved `ClientIp` rather than the proxy's address.
     let trace = TraceLayer::new_for_http()
         .make_span_with(|req: &Request<Body>| {
             let request_id = req
@@ -160,11 +162,16 @@ pub fn router(state: AppState) -> Router {
                 .get("x-request-id")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("-");
+            let client_ip = req
+                .extensions()
+                .get::<crate::clientip::ClientIp>()
+                .map_or_else(|| "-".to_string(), |ip| ip.0.to_string());
             info_span!(
                 "http",
                 method = %req.method(),
                 path = %req.uri().path(),
                 request_id = %request_id,
+                client_ip = %client_ip,
             )
         })
         .on_response(
@@ -192,6 +199,10 @@ pub fn router(state: AppState) -> Router {
     .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY))
     .layer(PropagateRequestIdLayer::x_request_id())
     .layer(trace)
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::clientip::client_ip_middleware,
+    ))
     .layer(SetRequestIdLayer::x_request_id(MakeUlidRequestId))
     .with_state(state)
 }
