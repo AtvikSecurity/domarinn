@@ -1,6 +1,6 @@
 //! The client address over a real listening socket.
 //!
-//! Every other suite drives the router through `oneshot`, which carries no
+//! Most other suites drive the router through `oneshot`, which carries no
 //! `ConnectInfo`, so no `ClientIp` is resolved and the per-client login limit
 //! never applies there. Here the app is served on `127.0.0.1:0` with
 //! `into_make_service_with_connect_info`, exactly as `serve_on` does, and
@@ -12,6 +12,7 @@
 mod common;
 
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -108,6 +109,33 @@ async fn login(
     .await
 }
 
+/// Send one wrong login per `(xff, username)` pair, all at once, and assert
+/// each is a 401. Concurrent, so every `check_client` lands within
+/// milliseconds of the first: sequential argon2 verifies in a debug build on
+/// a slow runner could otherwise outlast the 6 s refill and hand the bucket a
+/// token back before the refusal under test.
+async fn drain(http: &reqwest::Client, served: &Served, attempts: Vec<(String, String)>) {
+    let mut set = tokio::task::JoinSet::new();
+    for (i, (xff, username)) in attempts.into_iter().enumerate() {
+        let http = http.clone();
+        let base = served.base.clone();
+        set.spawn(async move {
+            let resp = http
+                .post(format!("{base}/api/v1/auth/login"))
+                .header("x-forwarded-for", xff)
+                .json(&json!({ "username": username, "password": WRONG_PW }))
+                .send()
+                .await
+                .expect("send request");
+            (i, resp.status(), resp.text().await.unwrap_or_default())
+        });
+    }
+    while let Some(joined) = set.join_next().await {
+        let (i, status, body) = joined.expect("login task");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}: {body}");
+    }
+}
+
 async fn setup_admin(http: &reqwest::Client, served: &Served, xff: Option<&str>) {
     let (status, error) = post(
         http,
@@ -129,18 +157,18 @@ async fn xff_from_a_trusted_proxy_keys_the_client_limit_on_the_real_client() {
 
     // A distinct unknown username per attempt, so every account counter sees
     // one failure and only the per-client bucket can run out.
-    for i in 0..BURST {
-        let (status, error) = login(
-            &http,
-            &served,
-            Some("198.51.100.30"),
-            &format!("ghost-a{i}"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}: {error}");
-    }
+    let started = Instant::now();
+    let attempts = (0..BURST)
+        .map(|i| ("198.51.100.30".to_string(), format!("ghost-a{i}")))
+        .collect();
+    drain(&http, &served, attempts).await;
     let (status, error) = login(&http, &served, Some("198.51.100.30"), "ghost-a-last").await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{error}");
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{error} (after {:?}; a token refills every 6 s)",
+        started.elapsed()
+    );
     assert!(error.contains(CLIENT_PHRASE), "{error}");
 
     // Same peer (loopback), same kind of request, different forwarded client:
@@ -160,12 +188,17 @@ async fn xff_from_an_untrusted_peer_is_ignored() {
     // Every request spoofs a fresh address and a fresh username. If the header
     // were honoured each would get its own bucket and all would be 401; it is
     // not, so they all share the loopback peer's bucket.
-    for i in 0..BURST {
-        let xff = format!("198.51.100.{}", 40 + i);
-        let (status, error) = login(&http, &served, Some(&xff), &format!("ghost-c{i}")).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}: {error}");
-    }
+    let started = Instant::now();
+    let attempts = (0..BURST)
+        .map(|i| (format!("198.51.100.{}", 40 + i), format!("ghost-c{i}")))
+        .collect();
+    drain(&http, &served, attempts).await;
     let (status, error) = login(&http, &served, Some("198.51.100.99"), "ghost-c-last").await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{error}");
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{error} (after {:?}; a token refills every 6 s)",
+        started.elapsed()
+    );
     assert!(error.contains(CLIENT_PHRASE), "{error}");
 }

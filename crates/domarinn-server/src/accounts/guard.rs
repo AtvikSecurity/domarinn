@@ -311,16 +311,39 @@ mod tests {
         .await
     }
 
+    /// One wrong login from `peer` per username, all at once, each asserted
+    /// to be a 401. Concurrent, so every `check_client` lands within
+    /// milliseconds of the first: sequential argon2 verifies in a debug build
+    /// on a slow runner could otherwise outlast the 6 s refill and hand the
+    /// bucket a token back before the refusal under test.
+    async fn drain_from(router: &Router, peer: &'static str, usernames: Vec<String>) {
+        let mut set = tokio::task::JoinSet::new();
+        for (i, username) in usernames.into_iter().enumerate() {
+            let router = router.clone();
+            set.spawn(async move {
+                let (status, body) = login_from(&router, peer, &username, "wrong-pw").await;
+                (i, status, body)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let (i, status, body) = joined.expect("login task");
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}: {body}");
+        }
+    }
+
     #[tokio::test]
     async fn the_client_limit_refuses_before_any_argon2_runs() {
         let (router, state, _dir) = app_with_admin().await;
-        for i in 0..10 {
-            let (status, _) = login_from(&router, "198.51.100.20", "root", "wrong-pw").await;
-            assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}");
-        }
+        let started = Instant::now();
+        drain_from(&router, "198.51.100.20", vec!["root".to_string(); 10]).await;
         // Even the right password: the client is out of tokens.
         let (status, body) = login_from(&router, "198.51.100.20", "root", ADMIN_PW).await;
-        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "{body} (after {:?}; a token refills every 6 s)",
+            started.elapsed()
+        );
         assert!(body.contains("network address"), "{body}");
         assert_eq!(state.login_guard.verifies.load(Ordering::SeqCst), 10);
     }
@@ -330,13 +353,16 @@ mod tests {
         let (router, _state, _dir) = app_with_admin().await;
         // Distinct names, so no account counter is anywhere near its limit
         // and only the client limit can refuse.
-        for i in 0..10 {
-            let (status, _) =
-                login_from(&router, "198.51.100.20", &format!("ghost{i}"), "wrong-pw").await;
-            assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}");
-        }
-        let (status, _) = login_from(&router, "198.51.100.20", "ghost10", "wrong-pw").await;
-        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        let started = Instant::now();
+        let names = (0..10).map(|i| format!("ghost{i}")).collect();
+        drain_from(&router, "198.51.100.20", names).await;
+        let (status, body) = login_from(&router, "198.51.100.20", "ghost10", "wrong-pw").await;
+        assert_eq!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "{body} (after {:?}; a token refills every 6 s)",
+            started.elapsed()
+        );
 
         let (status, _) = login_from(&router, "198.51.100.21", "root", "wrong-pw").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
