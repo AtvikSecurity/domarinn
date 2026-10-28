@@ -26,7 +26,7 @@ The `type` field selects the assertion. Names are kebab-case.
 | `equals`         | deterministic | `value: any` (may be `!raw`)           | output equals the (rendered) expected value |
 | `starts-with`    | deterministic | `value: string`                        | output starts with the prefix |
 | `is-json`        | deterministic | –                                      | the whole output parses as JSON |
-| `contains-json`  | deterministic | `schema?` (JSON Schema, `$file` ok)    | a JSON object/array appears anywhere in the output, and matches `schema` when given |
+| `contains-json`  | deterministic | `schema?` (JSON Schema, `$file` ok)    | the whole output is JSON (any value, scalars included), or a JSON object/array appears anywhere in it; and it matches `schema` when given |
 | `length`         | deterministic | `min?: int`, `max?: int`               | character count is within `[min, max]` |
 | `jinja`          | deterministic | `value: string`                        | a minijinja boolean expression is true |
 | `tool-call`      | deterministic | `name: string`, `args?`, `schema?`     | the model called that tool (see [`tool-call`](#tool-call)) |
@@ -233,7 +233,7 @@ Passes if the output contains **any** of the listed substrings (case-insensitive
 
 ### `regex`
 
-Passes if the [`regex`](https://docs.rs/regex) pattern matches anywhere in the output. An **invalid** pattern fails the assertion with a message (it does not crash the run).
+Passes if the [`regex`](https://docs.rs/regex) pattern matches anywhere in the output. An **invalid** pattern does not crash the run, and it does not *fail* either: the assertion **errors** (class `assert_failed`), which promotes the case to `error`, because a pattern that will not compile says nothing about the output. `negate` does not flip it.
 
 ```yaml
 - type: regex
@@ -282,7 +282,9 @@ Passes if the **entire** output parses as a JSON value.
 
 ### `contains-json`
 
-Passes if a JSON object or array appears **anywhere** in the output (the first balanced `{…}` or `[…]` is found, even embedded in prose). Contrast with `is-json`, which requires the whole output to be JSON.
+Passes if a JSON object or array appears **anywhere** in the output (the first balanced `{…}` or `[…]` is found, even embedded in prose). Only the *first* opening bracket is tried: if the span it starts does not parse, the assertion fails even when valid JSON follows later. Contrast with `is-json`, which requires the whole output to be JSON.
+
+The whole output is tried first, and that attempt accepts **any** JSON value — so an output that is entirely a scalar (`42`, `true`, `"ok"`) passes too, and is what a `schema` is checked against.
 
 ```yaml
 - type: contains-json
@@ -352,7 +354,7 @@ Evaluates a **minijinja boolean expression**. The evaluation context contains:
   value: "vars.expected in output"
 ```
 
-An expression that evaluates false — or errors — fails the assertion.
+An expression that evaluates false fails the assertion. One that **errors** (a syntax error, an unknown filter) is a broken assertion rather than a verdict: it errors the case (class `assert_failed`), and `negate` does not flip it.
 
 ### Budget assertions: `cost`, `latency`, `tokens`
 
@@ -371,7 +373,7 @@ These read the call's **run metrics** rather than the output text:
 Behavior details:
 
 - **`latency` bypasses the cache.** A cached response has a near-zero replay latency, which would make the assertion meaningless. When a case contains a `latency` assertion the runner disables the cache for that cell so the latency reflects a real call. Under `--cache-only` there is no live call to fall back on, so that case is **refused** — `there is nothing honest to replay` — while the rest of the suite still replays. See [caching.md](../concepts/caching.md#cache-modes).
-- **Unknown metrics pass with a note.** If the provider does not report cost or token usage, `cost` and `tokens` **pass** with `cost not reported; budget not enforced` / `tokens not reported; budget not enforced` — they never fail a case for missing data. (The native `anthropic` and `openai` providers report token usage but not cost, so `tokens` is enforced while `cost` is a no-op unless your provider fills in `cost_usd`.)
+- **Unknown metrics pass with a note.** If the provider does not report cost or token usage, `cost` and `tokens` **pass** with `cost not reported; budget not enforced` / `tokens not reported; budget not enforced` — they never fail a case for missing data. (The native `anthropic` and `openai` providers report token usage, and cost too whenever the model is priced — by the built-in rate table or a [`pricing:`](providers.md#pricing) block. An unpriced model, and the `http` provider, report no cost, so `cost` is a no-op there unless an `exec` provider fills in `cost_usd` itself.)
 - **A warm prompt cache does not shrink a `tokens` budget.** Both vendors report the cached span of a prompt in its own field rather than in `input_tokens`, so a total over `input + output` alone would measure only the *uncached* fraction — and a 6,000-token prompt would fail the budget cold and pass it a few minutes later at 200, with no config change. `count: total` therefore counts the prompt that was sent. `count: billable` adds the cache *write*, which is spend rather than prompt.
 
 ---
@@ -423,7 +425,7 @@ Passes when the embedding **cosine similarity** between the output and a referen
 - The reference `value` is templatable (rendered against the test vars).
 - The default threshold is **0.8**. The assertion passes when `cosine >= threshold`.
 - The reported **score** is the cosine remapped from `[-1, 1]` to `[0, 1]` (`(cosine + 1) / 2`), while the pass/fail decision uses the **raw** cosine against the threshold.
-- If no embeddings provider is configured, the assertion errors with `similar assertion needs an embeddings provider in the suite`.
+- If no embeddings provider is configured, the assertion errors with `no grader is configured for 'similar' assertions in this suite` (class `grader_missing`, exit `2`).
 
 ---
 
