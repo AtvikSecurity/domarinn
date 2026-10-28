@@ -17,14 +17,27 @@ Request-body size is capped at **64 MiB**; request bodies may be gzip/deflate co
 ```json
 {
   "name": "domarinn",
-  "version": "0.1.0",
+  "version": "0.10.5",
   "auth_mode": "protect-writes",
   "setup_required": false,
-  "supported_schema_versions": [2, 3],
-  "result_schema_version": 3,
-  "cache": { "max_entry_bytes": 4194304, "max_bytes": 1073741824, "max_age_days": 30 }
+  "sso_providers": [
+    { "name": "google", "kind": "oidc", "label": "Google", "login_url": "/api/v1/auth/oidc/google/start" }
+  ],
+  "supported_schema_versions": [3, 4],
+  "result_schema_version": 4,
+  "cache": { "max_entry_bytes": 4194304, "max_bytes": 1073741824, "max_age_days": 30 },
+  "cache_tiers": [
+    { "id": "server", "label": "Server", "search": "fts" },
+    { "id": "local", "label": "Local disk", "search": "substring" }
+  ],
+  "mcp_enabled": false
 }
 ```
+
+- `sso_providers` lists each configured [SSO](server.md#single-sign-on-oidc--saml) provider (`kind` is `oidc` or `saml`) — enough for a login page to render a button that navigates to `login_url`, which accepts `?return_to=/path`. Empty when none is configured.
+- `supported_schema_versions` is always `result_schema_version - 1 ..= result_schema_version`, the window [ingest](#run-ingest) accepts.
+- `cache_tiers` are the cache tiers this instance can [browse](#browsing-the-cache), in switcher order. `server` is always present; `local` appears only when a local cache directory is mounted. `search` says what `?q=` means on that tier — `fts` (a full-text index) or `substring` (a substring match over previews). No filesystem path is ever exposed: this endpoint is unauthenticated.
+- `mcp_enabled` is whether the MCP endpoint is mounted (`DOMARINN_MCP_ENABLED`) — advertised because an unauthenticated probe cannot tell "disabled" from "wrong URL".
 
 ## Auth (accounts, sessions)
 
@@ -71,12 +84,12 @@ The scope gate is `read` rather than `write` so a `viewer` account can mint the 
 | Method | Path                                    | Scope   | Notes |
 |--------|-----------------------------------------|---------|-------|
 | POST   | `/api/v1/runs`                          | `write` | Ingest a run document. See [ingest](#run-ingest). Uploading into a **restricted** run set additionally needs an `upload` grant (`403`); see [run sets](#run-sets-access-control). |
-| GET    | `/api/v1/runs`                          | `read`  | List runs (filterable, paginated). Filters: `project`, `suite`, `tag`, `branch`, `since`, `until`, `status` (`pass`\|`fail`\|`error` — a run whose only red is `xpass` cases counts as failing), `cached`, `origin` (`ci`\|`local`), `actor`. |
+| GET    | `/api/v1/runs`                          | `read`  | List runs (filterable, paginated). Filters: `project`, `suite`, `tag`, `branch`, `since`, `until`, `status` (`pass`\|`fail`\|`error` — a run whose only red is `xpass` cases counts as failing), `cached` (`exclude`\|`only`\|`all`), `origin` (`ci`\|`local`), `actor`. See [list filters](#run-list-filters). |
 | GET    | `/api/v1/runs/{id}`                      | `read`  | Full run detail. `404` if unknown. |
 | GET    | `/api/v1/runs/{id}/cases`               | `read`  | Lean list of the run's cases (filterable, paginated). |
 | GET    | `/api/v1/runs/{id}/cases/{case_key}`    | `read`  | One case's full detail. |
 | GET    | `/api/v1/runs/{id}/matrix`              | `read`  | Prompt × provider aggregate matrix (rows = tests, paginated). |
-| GET    | `/api/v1/runs/{id}/export`              | `read`  | The original, lossless run document. |
+| GET    | `/api/v1/runs/{id}/export`              | `read`  | The original, lossless run document — the `RunResult` document as it was ingested, every field intact. `404` if unknown or invisible. |
 | GET    | `/api/v1/runs/{id}/config`              | `read`  | The run's config digest + snapshot (no full export). |
 | GET    | `/api/v1/runs/{id}/compare/{other}`     | `read`  | Diff two runs (regressions/improvements per case). |
 | DELETE | `/api/v1/runs/{id}`                      | `admin` | Delete a run. `204` on success. |
@@ -86,7 +99,7 @@ The scope gate is `read` rather than `write` so a `viewer` account can mint the 
 `GET /runs/{id}` reports two cost figures, and they are never summed: `cost_usd` is what the systems under test cost, `grader_cost_usd` is what grading them cost. It also carries `cache_read_tokens`, `cache_write_tokens` and `cache_savings_usd`. All four are `null` for runs ingested before the columns existed — which is **not** the same as zero, and readers render it as unknown rather than as "no activity". There is no backfill; see the migration note in `storage/schema.rs` for why.
 
 <a id="run-ingest"></a>**Ingest** (`POST /api/v1/runs`) accepts a `RunResult`
-JSON document (see [`protocol.md`](protocol.md) and `domarinn schema result`). The body must carry a `schema_version` within the supported window (`result_schema_version - 1 ..= result_schema_version`), else `422`. Ingest is **idempotent by content**:
+JSON document (see [`protocol.md`](protocol.md) and `domarinn schema result`). A body that is not JSON, or has no integer `schema_version`, is a `400`. A `schema_version` outside the supported window (`result_schema_version - 1 ..= result_schema_version`, as advertised by [`/meta`](#health--meta)) is a `422` whose message says whether the CLI or the server is the one to upgrade, and a document that does not parse as a `RunResult` is also a `422`. Ingest is **idempotent by content**:
 
 | Status | Meaning |
 |--------|---------|
@@ -96,7 +109,11 @@ JSON document (see [`protocol.md`](protocol.md) and `domarinn schema result`). T
 
 The `url` in the response is a browser link to the run. It is built from `DOMARINN_PUBLIC_URL` when set; otherwise from the request's `Host` header and `X-Forwarded-Proto` (see [`../guides/self-host.md`](../guides/self-host.md#reverse-proxies-and-share-links)).
 
-**List filters** (`GET /api/v1/runs`, all optional query params): `project`, `suite`, `tag`, `branch`, `status`, `since`, `until` (each epoch-ms *or* RFC3339), `limit` (default `50`, max `200`), `cursor`. The response is `{ "runs": [...], "next_cursor": "<cursor|null>" }`; pass `next_cursor` back as `cursor` to page.
+<a id="run-list-filters"></a>**List filters** (`GET /api/v1/runs`, all optional query params): `project`, `suite`, `tag`, `branch`, `status`, `since`, `until` (each epoch-ms *or* RFC3339), `cached`, `origin`, `actor`, `limit` (default `50`, max `200`), `cursor`. `origin=ci` keeps runs that recorded a CI provider and `origin=local` the rest; `actor` matches either the recorded actor or the authenticated uploader. Unknown parameters are a `400`.
+
+`cached` filters on whether a run was **fully cached** — every provider call a cache hit, and at least one call made. `exclude` hides those runs **whatever their verdict** (a replay re-derives its verdicts from the same cache, grader verdicts included — see [caching](../concepts/caching.md)); `only` returns just them; `all`, like omitting the parameter, is a no-op. A run stored before the cache counters existed is never classified as cached, so `exclude` never hides it. The hiding default lives in the web UI, not here: an API caller that says nothing gets everything.
+
+The response is `{ "runs": [...], "next_cursor": "<cursor|null>", "cached_hidden": <n|null> }`; pass `next_cursor` back as `cursor` to page. `cached_hidden` is how many runs `cached=exclude` suppressed across the **whole** filtered set, not just this page, so a UI can say how many it is hiding. It is `null` unless the query was `cached=exclude` and this is the first page (no `cursor`).
 
 **Case filters** (`GET /api/v1/runs/{id}/cases`): `status` (`pass`, `fail`, `error`, `skip`, `xfail`, `xpass`), `tag`, `q` (free-text), `provider`, `prompt`, `test`, `stop_reason`, `error_class`, `empty_reason` (each an exact match on the promoted cell columns), `cached` (`true` fetches cache hits only, `false` fresh calls only), `limit`, `cursor`.
 
@@ -108,7 +125,7 @@ The `url` in the response is a browser link to the run. It is built from `DOMARI
 
 | Method | Path                | Scope  | Notes |
 |--------|---------------------|--------|-------|
-| GET    | `/api/v1/search`    | `read` | SQLite FTS5 across run metadata and case content — names, notes, tags, outputs, and assertion reasons. `q` (required, FTS5 syntax) and `limit`. Returns hits grouped by kind, filtered to the runs the caller may see. Matched terms in snippets are wrapped in the private-use characters `U+E000`/`U+E001` for the web UI to split on. |
+| GET    | `/api/v1/search`    | `read` | SQLite FTS5 across run metadata and case content — names, notes, tags, outputs, and assertion reasons. `q` (required, FTS5 syntax), `limit` (default `50`, max `200`), and `cached` (`exclude`\|`only`\|`all`, narrowing hits by their owning run exactly as the [run list's](#run-list-filters) filter does; absent is a no-op). Returns hits grouped by kind, filtered to the runs the caller may see. Matched terms in snippets are wrapped in the private-use characters `U+E000`/`U+E001` for the web UI to split on. |
 
 ## Projects, suites, baselines
 
@@ -116,11 +133,15 @@ The `url` in the response is a browser link to the run. It is built from `DOMARI
 |--------|----------------------------------------------------------|---------|-------|
 | GET    | `/api/v1/projects`                                       | `read`  | List known projects, restricted ones omitted. |
 | GET    | `/api/v1/projects/{project}/suites`                      | `read`  | List a project's suites, restricted ones omitted. |
-| PUT    | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Pin a baseline run: body `{ "run_id": "..." }`. `200` with `{project, suite, run_id}` on success. Needs an `upload` grant when the suite is restricted (`403`). `404` if the run is unknown, invisible to the caller, or belongs to another suite. |
-| DELETE | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Unpin the baseline. Same `upload` gate. `204` on success. |
+| GET    | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `read`  | The suite's pin: `{project, suite, run_id, branch, set_at}` — exactly one of `run_id` / `branch` is non-null, and `set_at` is epoch-ms. `404` with code `baseline_unpinned` when nothing is pinned, or the pinned run is invisible to the caller. |
+| PUT    | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Pin a baseline. The body is **exactly one** of `{ "run_id": "..." }` (a fixed run) or `{ "branch": "main" }` (auto-tracking: the newest runs on that branch, merged per case). Both or neither is a `400`, as is a blank branch; unknown fields are rejected. `200` echoing `{project, suite, run_id}` or `{project, suite, branch}`. Needs an `upload` grant when the suite is restricted (`403`). `404` if a `run_id` is unknown, invisible to the caller, or belongs to another suite; a branch pin needs no run to exist yet. |
+| DELETE | `/api/v1/projects/{project}/suites/{suite}/baseline`     | `write` | Unpin the baseline. Same `upload` gate. `204` on success, `404` when nothing was pinned. |
+| GET    | `/api/v1/projects/{project}/suites/{suite}/baseline/export` | `read` | The baseline as a full run document — what `--against server:baseline` and `--against server:branch:<name>` resolve through. A run pin returns that run's stored document; a branch pin returns a composite merged from the newest (up to 20) visible runs on the branch, the newest run that has each case winning. `?branch=<name>` resolves that branch directly, pin or no pin; `?exclude=<run_id>` drops one run from a composite, so a run uploaded before it compares cannot become its own baseline. |
 | GET    | `/api/v1/projects/{project}/suites/{suite}/cases/{case_key}/history` | `read` | One case's status/score/output-hash across the suite's recent runs. `limit` (default `20`, max `100`). |
 
 A baseline is a claim about a suite, so it may only name a run **the caller can see, in that same suite**. All three failures — no such run, someone else's suite, restricted away — are one `404`, for the reason the [run-set section](#run-sets-access-control) gives.
+
+A "nothing to compare against" `404` from `GET …/baseline` or `…/baseline/export` carries a machine `code` beside the message — `{ "error": "…", "code": "baseline_unpinned" }`, or `no_runs_on_branch` when a branch has no visible runs to merge. The CLI keys off that code: a coded `404` is an absence (first run, nothing pinned yet — carry on), while a bare `404` means the route itself is missing (an older server) and must not silently skip the gate.
 
 <a id="run-sets-access-control"></a>
 
@@ -280,10 +301,12 @@ Both operate on the **server** tier. A `?tier=local` browsing tier is read-only,
 
 | Method | Path | Scope | Notes |
 |--------|------|-------|-------|
-| GET | `/api/v1/cache/entries` | `admin` | List entries. Filters: `kind`, `model`, `empty_reason`, `q`, `since`, `until`, `min_cost_microusd`, `max_cost_microusd`, `tier`. Sort: `sort=created\|last_access\|size\|cost` with `order=desc\|asc`. Paginates by opaque `cursor` (`limit` default `50`, max `200`). |
-| GET | `/api/v1/cache/entries/{key}` | `read` | One entry, parsed. `?raw=true` also returns the provider's raw metadata, which is withheld by default. |
+| GET | `/api/v1/cache/entries` | `admin` | List entries. Filters: `kind`, `model`, `empty_reason`, `q`, `since`, `until`, `min_cost_microusd`, `max_cost_microusd`, `tier`. Sort: `sort=created\|last_access\|size\|cost\|kind\|model\|tokens\|key` (default `created`; `tokens` is input + output) with `order=desc\|asc` (default `desc`). Paginates by opaque `cursor` (`limit` default `50`, max `200`). |
+| GET | `/api/v1/cache/entries/{key}` | `read` | One entry, parsed. `?raw=true` also returns the provider's raw metadata, which is withheld by default. Takes `tier` as the list does. |
 | GET | `/api/v1/cache/entries/{key}/runs` | `read` | Cases whose provider call was addressed by this key, newest run first. Cursor paginated. |
-| GET | `/api/v1/cache/facets` | `admin` | Values the `kind`, `model` and `empty_reason` filters can take, with counts, plus `total` / `unindexed` / `unparseable`. |
+| GET | `/api/v1/cache/facets` | `admin` | Values the `kind`, `model` and `empty_reason` filters can take, with counts, plus `total` / `unindexed` / `unparseable`. Takes `tier` as the list does. |
+
+`tier` is `server` (the default) or `local`, from the `cache_tiers` that [`/meta`](#health--meta) advertises. Asking for `local` on an instance with no local directory mounted is a `404`, not a `400`: the request is well-formed, the tier just is not here. `…/runs` takes no `tier`; it reads the server's own run records.
 
 **Listing is `admin`; reading one entry is `read`.** That asymmetry is deliberate.
 A key is `sha256(canonical_json({request, repeat, salts}))` — the only way to

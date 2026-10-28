@@ -711,7 +711,7 @@ A suite is validated structurally before any provider is contacted — both by `
 
 - **Unknown or misspelled keys are a hard error that names the file, the dotted path, and the key.** A stray `maxx:` under `runner.retries`, for instance, fails with a message like ``examples/x/domarinn.yaml: runner.retries: unknown field `maxx` `` — so you can jump straight to the offending line.
 - **The check reaches inside provider, assertion, and grader mappings.** A typo'd provider field (`basurl:` for `base_url:`) or assertion option is flagged, **including the `provider:` block nested inside a grader** — both the top-level `grader.provider` and the inner grader on any `llm-rubric` assertion (in `defaults.assert` or an inline test's `assert`). Free-form bags — a provider's `params`, an `http` provider's `body`, an `exec` assertion's `config` — are opaque values, not schema, so their inner keys are intentionally left unchecked.
-- **A message `role` must be `system`, `user`, or `assistant`.** Any other value is rejected at load time.
+- **A message `role` must be `system`, `user`, `assistant`, or `tool`.** Any other value is rejected at load time. A `tool` turn is a replayed tool result (see [per-case history](#per-case-history)): `tool_calls` belongs only on an `assistant` turn and `tool_call_id` only on a `tool` turn, and either misplacement is rejected too.
 - **An `http` provider's `method` is normalized to upper case.** You may write `method: get` or `method: GET`; the method sent on the wire — and the one the cache keys on — is always the upper-case form, so two spellings of one method share entries rather than paying twice.
 
 ---

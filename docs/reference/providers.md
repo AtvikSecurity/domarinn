@@ -78,10 +78,11 @@ A native client for the Anthropic **Messages API**.
 |---------------|-----------|-----------------------------|---------|
 | `model`       | string    | –                           | The model id. |
 | `base_url`    | string    | `https://api.anthropic.com` | API base. |
-| `api_key_env` | string    | `ANTHROPIC_API_KEY`         | Env var holding the API key (sent as `x-api-key`). |
+| `api_key_env` | string or `[string]` | `ANTHROPIC_API_KEY` | Env var holding the API key (sent as `x-api-key`). A list is tried in order and the first name set to a non-empty value wins; see [below](#api_key_env-a-list-of-names). |
 | `params`      | object    | `{}`                        | Extra request-body params, passed through verbatim. |
+| `pricing`     | object    | built-in rate               | Rate override for this model. See [Pricing](#pricing). |
 | `request`     | object    | –                           | Transport overrides — auth scheme, headers, path, query, body overlay. See [Customizing the request](#customizing-the-request). |
-| `cache_salt`  | string    | –                           | Cache pin. Change it to throw away every answer this provider has cached. |
+| `cache_salt`  | string    | –                           | Cache pin. Change it to throw away every answer this provider has cached. `base_url` is not in the cache key, so give two endpoints that answer differently different salts. |
 
 Behavior:
 
@@ -106,8 +107,11 @@ An OpenAI-compatible **chat-completions** client. Works against the OpenAI API a
 |---------------|-----------|------------------------------|---------|
 | `model`       | string    | –                            | The model id. |
 | `base_url`    | string    | `https://api.openai.com/v1`  | API base — point this at any compatible gateway. |
-| `api_key_env` | string    | `OPENAI_API_KEY`             | Env var holding the API key (sent as a bearer token). |
+| `api_key_env` | string or `[string]` | `OPENAI_API_KEY` | Env var holding the API key (sent as a bearer token). A list is tried in order; the first non-empty one wins. |
 | `params`      | object    | `{}`                         | Extra request-body params, passed through verbatim. |
+| `pricing`     | object    | built-in rate                | Rate override for this model. See [Pricing](#pricing). |
+| `request`     | object    | –                            | Transport overrides — auth scheme, headers, path, query, body overlay. See [Customizing the request](#customizing-the-request). |
+| `cache_salt`  | string    | –                            | Cache pin. Change it to throw away every answer this provider has cached. `base_url` is not in the cache key, so give two endpoints that answer differently different salts. |
 
 Behavior:
 
@@ -134,6 +138,16 @@ providers:
     params:
       temperature: 0.2
 ```
+
+### `api_key_env`: a list of names
+
+Every provider that reads a credential (`anthropic`, `openai`, `embeddings`, and a grader's `provider:` block) accepts either one variable name or a list of them:
+
+```yaml
+api_key_env: [TEAM_OPENAI_KEY, OPENAI_API_KEY]
+```
+
+The names are tried in order and the first one holding a non-empty value wins — an exported-but-empty variable counts as unset, because an empty credential is rejected exactly like a missing one. When none resolves, the error names every variable it tried. Which name won is logged at debug level and is not stored in the run document, so two environments resolving different names produce runs the `config_digest` cannot tell apart. A single name still serializes as a bare string, so an existing suite's digest does not move until you switch it to the list form.
 
 ---
 
@@ -276,9 +290,11 @@ An OpenAI-compatible embeddings client. It is **not** a system under test — th
 |---------------|-----------|------------------------------|---------|
 | `model`       | string    | –                            | The embeddings model id. |
 | `base_url`    | string    | `https://api.openai.com/v1`  | API base. |
-| `api_key_env` | string    | `OPENAI_API_KEY`             | Env var holding the API key (sent as a bearer token). |
+| `api_key_env` | string or `[string]` | `OPENAI_API_KEY` | Env var holding the API key (sent as a bearer token). A list is tried in order; the first non-empty one wins. |
 | `params`      | object    | `{}`                         | Extra request-body params, passed through verbatim. |
 | `pricing`     | object    | built-in rate                | Rate override. Only `input_per_mtok` is read — see below. |
+| `request`     | object    | –                            | Transport overrides — auth scheme, headers, path, query, body overlay. See [Customizing the request](#customizing-the-request). |
+| `cache_salt`  | string    | –                            | Cache pin. Change it to throw away every embedding this provider has cached. |
 
 Behavior:
 
@@ -297,7 +313,9 @@ See [`similar`](assertions.md#similar) for the assertion this provider exists to
 
 ## Retry, timeout, and error classification
 
-The HTTP-backed providers (`anthropic`, `openai`, `http`, and the embeddings client) share one classification of failures, in `net.rs`. This keeps behavior consistent across every network provider.
+The HTTP-backed systems under test (`anthropic`, `openai`, and `http`) share one classification of failures, in `net.rs`. This keeps behavior consistent across every network provider.
+
+The `embeddings` client is not one of them. It is called from the grader, not the provider path, so `runner.retries` never reaches it: a non-`2xx` reply or a transport failure is not retried, `Retry-After` is not read, and the `similar` assertion errors with class `grader_unavailable`.
 
 | Condition                                   | Classification | Retriable? |
 |---------------------------------------------|----------------|------------|
@@ -310,7 +328,7 @@ The HTTP-backed providers (`anthropic`, `openai`, `http`, and the embeddings cli
 
 Details:
 
-- **`Retry-After` is honored.** On a `429`/`5xx` carrying a `Retry-After` header (delta-seconds form), that delay is used before the next attempt; otherwise the runner's exponential backoff applies.
+- **`Retry-After` is honored.** On a `429`/`5xx` carrying a `Retry-After` header — in either form RFC 9110 permits, delta-seconds (`120`) or an HTTP-date (`Wed, 21 Oct 2015 07:28:00 GMT`, where a date already past means retry immediately) — that delay is used before the next attempt; otherwise the runner's exponential backoff applies.
 - **Retries are opt-in.** The default is no retries (`runner.retries.max = 0`). Configure `runner.retries` to enable backoff (default initial 500 ms, max 8000 ms). A retriable error that exhausts attempts becomes a case `error` (exit code `3`); a fatal error becomes a case `error` immediately.
 - **Default request timeout** for `anthropic`, `openai`, and `http` is **120 s**; the embeddings client uses **60 s**. The `exec` provider uses its own `timeout_ms` (default 60000 ms).
 - **API keys never appear in cache keys.** The key hashes the *redacted* request: credentials live in headers, which the keyed envelope excludes structurally, and an `exec` provider's declared `env` enters as a digest — precisely because `env` is a credential channel, so the values never reach the stored entry. What the key does cover for `exec` is the command and its args plus the document sent to the child.
@@ -340,8 +358,8 @@ Two kinds of outcome, both keyed on open string types so a value this build has 
 | Class | |
 |---|---|
 | `provider_auth` | a rejected or missing credential |
-| `provider_unavailable` | `5xx`, connection refused, DNS |
-| `provider_timeout` | no reply inside the timeout |
+| `provider_unavailable` | `5xx` |
+| `provider_timeout` | no reply inside the timeout, or no connection at all — connection refused and DNS failures land here too |
 | `provider_protocol` | a reply that could not be understood |
 | `provider_rate_limit` | `429` after retries are exhausted |
 | `exec_failed` | an `exec` child that did not run |
