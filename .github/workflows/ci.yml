@@ -354,3 +354,120 @@ jobs:
 
       - name: Confirm the binary is static
         run: file target/${{ matrix.target }}/release/domarinn || true
+
+  action-e2e:
+    name: domarinn-eval action on a GitHub runner
+    runs-on: ubuntu-26.04
+    # A cached CLI build plus two sub-second suites.
+    timeout-minutes: 20
+    # The GitHub copy of the composite action, run the way a consumer runs it
+    # (`uses:` + inputs) against this commit's CLI, with its outputs asserted
+    # in a follow-up step. action_contract.rs runs the same shell against stub
+    # binaries; this is the one place it meets the real runner, the real
+    # `$GITHUB_OUTPUT`/`$GITHUB_STEP_SUMMARY` and the real artifact upload.
+    # The Gitea/Forgejo copies get the same treatment on real forges in
+    # forge-e2e.yml.
+    #
+    # `comment: "false"`: the PR comment would need `pull-requests: write`,
+    # which a fork's pull request never gets (the step would only warn), and on
+    # a same-repo pull request it would post a second results comment on every
+    # PR for maintainers to scroll past. The comment protocol itself (create,
+    # then update the action's own comment and nobody else's) is asserted on
+    # the forges, where the harness controls who else comments.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # pin to SHA
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          install_args: rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3 # pin to SHA
+        with:
+          key: action-e2e
+      - run: mise run build-cli
+
+      # 1. A passing suite: the shipped offline example.
+      - id: pass
+        uses: ./.github/actions/domarinn-eval
+        with:
+          config: examples/12-render-health
+          binary-path: target/release/domarinn
+          comment: "false"
+          artifact-name: domarinn-results-pass
+
+      - name: Assert the passing run's outputs
+        env:
+          EXIT_CODE: ${{ steps.pass.outputs.exit-code }}
+          PASSED: ${{ steps.pass.outputs.passed }}
+          FAILED: ${{ steps.pass.outputs.failed }}
+          TOTAL: ${{ steps.pass.outputs.total }}
+          PASS_RATE: ${{ steps.pass.outputs.pass-rate }}
+          SUMMARY_PATH: ${{ steps.pass.outputs.summary-path }}
+          RESULTS_PATH: ${{ steps.pass.outputs.results-path }}
+        run: |
+          set -euo pipefail
+          bad=0
+          expect() { # name actual expected
+            if [ "$2" = "$3" ]; then echo "ok: $1 = $2"; else echo "::error::$1 is '$2', expected '$3'"; bad=1; fi
+          }
+          expect exit-code "$EXIT_CODE" 0
+          expect passed "$PASSED" 2
+          expect failed "$FAILED" 0
+          expect total "$TOTAL" 2
+          expect pass-rate "$PASS_RATE" 100.0
+          grep -q '<testsuite' "$RESULTS_PATH" || { echo "::error::no JUnit report at $RESULTS_PATH"; bad=1; }
+          grep -q '2 passed' "$SUMMARY_PATH" || { echo "::error::$SUMMARY_PATH does not report 2 passed"; bad=1; }
+          exit "$bad"
+
+      # 2. A failing suite with the gate disarmed: exit 1 must arrive as
+      # outputs and a warning, and leave the job green.
+      - name: Write a suite with one failing case
+        run: |
+          mkdir -p action-e2e-fail/suite
+          cp examples/echo-provider.py action-e2e-fail/
+          printf '%s\n' \
+            'version: 1' \
+            'project: e2e' \
+            'suite: action-e2e-fail' \
+            'providers:' \
+            '  - id: echo' \
+            '    type: exec' \
+            '    command: ["python3", "../echo-provider.py"]' \
+            'tests:' \
+            '  - id: passes' \
+            '    vars: { user_input: "hello" }' \
+            '    assert: [{ type: contains, value: "hello" }]' \
+            '  - id: fails' \
+            '    vars: { user_input: "hello" }' \
+            '    assert: [{ type: contains, value: "goodbye" }]' \
+            > action-e2e-fail/suite/domarinn.yaml
+      - id: fail
+        uses: ./.github/actions/domarinn-eval
+        with:
+          config: action-e2e-fail/suite
+          binary-path: target/release/domarinn
+          comment: "false"
+          fail-on-regression: "false"
+          artifact-name: domarinn-results-fail
+
+      - name: Assert the failing run's outputs
+        env:
+          OUTCOME: ${{ steps.fail.outcome }}
+          EXIT_CODE: ${{ steps.fail.outputs.exit-code }}
+          PASSED: ${{ steps.fail.outputs.passed }}
+          FAILED: ${{ steps.fail.outputs.failed }}
+          TOTAL: ${{ steps.fail.outputs.total }}
+          SUMMARY_PATH: ${{ steps.fail.outputs.summary-path }}
+        run: |
+          set -euo pipefail
+          bad=0
+          expect() { # name actual expected
+            if [ "$2" = "$3" ]; then echo "ok: $1 = $2"; else echo "::error::$1 is '$2', expected '$3'"; bad=1; fi
+          }
+          expect outcome "$OUTCOME" success
+          expect exit-code "$EXIT_CODE" 1
+          expect passed "$PASSED" 1
+          expect failed "$FAILED" 1
+          expect total "$TOTAL" 2
+          grep -q '1 failed' "$SUMMARY_PATH" || { echo "::error::$SUMMARY_PATH does not report the failure"; bad=1; }
+          exit "$bad"
