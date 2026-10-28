@@ -109,30 +109,24 @@ async fn login(
     .await
 }
 
-/// Send one wrong login per `(xff, username)` pair, all at once, and assert
-/// each is a 401. Concurrent, so every `check_client` lands within
-/// milliseconds of the first: sequential argon2 verifies in a debug build on
-/// a slow runner could otherwise outlast the 6 s refill and hand the bucket a
-/// token back before the refusal under test.
-async fn drain(http: &reqwest::Client, served: &Served, attempts: Vec<(String, String)>) {
-    let mut set = tokio::task::JoinSet::new();
-    for (i, (xff, username)) in attempts.into_iter().enumerate() {
-        let http = http.clone();
-        let base = served.base.clone();
-        set.spawn(async move {
-            let resp = http
-                .post(format!("{base}/api/v1/auth/login"))
-                .header("x-forwarded-for", xff)
-                .json(&json!({ "username": username, "password": WRONG_PW }))
-                .send()
-                .await
-                .expect("send request");
-            (i, resp.status(), resp.text().await.unwrap_or_default())
-        });
-    }
-    while let Some(joined) = set.join_next().await {
-        let (i, status, body) = joined.expect("login task");
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}: {body}");
+/// Spend per-client tokens with one `POST /auth/setup` per forwarded
+/// address, all expected to answer `expect`. Setup shares the login bucket
+/// and is refused before any hashing (a 409 once an admin exists, a 400 for a
+/// too-short password before then), so the drain never waits on argon2: a
+/// drain of logins queued ten verifies on the process-wide hash permits, and
+/// on a slow runner that outlasted the 6 s refill and handed a token back
+/// before the refusal under test.
+async fn drain(http: &reqwest::Client, served: &Served, xffs: Vec<String>, expect: StatusCode) {
+    for (i, xff) in xffs.into_iter().enumerate() {
+        let (status, error) = post(
+            http,
+            served,
+            "/api/v1/auth/setup",
+            Some(&xff),
+            json!({ "username": "root", "password": "x" }),
+        )
+        .await;
+        assert_eq!(status, expect, "drain {i} from {xff}: {error}");
     }
 }
 
@@ -155,13 +149,16 @@ async fn xff_from_a_trusted_proxy_keys_the_client_limit_on_the_real_client() {
     // Setup spends a token from its caller's bucket: give it its own client.
     setup_admin(&http, &served, Some("198.51.100.29")).await;
 
-    // A distinct unknown username per attempt, so every account counter sees
-    // one failure and only the per-client bucket can run out.
+    // Ten setups forwarded for one client: an admin exists, so each is a
+    // cheap 409, and only the per-client bucket notices them.
     let started = Instant::now();
-    let attempts = (0..BURST)
-        .map(|i| ("198.51.100.30".to_string(), format!("ghost-a{i}")))
-        .collect();
-    drain(&http, &served, attempts).await;
+    drain(
+        &http,
+        &served,
+        vec!["198.51.100.30".to_string(); BURST],
+        StatusCode::CONFLICT,
+    )
+    .await;
     let (status, error) = login(&http, &served, Some("198.51.100.30"), "ghost-a-last").await;
     assert_eq!(
         status,
@@ -181,18 +178,16 @@ async fn xff_from_a_trusted_proxy_keys_the_client_limit_on_the_real_client() {
 async fn xff_from_an_untrusted_peer_is_ignored() {
     let served = serve(None).await;
     let http = client();
-    // No setup: it would spend one of the loopback bucket's tokens, and login
-    // answers an unknown username with the same 401 whether or not any user
-    // exists, so all eleven requests below are logins.
+    // No admin, so each too-short setup is a 400 before any hashing.
 
-    // Every request spoofs a fresh address and a fresh username. If the header
-    // were honoured each would get its own bucket and all would be 401; it is
-    // not, so they all share the loopback peer's bucket.
+    // Every request spoofs a fresh address. If the header were honoured each
+    // would get its own bucket and the final login would be a 401; it is not,
+    // so they all share the loopback peer's bucket.
     let started = Instant::now();
-    let attempts = (0..BURST)
-        .map(|i| (format!("198.51.100.{}", 40 + i), format!("ghost-c{i}")))
+    let xffs = (0..BURST)
+        .map(|i| format!("198.51.100.{}", 40 + i))
         .collect();
-    drain(&http, &served, attempts).await;
+    drain(&http, &served, xffs, StatusCode::BAD_REQUEST).await;
     let (status, error) = login(&http, &served, Some("198.51.100.99"), "ghost-c-last").await;
     assert_eq!(
         status,

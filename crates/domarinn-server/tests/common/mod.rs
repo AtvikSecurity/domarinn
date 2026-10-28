@@ -117,31 +117,59 @@ pub async fn test_storage_handles(n: usize) -> (Vec<Storage>, TempDir) {
 /// a backend. Backend follows `DOMARINN_TEST_BACKEND`, as in
 /// [`test_app_with_storage`].
 pub async fn test_app_pair(
-    mut settings: Settings,
+    settings: Settings,
     auth_mode: domarinn_server::AuthMode,
 ) -> (Router, Router, TempDir) {
-    let dir = TempDir::new().expect("tempdir");
-    if pg::backend_is_postgres() {
-        settings.database_url = Some(
-            tokio::task::spawn_blocking(pg::fresh_database_url)
-                .await
-                .expect("create postgres test database"),
-        );
-    } else {
-        seed_sqlite_from_template(dir.path()).await;
+    let db = SharedDb::new(auth_mode).await;
+    let a = db.app(settings.clone()).await;
+    let b = db.app(settings).await;
+    (a, b, db.dir)
+}
+
+/// One fresh database that apps can be built over at any point, each with
+/// its own `Settings`: a restart with changed configuration, or a replica
+/// started later. Backend follows `DOMARINN_TEST_BACKEND`.
+pub struct SharedDb {
+    /// Keep alive for the test; it holds the SQLite files.
+    pub dir: TempDir,
+    config: ServerConfig,
+    database_url: Option<String>,
+}
+
+impl SharedDb {
+    pub async fn new(auth_mode: domarinn_server::AuthMode) -> SharedDb {
+        let dir = TempDir::new().expect("tempdir");
+        let database_url = if pg::backend_is_postgres() {
+            Some(
+                tokio::task::spawn_blocking(pg::fresh_database_url)
+                    .await
+                    .expect("create postgres test database"),
+            )
+        } else {
+            seed_sqlite_from_template(dir.path()).await;
+            None
+        };
+        let config = ServerConfig {
+            port: 0,
+            data_dir: dir.path().to_path_buf(),
+            auth_mode,
+        };
+        SharedDb {
+            dir,
+            config,
+            database_url,
+        }
     }
-    let config = ServerConfig {
-        port: 0,
-        data_dir: dir.path().to_path_buf(),
-        auth_mode,
-    };
-    let (a, _) = build_app(&config, settings.clone())
-        .await
-        .expect("build first app");
-    let (b, _) = build_app(&config, settings)
-        .await
-        .expect("build second app");
-    (a, b, dir)
+
+    /// Build an app over this database. `settings.database_url` is replaced
+    /// by this database's.
+    pub async fn app(&self, mut settings: Settings) -> Router {
+        settings.database_url = self.database_url.clone();
+        build_app(&self.config, settings)
+            .await
+            .expect("build app over the shared database")
+            .0
+    }
 }
 
 /// [`test_storage_handles`] with two handles.

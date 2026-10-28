@@ -1,4 +1,5 @@
-//! A per-identity token bucket for `tools/call`.
+//! A token bucket for `tools/call`, per identity, or per identity and client
+//! address.
 //!
 //! The spec makes rate limiting a MUST for tool invocations. The bucket
 //! mechanics live in [`crate::ratelimit`]; this module only decides what a
@@ -20,7 +21,8 @@ use crate::auth::Identity;
 use crate::clientip::ClientIp;
 use crate::ratelimit::TokenBuckets;
 
-/// Sustained `tools/call` rate per identity.
+/// Sustained `tools/call` rate per identity, or per identity and client
+/// address.
 pub const DEFAULT_PER_MINUTE: u32 = 60;
 /// How many calls may arrive back-to-back before the sustained rate applies.
 pub const DEFAULT_BURST: u32 = 10;

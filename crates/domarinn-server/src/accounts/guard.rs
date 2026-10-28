@@ -91,7 +91,13 @@ impl LoginGuard {
             .context("loading the device cookie key")?;
         Ok(LoginGuard {
             client: TokenBuckets::new(CLIENT_PER_MINUTE, CLIENT_BURST, CLIENT_MAX_TRACKED),
-            device_key: DeviceKey::from_hex(&secret)?,
+            device_key: DeviceKey::from_hex(&secret).with_context(|| {
+                format!(
+                    "the server_secrets row '{DEVICE_COOKIE_SECRET}' is corrupt; deleting it \
+                     lets the server mint a new key on the next start, at the cost of every \
+                     existing device cookie"
+                )
+            })?,
             #[cfg(test)]
             verifies: std::sync::atomic::AtomicU64::new(0),
         })
@@ -99,14 +105,20 @@ impl LoginGuard {
 
     /// Spend one of `client`'s tokens, or the 429 to send instead. With no
     /// known client there is nothing to key on, and nothing is refused.
+    /// `proxy_unconfigured` is whether the request carried the
+    /// [`crate::clientip::ProxyUnconfigured`] marker; it only shapes the log.
     // The error *is* the response the handler returns, once per request, so
     // boxing it would only add an allocation to the refusal path.
     #[allow(clippy::result_large_err)]
-    pub(crate) fn check_client(&self, client: Option<&ClientIp>) -> Result<(), Response> {
+    pub(crate) fn check_client(
+        &self,
+        client: Option<&ClientIp>,
+        proxy_unconfigured: bool,
+    ) -> Result<(), Response> {
         let Some(ip) = client else { return Ok(()) };
         self.client
             .take(&ip.bucket(), Instant::now())
-            .map_err(|wait| throttled(Refusal::Client, wait, client))
+            .map_err(|wait| throttled(Refusal::Client, wait, client, proxy_unconfigured))
     }
 }
 
@@ -194,17 +206,22 @@ impl Refusal {
 ///
 /// Logged with the limit and the client bucket only: never the username,
 /// which would put whatever an attacker types (or a user's password typed
-/// into the wrong box) into the logs.
+/// into the wrong box) into the logs. `proxy_unconfigured = true` marks a
+/// request whose peer looked like a proxy nobody listed in
+/// `DOMARINN_TRUSTED_PROXIES`: then the "client" refused is the proxy, and
+/// every user behind it is sharing that one budget.
 pub(crate) fn throttled(
     refusal: Refusal,
     retry_after: Duration,
     client: Option<&ClientIp>,
+    proxy_unconfigured: bool,
 ) -> Response {
     let secs = retry_after.as_secs_f64().ceil().max(1.0) as u64;
     let wait = Duration::from_secs(secs);
     tracing::warn!(
         refusal = refusal.kind(),
         client = client.map(ClientIp::bucket).as_deref().unwrap_or("-"),
+        proxy_unconfigured,
         retry_after_secs = secs,
         "password attempt refused by throttle"
     );
@@ -311,23 +328,22 @@ mod tests {
         .await
     }
 
-    /// One wrong login from `peer` per username, all at once, each asserted
-    /// to be a 401. Concurrent, so every `check_client` lands within
-    /// milliseconds of the first: sequential argon2 verifies in a debug build
-    /// on a slow runner could otherwise outlast the 6 s refill and hand the
-    /// bucket a token back before the refusal under test.
-    async fn drain_from(router: &Router, peer: &'static str, usernames: Vec<String>) {
-        let mut set = tokio::task::JoinSet::new();
-        for (i, username) in usernames.into_iter().enumerate() {
-            let router = router.clone();
-            set.spawn(async move {
-                let (status, body) = login_from(&router, peer, &username, "wrong-pw").await;
-                (i, status, body)
-            });
-        }
-        while let Some(joined) = set.join_next().await {
-            let (i, status, body) = joined.expect("login task");
-            assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}: {body}");
+    /// Spend `peer`'s whole per-client burst on `POST /auth/setup`, which
+    /// shares the bucket. An admin already exists, so each is a 409 decided
+    /// by a row count, and no argon2 runs: draining through logins would
+    /// queue ten verifies on the process-wide hash permits, and on a slow
+    /// runner (or with parallel tests holding the permits) that outlasted the
+    /// 6 s refill and handed a token back before the refusal under test.
+    async fn drain_from(router: &Router, peer: &str) {
+        for i in 0..CLIENT_BURST {
+            let (status, body) = post(
+                router,
+                Some(peer),
+                "/api/v1/auth/setup",
+                json!({ "username": "root", "password": ADMIN_PW }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "drain {i}: {body}");
         }
     }
 
@@ -335,7 +351,7 @@ mod tests {
     async fn the_client_limit_refuses_before_any_argon2_runs() {
         let (router, state, _dir) = app_with_admin().await;
         let started = Instant::now();
-        drain_from(&router, "198.51.100.20", vec!["root".to_string(); 10]).await;
+        drain_from(&router, "198.51.100.20").await;
         // Even the right password: the client is out of tokens.
         let (status, body) = login_from(&router, "198.51.100.20", "root", ADMIN_PW).await;
         assert_eq!(
@@ -345,24 +361,22 @@ mod tests {
             started.elapsed()
         );
         assert!(body.contains("network address"), "{body}");
-        assert_eq!(state.login_guard.verifies.load(Ordering::SeqCst), 10);
+        assert_eq!(state.login_guard.verifies.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
     async fn the_client_limit_is_per_address() {
         let (router, _state, _dir) = app_with_admin().await;
-        // Distinct names, so no account counter is anywhere near its limit
-        // and only the client limit can refuse.
         let started = Instant::now();
-        let names = (0..10).map(|i| format!("ghost{i}")).collect();
-        drain_from(&router, "198.51.100.20", names).await;
-        let (status, body) = login_from(&router, "198.51.100.20", "ghost10", "wrong-pw").await;
+        drain_from(&router, "198.51.100.20").await;
+        let (status, body) = login_from(&router, "198.51.100.20", "root", "wrong-pw").await;
         assert_eq!(
             status,
             StatusCode::TOO_MANY_REQUESTS,
             "{body} (after {:?}; a token refills every 6 s)",
             started.elapsed()
         );
+        assert!(body.contains("network address"), "{body}");
 
         let (status, _) = login_from(&router, "198.51.100.21", "root", "wrong-pw").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -398,7 +412,7 @@ mod tests {
     #[test]
     fn retry_after_rounds_up_and_is_never_zero() {
         for (wait, expected) in [(0, "1"), (1, "1"), (1_001, "2"), (300_000, "300")] {
-            let response = throttled(Refusal::Untrusted, Duration::from_millis(wait), None);
+            let response = throttled(Refusal::Untrusted, Duration::from_millis(wait), None, false);
             assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
             assert_eq!(
                 response.headers()[axum::http::header::RETRY_AFTER],

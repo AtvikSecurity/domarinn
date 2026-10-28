@@ -76,15 +76,45 @@ async fn locks_double_within_a_day_and_cap_at_an_hour() {
     assert_eq!(durations, [5, 10, 20, 40, 60, 60]);
 }
 
+/// The quiet day is measured from the *last* lock, not the first: a second
+/// lock 20 hours in keeps the chain alive until a day after it.
 #[tokio::test]
 async fn the_escalation_resets_after_a_quiet_day() {
     let (s, _dir) = storage().await;
     spend(&s, "acct:carol", T0, 10).await;
     assert_eq!(begin(&s, "acct:carol", T0).await, locked(5 * MIN));
 
-    let later = T0 + LOCKOUT_ESCALATION_MS + 1;
-    spend(&s, "acct:carol", later, 10).await;
-    assert_eq!(begin(&s, "acct:carol", later).await, locked(5 * MIN));
+    let second = T0 + 20 * 60 * MIN;
+    spend(&s, "acct:carol", second, 10).await;
+    assert_eq!(begin(&s, "acct:carol", second).await, locked(10 * MIN));
+
+    let quiet = second + LOCKOUT_ESCALATION_MS;
+    spend(&s, "acct:carol", quiet, 10).await;
+    assert_eq!(begin(&s, "acct:carol", quiet).await, locked(5 * MIN));
+}
+
+/// The chain slides with the attack: an account that keeps tripping the lock
+/// stays at the cap past the first lock's 24 hours, rather than being handed
+/// a 5-minute lock once a day.
+#[tokio::test]
+async fn a_chain_sustained_past_a_day_stays_at_the_cap() {
+    let (s, _dir) = storage().await;
+    let mut now = T0;
+    let mut durations = Vec::new();
+    while now <= T0 + LOCKOUT_ESCALATION_MS + 120 * MIN {
+        spend(&s, "acct:erin", now, 10).await;
+        let AttemptVerdict::Locked { retry_after_ms } = begin(&s, "acct:erin", now).await else {
+            panic!("the 11th attempt must lock");
+        };
+        durations.push(retry_after_ms / MIN);
+        now += retry_after_ms;
+    }
+    assert_eq!(durations[..5], [5, 10, 20, 40, 60]);
+    assert!(
+        durations[4..].iter().all(|&d| d == 60),
+        "every lock after the ladder tops out must stay at the cap: {durations:?}"
+    );
+    assert!(durations.len() > 25, "the chain spanned more than a day");
 }
 
 #[tokio::test]

@@ -281,6 +281,27 @@ async fn an_admin_reset_clears_the_untrusted_lockout() {
     assert_eq!(r.status, StatusCode::OK, "{}", error_of(&r));
 }
 
+/// The sole-admin way back in: an operator who sets a new
+/// `DOMARINN_ADMIN_PASSWORD` and restarts gets the admin signed in from any
+/// browser, because the bootstrap clears the untrusted lock as a reset does.
+#[tokio::test]
+async fn a_new_bootstrap_password_clears_the_untrusted_lockout() {
+    let db = SharedDb::new(AuthMode::ProtectWrites).await;
+    let before = db.app(Settings::default()).await;
+    setup_admin(&before).await;
+    lock_untrusted(&before, "root").await;
+
+    let restarted = db
+        .app(Settings {
+            admin_user: Some("root".to_string()),
+            admin_password: Some("a-new-root-password".to_string()),
+            ..Settings::default()
+        })
+        .await;
+    let r = login_with(&restarted, "root", "a-new-root-password", None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", error_of(&r));
+}
+
 async fn change_password(app: &Router, token: &str, current: &str, new: &str) -> Reply {
     post_json(
         app,
@@ -403,7 +424,7 @@ async fn two_instances_over_one_database_share_counters() {
 /// Attempts are reserved before the password is verified, so a burst of
 /// concurrent guesses cannot all read "under budget" and all be verified.
 #[tokio::test(flavor = "multi_thread")]
-async fn concurrent_wrong_guesses_get_at_most_ten_verifies() {
+async fn concurrent_wrong_guesses_get_exactly_ten_verifies() {
     let (app, _dir) = app().await;
     setup_admin(&app).await;
 
@@ -420,6 +441,9 @@ async fn concurrent_wrong_guesses_get_at_most_ten_verifies() {
             other => panic!("unexpected {other}"),
         }
     }
-    assert!(rejected <= BUDGET, "{rejected} guesses were verified");
+    // Exact: each reservation is one atomic upsert, so the first ten are
+    // allowed and the eleventh locks for minutes, well past the burst; and
+    // with no `ConnectInfo` no per-client limit can refuse one of the ten.
+    assert_eq!(rejected, BUDGET, "{rejected} guesses were verified");
     assert_eq!(rejected + refused, 20);
 }

@@ -161,7 +161,7 @@ Three endpoints check a password: sign-in (`POST /api/v1/auth/login`), first-adm
 | Limit | Applies to | Counted per | Budget | Then | Kept |
 |-------|------------|-------------|--------|------|------|
 | Per client | Sign-in and setup, one shared budget | Client address (IPv6 by /64) | A burst of 10, refilling at 10 a minute | `429` before any database or argon2 work, whatever the credentials, the right password included | In memory, per replica |
-| Unrecognised browser | Sign-in without a device cookie for the account | Username, across every such browser | 10 attempts without a success in a 15-minute window | Sign-in to the account from any unrecognised browser is locked for 5 minutes. Each further lock within 24 hours of the first doubles (10, 20, 40 minutes), capped at 1 hour | Database |
+| Unrecognised browser | Sign-in without a device cookie for the account | Username, across every such browser | 10 attempts without a success in a 15-minute window | Sign-in to the account from any unrecognised browser is locked for 5 minutes. Each further lock within 24 hours of the previous one doubles (10, 20, 40 minutes), capped at 1 hour. The 24 hours run from the latest lock, so a sustained attack stays at the cap; a day with no lock starts the ladder again at 5 minutes | Database |
 | Recognised browser | Sign-in with a valid device cookie for the account | That browser | 10 attempts without a success in a 15-minute window | That browser is locked for 15 minutes | Database |
 | Password change | `POST /api/v1/me/password` | Account | 5 wrong `current_password` guesses in a 15-minute window | Locked for 15 minutes | Database |
 
@@ -169,11 +169,14 @@ The window starts with the first attempt and lasts 15 minutes. An attempt is cou
 
 The per-client limit is what makes spraying one password across many usernames cost the attacker time instead of costing the server CPU. It refuses a correct password too, which is acceptable because it is per client rather than per account, and nobody types ten passwords a minute. It stays in memory per replica on purpose: it protects that replica's CPU. The argon2 concurrency cap above remains the ceiling across all clients.
 
-**An account under attack.** While the unrecognised-browser lock is on, those attempts get the `429` without the password being checked at all, so the correct password is refused too. That is the point: guessing stops. The owner has three ways in:
+**An account under attack.** While the unrecognised-browser lock is on, those attempts get the `429` without the password being checked at all, so the correct password is refused too. That is the point: guessing stops. The owner has four ways in:
 
 - **A browser they have signed in from before.** It carries a device cookie for the account and is charged to its own counter, which nobody else's failures touch.
 - **SSO**, where a provider is configured. It is not throttled.
 - **An admin password reset** (`PATCH /api/v1/users/{id}` with a new `password`), which also lifts the account's unrecognised-browser lock.
+- **A new `DOMARINN_ADMIN_PASSWORD`**, for the account named by `DOMARINN_ADMIN_USER`. When the server starts and finds that the password has changed, it sets the new one and lifts the account's unrecognised-browser lock, as an admin reset does. This is the way back in when the locked account is the only admin.
+
+When the locked account is the only admin, an admin static token (a `DOMARINN_TOKENS` entry with the `admin:` scope) or an `admin`-scoped API key can also make the `PATCH /api/v1/users/{id}` reset: neither signs in with a password, so neither is throttled.
 
 #### The device cookie
 
@@ -196,11 +199,11 @@ Every throttled response is a `429` with `Retry-After` in whole seconds (rounded
 | Recognised browser | `too many failed sign-in attempts from this browser; try again in 15 minutes` |
 | Password change | `too many failed password attempts; try again in 15 minutes` |
 
-The wait is stated in minutes, rounded up, or in seconds under a minute. The unrecognised-browser sentence is the same whether or not the account exists. Each refusal is logged at `warn` with the limit and the client address, never the username.
+The wait is stated in minutes, rounded up, or in seconds under a minute. The unrecognised-browser sentence is the same whether or not the account exists. Each refusal is logged at `warn` with the limit, the client bucket (the address for IPv4, its /64 for IPv6), and `proxy_unconfigured`, never the username. `proxy_unconfigured = true` means the request came from a private-range peer that sent `X-Forwarded-For` while `DOMARINN_TRUSTED_PROXIES` is empty: the client being refused is then probably your proxy, and everyone behind it shares its budget (see [Behind a reverse proxy](#behind-a-reverse-proxy)).
 
 #### Where the counters live
 
-The account, browser, and password-change counters are rows in the `login_attempts` table of the runs database (`domarinn.db`, or Postgres), shared by every replica and kept across restarts. Each attempt is one atomic upsert, so replicas cannot race each other past a limit. The hourly retention task deletes rows whose windows and locks have all lapsed. A row stays for 24 hours after its first lock, so the next lock still doubles.
+The account, browser, and password-change counters are rows in the `login_attempts` table of the runs database (`domarinn.db`, or Postgres), shared by every replica and kept across restarts. Each attempt is one atomic upsert, so replicas cannot race each other past a limit. The hourly retention task deletes rows whose windows and locks have all lapsed. A row stays for 24 hours after its latest lock, so the next lock still doubles.
 
 The per-client limit holds back how fast one address can add rows, to about 10 a minute. A botnet spraying usernames from many addresses can still add rows at its combined rate until they lapse and are pruned. That is an accepted cost.
 
@@ -213,7 +216,7 @@ Every client-keyed limit uses the resolved client address. Without help, behind 
 - A missing or malformed header, or one listing only trusted hops, falls back to the peer.
 - Only `X-Forwarded-For` is read. `Forwarded` (RFC 7239) is ignored.
 
-The default is empty, which trusts no one. An entry that is not an IP or CIDR stops the server at startup, naming the entry. If a peer in a private range (RFC 1918, loopback, link-local, `100.64.0.0/10`, or IPv6 ULA and link-local) sends `X-Forwarded-For` while the setting is empty, the server logs one warning per process naming the setting, because that is what an unlisted ingress looks like.
+The default is empty, which trusts no one. An entry that is not an IP or CIDR stops the server at startup, naming the entry. Host bits below the prefix are ignored (`10.1.2.3/8` means `10.0.0.0/8`). An IPv4-mapped entry such as `::ffff:10.0.0.0/104` means the IPv4 network it maps (`10.0.0.0/8`); a mapped prefix shorter than `/96` is a startup error. A catch-all entry (`0.0.0.0/0` or `::/0`) is accepted but logged at startup as trusting every peer, since any client that can reach the server could then pick its own address. If a peer in a private range (RFC 1918, loopback, link-local, `100.64.0.0/10`, or IPv6 ULA and link-local) sends `X-Forwarded-For` while the setting is empty, the server logs a warning naming the setting, at most once every 10 minutes, because that is what an unlisted ingress looks like. Throttle refusals for such requests also carry `proxy_unconfigured = true`.
 
 The same address is the `client_ip` field of every [request log](#logging--observability) line, and it keys the MCP rate limit for callers without an account. See [Self-hosting](../guides/self-host.md#reverse-proxies) for the deployment side.
 

@@ -25,6 +25,9 @@ pub(crate) struct TokenBuckets {
     capacity: f64,
     refill_per_sec: f64,
     max_tracked: usize,
+    /// Full sweeps run, so tests can prove they are amortised.
+    #[cfg(test)]
+    sweeps: std::sync::atomic::AtomicUsize,
 }
 
 impl TokenBuckets {
@@ -34,6 +37,8 @@ impl TokenBuckets {
             capacity: f64::from(burst.max(1)),
             refill_per_sec: f64::from(per_minute.max(1)) / 60.0,
             max_tracked: max_tracked.max(1),
+            #[cfg(test)]
+            sweeps: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -42,14 +47,23 @@ impl TokenBuckets {
         let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
 
         if buckets.len() >= self.max_tracked && !buckets.contains_key(key) {
+            #[cfg(test)]
+            self.sweeps
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // A bucket back at capacity carries no state worth keeping.
             let capacity = self.capacity;
             let refill = self.refill_per_sec;
             buckets.retain(|_, b| {
                 refilled(b.tokens, b.last, now, refill, capacity) < capacity - f64::EPSILON
             });
-            if buckets.len() >= self.max_tracked {
-                evict_fullest(&mut buckets, self.max_tracked, now, refill, capacity);
+            // Every sweep leaves at least a batch of free slots, however few
+            // buckets the idle pass found. Stopping at "one free" would make
+            // the next new key pay the O(n) scan again under the mutex, and
+            // fresh keys (a /64 each) are the attacker's to mint.
+            let target = self.max_tracked - eviction_batch(self.max_tracked);
+            if buckets.len() > target {
+                let excess = buckets.len() - target;
+                evict_fullest(&mut buckets, excess, now, refill, capacity);
             }
         }
 
@@ -81,9 +95,20 @@ impl TokenBuckets {
     fn len(&self) -> usize {
         self.buckets.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
+
+    #[cfg(test)]
+    fn sweeps(&self) -> usize {
+        self.sweeps.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
-/// Drop the fullest tenth of the buckets. Every bucket is mid-drain, so
+/// How many slots a sweep leaves free: a tenth of the bound, at least one.
+/// Never more than `max_tracked`, so the subtraction in `take` cannot wrap.
+fn eviction_batch(max_tracked: usize) -> usize {
+    (max_tracked / 10).max(1)
+}
+
+/// Drop the `count` fullest buckets. Every bucket left is mid-drain, so
 /// something with state must go; the fullest are the closest to a fresh bucket
 /// and so the cheapest to forget, while a drained bucket — the one actually
 /// doing the limiting — survives. Freeing a batch rather than one slot means
@@ -91,12 +116,15 @@ impl TokenBuckets {
 /// every one.
 fn evict_fullest(
     buckets: &mut HashMap<String, Bucket>,
-    max_tracked: usize,
+    count: usize,
     now: Instant,
     refill: f64,
     capacity: f64,
 ) {
-    let batch = (max_tracked / 10).max(1).min(buckets.len());
+    let batch = count.min(buckets.len());
+    if batch == 0 {
+        return;
+    }
     let mut levels: Vec<(f64, &String)> = buckets
         .iter()
         .map(|(key, b)| (refilled(b.tokens, b.last, now, refill, capacity), key))
@@ -195,6 +223,81 @@ mod tests {
         assert!(
             buckets.take("hot", now).is_err(),
             "hot must still be limited"
+        );
+    }
+
+    /// Every key mid-drain, so only eviction frees slots: N new keys past the
+    /// bound cost at most N / batch sweeps, not one each.
+    #[test]
+    fn sweeps_are_amortised_over_a_batch_of_new_keys() {
+        let buckets = TokenBuckets::new(60, 3, 100);
+        let now = Instant::now();
+        for i in 0..100 {
+            assert!(buckets.take(&format!("fill{i}"), now).is_ok());
+        }
+        assert_eq!(buckets.sweeps(), 0);
+        for i in 0..1_000 {
+            assert!(buckets.take(&format!("new{i}"), now).is_ok());
+        }
+        assert!(
+            buckets.sweeps() <= 1_000 / eviction_batch(100),
+            "{} sweeps for 1000 new keys",
+            buckets.sweeps()
+        );
+    }
+
+    /// The case the batch used to miss: the idle pass frees a few slots but
+    /// fewer than a batch. The sweep must still top up to a full batch free.
+    #[test]
+    fn a_sweep_leaves_at_least_a_batch_free_even_when_a_few_were_idle() {
+        let buckets = TokenBuckets::new(60, 3, 100);
+        let start = Instant::now();
+        for i in 0..3 {
+            assert!(buckets.take(&format!("idle{i}"), start).is_ok());
+        }
+        // Long enough for the idle three to refill, not for anyone else.
+        let now = start + Duration::from_secs(60);
+        for i in 0..97 {
+            assert!(buckets.take(&format!("busy{i}"), now).is_ok());
+        }
+        assert_eq!(buckets.len(), 100);
+        assert!(buckets.take("newcomer", now).is_ok());
+        assert_eq!(buckets.sweeps(), 1);
+        assert_eq!(buckets.len(), 100 - eviction_batch(100) + 1);
+    }
+
+    #[test]
+    fn a_bound_of_one_keeps_one_bucket() {
+        let buckets = TokenBuckets::new(60, 1, 1);
+        let now = Instant::now();
+        assert!(buckets.take("a", now).is_ok());
+        assert!(buckets.take("a", now).is_err());
+        assert!(buckets.take("b", now).is_ok(), "b evicts a");
+        assert_eq!(buckets.len(), 1);
+        assert!(buckets.take("b", now).is_err(), "b's own state is kept");
+        assert!(buckets.take("a", now).is_ok(), "a was forgotten");
+        assert_eq!(buckets.len(), 1);
+    }
+
+    /// A bucket that has refilled to capacity is the default state, so it
+    /// goes before one that is half spent, which would come back with a
+    /// fresh burst if forgotten.
+    #[test]
+    fn a_full_idle_bucket_is_evicted_before_a_half_drained_one() {
+        let buckets = TokenBuckets::new(60, 4, 2);
+        let start = Instant::now();
+        assert!(buckets.take("idle", start).is_ok());
+        let now = start + Duration::from_secs(5);
+        assert!(buckets.take("half", now).is_ok());
+        assert!(buckets.take("half", now).is_ok());
+        // Map full; "idle" has refilled to 4, "half" sits at 2.
+        assert!(buckets.take("new", now).is_ok());
+        assert_eq!(buckets.len(), 2);
+        assert!(buckets.take("half", now).is_ok());
+        assert!(buckets.take("half", now).is_ok());
+        assert!(
+            buckets.take("half", now).is_err(),
+            "half must keep its spent tokens"
         );
     }
 }

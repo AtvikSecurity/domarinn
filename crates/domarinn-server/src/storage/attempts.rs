@@ -22,8 +22,12 @@ use super::{now_ms, Storage};
 /// is dead without a per-row expiry column.
 pub const ATTEMPT_WINDOW_MS: i64 = 15 * 60 * 1000;
 
-/// How long after the first lock of a chain later locks keep escalating. A
-/// key that stays quiet this long starts again at the base duration.
+/// How long after a lock the next one still escalates. Measured from the
+/// *latest* lock (each lock moves `lockout_window_start` to its own time), so
+/// the chain slides: an attack that keeps tripping the lock stays at the cap
+/// for as long as it lasts, instead of dropping back to the base duration
+/// once a day. A key that stays quiet this long after its last lock starts
+/// again at the base.
 pub const LOCKOUT_ESCALATION_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// One throttle's limits: how many attempts a window allows, and the lock
@@ -106,25 +110,22 @@ impl Storage {
                     return Ok(AttemptVerdict::Allowed);
                 }
 
-                // This attempt trips the lock. Within a day of the chain's
-                // first lock each lock doubles; after a quiet day the chain
+                // This attempt trips the lock. Within a day of the previous
+                // lock each lock doubles; after a quiet day the chain
                 // restarts. The count resets so the key gets a full budget
                 // once the lock lapses — the escalation is the deterrent.
+                // `lockout_window_start` becomes this lock's time either way,
+                // which is what makes the day slide with the attack.
                 let chain_expired =
                     lockouts == 0 || lockout_window_start + LOCKOUT_ESCALATION_MS <= now_ms;
                 let ordinal = if chain_expired { 1 } else { lockouts + 1 };
-                let chain_start = if ordinal == 1 {
-                    now_ms
-                } else {
-                    lockout_window_start
-                };
                 let until = now_ms + lock_duration_ms(ordinal, policy);
                 tx.execute(
                     "UPDATE login_attempts
                      SET failures = 0, window_start = ?2, locked_until = ?3,
                          lockouts = ?4, lockout_window_start = ?5
                      WHERE key = ?1",
-                    &params![key, now_ms, until, ordinal, chain_start],
+                    &params![key, now_ms, until, ordinal, now_ms],
                 )?;
                 tx.commit()?;
                 Ok(AttemptVerdict::Locked {
@@ -145,8 +146,8 @@ impl Storage {
     }
 
     /// Delete rows that no longer affect any verdict: not locked, outside the
-    /// attempt window, and either never locked or past the escalation window.
-    /// A row inside its escalation window must survive even with a zero
+    /// attempt window, and either never locked or a full escalation window past
+    /// its last lock. A row inside that window must survive even with a zero
     /// count, or pruning it would reset the next lock to the base duration.
     pub async fn prune_login_attempts(&self, now_ms: i64) -> anyhow::Result<u64> {
         self.runs

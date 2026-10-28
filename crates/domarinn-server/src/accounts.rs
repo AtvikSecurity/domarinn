@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 use ts_rs::TS;
 
 use crate::auth::{self, Admin, Identity, Read, Scope, Scoped};
-use crate::clientip::ClientIp;
+use crate::clientip::{ClientIp, ProxyUnconfigured};
 use crate::domain::{ApiKeyId, Role, UserId};
 use crate::dto::accounts::{
     ApiKeyCreatedResponse, ApiKeyListResponse, ApiKeyView, AuthSessionResponse, MeResponse, MeUser,
@@ -32,7 +32,7 @@ use crate::AppState;
 const MIN_PASSWORD_LEN: usize = 8;
 
 mod device;
-mod guard;
+pub(crate) mod guard;
 
 use device::DeviceCookie;
 pub(crate) use guard::LoginGuard;
@@ -130,10 +130,14 @@ pub(crate) struct CredentialsBody {
 pub(crate) async fn setup(
     State(state): State<AppState>,
     client: Option<Extension<ClientIp>>,
+    proxy: Option<Extension<ProxyUnconfigured>>,
     ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
     let client = client.map(|Extension(c)| c);
-    if let Err(refused) = state.login_guard.check_client(client.as_ref()) {
+    if let Err(refused) = state
+        .login_guard
+        .check_client(client.as_ref(), proxy.is_some())
+    {
         return Ok(refused);
     }
     if state.storage.count_users().await? > 0 {
@@ -182,12 +186,14 @@ pub(crate) async fn setup(
 pub(crate) async fn login(
     State(state): State<AppState>,
     client: Option<Extension<ClientIp>>,
+    proxy: Option<Extension<ProxyUnconfigured>>,
     headers: HeaderMap,
     ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
     let client = client.map(|Extension(c)| c);
+    let proxy_unconfigured = proxy.is_some();
     let login_guard = &state.login_guard;
-    if let Err(refused) = login_guard.check_client(client.as_ref()) {
+    if let Err(refused) = login_guard.check_client(client.as_ref(), proxy_unconfigured) {
         return Ok(refused);
     }
     let username = body.username.trim();
@@ -213,7 +219,12 @@ pub(crate) async fn login(
         ),
     };
     if let Some(wait) = guard::begin_attempt(&state.storage, counter.clone(), policy).await? {
-        return Ok(throttled(refusal, wait, client.as_ref()));
+        return Ok(throttled(
+            refusal,
+            wait,
+            client.as_ref(),
+            proxy_unconfigured,
+        ));
     }
     // SSO-only accounts carry the empty-string password sentinel, which
     // `verify_password` would reject instantly; they verify against the dummy
@@ -271,6 +282,7 @@ pub(crate) async fn change_password(
     scope: Scoped<Read>,
     State(state): State<AppState>,
     client: Option<Extension<ClientIp>>,
+    proxy: Option<Extension<ProxyUnconfigured>>,
     ApiJson(body): ApiJson<ChangePasswordBody>,
 ) -> ApiResult<Response> {
     // `Read` is open to anonymous callers outside `closed` mode; there is no
@@ -301,7 +313,12 @@ pub(crate) async fn change_password(
         guard::begin_attempt(&state.storage, counter.clone(), guard::PASSWORD_CHANGE).await?
     {
         let client = client.map(|Extension(c)| c);
-        return Ok(throttled(Refusal::PasswordChange, wait, client.as_ref()));
+        return Ok(throttled(
+            Refusal::PasswordChange,
+            wait,
+            client.as_ref(),
+            proxy.is_some(),
+        ));
     }
     // 403, not 401: the caller *is* authenticated, and the web client treats
     // any 401 as "your session is gone" and prompts for a new credential.

@@ -446,6 +446,12 @@ async fn bootstrap_admin(storage: &Storage, settings: &Settings) -> anyhow::Resu
             if !auth::verify_password(&existing.password_hash, password) {
                 let hash = auth::hash_password(password)?;
                 storage.update_password(existing.id.clone(), hash).await?;
+                // The operator's way back in when the sole admin is locked
+                // out of untrusted sign-in: a new password here is as good as
+                // an admin reset, so it clears the lock the way one does.
+                storage
+                    .clear_login_attempts(accounts::guard::account_key(username))
+                    .await?;
             }
         }
     }

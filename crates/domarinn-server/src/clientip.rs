@@ -18,7 +18,8 @@
 //! disagree with the first is one more thing to get wrong.
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderName};
@@ -49,6 +50,15 @@ impl ClientIp {
     }
 }
 
+/// Present in a request's extensions when its peer met the misconfiguration
+/// condition ([`warrants_proxy_warning`]): a private-range peer forwarding for
+/// someone while `DOMARINN_TRUSTED_PROXIES` is empty. A separate marker rather
+/// than a field on [`ClientIp`], so two requests from one client stay equal
+/// and keep sharing one bucket; refusal logs carry it as `proxy_unconfigured`,
+/// which is what tells an operator the "client" being limited is the proxy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProxyUnconfigured;
+
 /// One trusted network, stored pre-masked so matching is a single AND.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Net {
@@ -62,6 +72,14 @@ impl Net {
             (Net::V4 { addr, mask }, IpAddr::V4(v4)) => u32::from(v4) & mask == addr,
             (Net::V6 { addr, mask }, IpAddr::V6(v6)) => u128::from(v6) & mask == addr,
             _ => false,
+        }
+    }
+
+    /// A /0 of either family: every peer of that family matches.
+    fn is_catch_all(&self) -> bool {
+        match *self {
+            Net::V4 { mask, .. } => mask == 0,
+            Net::V6 { mask, .. } => mask == 0,
         }
     }
 }
@@ -80,6 +98,10 @@ impl TrustedProxies {
     /// A bad entry fails startup rather than being dropped: a typo in a trust
     /// list silently trusting less is every client collapsing into the proxy,
     /// and the operator would only find out when a lockout lands on everyone.
+    ///
+    /// A catch-all (`0.0.0.0/0`, `::/0`) is allowed, since a deployment that
+    /// is only reachable through its proxy may genuinely want it, but it is
+    /// logged: it lets any peer that can reach the port pick its own address.
     pub fn parse(raw: Option<&str>) -> anyhow::Result<TrustedProxies> {
         let nets = raw
             .into_iter()
@@ -87,12 +109,20 @@ impl TrustedProxies {
             .map(str::trim)
             .filter(|entry| !entry.is_empty())
             .map(|entry| {
-                parse_net(entry).ok_or_else(|| {
+                let net = parse_net(entry).map_err(|reason| {
                     anyhow::anyhow!(
-                        "invalid DOMARINN_TRUSTED_PROXIES entry '{entry}'; expected an IP \
-                         address or CIDR such as 10.0.0.0/8 or fd00::/8"
+                        "invalid DOMARINN_TRUSTED_PROXIES entry '{entry}' ({reason}); expected an \
+                         IP address or CIDR such as 10.0.0.0/8 or fd00::/8"
                     )
-                })
+                })?;
+                if net.is_catch_all() {
+                    tracing::warn!(
+                        entry,
+                        "DOMARINN_TRUSTED_PROXIES entry trusts every peer: any client that can \
+                         reach the server can set its own address with X-Forwarded-For"
+                    );
+                }
+                Ok(net)
             })
             .collect::<anyhow::Result<_>>()?;
         Ok(TrustedProxies { nets })
@@ -110,25 +140,45 @@ impl TrustedProxies {
     }
 }
 
-/// `addr` or `addr/prefix`. A bare address is canonicalised like a peer is,
-/// so `::ffff:10.0.0.1` is the v4 host it names.
-fn parse_net(entry: &str) -> Option<Net> {
+/// `addr` or `addr/prefix`, or why not. Host bits below the prefix are
+/// ignored (`10.1.2.3/8` is `10.0.0.0/8`), as most tools treat them.
+///
+/// IPv4-mapped IPv6 is turned into the v4 net it names, because peers are
+/// canonicalised to v4 before matching: left as v6, `::ffff:10.0.0.0/104`
+/// would parse fine and then never match anything. A mapped prefix shorter
+/// than /96 reaches past the mapped range into real v6 space, so it is not
+/// one v4 net and is refused rather than guessed at.
+fn parse_net(entry: &str) -> Result<Net, &'static str> {
     let (addr, prefix) = match entry.split_once('/') {
         Some((addr, prefix)) => (
-            addr.parse::<IpAddr>().ok()?,
-            Some(prefix.parse::<u32>().ok()?),
+            addr.parse::<IpAddr>().map_err(|_| "not an IP address")?,
+            Some(prefix.parse::<u32>().map_err(|_| "not a prefix length")?),
         ),
-        None => (entry.parse::<IpAddr>().ok()?.to_canonical(), None),
+        None => (
+            entry.parse::<IpAddr>().map_err(|_| "not an IP address")?,
+            None,
+        ),
+    };
+    let (addr, prefix) = match addr {
+        IpAddr::V6(v6) => match (v6.to_ipv4_mapped(), prefix) {
+            (Some(v4), None) => (IpAddr::V4(v4), None),
+            (Some(v4), Some(p)) if (96..=128).contains(&p) => (IpAddr::V4(v4), Some(p - 96)),
+            (Some(_), Some(p)) if p < 96 => {
+                return Err("an IPv4-mapped prefix must be /96 or longer")
+            }
+            _ => (addr, prefix),
+        },
+        IpAddr::V4(_) => (addr, prefix),
     };
     // `checked_shl` because a /0 shifts by the full width, which `<<` rejects.
     match addr {
         IpAddr::V4(v4) => {
             let prefix = prefix.unwrap_or(32);
             if prefix > 32 {
-                return None;
+                return Err("prefix longer than /32");
             }
             let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
-            Some(Net::V4 {
+            Ok(Net::V4 {
                 addr: u32::from(v4) & mask,
                 mask,
             })
@@ -136,10 +186,10 @@ fn parse_net(entry: &str) -> Option<Net> {
         IpAddr::V6(v6) => {
             let prefix = prefix.unwrap_or(128);
             if prefix > 128 {
-                return None;
+                return Err("prefix longer than /128");
             }
             let mask = u128::MAX.checked_shl(128 - prefix).unwrap_or(0);
-            Some(Net::V6 {
+            Ok(Net::V6 {
                 addr: u128::from(v6) & mask,
                 mask,
             })
@@ -222,32 +272,67 @@ fn warrants_proxy_warning(peer: IpAddr, has_xff: bool, trusted: &TrustedProxies)
     }
 }
 
-/// Once per process: the warning is about configuration, which does not
-/// change between requests, so repeating it would only bury it.
-static WARNED: AtomicBool = AtomicBool::new(false);
+/// At most one warning per this many seconds. Once per process was too quiet:
+/// after an upgrade the one line scrolls away at startup while every user
+/// keeps sharing the proxy's budget, and a long-lived pod never says it
+/// again. Every ten minutes keeps it findable without burying the logs.
+const WARN_EVERY_SECS: u64 = 10 * 60;
 
-/// Resolve the request's [`ClientIp`] into its extensions. Never rejects.
+/// The epoch second of the last warning; 0 means never.
+static LAST_WARNED: AtomicU64 = AtomicU64::new(0);
+
+/// Whether a warning is due at `now_secs`, claiming the slot if so. The
+/// compare-exchange means concurrent requests cannot both win one slot, and
+/// there is no lock on the request path.
+fn claim_warning(last: &AtomicU64, now_secs: u64) -> bool {
+    let prev = last.load(Ordering::Relaxed);
+    if prev != 0 && now_secs < prev.saturating_add(WARN_EVERY_SECS) {
+        return false;
+    }
+    last.compare_exchange(prev, now_secs.max(1), Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+}
+
+fn epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Resolve the request's [`ClientIp`] into its extensions, with a
+/// [`ProxyUnconfigured`] marker beside it when the peer looks like an
+/// unlisted proxy. Never rejects.
 pub(crate) async fn client_ip_middleware(
     State(state): State<AppState>,
     mut req: Request,
     next: Next,
 ) -> Response {
-    if let Some(ConnectInfo(peer)) = req.extensions().get::<ConnectInfo<SocketAddr>>().copied() {
-        let peer = peer.ip();
-        let trusted = state.trusted_proxies.as_ref();
-        let has_xff = req.headers().contains_key(X_FORWARDED_FOR);
-        if warrants_proxy_warning(peer, has_xff, trusted) && !WARNED.swap(true, Ordering::Relaxed) {
-            tracing::warn!(
-                peer = %peer,
-                "a private-range peer sent X-Forwarded-For but DOMARINN_TRUSTED_PROXIES is \
-                 empty, so every client behind it shares the proxy's address; list the proxy \
-                 there"
-            );
-        }
-        let client = resolve(peer, req.headers(), trusted);
-        req.extensions_mut().insert(ClientIp(client));
-    }
+    annotate(&mut req, state.trusted_proxies.as_ref());
     next.run(req).await
+}
+
+/// The middleware's work, apart from `next` so tests can inspect the
+/// extensions it leaves. Nothing is inserted without connect info.
+fn annotate(req: &mut Request, trusted: &TrustedProxies) {
+    let Some(ConnectInfo(peer)) = req.extensions().get::<ConnectInfo<SocketAddr>>().copied() else {
+        return;
+    };
+    let peer = peer.ip();
+    let has_xff = req.headers().contains_key(X_FORWARDED_FOR);
+    let unconfigured = warrants_proxy_warning(peer, has_xff, trusted);
+    if unconfigured && claim_warning(&LAST_WARNED, epoch_secs()) {
+        tracing::warn!(
+            peer = %peer,
+            "a private-range peer sent X-Forwarded-For but DOMARINN_TRUSTED_PROXIES is \
+             empty, so every client behind it shares the proxy's address; list the proxy \
+             there"
+        );
+    }
+    let client = resolve(peer, req.headers(), trusted);
+    req.extensions_mut().insert(ClientIp(client));
+    if unconfigured {
+        req.extensions_mut().insert(ProxyUnconfigured);
+    }
 }
 
 #[cfg(test)]
@@ -413,5 +498,107 @@ mod tests {
             &trusted("10.0.0.0/8")
         ));
         assert!(!warrants_proxy_warning(ip("198.51.100.1"), true, &none));
+    }
+
+    fn annotated(peer: &str, xff_value: Option<&str>, t: &TrustedProxies) -> Request {
+        let mut builder = axum::http::Request::builder().uri("/");
+        if let Some(value) = xff_value {
+            builder = builder.header(X_FORWARDED_FOR, value);
+        }
+        let mut req = builder.body(axum::body::Body::empty()).unwrap();
+        let addr: SocketAddr = format!("{peer}:40000").parse().unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        annotate(&mut req, t);
+        req
+    }
+
+    /// The marker rides beside the `ClientIp` exactly when the warning
+    /// predicate holds, and the `ClientIp` itself (so its bucket) is the
+    /// same either way.
+    #[test]
+    fn the_unconfigured_marker_follows_the_warning_condition() {
+        let none = TrustedProxies::parse(None).unwrap();
+        let behind = annotated("10.0.0.5", Some("198.51.100.7"), &none);
+        assert!(behind.extensions().get::<ProxyUnconfigured>().is_some());
+        assert_eq!(
+            behind.extensions().get::<ClientIp>(),
+            Some(&ClientIp(ip("10.0.0.5")))
+        );
+
+        let listed = annotated("10.0.0.5", Some("198.51.100.7"), &trusted("10.0.0.0/8"));
+        assert!(listed.extensions().get::<ProxyUnconfigured>().is_none());
+        assert_eq!(
+            listed.extensions().get::<ClientIp>(),
+            Some(&ClientIp(ip("198.51.100.7")))
+        );
+
+        for req in [
+            annotated("10.0.0.5", None, &none),
+            annotated("198.51.100.1", Some("192.0.2.1"), &none),
+        ] {
+            assert!(req.extensions().get::<ProxyUnconfigured>().is_none());
+            assert!(req.extensions().get::<ClientIp>().is_some());
+        }
+    }
+
+    #[test]
+    fn the_warning_recurs_at_most_once_per_interval() {
+        let last = AtomicU64::new(0);
+        let t0 = 1_800_000_000;
+        assert!(claim_warning(&last, t0), "the first is always due");
+        assert!(!claim_warning(&last, t0));
+        assert!(!claim_warning(&last, t0 + WARN_EVERY_SECS - 1));
+        assert!(claim_warning(&last, t0 + WARN_EVERY_SECS));
+        assert!(!claim_warning(&last, t0 + WARN_EVERY_SECS + 1));
+    }
+
+    /// Prefix edges, host bits, and IPv4-mapped entries. Each row is
+    /// `(entry, peer, should match)`.
+    #[test]
+    fn cidr_entries_match_as_written() {
+        for (entry, peer, expected) in [
+            ("0.0.0.0/0", "203.0.113.9", true),
+            ("0.0.0.0/0", "2001:db8::1", false),
+            ("::/0", "2001:db8::1", true),
+            ("::/0", "203.0.113.9", false),
+            ("192.0.2.7/32", "192.0.2.7", true),
+            ("192.0.2.7/32", "192.0.2.8", false),
+            ("2001:db8::7/128", "2001:db8::7", true),
+            ("2001:db8::7/128", "2001:db8::8", false),
+            // Host bits below the prefix are ignored.
+            ("10.1.2.3/8", "10.200.0.1", true),
+            ("10.1.2.3/8", "11.0.0.1", false),
+            // Mapped entries become the v4 net they name, and match both a
+            // v4 peer and a dual-stack listener's mapped form of it.
+            ("::ffff:10.0.0.0/104", "10.20.30.40", true),
+            ("::ffff:10.0.0.0/104", "::ffff:10.20.30.40", true),
+            ("::ffff:10.0.0.0/104", "11.0.0.1", false),
+            ("::ffff:192.0.2.7/128", "192.0.2.7", true),
+            ("::ffff:0.0.0.0/96", "198.51.100.1", true),
+        ] {
+            assert_eq!(
+                trusted(entry).contains(ip(peer)),
+                expected,
+                "{entry} vs {peer}"
+            );
+        }
+        assert_eq!(
+            parse_net("::ffff:10.0.0.0/104"),
+            parse_net("10.0.0.0/8"),
+            "a mapped /104 is a v4 /8"
+        );
+        assert!(parse_net("0.0.0.0/0").unwrap().is_catch_all());
+        assert!(parse_net("::/0").unwrap().is_catch_all());
+        assert!(!parse_net("10.0.0.0/8").unwrap().is_catch_all());
+    }
+
+    #[test]
+    fn a_mapped_prefix_shorter_than_96_is_rejected() {
+        for bad in ["::ffff:10.0.0.0/95", "::ffff:0.0.0.0/80"] {
+            let msg = TrustedProxies::parse(Some(bad)).unwrap_err().to_string();
+            assert!(msg.contains("DOMARINN_TRUSTED_PROXIES"), "{msg}");
+            assert!(msg.contains(bad), "{msg}");
+            assert!(msg.contains("/96"), "{msg}");
+        }
     }
 }
