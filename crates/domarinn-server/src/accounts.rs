@@ -5,13 +5,12 @@
 //! `me`) inspect the request [`Identity`] directly; the management endpoints use
 //! the [`Scoped`] extractors so they obey the active [`crate::AuthMode`].
 
-use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::net::SocketAddr;
+use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 
 use axum::extract::{ConnectInfo, Path, State};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::Utc;
@@ -33,196 +32,14 @@ use crate::AppState;
 /// Minimum acceptable password length.
 const MIN_PASSWORD_LEN: usize = 8;
 
+mod throttle;
+
+pub(crate) use throttle::LoginThrottle;
+use throttle::{login_throttle_key, throttled_response};
+
 // ---------------------------------------------------------------------------
-// Failed-password throttling
+// Password hashing
 // ---------------------------------------------------------------------------
-
-/// Password attempts allowed per key per [`THROTTLE_WINDOW`].
-const MAX_PASSWORD_ATTEMPTS: u32 = 5;
-/// Failed login attempts allowed per peer address per [`THROTTLE_WINDOW`],
-/// across every username. Higher than the per-username budget so a NAT full
-/// of colleagues fumbling passwords is not locked out together, but low
-/// enough that spraying random usernames (each a fresh per-username bucket)
-/// cannot buy unbounded argon2 work.
-const MAX_PEER_FAILURES: u32 = 30;
-/// How long a key's attempts are remembered, measured from its first one.
-const THROTTLE_WINDOW: Duration = Duration::from_secs(15 * 60);
-/// Cap on tracked keys, so a spray of random usernames cannot grow the map
-/// without bound.
-const MAX_THROTTLE_KEYS: usize = 10_000;
-
-struct Attempts {
-    count: u32,
-    window_start: Instant,
-}
-
-/// One bounded map of fixed-window attempt counters.
-struct Buckets {
-    limit: u32,
-    entries: Mutex<HashMap<String, Attempts>>,
-}
-
-impl Buckets {
-    fn new(limit: u32) -> Self {
-        Self {
-            limit,
-            entries: Mutex::default(),
-        }
-    }
-
-    fn begin(&self, key: &str, now: Instant) -> Result<(), Duration> {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        if entries.len() >= MAX_THROTTLE_KEYS && !entries.contains_key(key) {
-            entries.retain(|_, a| now.saturating_duration_since(a.window_start) < THROTTLE_WINDOW);
-            if entries.len() >= MAX_THROTTLE_KEYS {
-                // Still full of live windows: drop the oldest, which is the
-                // closest to expiring anyway.
-                if let Some(oldest) = entries
-                    .iter()
-                    .min_by_key(|(_, a)| a.window_start)
-                    .map(|(k, _)| k.clone())
-                {
-                    entries.remove(&oldest);
-                }
-            }
-        }
-        let attempts = entries.entry(key.to_string()).or_insert(Attempts {
-            count: 0,
-            window_start: now,
-        });
-        let elapsed = now.saturating_duration_since(attempts.window_start);
-        if elapsed >= THROTTLE_WINDOW {
-            attempts.count = 0;
-            attempts.window_start = now;
-        }
-        if attempts.count >= self.limit {
-            let remaining = THROTTLE_WINDOW.saturating_sub(elapsed);
-            // Round up so a client that honors `Retry-After` always gets in.
-            return Err(Duration::from_secs(
-                remaining.as_secs_f64().ceil().max(1.0) as u64
-            ));
-        }
-        attempts.count += 1;
-        Ok(())
-    }
-
-    fn clear(&self, key: &str) {
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(key);
-    }
-
-    /// Give back one attempt that turned out not to be a failure.
-    fn refund(&self, key: &str) {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(attempts) = entries.get_mut(key) {
-            attempts.count = attempts.count.saturating_sub(1);
-        }
-    }
-}
-
-/// In-memory, per-process backoff for password checks, in two layers:
-///
-/// - per key (an account, or a peer + username for login): at most
-///   [`MAX_PASSWORD_ATTEMPTS`] unsuccessful attempts per [`THROTTLE_WINDOW`];
-///   a success clears the key.
-/// - per peer address, login only: at most [`MAX_PEER_FAILURES`] failures per
-///   window across all usernames, checked first. A success refunds its own
-///   attempt but never erases earlier failures, so holding one valid account
-///   does not launder a spray against others.
-///
-/// Either layer answers a 429 with `Retry-After` until its window lapses.
-/// Attempts are counted *before* the password is checked, so N concurrent
-/// guesses cannot all slip past a check that has not yet seen any of them
-/// fail; the successful path then clears (or refunds) them.
-///
-/// Per-process, like the MCP rate limiter: several replicas behind one load
-/// balancer each allow their own budget. That still turns an online guessing
-/// attack from unbounded into a handful of tries per quarter hour.
-pub(crate) struct LoginThrottle {
-    keys: Buckets,
-    peers: Buckets,
-}
-
-impl Default for LoginThrottle {
-    fn default() -> Self {
-        Self {
-            keys: Buckets::new(MAX_PASSWORD_ATTEMPTS),
-            peers: Buckets::new(MAX_PEER_FAILURES),
-        }
-    }
-}
-
-impl LoginThrottle {
-    /// Record an attempt for `key`, or `Err(retry_after)` when it is out of
-    /// attempts for the current window.
-    pub(crate) fn begin(&self, key: &str, now: Instant) -> Result<(), Duration> {
-        self.keys.begin(key, now)
-    }
-
-    /// Forget `key` after a successful password check.
-    pub(crate) fn clear(&self, key: &str) {
-        self.keys.clear(key);
-    }
-
-    /// Record a login attempt from `peer`, or `Err(retry_after)` when that
-    /// address is out of failures for the current window.
-    pub(crate) fn begin_peer(&self, peer: IpAddr, now: Instant) -> Result<(), Duration> {
-        self.peers.begin(&peer_bucket(peer), now)
-    }
-
-    /// Take back an attempt [`Self::begin_peer`] counted that did not end in
-    /// a wrong password (it succeeded, or a later check refused it unverified).
-    pub(crate) fn refund_peer(&self, peer: IpAddr) {
-        self.peers.refund(&peer_bucket(peer));
-    }
-}
-
-/// The per-peer bucket for an address. IPv6 clients are bucketed by their
-/// /64, which is what one host or one customer is normally handed, so cycling
-/// through the interface identifier does not mint fresh budgets.
-fn peer_bucket(peer: IpAddr) -> String {
-    match peer.to_canonical() {
-        IpAddr::V4(v4) => v4.to_string(),
-        IpAddr::V6(v6) => {
-            let s = v6.segments();
-            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
-        }
-    }
-}
-
-/// The throttle key for a login attempt.
-///
-/// The peer address comes from axum's `ConnectInfo`, which is only present
-/// when the server is served with `into_make_service_with_connect_info`; when
-/// it is absent (and under the `oneshot` test harness) the key degrades to the
-/// username alone. Forwarding headers are deliberately ignored: the server has
-/// no trusted-proxy setting, so `X-Forwarded-For` is whatever the attacker
-/// says it is, and honoring it would hand every guess a fresh bucket.
-fn login_throttle_key(peer: Option<SocketAddr>, username: &str) -> String {
-    match peer {
-        Some(addr) => format!("login\0{}\0{username}", addr.ip()),
-        None => format!("login\0-\0{username}"),
-    }
-}
-
-/// A 429 carrying `Retry-After` in whole seconds.
-fn throttled_response(retry_after: Duration) -> Response {
-    let mut response = ApiError::status(
-        StatusCode::TOO_MANY_REQUESTS,
-        format!(
-            "too many failed password attempts; try again in {} seconds",
-            retry_after.as_secs()
-        ),
-    )
-    .into_response();
-    response.headers_mut().insert(
-        axum::http::header::RETRY_AFTER,
-        HeaderValue::from(retry_after.as_secs()),
-    );
-    response
-}
 
 /// A real argon2 hash (default parameters, so the same cost as any stored
 /// one) of a password nobody holds, verified against when the username has no
@@ -239,10 +56,10 @@ fn dummy_hash() -> &'static str {
 /// and a core for tens of milliseconds; unbounded, a burst of password
 /// requests would exhaust memory and the blocking pool long before the
 /// throttle's budgets ran out across many keys.
-fn hash_permits() -> &'static Semaphore {
-    static PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
+fn hash_permits() -> &'static Arc<Semaphore> {
+    static PERMITS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
-        Semaphore::new(cores.max(2))
+        Arc::new(Semaphore::new(cores.max(2)))
     });
     &PERMITS
 }
@@ -250,13 +67,31 @@ fn hash_permits() -> &'static Semaphore {
 /// Run an argon2 computation off the async workers, behind [`hash_permits`],
 /// so password checks never stall unrelated requests such as `/health`.
 async fn run_argon2<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> ApiResult<T> {
-    let _permit = hash_permits()
-        .acquire()
+    run_blocking_with_permit(hash_permits(), work).await
+}
+
+/// Run `work` on the blocking pool while holding one of `permits`.
+///
+/// The permit moves *into* the blocking closure rather than living in this
+/// future. A client that disconnects mid-login drops the future, but a
+/// `spawn_blocking` task cannot be cancelled and keeps hashing; were the
+/// permit the future's, it would be released right then, and reconnecting
+/// clients could stack up computations to the blocking pool's size (512)
+/// rather than the cap.
+async fn run_blocking_with_permit<T: Send + 'static>(
+    permits: &Arc<Semaphore>,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> ApiResult<T> {
+    let permit = Arc::clone(permits)
+        .acquire_owned()
         .await
         .map_err(|e| ApiError::from(anyhow::anyhow!("password hashing unavailable: {e}")))?;
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|e| ApiError::from(anyhow::anyhow!("password hashing task failed: {e}")))
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow::anyhow!("password hashing task failed: {e}")))
 }
 
 /// [`auth::hash_password`] on the blocking pool.
@@ -313,8 +148,8 @@ pub(crate) async fn setup(
 
 /// `POST /auth/login` — exchange username + password for a session token.
 ///
-/// Throttled per peer address and then per (peer address, username) by
-/// [`LoginThrottle`], and constant-shape for every failure: an unknown username, an SSO-only
+/// Throttled per (client address, username) by [`LoginThrottle`], and
+/// constant-shape for every failure: an unknown username, an SSO-only
 /// account, and a disabled account all pay for one argon2 verify (against
 /// [`dummy_hash`] when there is no real one) and get the same 401, so neither
 /// the status nor the latency tells a caller which usernames exist.
@@ -324,18 +159,8 @@ pub(crate) async fn login(
     ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
     let peer = peer.map(|Extension(ConnectInfo(addr))| addr);
-    let now = Instant::now();
-    if let Some(addr) = peer {
-        if let Err(retry_after) = state.login_throttle.begin_peer(addr.ip(), now) {
-            return Ok(throttled_response(retry_after));
-        }
-    }
     let key = login_throttle_key(peer, &body.username);
-    if let Err(retry_after) = state.login_throttle.begin(&key, now) {
-        // Refused before any password was checked: not a peer failure.
-        if let Some(addr) = peer {
-            state.login_throttle.refund_peer(addr.ip());
-        }
+    if let Err(retry_after) = state.login_throttle.begin(&key, Instant::now()) {
         return Ok(throttled_response(retry_after));
     }
     let user = state
@@ -361,9 +186,6 @@ pub(crate) async fn login(
         }
     };
     state.login_throttle.clear(&key);
-    if let Some(addr) = peer {
-        state.login_throttle.refund_peer(addr.ip());
-    }
     let token = issue_session(&state, &user.id).await?;
     Ok(session_response(&state, StatusCode::OK, token, &user))
 }
@@ -773,118 +595,7 @@ fn validate_password(password: &str) -> ApiResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_sixth_attempt_in_a_window_is_refused_with_the_remaining_wait() {
-        let throttle = LoginThrottle::default();
-        let start = Instant::now();
-        for i in 0..MAX_PASSWORD_ATTEMPTS {
-            assert!(throttle.begin("k", start).is_ok(), "attempt {i}");
-        }
-        let later = start + Duration::from_secs(60);
-        let wait = throttle.begin("k", later).unwrap_err();
-        assert_eq!(wait, THROTTLE_WINDOW - Duration::from_secs(60));
-    }
-
-    #[test]
-    fn the_window_lapsing_restores_the_budget() {
-        let throttle = LoginThrottle::default();
-        let start = Instant::now();
-        for _ in 0..MAX_PASSWORD_ATTEMPTS {
-            throttle.begin("k", start).unwrap();
-        }
-        assert!(throttle.begin("k", start).is_err());
-        assert!(throttle.begin("k", start + THROTTLE_WINDOW).is_ok());
-    }
-
-    #[test]
-    fn a_success_clears_the_key_and_keys_are_independent() {
-        let throttle = LoginThrottle::default();
-        let now = Instant::now();
-        for _ in 0..MAX_PASSWORD_ATTEMPTS {
-            throttle.begin("a", now).unwrap();
-        }
-        assert!(throttle.begin("a", now).is_err());
-        assert!(throttle.begin("b", now).is_ok());
-        throttle.clear("a");
-        assert!(throttle.begin("a", now).is_ok());
-    }
-
-    #[test]
-    fn retry_after_rounds_up_and_is_never_zero() {
-        let throttle = LoginThrottle::default();
-        let start = Instant::now();
-        for _ in 0..MAX_PASSWORD_ATTEMPTS {
-            throttle.begin("k", start).unwrap();
-        }
-        let nearly = start + THROTTLE_WINDOW - Duration::from_millis(1);
-        assert_eq!(
-            throttle.begin("k", nearly).unwrap_err(),
-            Duration::from_secs(1)
-        );
-    }
-
-    #[test]
-    fn the_map_is_bounded() {
-        let throttle = LoginThrottle::default();
-        let now = Instant::now();
-        for i in 0..MAX_THROTTLE_KEYS + 50 {
-            throttle.begin(&format!("k{i}"), now).unwrap();
-        }
-        assert_eq!(
-            throttle.keys.entries.lock().unwrap().len(),
-            MAX_THROTTLE_KEYS
-        );
-    }
-
-    #[test]
-    fn the_key_ignores_the_port_and_degrades_to_username_without_a_peer() {
-        let a: SocketAddr = "10.0.0.1:4000".parse().unwrap();
-        let b: SocketAddr = "10.0.0.1:5000".parse().unwrap();
-        assert_eq!(
-            login_throttle_key(Some(a), "root"),
-            login_throttle_key(Some(b), "root")
-        );
-        assert_ne!(
-            login_throttle_key(Some(a), "root"),
-            login_throttle_key(None, "root")
-        );
-        assert_ne!(
-            login_throttle_key(None, "root"),
-            login_throttle_key(None, "rooT")
-        );
-    }
-
-    #[test]
-    fn the_peer_bucket_trips_across_usernames_and_successes_only_refund() {
-        let throttle = LoginThrottle::default();
-        let now = Instant::now();
-        let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        for i in 0..MAX_PEER_FAILURES {
-            throttle.begin(&format!("user{i}"), now).unwrap();
-            assert!(throttle.begin_peer(ip, now).is_ok(), "attempt {i}");
-        }
-        assert!(throttle.begin_peer(ip, now).is_err());
-        assert!(throttle
-            .begin_peer("10.0.0.2".parse().unwrap(), now)
-            .is_ok());
-        // A refund gives back exactly one attempt, not the whole budget.
-        throttle.refund_peer(ip);
-        assert!(throttle.begin_peer(ip, now).is_ok());
-        assert!(throttle.begin_peer(ip, now).is_err());
-        assert!(throttle.begin_peer(ip, now + THROTTLE_WINDOW).is_ok());
-    }
-
-    #[test]
-    fn ipv6_peers_share_a_bucket_per_64_and_mapped_v4_is_v4() {
-        let a: IpAddr = "2001:db8:1:2::1".parse().unwrap();
-        let b: IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
-        let c: IpAddr = "2001:db8:1:3::1".parse().unwrap();
-        assert_eq!(peer_bucket(a), peer_bucket(b));
-        assert_ne!(peer_bucket(a), peer_bucket(c));
-        let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
-        assert_eq!(peer_bucket(mapped), "10.0.0.1");
-    }
+    use std::time::Duration;
 
     #[tokio::test]
     async fn argon2_runs_off_the_async_workers() {
@@ -894,6 +605,40 @@ mod tests {
             .ok()
             .unwrap());
         assert!(!verify_password(None, "").await.ok().unwrap());
+    }
+
+    /// A dropped request future must not free the permit while its blocking
+    /// work, which cannot be cancelled, is still running.
+    #[tokio::test]
+    async fn the_permit_outlives_a_dropped_caller_until_the_work_ends() {
+        let permits = Arc::new(Semaphore::new(1));
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let caller = tokio::spawn({
+            let permits = Arc::clone(&permits);
+            async move {
+                run_blocking_with_permit(&permits, move || {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                })
+                .await
+            }
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+            .await
+            .unwrap();
+
+        // The client disconnects: its future is dropped mid-await.
+        caller.abort();
+        assert!(matches!(caller.await, Err(e) if e.is_cancelled()));
+        assert_eq!(permits.available_permits(), 0, "work still running");
+
+        // The permit comes back only once the work itself finishes.
+        release_tx.send(()).unwrap();
+        let _permit = tokio::time::timeout(Duration::from_secs(10), permits.acquire())
+            .await
+            .expect("permit released after the work ended")
+            .unwrap();
     }
 
     #[test]

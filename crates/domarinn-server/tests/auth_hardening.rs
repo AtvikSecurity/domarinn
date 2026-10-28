@@ -117,6 +117,9 @@ async fn login_is_throttled_after_five_failures_even_for_the_right_password() {
         (1..=15 * 60).contains(&retry_after),
         "retry_after={retry_after}"
     );
+    // The body states the wait too, for clients that only show the body.
+    let msg = locked.json()["error"].as_str().unwrap().to_string();
+    assert!(msg.contains("try again in 15 minutes"), "{msg}");
 }
 
 #[tokio::test]
@@ -185,70 +188,67 @@ async fn login_from(app: &Router, peer: SocketAddr, username: &str, password: &s
     app.clone().oneshot(req).await.unwrap().status()
 }
 
+/// Behind a reverse proxy every client is the proxy's address. However many
+/// usernames one client sprays from it, nobody else's correct password is
+/// ever refused: the per-username buckets bound the guessing, and argon2 cost
+/// is bounded by the hashing semaphore, not by refusing the address.
 #[tokio::test(flavor = "multi_thread")]
-async fn one_peer_spraying_usernames_trips_the_per_peer_bucket() {
+async fn a_spray_from_a_shared_address_never_refuses_a_correct_password() {
     let (app, _dir) = test_app(protected()).await;
-    setup_admin(&app).await;
-    let attacker: SocketAddr = "203.0.113.7:40000".parse().unwrap();
+    let admin = setup_admin(&app).await;
+    create_member(&app, &admin, "alice").await;
+    let proxy: SocketAddr = "203.0.113.7:40000".parse().unwrap();
 
-    // Every username is a fresh (peer, username) bucket, so only the
-    // per-peer budget can stop this. Fire them concurrently: each one still
-    // pays for an argon2 verify, which now runs on the blocking pool.
+    // Concurrent, so the argon2 verifies really do contend for permits.
     let mut set = tokio::task::JoinSet::new();
-    for i in 0..30 {
+    for i in 0..40 {
         let app = app.clone();
-        set.spawn(
-            async move { login_from(&app, attacker, &format!("ghost{i}"), "nope-nope").await },
-        );
+        set.spawn(async move { login_from(&app, proxy, &format!("ghost{i}"), "nope-nope").await });
     }
     while let Some(status) = set.join_next().await {
         assert_eq!(status.unwrap(), StatusCode::UNAUTHORIZED);
     }
 
-    // A 31st username from the same peer is refused before any verify — even
-    // with the right password for a real account...
+    let colleague: SocketAddr = "203.0.113.7:50000".parse().unwrap();
     assert_eq!(
-        login_from(&app, attacker, "root", ADMIN_PW).await,
-        StatusCode::TOO_MANY_REQUESTS
-    );
-    // ...from any port on that address...
-    let same_host: SocketAddr = "203.0.113.7:50000".parse().unwrap();
-    assert_eq!(
-        login_from(&app, same_host, "ghost-new", "nope-nope").await,
-        StatusCode::TOO_MANY_REQUESTS
-    );
-    // ...while another peer is unaffected.
-    let bystander: SocketAddr = "198.51.100.9:40000".parse().unwrap();
-    assert_eq!(
-        login_from(&app, bystander, "root", ADMIN_PW).await,
+        login_from(&app, colleague, "root", ADMIN_PW).await,
         StatusCode::OK
+    );
+    assert_eq!(
+        login_from(&app, colleague, "alice", MEMBER_PW).await,
+        StatusCode::OK
+    );
+    // A fresh wrong guess is an honest 401, not a blanket address refusal.
+    assert_eq!(
+        login_from(&app, colleague, "ghost-new", "nope-nope").await,
+        StatusCode::UNAUTHORIZED
     );
 }
 
+/// Rotating the interface identifier inside one IPv6 /64 is still one client:
+/// it shares the per-username bucket instead of minting a fresh one per
+/// address. A different /64 is a different client.
 #[tokio::test]
-async fn successes_do_not_launder_a_peers_failures() {
+async fn ipv6_addresses_in_one_64_share_a_username_bucket() {
     let (app, _dir) = test_app(protected()).await;
     setup_admin(&app).await;
-    let peer: SocketAddr = "203.0.113.8:40000".parse().unwrap();
-    // Interleave a valid login with failures against other names: the
-    // success refunds only its own attempt, so the budget still runs out
-    // after 30 failures.
-    for i in 0..30 {
+    for i in 1..=5 {
+        let rotated: SocketAddr = format!("[2001:db8:1:2::{i:x}]:40000").parse().unwrap();
         assert_eq!(
-            login_from(&app, peer, &format!("ghost{i}"), "nope-nope").await,
+            login_from(&app, rotated, "root", "wrong-password").await,
             StatusCode::UNAUTHORIZED,
-            "failure {i}"
+            "attempt {i}"
         );
-        if i % 10 == 0 {
-            assert_eq!(
-                login_from(&app, peer, "root", ADMIN_PW).await,
-                StatusCode::OK
-            );
-        }
     }
+    let next: SocketAddr = "[2001:db8:1:2:ffff::99]:40000".parse().unwrap();
     assert_eq!(
-        login_from(&app, peer, "ghost-last", "nope-nope").await,
+        login_from(&app, next, "root", ADMIN_PW).await,
         StatusCode::TOO_MANY_REQUESTS
+    );
+    let elsewhere: SocketAddr = "[2001:db8:1:3::1]:40000".parse().unwrap();
+    assert_eq!(
+        login_from(&app, elsewhere, "root", ADMIN_PW).await,
+        StatusCode::OK
     );
 }
 
