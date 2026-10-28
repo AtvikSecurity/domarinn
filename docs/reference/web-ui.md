@@ -100,6 +100,8 @@ The card strip is the run's whole story in seven numbers: pass rate, case count,
 
 Below it, one row per case: status, the case id and its stable case key, a preview of the output, a strip of assertion squares, and the per-case tokens, cost, latency and score. The `All / Pass / Fail / Error / Skip` tabs and the search box narrow the list, and `Columns` lets you bring back the fields hidden to fit your screen — see [Columns](#columns), which applies to every table in the app. The actions at top right are the ones that change state: delete the run, pin it as this suite's baseline, or open it against another run in [Compare](#compare--mcnemar).
 
+`Download JSON` saves the run's stored document (`GET /runs/{id}/export`) as `<run-id>.json`. It goes through the API client, so it works whether you signed in or pasted a bearer token in Settings. `Set baseline` only appears to an account that can pin — write scope, plus `upload` or `manage` on the set when the set is restricted — and on the run that is currently pinned it becomes `Unpin baseline`.
+
 ---
 
 ## Matrix view
@@ -161,7 +163,7 @@ A suite's whole record on one page: how many runs, the newest run's pass rate, t
 
 Below that, the suite's runs, under the same cached default as everywhere else — this shot is taken at `?cached=all`, which is why both replays are listed and both carry a `cached` badge. Whenever the page is hiding some, it says so on the line above the table rather than letting the rows silently disagree with the `RUNS 2` beside them. Tick two and `Compare 2 runs` opens them in [Compare](#compare--mcnemar), older as base; the per-row `Compare` link takes a run against the one before it, which is why the oldest row has a `—` instead. `View in Runs →` hands the same project and suite to the runs list, carrying this page's own cached view through so the stream opens showing what the table did.
 
-`Pin branch…` beside the heading pins a **branch** as this suite's comparison baseline: type a branch name (`main`, say) and the baseline tracks it from then on, with no re-pinning. It is not "the newest run on that branch": the newest runs on the branch are merged *per case*, the newest run that has each case winning, so a filtered or sharded upload cannot quietly shrink what the gate compares against. A suite holds one pin, so pinning a branch replaces a pinned run and vice versa; the chip beside the heading reads `baseline` for a pinned run and `baseline: <branch>` for a pinned branch. Pinning needs `upload` on the set (see [the levels below](#who-may-reach-a-set)). To freeze the baseline on one run instead, use `Set baseline` on the [run page](#run-detail). Both kinds, and how CI resolves them, are covered in [Gate a pull request on regressions](../guides/gate-in-ci.md#gate-a-pull-request-on-regressions).
+`Pin branch…` beside the heading pins a **branch** as this suite's comparison baseline: type a branch name (`main`, say) and the baseline tracks it from then on, with no re-pinning. It is not "the newest run on that branch": the newest runs on the branch are merged *per case*, the newest run that has each case winning, so a filtered or sharded upload cannot quietly shrink what the gate compares against. A suite holds one pin, so pinning a branch replaces a pinned run and vice versa; the chip beside the heading reads `baseline` for a pinned run and `baseline: <branch>` for a pinned branch. Pinning needs `upload` on the set (see [the levels below](#who-may-reach-a-set)), and the button is hidden from accounts without it. The dialog opens with the currently pinned branch filled in, and `Unpin baseline` removes whichever pin the suite holds (`DELETE …/baseline`) after a confirmation. To freeze the baseline on one run instead, use `Set baseline` on the [run page](#run-detail). Both kinds, and how CI resolves them, are covered in [Gate a pull request on regressions](../guides/gate-in-ci.md#gate-a-pull-request-on-regressions).
 
 The `restricted` chip beside the heading, and the `Access` button opposite it, are the other half of this page.
 
@@ -212,7 +214,7 @@ Entry count, total size, lookup hit rate, hits, misses, and the age of the oldes
 
 The distinction is worth internalising because the two numbers get confused constantly: `LOOKUP HIT RATE` counts lookups **this cache** served, while the `CACHE` figure on a [run detail](#run-detail) page is that run's own cached-case rate, wherever the answers came from. A run can be 100% cached with this page at zero.
 
-`Prune cache…` runs retention on demand — expired and least-recently-used entries — and is an admin action. Retention also runs hourly on its own, bounded by `DOMARINN_CACHE_MAX_BYTES` and `DOMARINN_CACHE_MAX_AGE_DAYS` (see [Server](server.md#environment-variables)).
+`Prune cache…` runs retention on demand — expired and least-recently-used entries — and is an admin action, so it is shown to admins only. Leave `Older than (days)` blank to apply the server's configured retention, or give a number of days to remove only entries older than that; the page reports how many entries were removed. Retention also runs hourly on its own, bounded by `DOMARINN_CACHE_MAX_BYTES` and `DOMARINN_CACHE_MAX_AGE_DAYS` (see [Server](server.md#environment-variables)).
 
 ---
 
@@ -231,6 +233,8 @@ Clicking a row opens a drawer with the request beside the response it produced, 
 
 - **`indexing…`** — the entry is listed but its body has not been read yet, so its model, kind and cost are *unknown* rather than absent. Filters and search cannot reach it until the background pass catches up; the stats page reports how many are left.
 - **`opaque`** — this server could not parse the entry. It is stored and served to clients unchanged; most often it was written by a newer domarinn. Nothing is lost, there is simply nothing to describe.
+
+Admins can also delete a single entry from the drawer (`Delete entry…`, then confirm): the drawer closes, the list and stats refresh, and the next run that makes that call goes to the provider again.
 
 Entries written before 0.5 predate request capture, so their drawer shows the fingerprint of the provider that answered instead of the request itself.
 
