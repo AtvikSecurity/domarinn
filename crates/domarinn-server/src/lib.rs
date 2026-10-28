@@ -47,6 +47,7 @@ pub mod mcp;
 pub mod routes;
 pub mod runsets;
 pub mod sets;
+mod shutdown;
 pub mod sso;
 pub mod storage;
 
@@ -66,7 +67,8 @@ const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 ///
 /// Constructed verbatim by the CLI; the public field set is a stable contract
 /// (exactly `port`, `data_dir`, `auth_mode`). Any additional settings are read
-/// from the environment inside [`serve`].
+/// from the environment inside [`serve`], or — the listen address — passed to
+/// [`serve_on`].
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub port: u16,
@@ -577,20 +579,40 @@ pub async fn build_app(
     Ok((router, state))
 }
 
-/// Bind and serve until shutdown (Ctrl-C).
+/// The address [`serve`] listens on: every IPv4 interface, which is what a
+/// container needs — its port mapping arrives on the container's own
+/// interface, never on loopback.
+pub const DEFAULT_BIND: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+
+/// Bind [`DEFAULT_BIND`] and serve until shutdown (SIGTERM or Ctrl-C).
 pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
+    serve_on(config, DEFAULT_BIND).await
+}
+
+/// Bind `bind:port` and serve until shutdown (SIGTERM or Ctrl-C).
+///
+/// A separate entry point rather than a [`ServerConfig`] field so the
+/// config's public field set — which callers construct verbatim — stays
+/// unchanged. `bind` may be IPv6 (`::1`, `::`); the CLI's `--bind` /
+/// `DOMARINN_BIND` lands here.
+pub async fn serve_on(config: ServerConfig, bind: std::net::IpAddr) -> anyhow::Result<()> {
     let settings = Settings::from_env()?;
     let (app, state) = build_app(&config, settings).await?;
     spawn_cache_index_backfill(state.clone());
     spawn_cache_retention(state);
 
-    let port = config.port;
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("domarinn server listening on http://{addr}");
+    let addr = std::net::SocketAddr::new(bind, config.port);
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("binding {addr}: {e}"))?;
+    // The bound address, not the requested one: with `--port 0` the OS picks
+    // the port and this line is the only place it is reported.
+    let local = listener.local_addr().unwrap_or(addr);
+    tracing::info!("domarinn server listening on http://{local}");
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown::shutdown_signal())
         .await?;
+    tracing::info!("domarinn server stopped");
     Ok(())
 }
 
@@ -731,11 +753,6 @@ fn spawn_cache_retention(state: AppState) {
             }
         }
     });
-}
-
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutting down");
 }
 
 /// Export TypeScript type definitions for the server's DTO layer (response
