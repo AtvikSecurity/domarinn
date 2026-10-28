@@ -66,6 +66,7 @@ use self::origin::OriginPolicy;
 use self::proto::{Era, Rejection};
 use self::ratelimit::RateLimiter;
 use crate::auth::Identity;
+use crate::clientip::ClientIp;
 use crate::AppState;
 
 /// The MCP endpoint path. Under `/api/` so that a miss falls through to the
@@ -153,6 +154,7 @@ async fn no_oauth() -> Response {
 async fn endpoint(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
+    client: Option<Extension<ClientIp>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -228,7 +230,15 @@ async fn endpoint(
     }
 
     let id = incoming.id.clone().unwrap_or(Value::Null);
-    match dispatch::dispatch(&state, &mcp.limiter, &identity, &incoming).await {
+    match dispatch::dispatch(
+        &state,
+        &mcp.limiter,
+        &identity,
+        client.map(|Extension(c)| c),
+        &incoming,
+    )
+    .await
+    {
         Ok(outcome) => {
             let mut payload = outcome.payload;
             proto::decorate(era, &mut payload, outcome.cache);

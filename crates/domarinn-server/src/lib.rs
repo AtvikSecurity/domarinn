@@ -46,6 +46,7 @@ pub mod dto;
 pub mod extract;
 pub mod localcache;
 pub mod mcp;
+mod ratelimit;
 pub mod routes;
 pub mod runsets;
 pub mod sets;

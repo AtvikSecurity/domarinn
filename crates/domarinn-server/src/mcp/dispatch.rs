@@ -19,6 +19,7 @@ use super::proto::{CacheHint, Rejection};
 use super::ratelimit::RateLimiter;
 use super::{budget, catalog, jsonrpc, prompts, tools};
 use crate::auth::{Access, Identity, Scope};
+use crate::clientip::ClientIp;
 use crate::AppState;
 
 /// A method's answer, before era decoration.
@@ -53,6 +54,7 @@ pub async fn dispatch(
     state: &AppState,
     limiter: &RateLimiter,
     identity: &Identity,
+    client: Option<ClientIp>,
     incoming: &jsonrpc::Incoming,
 ) -> Result<Outcome, Rejection> {
     match incoming.method.as_str() {
@@ -96,7 +98,7 @@ pub async fn dispatch(
         // -- Authenticated: everything that reads stored eval data ----------
         "tools/call" => {
             authorize(identity, Scope::Read)?;
-            if let Err(retry_after) = limiter.check(identity) {
+            if let Err(retry_after) = limiter.check(identity, client.as_ref()) {
                 return Err(Rejection::new(
                     StatusCode::TOO_MANY_REQUESTS,
                     jsonrpc::RATE_LIMITED,
