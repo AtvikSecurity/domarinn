@@ -80,7 +80,7 @@ The two `2`s in the second row are the same argument twice: a green gate would m
 
 ## `domarinn run [PATH] [flags]`
 
-Execute a suite: render prompts, call providers, evaluate assertions, report results, and persist the run under `.domarinn/runs/<id>/`.
+Execute a suite: render prompts, call providers, evaluate assertions, report results, and persist the run under `.domarinn/runs/<id>/`. `DOMARINN_RUNS_DIR` moves that run store (relative to the working directory, like the default); every command that reads runs back — `diff`, `view`, `runs`, `share`, `ci-summary`, `--against latest` / `branch:<name>` — reads from the same place.
 
 - `PATH` — a suite file or a directory containing `domarinn.yaml` (default `.`).
 
@@ -99,6 +99,9 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--no-fallback` | Do not let a provider hand off to its [`fallback:`](providers.md#falling-back-to-another-provider) chain. **The right posture for a gate**: fallback is resilience, and a CI job usually wants to learn that its primary provider is broken rather than have the result quietly produced by a different model. It disables chain *walking* only: a [`fallback_only`](providers.md#fallback_only-a-provider-that-is-reachable-but-never-a-cell) provider stays out of the matrix, since membership is suite configuration and not something a resilience flag should move. `DOMARINN_NO_FALLBACK=true` sets the same thing; the flag wins, and a value that is not a boolean **refuses the run** (exit `2`) naming the value, rather than being guessed at — a typo'd `DOMARINN_NO_FALLBACK=ture` must not quietly leave fallback on in the gate that set it. |
 | `--repeat <N>` | Run each cell N times (variance / pass@k). |
 | `-j`, `--concurrency <N>` | Max concurrent provider calls (overrides `runner.concurrency`). |
+| `--retries <N>` | Retry transient provider failures up to `N` times (overrides [`runner.retries.max`](domarinn-yaml.md#runner)). Conflicts with `--no-retries`. |
+| `--no-retries` | Do not retry transient provider failures at all, whatever the suite's `runner.retries` says. |
+| `--fallback-on-empty-reason [<R>,…]` | Which [empty-output reasons](../concepts/grading.md#empty-outputs-and-grading) make a provider hand off to its [`fallback:`](providers.md#falling-back-to-another-provider) chain, overriding the suite's [`runner.fallback_on_empty_reason`](domarinn-yaml.md#runner) (default `refusal,content_filter`). Comma-separated or repeated. Pass the flag **with no value** to hand off only on hard call failures. `DOMARINN_FALLBACK_ON_EMPTY_REASON` (comma-separated) sets the same thing; the flag wins. Hard call failures always hand off and are not configurable here; `--no-fallback` turns the chain off entirely. |
 | `--format <FMT>[=<PATH>]` | Output format: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`. A bare format goes to `--out`, or stdout; `FMT=PATH` writes that format to its own file. Repeatable, but **every format needs its own destination**: two bare formats with one `--out` (each write would truncate the last) or on stdout (concatenated, unparseable) are a usage error (exit `2`), refused before the run spends anything — write `--format json=results.json --format junit=results.xml` instead. |
 | `--out <FILE>` | Write the bare `--format` (or the default table) to a file instead of stdout. A usage error when every `--format` already names its own file, since nothing would be written to it. |
 | `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |

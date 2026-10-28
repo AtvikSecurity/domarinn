@@ -117,15 +117,22 @@ pub struct RunArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Compare against a baseline run; regressions fail.
+    /// Compare against a baseline run; regressions fail. REF: server:baseline,
+    /// server:branch:<name>, branch:<name>, latest, a run id, a result.json
+    /// path, or none.
     ///
     /// `server:baseline` uses the baseline pinned for this suite on the results
-    /// server — the only reference that works in CI, where a fresh checkout has
-    /// no local run store. `latest` uses the newest local run *of this same
-    /// suite*. Also accepts a run id or a `result.json` path. Unlike a missing
-    /// baseline, a baseline that cannot be resolved is a usage error, so a gate
-    /// can never report green without having compared.
-    #[arg(long)]
+    /// server (a run or a branch) — the reliable choice in CI, where a fresh
+    /// checkout has no local run store. `server:branch:<name>` merges the
+    /// newest server runs on `<name>` with no pin at all; `branch:<name>` does
+    /// the same from the local run store. `latest` uses the newest local run
+    /// *of this same suite*. Also accepts a run id or a `result.json` path.
+    /// `none` disables the comparison, overriding a suite's `baseline:`
+    /// default — which otherwise applies when this flag is absent.
+    ///
+    /// Unlike a missing baseline, a baseline that cannot be resolved is a
+    /// usage error, so a gate can never report green without having compared.
+    #[arg(long, value_name = "REF")]
     pub against: Option<String>,
 
     /// Write a markdown summary (for CI / PR comments) to this path.
