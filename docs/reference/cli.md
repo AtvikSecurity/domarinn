@@ -292,7 +292,7 @@ Manage the **local** content-addressed cache. All of these take a suite path (de
 
 Three rules, each of which exists because the obvious alternative deletes something nobody asked for:
 
-- **At least one bound is required — any one of the three.** A bare `domarinn cache gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so. The error names `cache clear`.
+- **A bound is required: `--older-than` or `--empty-reason`.** `--newer-than` only narrows an `--older-than` window, so it does not count on its own (see the next rule). A bare `domarinn cache gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so. The error names `cache clear`.
 - **`--newer-than` needs `--older-than`.** Alone it would read "delete everything since", which is a whole-store wipe in the vocabulary of housekeeping. Requiring the other end makes that reading unconstructible rather than merely discouraged.
 - **No environment variables here.** `DOMARINN_CACHE_STORE_EMPTY_OUTPUTS` and `DOMARINN_NO_FALLBACK` exist because they are standing *policy*. A `gc` predicate is a one-shot destructive operation, and an environment that silently widens one is how an operator deletes a corpus they never named. That is the line, not "environment variables are bad": run-scoping selection like [`DOMARINN_PROVIDER`](#domarinn-run-path-flags) is allowed on the run side — the flag still wins, and the worst an unnoticed one does is run *fewer* cells, which the next invocation undoes.
 
