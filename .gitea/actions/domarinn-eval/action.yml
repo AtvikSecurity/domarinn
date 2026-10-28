@@ -515,10 +515,18 @@ runs:
     # A plain REST create-or-update, not `actions/github-script`: that is
     # Octokit, which speaks GitHub's API, and this forge's issue-comment routes
     # (`GET|POST /repos/{o}/{r}/issues/{n}/comments`,
-    # `PATCH /repos/{o}/{r}/issues/comments/{id}`) are its own. The existing
-    # comment is found by the hidden marker alone — there is no `user.type ==
-    # 'Bot'` to filter on here — and if updating it is refused (someone else
-    # quoted the marker, say), a fresh comment is posted instead.
+    # `PATCH /repos/{o}/{r}/issues/comments/{id}`) are its own.
+    #
+    # Which comment to update: only one the token itself wrote, found by
+    # `GET /user` and matched on `user.id`, whose body *starts* with the hidden
+    # marker; the oldest such comment wins. Both checks matter because the
+    # forge will not stop a wrong edit: a token with issue write access may
+    # edit anyone's comment on Gitea and Forgejo, and the automatic token has
+    # that access. Matching on the marker alone would overwrite a reviewer's
+    # quote-reply (which copies the marker) and would let a PR author plant a
+    # marked comment of their own to receive the results and then rewrite
+    # them. If `GET /user` fails, nothing is edited: a fresh comment is posted.
+    # An update the forge refuses also falls back to a fresh comment.
     #
     # Node rather than curl + jq: every runner that can run a JavaScript action
     # has `node`, and none is promised `jq`. `http`/`https` rather than `fetch`,
@@ -605,23 +613,38 @@ runs:
           }
           const repo = `${API_URL.replace(/\/+$/, '')}/repos/${REPOSITORY}`;
 
+          // Whose comments may be edited: the token's own, and nobody else's.
+          // Without an identity there is no safe match, so post a new one.
+          let self = null;
+          try {
+            const me = await call('GET', `${API_URL.replace(/\/+$/, '')}/user`);
+            if (me && me.id != null) self = me.id;
+            else warn('GET /user returned no user id; posting a new comment rather than editing one');
+          } catch (e) {
+            warn(`could not resolve the token's user (${e.message}); posting a new comment rather than editing one`);
+          }
+
           // Paginated, though Gitea and Forgejo currently ignore `page`/`limit`
           // on this route and answer with every comment: a page that brings no
           // id not already seen ends the walk, so an ignored `page` costs one
-          // extra request instead of looping forever. The newest marked
-          // comment wins.
-          const limit = 50;
-          const seen = new Set();
+          // extra request instead of looping forever. Of the token's own
+          // comments that start with the marker, the oldest (lowest id) wins.
           let existing = null;
-          for (let page = 1; page <= 200; page++) {
-            const batch = await call('GET', `${repo}/issues/${PR_NUMBER}/comments?page=${page}&limit=${limit}`);
-            if (!Array.isArray(batch)) throw new Error('comment list is not a JSON array');
-            const fresh = batch.filter((c) => !seen.has(c.id));
-            for (const c of fresh) {
-              seen.add(c.id);
-              if (typeof c.body === 'string' && c.body.includes(marker)) existing = c;
+          if (self !== null) {
+            const limit = 50;
+            const seen = new Set();
+            for (let page = 1; page <= 200; page++) {
+              const batch = await call('GET', `${repo}/issues/${PR_NUMBER}/comments?page=${page}&limit=${limit}`);
+              if (!Array.isArray(batch)) throw new Error('comment list is not a JSON array');
+              const fresh = batch.filter((c) => !seen.has(c.id));
+              for (const c of fresh) {
+                seen.add(c.id);
+                const mine = c.user != null && c.user.id === self;
+                const marked = typeof c.body === 'string' && c.body.startsWith(marker);
+                if (mine && marked && (existing === null || c.id < existing.id)) existing = c;
+              }
+              if (fresh.length === 0 || batch.length < limit) break;
             }
-            if (fresh.length === 0 || batch.length < limit) break;
           }
 
           if (existing) {

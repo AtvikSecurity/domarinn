@@ -302,14 +302,42 @@ fn comment_against(action: &str, forge: &StubForge) -> (super::Ran, Vec<Request>
     (ran, forge.requests())
 }
 
-fn comments_json(comments: &[(u64, &str)]) -> String {
+/// The user id `GET /user` reports for the step's token in these tests.
+const SELF: u64 = 42;
+/// Somebody else on the PR: a reviewer, or the PR's author.
+const OTHER: u64 = 77;
+
+/// A comment list, each comment as `(id, author's user id, body)`.
+fn comments_json(comments: &[(u64, u64, &str)]) -> String {
     serde_json::to_string(
         &comments
             .iter()
-            .map(|(id, body)| serde_json::json!({ "id": id, "body": body }))
+            .map(|(id, user, body)| {
+                serde_json::json!({ "id": id, "user": { "id": user, "login": format!("u{user}") }, "body": body })
+            })
             .collect::<Vec<_>>(),
     )
     .unwrap()
+}
+
+/// A stub forge whose `GET /user` answers as [`SELF`], whose comment list is
+/// `comments`, and which accepts every create and update.
+fn forge_with(comments: &'static [(u64, u64, &'static str)]) -> StubForge {
+    StubForge::start(move |method, path| match (method, path) {
+        ("GET", "/api/v1/user") => (200, format!(r#"{{"id":{SELF},"login":"u{SELF}"}}"#)),
+        ("GET", _) => (200, comments_json(comments)),
+        ("PATCH", _) => (200, "{}".into()),
+        ("POST", _) => (201, r#"{"id":99}"#.into()),
+        _ => (500, "{}".into()),
+    })
+}
+
+fn patches(seen: &[Request]) -> Vec<&Request> {
+    seen.iter().filter(|r| r.method == "PATCH").collect()
+}
+
+fn posts(seen: &[Request]) -> usize {
+    seen.iter().filter(|r| r.method == "POST").count()
 }
 
 /// First run on a PR: nothing carries the marker, so one comment is created —
@@ -317,11 +345,7 @@ fn comments_json(comments: &[(u64, &str)]) -> String {
 #[test]
 fn the_comment_step_creates_a_comment_when_none_is_marked() {
     for action in FORGE_ACTIONS {
-        let forge = StubForge::start(|method, _| match method {
-            "GET" => (200, comments_json(&[(3, "LGTM")])),
-            "POST" => (201, r#"{"id":12}"#.into()),
-            _ => (500, "{}".into()),
-        });
+        let forge = forge_with(&[(3, OTHER, "LGTM")]);
         let (ran, seen) = comment_against(action, &forge);
 
         assert_eq!(ran.status, Some(0), "{action}: {}", ran.log);
@@ -337,38 +361,125 @@ fn the_comment_step_creates_a_comment_when_none_is_marked() {
             text.starts_with("<!-- domarinn-eval -->\n") && text.contains("12 passed"),
             "{action}: got {text:?}"
         );
+        assert!(patches(&seen).is_empty(), "{action}: {seen:?}");
         assert!(
-            seen.iter().all(|r| r.method != "PATCH"),
-            "{action}: {seen:?}"
+            seen.iter()
+                .all(|r| r.auth.as_deref() == Some("token t0ken")),
+            "{action}: every call, `GET /user` included, carries the token: {seen:?}"
+        );
+        assert!(
+            !ran.log.contains("t0ken"),
+            "{action}: the token reached the log:\n{}",
+            ran.log
         );
     }
 }
 
-/// A later push updates the marked comment in place instead of adding another.
+/// A later push updates the token's own marked comment in place instead of
+/// adding another.
 #[test]
 fn the_comment_step_updates_the_marked_comment() {
     for action in FORGE_ACTIONS {
-        let forge = StubForge::start(|method, _| match method {
-            "GET" => (
+        let forge = forge_with(&[
+            (3, OTHER, "LGTM"),
+            (11, SELF, "<!-- domarinn-eval -->\nold"),
+        ]);
+        let (ran, seen) = comment_against(action, &forge);
+
+        assert_eq!(ran.status, Some(0), "{action}: {}", ran.log);
+        let patch = patches(&seen);
+        assert_eq!(patch.len(), 1, "{action}: {seen:?}\n{}", ran.log);
+        assert_eq!(
+            patch[0].path,
+            "/api/v1/repos/acme/widgets/issues/comments/11"
+        );
+        assert!(
+            patch[0].body.contains("12 passed"),
+            "{action}: {}",
+            patch[0].body
+        );
+        assert_eq!(posts(&seen), 0, "{action}: {seen:?}");
+    }
+}
+
+/// A marked comment somebody else wrote is never edited, however exactly it
+/// copies the marker. The token can edit anyone's comment on these forges, so
+/// a PR author could otherwise plant one, receive the real results in it, and
+/// then rewrite them.
+#[test]
+fn the_comment_step_never_edits_another_users_marked_comment() {
+    for action in FORGE_ACTIONS {
+        let forge = forge_with(&[(4, OTHER, "<!-- domarinn-eval -->\nall green, trust me")]);
+        let (ran, seen) = comment_against(action, &forge);
+
+        assert_eq!(ran.status, Some(0), "{action}: {}", ran.log);
+        assert!(patches(&seen).is_empty(), "{action}: {seen:?}");
+        assert_eq!(posts(&seen), 1, "{action}: {seen:?}");
+    }
+}
+
+/// A quote-reply copies the hidden marker, but not to the start of the body.
+/// Even when the token wrote it, it is not the results comment.
+#[test]
+fn the_comment_step_ignores_a_marker_that_does_not_start_the_body() {
+    for action in FORGE_ACTIONS {
+        let forge = forge_with(&[(5, SELF, "> <!-- domarinn-eval -->\n> 3 failed\n\nwhy?")]);
+        let (ran, seen) = comment_against(action, &forge);
+
+        assert_eq!(ran.status, Some(0), "{action}: {}", ran.log);
+        assert!(patches(&seen).is_empty(), "{action}: {seen:?}");
+        assert_eq!(posts(&seen), 1, "{action}: {seen:?}");
+    }
+}
+
+/// With more than one of its own marked comments on the PR, the step updates
+/// the oldest, whatever order the forge lists them in.
+#[test]
+fn the_comment_step_updates_the_oldest_own_marked_comment() {
+    for action in FORGE_ACTIONS {
+        let forge = forge_with(&[
+            (30, SELF, "<!-- domarinn-eval -->\nnewer"),
+            (8, OTHER, "<!-- domarinn-eval -->\nplanted"),
+            (20, SELF, "<!-- domarinn-eval -->\noldest"),
+        ]);
+        let (ran, seen) = comment_against(action, &forge);
+
+        assert_eq!(ran.status, Some(0), "{action}: {}", ran.log);
+        let patch = patches(&seen);
+        assert_eq!(patch.len(), 1, "{action}: {seen:?}\n{}", ran.log);
+        assert_eq!(
+            patch[0].path,
+            "/api/v1/repos/acme/widgets/issues/comments/20"
+        );
+        assert_eq!(posts(&seen), 0, "{action}: {seen:?}");
+    }
+}
+
+/// Without the token's identity no comment can be shown to be its own, so
+/// nothing is edited: the step warns and posts a fresh comment.
+#[test]
+fn the_comment_step_posts_anew_when_it_cannot_resolve_its_user() {
+    for action in FORGE_ACTIONS {
+        let forge = StubForge::start(|method, path| match (method, path) {
+            ("GET", "/api/v1/user") => (401, r#"{"message":"no"}"#.into()),
+            ("GET", _) => (
                 200,
-                comments_json(&[(3, "LGTM"), (11, "<!-- domarinn-eval -->\nold")]),
+                comments_json(&[(11, SELF, "<!-- domarinn-eval -->\nold")]),
             ),
-            "PATCH" => (200, r#"{"id":11}"#.into()),
+            ("POST", _) => (201, r#"{"id":12}"#.into()),
             _ => (500, "{}".into()),
         });
         let (ran, seen) = comment_against(action, &forge);
 
         assert_eq!(ran.status, Some(0), "{action}: {}", ran.log);
-        let patch = seen
-            .iter()
-            .find(|r| r.method == "PATCH")
-            .unwrap_or_else(|| panic!("{action}: nothing was updated: {seen:?}\n{}", ran.log));
-        assert_eq!(patch.path, "/api/v1/repos/acme/widgets/issues/comments/11");
-        assert!(patch.body.contains("12 passed"), "{action}: {}", patch.body);
         assert!(
-            seen.iter().all(|r| r.method != "POST"),
-            "{action}: {seen:?}"
+            ran.log
+                .contains("::warning::could not resolve the token's user"),
+            "{action}: got:\n{}",
+            ran.log
         );
+        assert!(patches(&seen).is_empty(), "{action}: {seen:?}");
+        assert_eq!(posts(&seen), 1, "{action}: {seen:?}");
     }
 }
 
@@ -379,47 +490,52 @@ fn the_comment_step_updates_the_marked_comment() {
 #[test]
 fn the_comment_step_stops_paging_when_the_forge_ignores_page() {
     for action in FORGE_ACTIONS {
-        let forge = StubForge::start(|method, _| match method {
-            "GET" => {
-                let full: Vec<(u64, &str)> = (1..=50).map(|id| (id, "chatter")).collect();
+        let forge = StubForge::start(|method, path| match (method, path) {
+            ("GET", "/api/v1/user") => (200, format!(r#"{{"id":{SELF}}}"#)),
+            ("GET", _) => {
+                let full: Vec<(u64, u64, &str)> =
+                    (1..=50).map(|id| (id, OTHER, "chatter")).collect();
                 (200, comments_json(&full))
             }
-            "POST" => (201, r#"{"id":99}"#.into()),
+            ("POST", _) => (201, r#"{"id":99}"#.into()),
             _ => (500, "{}".into()),
         });
         let (ran, seen) = comment_against(action, &forge);
 
         assert_eq!(ran.status, Some(0), "{action}: {}", ran.log);
-        let gets = seen.iter().filter(|r| r.method == "GET").count();
+        let gets = seen
+            .iter()
+            .filter(|r| r.method == "GET" && r.path.contains("/comments"))
+            .count();
         assert_eq!(
             gets, 2,
             "{action}: a full first page asks for a second, and a second with no \
              new ids ends it: {seen:?}"
         );
-        assert_eq!(seen.iter().filter(|r| r.method == "POST").count(), 1);
+        assert_eq!(posts(&seen), 1);
     }
 }
 
-/// A marked comment the token may not edit — someone quoted the marker, say —
-/// is not the end of it: the step posts a fresh comment instead.
+/// An update the forge refuses after all — the token lost access to edit, say
+/// — is not the end of it: the step posts a fresh comment instead.
 #[test]
 fn the_comment_step_posts_anew_when_the_update_is_refused() {
     for action in FORGE_ACTIONS {
-        let forge = StubForge::start(|method, _| match method {
-            "GET" => (200, comments_json(&[(5, "> <!-- domarinn-eval -->")])),
-            "PATCH" => (403, r#"{"message":"forbidden"}"#.into()),
-            "POST" => (201, r#"{"id":6}"#.into()),
+        let forge = StubForge::start(|method, path| match (method, path) {
+            ("GET", "/api/v1/user") => (200, format!(r#"{{"id":{SELF}}}"#)),
+            ("GET", _) => (
+                200,
+                comments_json(&[(5, SELF, "<!-- domarinn-eval -->\nold")]),
+            ),
+            ("PATCH", _) => (403, r#"{"message":"forbidden"}"#.into()),
+            ("POST", _) => (201, r#"{"id":6}"#.into()),
             _ => (500, "{}".into()),
         });
         let (ran, seen) = comment_against(action, &forge);
 
         assert_eq!(ran.status, Some(0), "{action}: {}", ran.log);
         assert!(ran.log.contains("::warning::could not update comment 5"));
-        assert_eq!(
-            seen.iter().filter(|r| r.method == "POST").count(),
-            1,
-            "{action}: {seen:?}"
-        );
+        assert_eq!(posts(&seen), 1, "{action}: {seen:?}");
     }
 }
 

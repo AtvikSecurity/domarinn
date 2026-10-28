@@ -480,6 +480,10 @@ runs:
     # -- Comment the summary on the PR (create-or-update a single comment). -----
     - name: Comment on PR
       if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      # A refused comment (a fork's read-only token, a rate limit) is a
+      # reporting failure, not a verdict: the gate step below owns that, and
+      # the forge copies of this step already only warn.
+      continue-on-error: true
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0 # pin to SHA
       env:
         SUMMARY_PATH: ${{ steps.summary.outputs.summary-path }}
@@ -496,8 +500,16 @@ runs:
           }
           const { owner, repo } = context.repo;
           const issue_number = context.issue.number;
-          const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
-          const existing = comments.find(c => c.body && c.body.includes(marker));
+          // Only a comment this step's own token wrote, and only one whose body
+          // starts with the marker: a token with write access may edit anyone's
+          // comment, so matching the marker anywhere would overwrite a quote-reply
+          // or a comment planted to receive the results. The token is always the
+          // job's GITHUB_TOKEN, which posts as github-actions[bot]. Every page is
+          // read, and the oldest match wins (the list is oldest first).
+          const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+          const existing = comments.find(c =>
+            c.user && c.user.type === 'Bot' && c.user.login === 'github-actions[bot]' &&
+            typeof c.body === 'string' && c.body.startsWith(marker));
           if (existing) {
             await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
           } else {
