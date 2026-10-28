@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from "@/api/queries";
 import type { ApiKeyCreatedResponse, ApiKeyView, AuthScope } from "@/api";
+import { apiErrorMessage } from "@/api/errorMessage";
 import { useAuth } from "@/auth/AuthProvider";
 import { scopesAtMost } from "@/lib/authz";
 import { formatDate, formatRelative, parseTimestamp } from "@/lib/format";
@@ -57,7 +58,12 @@ const KEY_SORT_FIELDS: Record<string, SortAccessor<ApiKeyView>> = {
 export function KeysPage() {
   const { view, isLoading } = useAuth();
   const allowedScopes = scopesAtMost(view.scope);
-  const canManage = view.canWrite && allowedScopes.length > 0;
+  // Keys belong to a user account. The server gates the key endpoints at
+  // `read` and then refuses any caller with no owning account (`require_user`),
+  // so a viewer may mint its own read-only key while an anonymous open-mode
+  // visitor or a static token — authenticated, but nobody's — may not. The
+  // scope dropdown is what caps a key at the caller's own scope.
+  const canManage = view.authenticated && !!view.user;
 
   const keysQuery = useApiKeys(canManage);
   const createKey = useCreateApiKey();
@@ -67,6 +73,8 @@ export function KeysPage() {
   const [scope, setScope] = useState<AuthScope>("read");
   const [secret, setSecret] = useState<ApiKeyCreatedResponse | null>(null);
   const [revoking, setRevoking] = useState<ApiKeyView | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
   // Above the early returns below: hook order cannot depend on auth state.
   const colPrefs = useColumnPrefs(KEYS_TABLE_ID);
   const shownCols = useMemo(
@@ -91,25 +99,37 @@ export function KeysPage() {
   }
   if (!canManage) {
     return (
-      <div className="max-w-2xl space-y-5">
-        <PageHeader />
-        <Card className="p-6 text-sm text-muted">
-          Your access level does not permit managing API keys. A write or admin
-          scope is required.
-        </Card>
-      </div>
+      <SignInPrompt
+        message={
+          view.source === "static"
+            ? "API keys belong to a user account, and a static token is not tied to one. Sign in with an account to create and manage your own keys."
+            : "API keys belong to a user account. Sign in with an account to create and manage your own keys."
+        }
+      />
     );
   }
 
   async function onCreate(e: React.FormEvent) {
     e.preventDefault();
-    const created = await createKey.mutateAsync({
-      name: name.trim() || "Unnamed key",
-      scope,
-    });
-    setSecret(created);
-    setName("");
-    setScope("read");
+    setCreateError(null);
+    try {
+      const created = await createKey.mutateAsync({
+        name: name.trim() || "Unnamed key",
+        scope,
+      });
+      setSecret(created);
+      setName("");
+      setScope("read");
+    } catch (err) {
+      setCreateError(
+        apiErrorMessage(err, "Could not create the key. Please try again."),
+      );
+    }
+  }
+
+  function closeRevoke() {
+    setRevoking(null);
+    setRevokeError(null);
   }
 
   return (
@@ -159,9 +179,9 @@ export function KeysPage() {
             {createKey.isPending ? "Creating…" : "Create key"}
           </Button>
         </form>
-        {createKey.isError ? (
-          <p className="mt-2 text-sm text-fail">
-            Could not create the key. Please try again.
+        {createError ? (
+          <p role="alert" className="mt-2 text-sm text-fail">
+            {createError}
           </p>
         ) : null}
       </Card>
@@ -327,7 +347,7 @@ export function KeysPage() {
       {/* Revoke confirmation. */}
       <Modal
         open={revoking !== null}
-        onOpenChange={(o) => !o && setRevoking(null)}
+        onOpenChange={(o) => !o && closeRevoke()}
         title="Revoke API key"
         description={
           revoking
@@ -336,18 +356,31 @@ export function KeysPage() {
         }
         footer={
           <ModalActions
-            onCancel={() => setRevoking(null)}
+            onCancel={closeRevoke}
             confirmLabel="Revoke key"
             confirmVariant="danger"
             pending={revokeKey.isPending}
             onConfirm={async () => {
               if (!revoking) return;
-              await revokeKey.mutateAsync(revoking.id);
-              setRevoking(null);
+              setRevokeError(null);
+              try {
+                await revokeKey.mutateAsync(revoking.id);
+                closeRevoke();
+              } catch (err) {
+                setRevokeError(
+                  apiErrorMessage(err, "Could not revoke the key. Please try again."),
+                );
+              }
             }}
           />
         }
-      />
+      >
+        {revokeError ? (
+          <p role="alert" className="text-sm text-fail">
+            {revokeError}
+          </p>
+        ) : null}
+      </Modal>
     </div>
   );
 }
