@@ -64,6 +64,32 @@ function forbidden(): Response {
   return json({ error: "forbidden" }, 403);
 }
 
+/**
+ * The account endpoints' refusals, word for word as `accounts.rs` sends them.
+ * The UI shows the server's sentence verbatim (`apiErrorMessage`), so a mock
+ * that answers with its own codes — it used to send `username_taken` and
+ * `last_admin` — tests a page against a server that does not exist.
+ */
+const MIN_PASSWORD_LEN = 8;
+
+function badRequest(message: string): Response {
+  return json({ error: message }, 400);
+}
+
+/** `validate_username`: trimmed, and not empty. */
+function usernameRefusal(username: string | undefined): Response | null {
+  return (username ?? "").trim() === ""
+    ? badRequest("username must not be empty")
+    : null;
+}
+
+/** `validate_password`: at least `MIN_PASSWORD_LEN` bytes. */
+function passwordRefusal(password: string | undefined): Response | null {
+  return new TextEncoder().encode(password ?? "").length < MIN_PASSWORD_LEN
+    ? badRequest(`password must be at least ${MIN_PASSWORD_LEN} characters`)
+    : null;
+}
+
 /** Extract the bearer token from a request's headers, if present. */
 function bearer(init: RequestInit): string | null {
   const headers = init.headers as Record<string, string> | undefined;
@@ -323,9 +349,17 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       return res ? json(res) : json({ error: "invalid_credentials" }, 401);
     }
     if (method === "POST" && seg[1] === "setup" && seg.length === 2) {
-      if (!auth.setupRequired()) return json({ error: "already_setup" }, 409);
+      if (!auth.setupRequired()) {
+        return json({ error: "setup has already been completed" }, 409);
+      }
       const body = readJson<{ username?: string; password?: string }>(init);
-      return json(auth.setup(body.username ?? "", body.password ?? ""), 201);
+      const refused =
+        usernameRefusal(body.username) ?? passwordRefusal(body.password);
+      if (refused) return refused;
+      return json(
+        auth.setup((body.username ?? "").trim(), body.password ?? ""),
+        201,
+      );
     }
     if (method === "POST" && seg[1] === "logout" && seg.length === 2) {
       // Real server: 401 for an anonymous caller, otherwise `OkResponse`.
@@ -374,24 +408,44 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
         password?: string;
         role?: Role;
       }>(init);
-      const created = auth.createUser(body.username, body.password, body.role);
-      return created ? json(created, 201) : json({ error: "username_taken" }, 409);
+      const refused =
+        usernameRefusal(body.username) ?? passwordRefusal(body.password);
+      if (refused) return refused;
+      const created = auth.createUser(
+        body.username?.trim(),
+        body.password,
+        body.role,
+      );
+      return created
+        ? json(created, 201)
+        : json({ error: "username already exists" }, 409);
     }
     if (method === "PATCH" && seg.length === 2) {
       const targetId = seg[1];
       if (targetId === undefined) return notFound();
       const body = readJson<auth.UserPatch>(init);
-      const res = auth.updateUser(targetId, body);
-      if (res === "last_admin") return json({ error: "last_admin" }, 409);
-      if (res === "not_found") return notFound();
+      // The server applies role/disabled first (refusing the last admin),
+      // then validates and sets the password — so a bad password still
+      // lands any role change sent alongside it.
+      const { password, ...rest } = body;
+      const badPassword =
+        password !== undefined ? passwordRefusal(password) : null;
+      const res = auth.updateUser(targetId, badPassword ? rest : body);
+      if (res === "not_found") return json({ error: "user not found" }, 404);
+      if (res === "last_admin") {
+        return json({ error: "cannot remove the last admin" }, 409);
+      }
+      if (badPassword) return badPassword;
       return json(res);
     }
     if (method === "DELETE" && seg.length === 2) {
       const targetId = seg[1];
       if (targetId === undefined) return notFound();
       const res = auth.deleteUser(targetId);
-      if (res === "last_admin") return json({ error: "last_admin" }, 409);
-      if (res === "not_found") return notFound();
+      if (res === "last_admin") {
+        return json({ error: "cannot delete the last admin" }, 409);
+      }
+      if (res === "not_found") return json({ error: "user not found" }, 404);
       return noContent();
     }
   }

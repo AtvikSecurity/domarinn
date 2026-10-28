@@ -63,8 +63,8 @@ test.describe("First-run setup", () => {
     ).toBeVisible();
 
     await page.getByLabel("Username").fill("founder");
-    await page.getByLabel("Password", { exact: true }).fill("s3cret!");
-    await page.getByLabel("Confirm password").fill("s3cret!");
+    await page.getByLabel("Password", { exact: true }).fill("s3cret!!");
+    await page.getByLabel("Confirm password").fill("s3cret!!");
     await page.getByRole("button", { name: /Create admin/ }).click();
 
     // Setup completes, logs in, and lands on the runs list.

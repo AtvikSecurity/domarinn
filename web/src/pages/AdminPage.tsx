@@ -6,7 +6,7 @@ import {
   useUsers,
 } from "@/api/queries";
 import type { Role, UserView } from "@/api";
-import { ApiError } from "@/api/client";
+import { apiErrorMessage } from "@/api/errorMessage";
 import { useAuthView } from "@/auth/AuthProvider";
 import { ALL_ROLES } from "@/lib/authz";
 import { formatDate, parseTimestamp } from "@/lib/format";
@@ -60,21 +60,41 @@ const USER_SORT_FIELDS: Record<string, SortAccessor<UserView>> = {
   created: (u) => parseTimestamp(u.created_at),
 };
 
-function errorMessage(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) {
-    if (err.status === 409) {
-      const body = err.body as { error?: string } | undefined;
-      if (body?.error === "last_admin") {
-        return "Cannot remove the last active admin.";
-      }
-      if (body?.error === "username_taken") {
-        return "That username is already taken.";
-      }
-      return "Conflict — the change was rejected by the server.";
-    }
-    if (err.status === 403) return "You are not allowed to perform this action.";
+/**
+ * A role or status change held back for confirmation. The server only refuses
+ * the change that would leave no enabled admin, so an admin who has a second
+ * admin can still disable or demote themselves in one click — and lose this
+ * page with it. Disabling anyone signs them out, so that asks too.
+ */
+type PendingChange =
+  | { kind: "role"; user: UserView; role: Role }
+  | { kind: "disable"; user: UserView };
+
+/** Lower index in `ALL_ROLES` is less privilege. */
+function isDemotion(from: Role, to: Role): boolean {
+  return ALL_ROLES.indexOf(to) < ALL_ROLES.indexOf(from);
+}
+
+function confirmCopy(change: PendingChange, isSelf: boolean) {
+  if (change.kind === "role") {
+    return {
+      title: "Change your own role",
+      description:
+        `You are signed in as "${change.user.username}". Changing your role ` +
+        `from ${change.user.role} to ${change.role} takes effect immediately, ` +
+        "and you lose access to this page.",
+      confirmLabel: `Change to ${change.role}`,
+    };
   }
-  return fallback;
+  return {
+    title: isSelf ? "Disable your own account" : "Disable user",
+    description: isSelf
+      ? `You are signed in as "${change.user.username}". Disabling this ` +
+        "account signs you out, and only another admin can enable it again."
+      : `Disable "${change.user.username}"? They are signed out and cannot ` +
+        "sign in until an admin enables the account again.",
+    confirmLabel: isSelf ? "Disable my account" : "Disable user",
+  };
 }
 
 export function AdminPage() {
@@ -84,8 +104,11 @@ export function AdminPage() {
   const deleteUser = useDeleteUser();
 
   const [banner, setBanner] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [resetting, setResetting] = useState<UserView | null>(null);
   const [deleting, setDeleting] = useState<UserView | null>(null);
+  const [confirming, setConfirming] = useState<PendingChange | null>(null);
+  const selfId = view.user?.id ?? null;
   const colPrefs = useColumnPrefs(USERS_TABLE_ID);
   const shownCols = useMemo(
     () => visibleColumns(USER_COLUMNS, colPrefs),
@@ -94,26 +117,56 @@ export function AdminPage() {
   const shownIds = useMemo(() => new Set(shownCols.map((c) => c.id)), [shownCols]);
   const sort = useSortParam();
 
-  async function changeRole(user: UserView, role: Role) {
+  function clearMessages() {
     setBanner(null);
+    setNotice(null);
+  }
+
+  async function applyRole(user: UserView, role: Role) {
+    clearMessages();
     try {
       await updateUser.mutateAsync({ id: user.id, patch: { role } });
     } catch (err) {
-      setBanner(errorMessage(err, "Could not change the role."));
+      setBanner(apiErrorMessage(err, "Could not change the role."));
     }
   }
 
-  async function toggleDisabled(user: UserView) {
-    setBanner(null);
+  async function applyDisabled(user: UserView, disabled: boolean) {
+    clearMessages();
     try {
-      await updateUser.mutateAsync({
-        id: user.id,
-        patch: { disabled: !user.disabled },
-      });
+      await updateUser.mutateAsync({ id: user.id, patch: { disabled } });
     } catch (err) {
-      setBanner(errorMessage(err, "Could not update the account."));
+      setBanner(apiErrorMessage(err, "Could not update the account."));
     }
   }
+
+  function changeRole(user: UserView, role: Role) {
+    if (user.id === selfId && isDemotion(user.role, role)) {
+      setConfirming({ kind: "role", user, role });
+      return;
+    }
+    void applyRole(user, role);
+  }
+
+  function toggleDisabled(user: UserView) {
+    if (!user.disabled) {
+      setConfirming({ kind: "disable", user });
+      return;
+    }
+    void applyDisabled(user, false);
+  }
+
+  async function confirmChange() {
+    if (!confirming) return;
+    const change = confirming;
+    if (change.kind === "role") await applyRole(change.user, change.role);
+    else await applyDisabled(change.user, true);
+    setConfirming(null);
+  }
+
+  const confirmText = confirming
+    ? confirmCopy(confirming, confirming.user.id === selfId)
+    : null;
 
   return (
     <div className="max-w-4xl space-y-5">
@@ -134,7 +187,20 @@ export function AdminPage() {
         </div>
       ) : null}
 
-      <CreateUserForm onError={(m) => setBanner(m)} />
+      {notice ? (
+        <div
+          role="status"
+          className="rounded-md border border-pass/30 bg-pass/5 px-3 py-2 text-sm text-pass"
+        >
+          {notice}
+        </div>
+      ) : null}
+
+      <CreateUserForm
+        onStart={clearMessages}
+        onError={(m) => setBanner(m)}
+        onCreated={(name) => setNotice(`Created user "${name}".`)}
+      />
 
       <section className={cn(CHROME_FRAME, "overflow-hidden")}>
         <header className="border-b border-border px-4 py-2.5 text-sm font-semibold">
@@ -303,7 +369,26 @@ export function AdminPage() {
       <ResetPasswordModal
         user={resetting}
         onClose={() => setResetting(null)}
-        onError={(m) => setBanner(m)}
+        onReset={(u) => {
+          clearMessages();
+          setNotice(`Password reset for "${u.username}".`);
+        }}
+      />
+
+      <Modal
+        open={confirming !== null}
+        onOpenChange={(o) => !o && setConfirming(null)}
+        title={confirmText?.title ?? "Confirm"}
+        description={confirmText?.description}
+        footer={
+          <ModalActions
+            onCancel={() => setConfirming(null)}
+            confirmLabel={confirmText?.confirmLabel ?? "Confirm"}
+            confirmVariant="danger"
+            pending={updateUser.isPending}
+            onConfirm={confirmChange}
+          />
+        }
       />
 
       <Modal
@@ -323,13 +408,13 @@ export function AdminPage() {
             pending={deleteUser.isPending}
             onConfirm={async () => {
               if (!deleting) return;
-              setBanner(null);
+              clearMessages();
               try {
                 await deleteUser.mutateAsync(deleting.id);
                 setDeleting(null);
               } catch (err) {
                 setDeleting(null);
-                setBanner(errorMessage(err, "Could not delete the user."));
+                setBanner(apiErrorMessage(err, "Could not delete the user."));
               }
             }}
           />
@@ -339,7 +424,15 @@ export function AdminPage() {
   );
 }
 
-function CreateUserForm({ onError }: { onError: (message: string) => void }) {
+function CreateUserForm({
+  onStart,
+  onError,
+  onCreated,
+}: {
+  onStart: () => void;
+  onError: (message: string) => void;
+  onCreated: (username: string) => void;
+}) {
   const createUser = useCreateUser();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -347,9 +440,9 @@ function CreateUserForm({ onError }: { onError: (message: string) => void }) {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    onError("");
+    onStart();
     try {
-      await createUser.mutateAsync({
+      const created = await createUser.mutateAsync({
         username: username.trim(),
         password,
         role,
@@ -357,8 +450,9 @@ function CreateUserForm({ onError }: { onError: (message: string) => void }) {
       setUsername("");
       setPassword("");
       setRole("member");
+      onCreated(created.username);
     } catch (err) {
-      onError(errorMessage(err, "Could not create the user."));
+      onError(apiErrorMessage(err, "Could not create the user."));
     }
   }
 
@@ -414,27 +508,40 @@ function CreateUserForm({ onError }: { onError: (message: string) => void }) {
   );
 }
 
+/**
+ * The refusal renders inside the dialog: it is still open over the page when
+ * the request fails, so the page banner would sit behind the overlay where
+ * nobody can read it.
+ */
 function ResetPasswordModal({
   user,
   onClose,
-  onError,
+  onReset,
 }: {
   user: UserView | null;
   onClose: () => void;
-  onError: (message: string) => void;
+  onReset: (user: UserView) => void;
 }) {
   const updateUser = useUpdateUser();
   const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  function close() {
+    setPassword("");
+    setError(null);
+    onClose();
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!user) return;
+    setError(null);
     try {
       await updateUser.mutateAsync({ id: user.id, patch: { password } });
-      setPassword("");
-      onClose();
+      close();
+      onReset(user);
     } catch (err) {
-      onError(errorMessage(err, "Could not reset the password."));
+      setError(apiErrorMessage(err, "Could not reset the password."));
     }
   }
 
@@ -442,10 +549,7 @@ function ResetPasswordModal({
     <Modal
       open={user !== null}
       onOpenChange={(o) => {
-        if (!o) {
-          setPassword("");
-          onClose();
-        }
+        if (!o) close();
       }}
       title="Reset password"
       description={user ? `Set a new password for "${user.username}".` : undefined}
@@ -460,11 +564,13 @@ function ResetPasswordModal({
           autoFocus
           required
         />
+        {error ? (
+          <p role="alert" className="text-sm text-fail">
+            {error}
+          </p>
+        ) : null}
         <ModalActions
-          onCancel={() => {
-            setPassword("");
-            onClose();
-          }}
+          onCancel={close}
           confirmLabel="Set password"
           confirmType="submit"
           pending={updateUser.isPending}
