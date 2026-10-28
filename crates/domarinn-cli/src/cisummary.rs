@@ -28,7 +28,14 @@ pub struct CiSummaryArgs {
     #[arg(default_value = "latest")]
     pub run: String,
 
-    /// Compare against a baseline run (id, path, or `latest`).
+    /// Compare against a baseline; the same references `run --against` takes.
+    ///
+    /// `server:baseline` (the pin for this suite on the results server),
+    /// `server:branch:<name>` (the newest server runs on a branch, merged per
+    /// case), `branch:<name>` (the same over the local run store), `latest`
+    /// (the newest local run of this suite), a run id, a `result.json` path,
+    /// or `none` to drop a `baseline:` default. Unlike `run`, an unresolvable
+    /// baseline warns and summarizes without a comparison.
     #[arg(long)]
     pub against: Option<String>,
 
@@ -36,9 +43,12 @@ pub struct CiSummaryArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Append `key=value` step outputs to this file (defaults to $GITHUB_OUTPUT
-    /// when the environment sets it, so GitHub Actions needs no flag).
-    #[arg(long, env = "GITHUB_OUTPUT")]
+    /// Append `key=value` step outputs to this file.
+    ///
+    /// `--step-output` is the forge-neutral spelling of the same flag. Both
+    /// default to $GITHUB_OUTPUT, which GitHub, Gitea and Forgejo runners all
+    /// set, so a workflow step needs neither.
+    #[arg(long, visible_alias = "step-output", env = "GITHUB_OUTPUT")]
     pub github_output: Option<PathBuf>,
 }
 

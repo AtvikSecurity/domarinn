@@ -247,14 +247,14 @@ DOMARINN_SERVER_URL=https://evals.example domarinn baseline show
 
 ## `domarinn ci-summary [RUN] [flags]`
 
-Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as GitHub Actions step outputs. See [`gate-in-ci.md`](../guides/gate-in-ci.md#the-ci-summary-command).
+Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as step outputs for GitHub, Gitea or Forgejo Actions. See [`gate-in-ci.md`](../guides/gate-in-ci.md#the-ci-summary-command).
 
 | Flag | Meaning |
 |---|---|
 | `RUN` | Run to summarize — a run id, `latest` (default), a `result.json`, or a run directory. |
 | `--against <REF>` | Append a baseline comparison; same references as `run --against`, including the branch forms and `none`. With no flag, a [`baseline:`](domarinn-yaml.md#baseline) key in the summarized run's config supplies the same default the gate used. `ci-summary` is a reporter, not a gate, so an unresolvable baseline warns and is skipped rather than failing. |
 | `--out <FILE>` | Write the Markdown to a file instead of stdout. |
-| `--github-output <FILE>` | Append `key=value` step outputs here. Defaults to `$GITHUB_OUTPUT`, so on a runner no flag is needed. |
+| `--github-output <FILE>` | Append `key=value` step outputs here. `--step-output` is the forge-neutral alias for the same flag. Defaults to `$GITHUB_OUTPUT`, which GitHub, Gitea and Forgejo runners all set, so on a runner no flag is needed. |
 
 **It is a reporter, not a gate** — it exits `0` for a failing run, because the verdict belongs to `run`'s [exit code](#exit-codes). It exits `2` only when the run reference cannot be resolved.
 
