@@ -15,15 +15,16 @@ beside it discusses what the shot shows. -->
 | `/runs`                       | [Runs list](#runs-list) | Browse and filter runs (project, suite, tag, branch, status, origin, actor). |
 | `/runs/:id`                   | [Run detail](#run-detail) | Every case with its assertions; click one for the [detail drawer](#the-case-drawer). |
 | `/runs/:id?view=matrix`       | [Matrix view](#matrix-view) | The same run pivoted to **prompt × provider**. |
-| `/runs/:id/compare[/:other]`  | [Compare](#compare--mcnemar) | Base/head pickers, regression highlighting, and the significance test. |
+| `/runs/:id/compare/:other`    | [Compare](#compare--mcnemar) | Base/head pickers, regression highlighting, and the significance test. Both runs are part of the path; `/runs/:id/compare` alone is not a page. |
 | `/sets`                       | [Run sets](#run-sets) | Every project you can reach, and who may reach it. |
 | `/sets/:project`              | [Run sets](#run-sets) | That project's suites, with their trends, baselines and locks. |
 | `/sets/:project/:suite`       | [One suite](#one-suite) | One suite's record, plus the [access panel](#who-may-reach-a-set). |
 | `/search?q=`                  | [Search](#search) | Full-text across runs and case outputs. |
 | `/cache`                      | [Cache stats](#cache-stats) | The server's shared cache tier: entries, size, hit/miss counters. |
+| `/cache/entries`              | [Cache entries](#cache-entries) | What is actually in the cache, one row per entry, with a request/response drawer. Admin-only. |
 | `/settings`                   | [Settings](#settings) | Account, appearance, and what this server is running. |
 | `/login`                      | [Login](#login) | Username/password sign-in, plus any configured SSO buttons. |
-| `/setup`                       | Setup | First-run admin creation (only while `setup_required`). |
+| `/setup`                      | Setup | First-run admin creation (only while `setup_required`). |
 | `/keys`                       | [API keys](#api-keys) | Create, view once, and revoke your API keys. |
 | `/admin`                      | [Admin](#admin) | Manage accounts. Admin-only. |
 
@@ -159,6 +160,8 @@ Note what the two red rows do *not* do: `failing-gate` at 33.3% and `errors-and-
 A suite's whole record on one page: how many runs, the newest run's pass rate, the case total with the share that passed across all of them, when it last ran, and a pass-rate trend as soon as there are two runs to draw a line between.
 
 Below that, the suite's runs, under the same cached default as everywhere else — this shot is taken at `?cached=all`, which is why both replays are listed and both carry a `cached` badge. Whenever the page is hiding some, it says so on the line above the table rather than letting the rows silently disagree with the `RUNS 2` beside them. Tick two and `Compare 2 runs` opens them in [Compare](#compare--mcnemar), older as base; the per-row `Compare` link takes a run against the one before it, which is why the oldest row has a `—` instead. `View in Runs →` hands the same project and suite to the runs list, carrying this page's own cached view through so the stream opens showing what the table did.
+
+`Pin branch…` beside the heading pins a **branch** as this suite's comparison baseline: type a branch name (`main`, say) and the baseline tracks it from then on, with no re-pinning. It is not "the newest run on that branch": the newest runs on the branch are merged *per case*, the newest run that has each case winning, so a filtered or sharded upload cannot quietly shrink what the gate compares against. A suite holds one pin, so pinning a branch replaces a pinned run and vice versa; the chip beside the heading reads `baseline` for a pinned run and `baseline: <branch>` for a pinned branch. Pinning needs `upload` on the set (see [the levels below](#who-may-reach-a-set)). To freeze the baseline on one run instead, use `Set baseline` on the [run page](#run-detail). Both kinds, and how CI resolves them, are covered in [Gate a pull request on regressions](../guides/gate-in-ci.md#gate-a-pull-request-on-regressions).
 
 The `restricted` chip beside the heading, and the `Access` button opposite it, are the other half of this page.
 
