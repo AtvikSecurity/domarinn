@@ -613,10 +613,23 @@ export function useCacheStats() {
   });
 }
 
+/**
+ * What a prune evicts. Omit `olderThanDays` for the server's configured
+ * retention (age *and* size limits); naming it evicts on age alone — see
+ * `cache_prune` in the server's `cachebrowse.rs`.
+ */
+export interface PruneOptions {
+  olderThanDays?: number;
+}
+
 export function usePruneCache() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: () => apiRequest<PruneResponse>("/cache/prune", { method: "POST" }),
+    mutationFn: (opts: PruneOptions = {}) =>
+      apiRequest<PruneResponse>("/cache/prune", {
+        method: "POST",
+        params: { older_than_days: opts.olderThanDays },
+      }),
     // The whole ["cache"] subtree, not just the stats. A prune deletes entries,
     // so leaving the entries list cached would keep rendering rows the server
     // has just evicted.

@@ -708,7 +708,17 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
         "Authorization"
       ];
       if (!authed) return json({ error: "unauthorized" }, 401);
-      const res: PruneResponse = { pruned: 128 };
+      // A bare prune applies the configured retention; `older_than_days`
+      // evicts on age alone, counted against the fixture's own clock (its
+      // newest entry) so the answer is stable across days.
+      const days = p.get("older_than_days");
+      let pruned = 128;
+      if (days !== null) {
+        const created = fx.cacheEntryList().map((e) => parseTimestamp(e.created_at));
+        const cutoff = Math.max(...created) - Number(days) * 86_400_000;
+        pruned = created.filter((t) => t < cutoff).length;
+      }
+      const res: PruneResponse = { pruned };
       return json(res);
     }
     // DELETE /cache/entries/:key — admin scope, 204 or 404 like the server.
