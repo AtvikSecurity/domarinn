@@ -1,0 +1,50 @@
+# A representative promptfoo config exercising every construct the converter
+# maps. tests/import_promptfoo.rs converts it and runs `domarinn validate` on
+# the result, which must report no errors and no warnings.
+description: Support assistant regression suite
+
+providers:
+  - openai:gpt-4o-mini
+  - anthropic:messages:claude-3-5-haiku-latest
+  - ollama:chat:llama3.1:8b
+  - id: openai:chat:gpt-4o
+    label: gpt-4o-cold
+    config:
+      temperature: 0
+      max_tokens: 512
+      apiKeyEnvar: OPENAI_API_KEY
+
+prompts:
+  - "You are a support agent for {{ product }}. Customer: {{ question }}"
+
+defaultTest:
+  vars:
+    product: Aurora Notes
+  assert:
+    - type: not-icontains
+      value: as an AI
+    - type: latency
+      threshold: 5000
+
+tests:
+  - description: refund window
+    vars:
+      question: How long do I have to return something?
+    assert:
+      - type: contains-any
+        value: ["30 days", "thirty days"]
+      - type: icontains-any
+        value: [refund, return]
+      - type: cost
+        threshold: 0.01
+      - type: not-contains
+        value: "I don't know"
+  - vars:
+      question: ["Can I get a refund on a gift card?", "Are gift cards refundable?"]
+    assert:
+      - type: icontains-all
+        value: [gift card, refund]
+      - type: llm-rubric
+        value: States that gift cards are non-refundable
+        threshold: 0.7
+  - file://tests.csv

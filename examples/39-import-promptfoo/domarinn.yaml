@@ -5,10 +5,10 @@
 # ids.
 #
 # Read the `# NOTE:` lines first. Each one is something the converter could not
-# translate faithfully and refused to drop silently — here a `not-icontains`
-# assertion it does not recognise, and a `javascript` assertion that has no
-# equivalent at all. Both left the suite; re-adding them is the migration work
-# this file does not do for you.
+# translate faithfully and refused to drop silently — here a `javascript`
+# assertion and a `moderation` assertion, neither of which has an equivalent.
+# Both left the suite; replacing them is the migration work this file does not
+# do for you.
 #
 # Two things a converted suite always wants next, neither of which the converter
 # can guess: `project:` / `suite:` names (they group and compare runs on the
@@ -20,18 +20,15 @@
 # this file as YAML, and runs both — so this can only fall out of date if the
 # converter itself changes.
 #
-# The `$schema=./domarinn.schema.json` line below is the converter's own, and it
-# assumes the only thing the converter can assume: a suite sitting beside a
-# schema you wrote with `domarinn schema config > domarinn.schema.json` at your
-# project root. This suite lives two levels down, so that hint resolves to
-# nothing — left unedited on purpose, because every line after this header is
-# the converter's verbatim.
+# The `$schema=` line below is the converter's own: it names the published
+# config schema, so an editor with the YAML language server validates and
+# completes this file wherever it lives.
 #
 # Run:  domarinn run examples/39-import-promptfoo
 # Converted from a promptfoo config by `domarinn import promptfoo`.
-# yaml-language-server: $schema=./domarinn.schema.json
-# NOTE: assertion type 'not-icontains' was skipped (no equivalent)
-# NOTE: 'javascript' assertion has no direct equivalent; rewrite as an `exec` assertion
+# yaml-language-server: $schema=https://raw.githubusercontent.com/AtvikSecurity/domarinn/main/domarinn.schema.json
+# NOTE: assertion type 'javascript' was skipped (no direct equivalent; rewrite it as an `exec` assertion)
+# NOTE: assertion type 'moderation' was skipped (no equivalent)
 version: 1
 description: Refund-policy replies from the support assistant
 providers:
@@ -51,6 +48,8 @@ defaults:
   assert:
     - type: icontains
       value: Aurora
+    - type: not-icontains
+      value: as an AI
 tests:
   - id: case-0
     vars:

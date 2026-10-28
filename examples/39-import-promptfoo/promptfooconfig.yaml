@@ -31,11 +31,9 @@ defaultTest:
   assert:
     - type: icontains
       value: Aurora
-    # NOT recognised by the converter, which matches on the bare type name: this
-    # one is reported as unmapped and left out. domarinn does support the
-    # spelling — `not-<type>` sugar, documented in docs/reference/assertions.md
-    # and used by examples/13-exec-provider — so it has to be re-added by hand,
-    # which is exactly why the notes are worth reading.
+    # Carried across unchanged: domarinn has the same `not-<type>` sugar,
+    # documented in docs/reference/assertions.md and used by
+    # examples/13-exec-provider.
     - type: not-icontains
       value: as an AI
 
@@ -56,3 +54,6 @@ tests:
     assert:
       - type: icontains
         value: gift card
+      # No equivalent either: domarinn ships no moderation classifier. The
+      # usual replacement is an `llm-rubric` that states the policy outright.
+      - type: moderation

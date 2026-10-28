@@ -311,7 +311,7 @@ See [caching.md](../concepts/caching.md) for the key rule, backends, and team sh
 
 ## `domarinn import promptfoo <PATH>`
 
-Translate a promptfoo config into a domarinn suite, printed to stdout. Mappable providers, prompts, tests, and assertions are converted; anything without a faithful equivalent is emitted as a commented `# NOTE:` line so nothing is silently dropped.
+Translate a promptfoo config into a domarinn suite, printed to stdout. Mappable providers, prompts, tests, and assertions are converted; anything without a faithful equivalent is emitted as a commented `# NOTE:` line so nothing is silently dropped. That includes keys the converter does not read — a provider's unrecognised `config:` entries, a test's `options`, an assertion's `transform`, a top-level `outputPath` — and a `tests: file://…` source, which is carried across as-is but whose contents are not translated. The output's `$schema` hint names the published config schema. See [Migrating from promptfoo](../guides/migrate-promptfoo.md#what-maps-cleanly) for the full mapping.
 
 ```sh
 domarinn import promptfoo promptfooconfig.yaml > domarinn.yaml
