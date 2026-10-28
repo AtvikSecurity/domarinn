@@ -450,6 +450,7 @@ fn retry_warn_carries_structured_attempt_and_delay_fields() {
                     state: &state,
                 },
                 &retry_cfg,
+                None,
             )
             .await
             .expect("second attempt succeeds")
@@ -610,6 +611,8 @@ async fn annotated_case(
         &cache_state,
         &crate::empty_policy::EmptyPolicy::default(),
         &crate::runner::runner_fallback::FallbackPolicy::default(),
+        None,
+        true,
     )
     .await
 }
@@ -798,6 +801,8 @@ async fn empty_case(
         &cache_state,
         &crate::empty_policy::EmptyPolicy::default(),
         &crate::runner::runner_fallback::FallbackPolicy::default(),
+        None,
+        true,
     )
     .await
 }

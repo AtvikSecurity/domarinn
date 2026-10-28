@@ -1,9 +1,9 @@
 //! The run orchestrator: expand the matrix, call providers (through the cache),
 //! evaluate assertions, and assemble a [`RunResult`].
 //!
-//! Phase 2 runs sequentially; the cell loop is written so a later phase can
-//! parallelize it while preserving deterministic output order (cells carry their
-//! index).
+//! Cells run concurrently — up to `runner.concurrency` at once, through
+//! `buffer_unordered` — and each carries its index, so completion order never
+//! leaks into output order.
 
 use std::path::Path;
 use std::time::Instant;
@@ -22,7 +22,7 @@ use crate::generate::resolve_generators;
 use crate::ids::RunId;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::provider::{CallCtx, Provider, ProviderRequest, TestMeta};
-use crate::provider_factory::build_provider;
+use crate::provider_factory::build_provider_with_timeout;
 use crate::render;
 use crate::resolve::expand_tests;
 use crate::result::{
@@ -420,6 +420,32 @@ pub async fn run_with_progress(
         }
     }
 
+    // The `runner:` knobs that shape every provider call. `validate` refuses
+    // the bad values on the CLI path; a library caller gets the same refusal
+    // here rather than a limiter that never admits anything, or a timeout that
+    // fails every request before it is sent.
+    let runner_cfg = suite.runner.as_ref();
+    let runner_timeout_ms = runner_cfg.and_then(|r| r.timeout_ms);
+    if runner_timeout_ms == Some(0) {
+        return Err(RunError::Resolve(crate::resolve::ResolveError::Parse {
+            path: "runner.timeout_ms".into(),
+            message: "must be greater than 0".into(),
+        }));
+    }
+    let limiter = match runner_cfg.and_then(|r| r.rate_limit.as_ref()) {
+        None => None,
+        Some(rl) => Some(
+            crate::rate_limit::RateLimiter::per_second(rl.rps).ok_or_else(|| {
+                RunError::Resolve(crate::resolve::ResolveError::Parse {
+                    path: "runner.rate_limit.rps".into(),
+                    message: format!("must be a positive, finite number; got {}", rl.rps),
+                })
+            })?,
+        ),
+    };
+    let limiter = limiter.as_ref();
+    let short_circuit = runner_cfg.and_then(|r| r.short_circuit).unwrap_or(true);
+
     // Providers (embeddings providers are grader helpers, not systems under test).
     //
     // Two passes into two lists, and the separation is load-bearing. `providers`
@@ -453,7 +479,7 @@ pub async fn run_with_progress(
         .collect();
     let providers: Vec<Box<dyn Provider>> = selected
         .iter()
-        .map(|p| build_provider(p, Some(base_dir)))
+        .map(|p| build_provider_with_timeout(p, Some(base_dir), runner_timeout_ms))
         .collect::<Result<_, _>>()?;
 
     // The fallback targets of the selected providers that pass 1 did not build.
@@ -479,7 +505,7 @@ pub async fn run_with_progress(
         // Tolerant, unlike the pass above: a fallback that will not build is one
         // this run may never reach, and failing the whole run over a provider
         // nothing selected would make `fallback:` a liability to configure.
-        match build_provider(cfg, Some(base_dir)) {
+        match build_provider_with_timeout(cfg, Some(base_dir), runner_timeout_ms) {
             Ok(p) => fallback_pool.push(p),
             Err(e) => tracing::warn!(
                 provider = %cfg.id,
@@ -745,6 +771,8 @@ pub async fn run_with_progress(
                     cache_state,
                     empty_policy,
                     fallback_policy,
+                    limiter,
+                    short_circuit,
                 )
                 .await;
                 if let Some(sink) = progress {
@@ -828,3 +856,7 @@ pub async fn run_with_progress(
 #[cfg(test)]
 #[path = "runner_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "runner_limits_tests.rs"]
+mod limits_tests;
