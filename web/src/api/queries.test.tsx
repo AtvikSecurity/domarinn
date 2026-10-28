@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -9,6 +9,7 @@ import {
   useDeleteCacheEntry,
   useDeleteRun,
   useDeleteUser,
+  useExportRun,
   useRun,
   useSetBaseline,
   useUpdateUser,
@@ -16,6 +17,7 @@ import {
 } from "./queries";
 import { resetMockAuth } from "@/mocks/authState";
 import * as fx from "@/mocks/fixtures";
+import { setMockEnabled } from "@/mocks/handlers";
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = new QueryClient({
@@ -205,5 +207,44 @@ describe("mutations invalidate every view of what they changed", () => {
     const { result } = renderHook(() => useDeleteUser(), { wrapper: stableWrapper });
     await act(() => result.current.mutateAsync("u_member"));
     expect(keys()).toEqual(expect.arrayContaining([qk.users, qk.sets()]));
+  });
+});
+
+describe("useExportRun", () => {
+  it("saves the served bytes verbatim, without a parse/re-serialize", async () => {
+    // An integer past 2^53 and non-default formatting: both are mangled by a
+    // JSON.parse -> JSON.stringify round trip.
+    const body = '{"id":"r1",  "big": 12345678901234567890}\n';
+    setMockEnabled(false);
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    // jsdom has neither, so there is nothing to spy on; define and remove.
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:run");
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = vi.fn();
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+    onTestFinished(() => {
+      setMockEnabled(true);
+      vi.unstubAllGlobals();
+      click.mockRestore();
+      Reflect.deleteProperty(URL, "createObjectURL");
+      Reflect.deleteProperty(URL, "revokeObjectURL");
+    });
+
+    const { result } = renderHook(() => useExportRun(), { wrapper });
+    await act(() => result.current.mutateAsync("r1"));
+
+    expect(click).toHaveBeenCalledTimes(1);
+    const blob = createObjectURL.mock.calls[0]![0];
+    expect(blob.type).toBe("application/json");
+    expect(await blob.text()).toBe(body);
   });
 });

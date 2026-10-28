@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { cn } from "@/lib/cn";
 import { Button } from "./Button";
@@ -40,6 +40,11 @@ const CloseIcon = () => (
  * `Dialog.Trigger`, and every caller here opens the modal from state with no
  * trigger, so without this focus fell to `<body>` on close and a keyboard user
  * was dumped at the top of the page.
+ *
+ * The opener is captured while rendering the closed-to-open transition, before
+ * any child mounts. Not in Radix's `onOpenAutoFocus`: Radix skips that event
+ * when focus is already inside the dialog, so a child with `autoFocus` (the
+ * reset-password field) would have taken focus first and the opener was lost.
  */
 export function Modal({
   open,
@@ -60,7 +65,16 @@ export function Modal({
   footer?: ReactNode;
   size?: "md" | "lg" | "xl";
 }) {
-  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const [opener, setOpener] = useState<HTMLElement | null>(() =>
+    open ? focusedElement() : null,
+  );
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    // React's "adjust state when a prop changes" pattern: runs during the
+    // render that opens the dialog, so focus is still on the opener.
+    setWasOpen(open);
+    if (open) setOpener(focusedElement());
+  }
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -72,21 +86,13 @@ export function Modal({
             size === "lg" && "w-[min(38rem,calc(100vw-2rem))]",
             size === "md" && "w-[min(30rem,calc(100vw-2rem))]",
           )}
-          onOpenAutoFocus={() => {
-            // Runs before Radix moves focus in, so this is still the opener.
-            returnFocusRef.current =
-              document.activeElement instanceof HTMLElement
-                ? document.activeElement
-                : null;
-          }}
           onCloseAutoFocus={(e) => {
-            const target = returnFocusRef.current;
-            returnFocusRef.current = null;
-            // The opener may be gone (e.g. a row deleted by this very dialog);
-            // then fall back to Radix's default.
-            if (target?.isConnected && target !== document.body) {
+            // Not cleared here: the next open overwrites it, and clearing
+            // could race a reopen. The opener may be gone (e.g. a row
+            // deleted by this very dialog); then fall back to Radix's default.
+            if (opener?.isConnected && opener !== document.body) {
               e.preventDefault();
-              target.focus();
+              opener.focus();
             }
           }}
         >
@@ -116,6 +122,12 @@ export function Modal({
       </Dialog.Portal>
     </Dialog.Root>
   );
+}
+
+function focusedElement(): HTMLElement | null {
+  return document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
 }
 
 /**

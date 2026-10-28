@@ -6,7 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { apiRequest } from "./client";
+import { apiRequest, apiRequestBytes } from "./client";
 import { rankProjects } from "@/lib/setSearch";
 import type {
   ApiKeyCreatedResponse,
@@ -581,19 +581,22 @@ export function useDeleteRun() {
 export function useExportRun() {
   return useMutation({
     mutationFn: async (runId: string) => {
-      const doc = await apiRequest<unknown>(
+      // The bytes as served, not parsed: re-serializing would reformat the
+      // document and silently round integers past 2^53, so the "original
+      // document" would no longer be the original.
+      const bytes = await apiRequestBytes(
         `/runs/${encodeURIComponent(runId)}/export`,
       );
-      saveJsonFile(`${runId}.json`, doc);
+      saveFile(
+        `${runId}.json`,
+        new Blob([bytes], { type: "application/json" }),
+      );
     },
   });
 }
 
-/** Hand `data` to the browser as a JSON file download. */
-function saveJsonFile(filename: string, data: unknown): void {
-  const blob = new Blob([JSON.stringify(data, null, 2)], {
-    type: "application/json",
-  });
+/** Hand `blob` to the browser as a file download. */
+function saveFile(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

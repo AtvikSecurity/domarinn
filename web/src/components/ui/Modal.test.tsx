@@ -12,7 +12,14 @@ beforeAll(() => {
   Element.prototype.scrollIntoView = () => {};
 });
 
-function Harness({ withField = false }: { withField?: boolean }) {
+function Harness({
+  withField = false,
+  autoFocusField = false,
+}: {
+  withField?: boolean;
+  /** Like ResetPasswordModal: the field grabs focus as it mounts. */
+  autoFocusField?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -31,6 +38,7 @@ function Harness({ withField = false }: { withField?: boolean }) {
         }
       >
         {withField ? <input aria-label="Name" /> : null}
+        {autoFocusField ? <input aria-label="Password" autoFocus /> : null}
       </Modal>
     </>
   );
@@ -77,5 +85,21 @@ describe("Modal", () => {
     const dialog = await screen.findByRole("dialog");
     await user.keyboard("{Escape}");
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  });
+
+  it("returns focus to the opener when a child autofocuses itself", async () => {
+    // Radix skips its open auto-focus event when focus is already inside the
+    // dialog, so an opener recorded there would be missed here.
+    const user = userEvent.setup();
+    render(<Harness autoFocusField />);
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(screen.getByLabelText("Password")).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Open" })).toHaveFocus(),
+    );
   });
 });
