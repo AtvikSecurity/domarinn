@@ -156,7 +156,7 @@ This example ships both halves of one migration. The promptfoo config going in, 
 --8<-- "examples/39-import-promptfoo/domarinn.yaml"
 ```
 
-Two of that config's assertions did not survive, and the notes name both: `not-icontains` is not a type the converter recognises — domarinn supports the spelling, the converter matches on the bare name — and `javascript` has no equivalent at all, its replacement being [an `exec` assertion](your-own-system.md#example-14--a-custom-assertion). Re-adding them is the part of a migration a converter cannot do for you.
+Two of that config's assertions did not survive, and the notes name both: `javascript` has no equivalent, its replacement being [an `exec` assertion](your-own-system.md#example-14--a-custom-assertion), and neither does `moderation`, which is usually best restated as an `llm-rubric`. Replacing them is the part of a migration a converter cannot do for you. The `not-icontains` beside them came across unchanged, because domarinn has the same `not-<type>` sugar.
 
 The ids are the converter's too: `p0` for the provider, and `case-0` / `case-1` for promptfoo cases that carried no description. They run as they are, and they are the first thing worth renaming — an id is what `--provider`, `only_providers` and a baseline diff refer to. A converted suite also has no `project:` or `suite:` name, which is what groups and compares runs on the results server.
 

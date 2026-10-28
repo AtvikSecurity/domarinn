@@ -7,7 +7,14 @@ configs = ["lefthook.common.toml"]
 # globs *.yaml, and remote config values win over same-key local overrides,
 # so a separately-named command covers the .yml spelling.
 [pre-commit.commands.zizmor-yml]
-glob = [".github/workflows/*.yml", ".github/actions/**/action.yml"]
+glob = [
+  ".github/workflows/*.yml",
+  ".github/actions/**/action.yml",
+  # The Gitea and Forgejo copies of the composite action. zizmor reads them as
+  # ordinary composite actions, URL-form `uses:` included.
+  ".gitea/actions/**/action.yml",
+  ".forgejo/actions/**/action.yml",
+]
 run = "zizmor --offline {staged_files}"
 
 # Generated artifacts are drift-checked byte-for-byte in CI (schema-check /

@@ -22,7 +22,7 @@ use crate::cache_key::request_cache_key;
 use crate::cache_migrate::legacy_provider_key;
 use crate::error_class::ErrorClass;
 use crate::provider::{CallCtx, Provider, ProviderError, ProviderRequest, ProviderResponse};
-use crate::retry::{with_retry, RetryPolicy, RetryStats};
+use crate::retry::{with_retry_limited, RetryPolicy, RetryStats};
 
 use super::runner_result::{json_to_persist, RAW_MAX_BYTES};
 
@@ -201,6 +201,7 @@ pub(super) async fn call_with_cache(
     ctx: &CallCtx,
     cache: CacheCall<'_>,
     retry_cfg: &RetryPolicy,
+    limiter: Option<&crate::rate_limit::RateLimiter>,
 ) -> Result<CallOutcome, CallFailure> {
     let CacheCall {
         backend: cache,
@@ -308,7 +309,11 @@ pub(super) async fn call_with_cache(
         }
     }
 
-    let (result, stats) = with_retry(retry_cfg, |_attempt| provider.call(req, ctx)).await;
+    // The limiter is consulted here and nowhere earlier: every return above
+    // this line is a cache hit or a cache-side failure, and neither sent a
+    // request anybody's quota would see.
+    let (result, stats) =
+        with_retry_limited(retry_cfg, limiter, |_attempt| provider.call(req, ctx)).await;
 
     match result {
         Ok(response) => {

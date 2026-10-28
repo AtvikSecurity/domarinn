@@ -12,7 +12,7 @@ use domarinn_core::result::{CaseResult, CaseStatus, RunResult, RunSummary};
 
 use crate::style::Palette;
 
-#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Table,
     Json,
@@ -20,6 +20,31 @@ pub enum Format {
     Junit,
     /// A markdown run summary (pass/fail counts + Wilson pass-rate interval).
     Md,
+}
+
+impl Format {
+    /// The `--format` spelling, for messages that have to quote one back.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Format::Table => "table",
+            Format::Json => "json",
+            Format::Jsonl => "jsonl",
+            Format::Junit => "junit",
+            Format::Md => "md",
+        }
+    }
+
+    /// The file a remediation message suggests for this format. Only ever
+    /// printed, never used: the user still chooses the real path.
+    pub(crate) fn example_file(self) -> &'static str {
+        match self {
+            Format::Table => "results.txt",
+            Format::Json => "results.json",
+            Format::Jsonl => "results.jsonl",
+            Format::Junit => "results.xml",
+            Format::Md => "results.md",
+        }
+    }
 }
 
 /// Persist a run under `<store>/<run_id>/result.json` and update the `latest`

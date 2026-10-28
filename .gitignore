@@ -46,3 +46,6 @@ web/screenshots/.auth/
 # Session working notes (plans, specs). Under docs/ only so they sit beside the
 # work they describe; they are not part of the published site.
 docs/superpowers/
+
+# Forge e2e harness scratch: built binary, fixture checkouts, forge/runner logs.
+scripts/forge-e2e/.work/

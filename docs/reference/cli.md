@@ -80,7 +80,7 @@ The two `2`s in the second row are the same argument twice: a green gate would m
 
 ## `domarinn run [PATH] [flags]`
 
-Execute a suite: render prompts, call providers, evaluate assertions, report results, and persist the run under `.domarinn/runs/<id>/`.
+Execute a suite: render prompts, call providers, evaluate assertions, report results, and persist the run under `.domarinn/runs/<id>/`. `DOMARINN_RUNS_DIR` moves that run store (relative to the working directory, like the default); every command that reads runs back — `diff`, `view`, `runs`, `share`, `ci-summary`, `--against latest` / `branch:<name>` — reads from the same place.
 
 - `PATH` — a suite file or a directory containing `domarinn.yaml` (default `.`).
 
@@ -99,8 +99,11 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 | `--no-fallback` | Do not let a provider hand off to its [`fallback:`](providers.md#falling-back-to-another-provider) chain. **The right posture for a gate**: fallback is resilience, and a CI job usually wants to learn that its primary provider is broken rather than have the result quietly produced by a different model. It disables chain *walking* only: a [`fallback_only`](providers.md#fallback_only-a-provider-that-is-reachable-but-never-a-cell) provider stays out of the matrix, since membership is suite configuration and not something a resilience flag should move. `DOMARINN_NO_FALLBACK=true` sets the same thing; the flag wins, and a value that is not a boolean **refuses the run** (exit `2`) naming the value, rather than being guessed at — a typo'd `DOMARINN_NO_FALLBACK=ture` must not quietly leave fallback on in the gate that set it. |
 | `--repeat <N>` | Run each cell N times (variance / pass@k). |
 | `-j`, `--concurrency <N>` | Max concurrent provider calls (overrides `runner.concurrency`). |
-| `--format <F>` | Output format, repeatable: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`, on stdout. |
-| `--out <FILE>` | Write the primary output to a file instead of stdout. |
+| `--retries <N>` | Retry transient provider failures up to `N` times (overrides [`runner.retries.max`](domarinn-yaml.md#runner)). Conflicts with `--no-retries`. |
+| `--no-retries` | Do not retry transient provider failures at all, whatever the suite's `runner.retries` says. |
+| `--fallback-on-empty-reason [<R>,…]` | Which [empty-output reasons](../concepts/grading.md#empty-outputs-and-grading) make a provider hand off to its [`fallback:`](providers.md#falling-back-to-another-provider) chain, overriding the suite's [`runner.fallback_on_empty_reason`](domarinn-yaml.md#runner) (default `refusal,content_filter`). Comma-separated or repeated. Pass the flag **with no value** to hand off only on hard call failures. `DOMARINN_FALLBACK_ON_EMPTY_REASON` (comma-separated) sets the same thing; the flag wins. Hard call failures always hand off and are not configurable here; `--no-fallback` turns the chain off entirely. |
+| `--format <FMT>[=<PATH>]` | Output format: `table` (default), `json`, `jsonl`, `junit`, `md`. `md` is the same run-summary Markdown as `--summary-md`. A bare format goes to `--out`, or stdout; `FMT=PATH` writes that format to its own file. Repeatable, but **every format needs its own destination**: two bare formats with one `--out` (each write would truncate the last) or on stdout (concatenated, unparseable) are a usage error (exit `2`), refused before the run spends anything — write `--format json=results.json --format junit=results.xml` instead. |
+| `--out <FILE>` | Write the bare `--format` (or the default table) to a file instead of stdout. A usage error when every `--format` already names its own file, since nothing would be written to it. |
 | `--no-raw` | Do not persist raw provider metadata in the result document (keeps `result.json` small). The prompt and `stop_reason` are still captured. |
 | `--no-progress` | Disable the live progress bar (see below). |
 | `--allow-empty` | Succeed even if the run resolves to zero cases. Without it that is exit 2, because a green result over no cells is indistinguishable from a green result over every cell. Pass it for a sharded matrix where a shard legitimately has no work. |
@@ -114,6 +117,7 @@ Execute a suite: render prompts, call providers, evaluate assertions, report res
 ```sh
 domarinn run examples/12-render-health                 # run, print a table
 domarinn run --tag safety -j 8 --format junit --out results.xml
+domarinn run --format json=results.json --format junit=results.xml   # both from one run
 domarinn run --against server:baseline --summary-md summary.md
 domarinn run --note "retry backoff, 3rd attempt"    # label this run
 ```
@@ -247,14 +251,14 @@ DOMARINN_SERVER_URL=https://evals.example domarinn baseline show
 
 ## `domarinn ci-summary [RUN] [flags]`
 
-Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as GitHub Actions step outputs. See [`gate-in-ci.md`](../guides/gate-in-ci.md#the-ci-summary-command).
+Summarize a stored run for CI: a Markdown report for a PR comment or job summary, plus the headline numbers as step outputs for GitHub, Gitea or Forgejo Actions. See [`gate-in-ci.md`](../guides/gate-in-ci.md#the-ci-summary-command).
 
 | Flag | Meaning |
 |---|---|
 | `RUN` | Run to summarize — a run id, `latest` (default), a `result.json`, or a run directory. |
 | `--against <REF>` | Append a baseline comparison; same references as `run --against`, including the branch forms and `none`. With no flag, a [`baseline:`](domarinn-yaml.md#baseline) key in the summarized run's config supplies the same default the gate used. `ci-summary` is a reporter, not a gate, so an unresolvable baseline warns and is skipped rather than failing. |
 | `--out <FILE>` | Write the Markdown to a file instead of stdout. |
-| `--github-output <FILE>` | Append `key=value` step outputs here. Defaults to `$GITHUB_OUTPUT`, so on a runner no flag is needed. |
+| `--github-output <FILE>` | Append `key=value` step outputs here. `--step-output` is the forge-neutral alias for the same flag. Defaults to `$GITHUB_OUTPUT`, which GitHub, Gitea and Forgejo runners all set, so on a runner no flag is needed. |
 
 **It is a reporter, not a gate** — it exits `0` for a failing run, because the verdict belongs to `run`'s [exit code](#exit-codes). It exits `2` only when the run reference cannot be resolved.
 
@@ -292,7 +296,7 @@ Manage the **local** content-addressed cache. All of these take a suite path (de
 
 Three rules, each of which exists because the obvious alternative deletes something nobody asked for:
 
-- **At least one bound is required — any one of the three.** A bare `domarinn cache gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so. The error names `cache clear`.
+- **A bound is required: `--older-than` or `--empty-reason`.** `--newer-than` only narrows an `--older-than` window, so it does not count on its own (see the next rule). A bare `domarinn cache gc` is a usage error (exit `2`), because the obvious reading of "gc" is "tidy up a bit" and the command that removes everything should be the one that says so. The error names `cache clear`.
 - **`--newer-than` needs `--older-than`.** Alone it would read "delete everything since", which is a whole-store wipe in the vocabulary of housekeeping. Requiring the other end makes that reading unconstructible rather than merely discouraged.
 - **No environment variables here.** `DOMARINN_CACHE_STORE_EMPTY_OUTPUTS` and `DOMARINN_NO_FALLBACK` exist because they are standing *policy*. A `gc` predicate is a one-shot destructive operation, and an environment that silently widens one is how an operator deletes a corpus they never named. That is the line, not "environment variables are bad": run-scoping selection like [`DOMARINN_PROVIDER`](#domarinn-run-path-flags) is allowed on the run side — the flag still wins, and the worst an unnoticed one does is run *fewer* cells, which the next invocation undoes.
 
@@ -307,7 +311,7 @@ See [caching.md](../concepts/caching.md) for the key rule, backends, and team sh
 
 ## `domarinn import promptfoo <PATH>`
 
-Translate a promptfoo config into a domarinn suite, printed to stdout. Mappable providers, prompts, tests, and assertions are converted; anything without a faithful equivalent is emitted as a commented `# NOTE:` line so nothing is silently dropped.
+Translate a promptfoo config into a domarinn suite, printed to stdout. Mappable providers, prompts, tests, and assertions are converted; anything without a faithful equivalent is emitted as a commented `# NOTE:` line so nothing is silently dropped. That includes keys the converter does not read — a provider's unrecognised `config:` entries, a test's `options`, an assertion's `transform`, a top-level `outputPath` — and a `tests: file://…` source, which is carried across as-is but whose contents are not translated. The output's `$schema` hint names the published config schema. See [Migrating from promptfoo](../guides/migrate-promptfoo.md#what-maps-cleanly) for the full mapping.
 
 ```sh
 domarinn import promptfoo promptfooconfig.yaml > domarinn.yaml
@@ -338,12 +342,20 @@ domarinn list tests . --json
 domarinn list tests . --generators
 ```
 
-## `domarinn server [--port N] [--data-dir DIR]`
+## `domarinn server [--port N] [--bind ADDR] [--data-dir DIR]`
 
-Run the self-hostable results server + embedded web UI (default port `8321`, binds `0.0.0.0`; default data dir `/data`, env `DOMARINN_DATA_DIR`). See [server.md](server.md) and [self-host.md](../guides/self-host.md).
+Run the self-hostable results server + embedded web UI. See [server.md](server.md) and [self-host.md](../guides/self-host.md).
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--port <N>` | `8321` | Listen port (also `DOMARINN_LISTEN_PORT`). |
+| `--bind <ADDR>` | `0.0.0.0` | Listen address, IPv4 or IPv6 (also `DOMARINN_BIND`). Use `127.0.0.1` or `::1` to stay off the network. |
+| `--data-dir <DIR>` | `/data` | State directory (also `DOMARINN_DATA_DIR`). |
+
+The server stops gracefully on SIGTERM or Ctrl-C: in-flight requests finish, then it exits `0`. See [server.md](server.md) for the liveness and readiness routes.
 
 ```sh
-domarinn server --port 8321 --data-dir ./data
+domarinn server --port 8321 --bind 127.0.0.1 --data-dir ./data
 ```
 
 ## `domarinn migrate-db [--data-dir DIR] [--database-url URL]`
@@ -363,9 +375,26 @@ Afterwards, start the server with `DOMARINN_DATABASE_URL` set. See [server.md](s
 domarinn migrate-db --data-dir /data --database-url "postgres://domarinn:secret@db.example.com:5432/domarinn"
 ```
 
-## `domarinn healthcheck [--port N]`
+## `domarinn healthcheck [--port N] [--host HOST]`
 
-Probe **this binary's own** server health and exit `0`/non-zero accordingly. Designed for the container `HEALTHCHECK` in the distroless image, which has no shell or curl.
+Send an HTTP `GET /api/v1/health` to a local server and exit `0` on a `2xx` response, `3` otherwise: connection refused, no answer within 3 seconds, or any other status. The reason goes to stderr. Designed for the container `HEALTHCHECK` in the distroless image, which has no shell or curl.
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--port <N>` | `8321` | Port to probe (also `DOMARINN_LISTEN_PORT`, the same variable `server` reads). |
+| `--host <HOST>` | loopback | Host or IP to probe. When unset: `DOMARINN_BIND` if it names a specific address (a server bound to one interface does not answer on loopback), else `127.0.0.1`, or `::1` when `DOMARINN_BIND` is `::`. |
+
+Because both commands read the same variables, configure a container's port and address through `DOMARINN_LISTEN_PORT` and `DOMARINN_BIND`. If you pass `--port` to `server` as an argument, the image's `HEALTHCHECK` keeps probing `8321` and the container reports unhealthy.
+
+## `domarinn completions <SHELL>`
+
+Print a shell completion script to stdout for `bash`, `zsh`, `fish`, `elvish`, or `powershell`. Covers every subcommand and flag.
+
+```sh
+domarinn completions bash > ~/.local/share/bash-completion/completions/domarinn
+domarinn completions zsh > "${fpath[1]}/_domarinn"
+domarinn completions fish > ~/.config/fish/completions/domarinn.fish
+```
 
 ---
 

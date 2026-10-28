@@ -65,6 +65,11 @@ pub(super) struct AssertCtx<'a> {
     pub repeat: u32,
     /// Set once the grader's credential is rejected. See [`super::AbortFlag`].
     pub aborted: &'a super::AbortFlag,
+    /// `runner.short_circuit` (default `true`): skip graded asserts once the
+    /// deterministic ones have decided the case. `false` grades every assertion
+    /// regardless, for a full per-assertion report at the cost of the judge
+    /// calls the optimization exists to save.
+    pub short_circuit: bool,
 }
 
 /// Evaluate all asserts: local first, then (if they can still change the
@@ -122,7 +127,8 @@ pub(super) async fn evaluate_asserts(
 
     // Decide whether the deferred asserts still matter.
     let remaining_weight: f64 = deferred_indices.iter().map(|i| asserts[*i].weight).sum();
-    let matters = remaining_can_change_outcome(&scored, remaining_weight, threshold);
+    let matters =
+        !ctx.short_circuit || remaining_can_change_outcome(&scored, remaining_weight, threshold);
 
     for i in deferred_indices {
         let assert = &asserts[i];

@@ -154,6 +154,7 @@ pub fn validate(suite: &Suite, raw: &Yaml) -> Validation {
 
     check_unknown_flatten_keys(raw, &mut issues);
     check_verdict_mode(suite, &mut issues);
+    check_runner_limits(suite, &mut issues);
 
     if suite.version != 1 {
         issues.push(Issue::new(
@@ -318,6 +319,36 @@ impl VariantKeys {
 /// Key sets come entirely from the schema — no hand-maintained allowlist.
 /// Free-form bags (`params`, an exec assert's `config`, an http provider's
 /// `body`) are values, not mappings we walk, so their inner keys are never checked.
+/// Reject a `runner.rate_limit.rps` or `runner.timeout_ms` that cannot work.
+///
+/// Both used to be accepted and ignored, so nothing ever noticed a bad value.
+/// Now that they are read, `rps: 0` would admit no request at all and
+/// `timeout_ms: 0` would fail every one before it was sent — a run that cannot
+/// make progress, reported one case at a time. Better refused up front.
+fn check_runner_limits(suite: &Suite, issues: &mut Vec<Issue>) {
+    let Some(runner) = &suite.runner else {
+        return;
+    };
+    if let Some(rl) = &runner.rate_limit {
+        if !(rl.rps.is_finite() && rl.rps > 0.0) {
+            issues.push(Issue::new(
+                "runner.rate_limit.rps",
+                format!(
+                    "must be a positive number of requests per second, got {}; \
+                     remove `rate_limit` to run unthrottled",
+                    rl.rps
+                ),
+            ));
+        }
+    }
+    if runner.timeout_ms == Some(0) {
+        issues.push(Issue::new(
+            "runner.timeout_ms",
+            "must be greater than 0; remove it to keep each provider's default",
+        ));
+    }
+}
+
 /// Reject `verdict_mode: auto`, which is in the schema and documented but which
 /// the grader never reads.
 ///
@@ -332,7 +363,8 @@ fn check_verdict_mode(suite: &Suite, issues: &mut Vec<Issue>) {
         if matches!(grader.verdict_mode, Some(crate::config::VerdictMode::Auto)) {
             issues.push(Issue::new(
                 format!("{path}.verdict_mode"),
-                "`auto` is not implemented; grading always uses the forced                  structured-verdict mechanism. Remove the field or set `forced`."
+                "`auto` is not implemented; grading always uses the forced \
+                 structured-verdict mechanism. Remove the field or set `forced`."
                     .to_string(),
             ));
         }
@@ -860,5 +892,57 @@ providers:
         assert!(issues
             .iter()
             .any(|i| i.message.contains("duplicate provider id")));
+    }
+
+    fn runner_errors(runner: &str) -> Vec<Issue> {
+        let yaml = format!(
+            "version: 1\nproviders: [{{id: p, type: exec, command: [a]}}]\nrunner: {runner}\n"
+        );
+        let (suite, raw) = load_str_raw(&yaml).unwrap();
+        validate(&suite, &raw).errors().cloned().collect()
+    }
+
+    #[test]
+    fn a_rate_limit_that_admits_nothing_is_an_error() {
+        // `.nan` and `.inf` never get this far: the YAML loader rejects them.
+        for rps in ["0", "-1", "-0.0"] {
+            let errors = runner_errors(&format!("{{rate_limit: {{rps: {rps}}}}}"));
+            assert!(
+                errors.iter().any(|i| i.path == "runner.rate_limit.rps"),
+                "rps {rps}: {errors:?}"
+            );
+        }
+        assert!(runner_errors("{rate_limit: {rps: 0.5}}").is_empty());
+    }
+
+    #[test]
+    fn a_zero_timeout_is_an_error() {
+        let errors = runner_errors("{timeout_ms: 0}");
+        assert!(errors.iter().any(|i| i.path == "runner.timeout_ms"));
+        assert!(runner_errors("{timeout_ms: 1500}").is_empty());
+    }
+
+    /// The message used to carry a run of indentation spaces mid-sentence, from
+    /// a line break inside the string literal that was not escaped.
+    #[test]
+    fn the_verdict_mode_auto_message_reads_as_one_sentence() {
+        let (suite, raw) = load_str_raw(
+            "version: 1\nproviders: [{id: p, type: exec, command: [a]}]\n\
+             grader: {provider: {type: openai, model: m}, verdict_mode: auto}\n",
+        )
+        .unwrap();
+        let issue = validate(&suite, &raw)
+            .into_issues()
+            .into_iter()
+            .find(|i| i.path == "grader.verdict_mode")
+            .expect("auto is refused");
+        assert!(
+            issue
+                .message
+                .contains("the forced structured-verdict mechanism"),
+            "{}",
+            issue.message
+        );
+        assert!(!issue.message.contains("  "), "{}", issue.message);
     }
 }

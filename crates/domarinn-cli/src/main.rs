@@ -4,10 +4,12 @@
 //! config/usage error; `3` infrastructure error. `3` wins over `1` so CI can
 //! distinguish "the model got worse" from "the harness broke".
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 mod baseline;
 mod baselinecmd;
@@ -24,6 +26,7 @@ mod import;
 mod loadrun;
 mod output;
 mod outputmd;
+mod outputplan;
 mod progress;
 mod run;
 mod runscmd;
@@ -103,12 +106,16 @@ enum Command {
     },
     /// Import a config from another tool into a domarinn suite.
     Import {
+        /// The tool whose config PATH is written for.
         #[arg(value_enum)]
         format: ImportFormat,
+        /// The config file to translate (e.g. promptfooconfig.yaml). The suite
+        /// is printed to stdout.
         path: PathBuf,
     },
     /// Generate TypeScript type definitions for the result/diff DTOs.
     GenTypes {
+        /// Directory to write the .ts files into (created if missing).
         #[arg(default_value = "web/src/api/generated")]
         dir: PathBuf,
     },
@@ -120,6 +127,8 @@ enum Command {
     },
     /// Print a JSON Schema (for editor completion / CI contract).
     Schema {
+        /// `config` is the suite (domarinn.yaml) schema; `result` is the
+        /// RunResult document schema.
         #[arg(value_enum)]
         which: SchemaKind,
     },
@@ -139,9 +148,18 @@ enum Command {
         generators: bool,
     },
     /// Run the self-hostable results server + web UI.
+    ///
+    /// Stops gracefully on SIGTERM or Ctrl-C: in-flight requests finish before
+    /// the process exits.
     Server {
-        #[arg(long, default_value_t = 8321)]
+        /// Listen port (env: DOMARINN_LISTEN_PORT).
+        #[arg(long, env = "DOMARINN_LISTEN_PORT", default_value_t = 8321)]
         port: u16,
+        /// Listen address, IPv4 or IPv6 (env: DOMARINN_BIND). The default,
+        /// 0.0.0.0, is every IPv4 interface — what a container needs; use
+        /// 127.0.0.1 or ::1 to keep a bare-metal server off the network.
+        #[arg(long, env = "DOMARINN_BIND", default_value_t = domarinn_server::DEFAULT_BIND)]
+        bind: IpAddr,
         /// State directory holding the SQLite databases (env: DOMARINN_DATA_DIR).
         #[arg(long, env = "DOMARINN_DATA_DIR", default_value = "/data")]
         data_dir: PathBuf,
@@ -160,9 +178,28 @@ enum Command {
         database_url: String,
     },
     /// Probe this binary's own /api/v1/health (used by container HEALTHCHECK).
+    ///
+    /// Sends an HTTP GET and exits 0 on a 2xx response, 3 otherwise (refused,
+    /// timed out after 3s, or a non-2xx status).
     Healthcheck {
-        #[arg(long, default_value_t = 8321)]
+        /// Port the server listens on (env: DOMARINN_LISTEN_PORT — the same variable
+        /// `server` reads, so one setting moves both).
+        #[arg(long, env = "DOMARINN_LISTEN_PORT", default_value_t = 8321)]
         port: u16,
+        /// Host or IP to probe. Defaults to loopback, or to DOMARINN_BIND when
+        /// that names a specific address (a server bound to one interface is
+        /// not reachable on loopback).
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// Print a shell completion script to stdout.
+    ///
+    /// For example: `domarinn completions bash > ~/.local/share/bash-completion/completions/domarinn`,
+    /// or `domarinn completions zsh > "${fpath[1]}/_domarinn"`.
+    Completions {
+        /// The shell to generate completions for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -241,12 +278,17 @@ fn main() -> ExitCode {
             json,
             generators,
         } => cmd_list(what, &path, json, generators),
-        Command::Server { port, data_dir } => cmd_server(port, data_dir),
+        Command::Server {
+            port,
+            bind,
+            data_dir,
+        } => cmd_server(port, bind, data_dir),
         Command::MigrateDb {
             data_dir,
             database_url,
         } => cmd_migrate_db(data_dir, database_url),
-        Command::Healthcheck { port } => cmd_healthcheck(port),
+        Command::Healthcheck { port, host } => cmd_healthcheck(port, host),
+        Command::Completions { shell } => cmd_completions(shell),
     };
     ExitCode::from(code)
 }
@@ -443,7 +485,7 @@ fn print_list(items: &[&str], json: bool) {
     }
 }
 
-fn cmd_server(port: u16, data_dir: PathBuf) -> u8 {
+fn cmd_server(port: u16, bind: IpAddr, data_dir: PathBuf) -> u8 {
     // Closed by default: anonymous access is an explicit operator choice via
     // DOMARINN_AUTH_MODE, never the out-of-the-box posture.
     let config = domarinn_server::ServerConfig {
@@ -458,7 +500,7 @@ fn cmd_server(port: u16, data_dir: PathBuf) -> u8 {
             return exit::INFRA;
         }
     };
-    match runtime.block_on(domarinn_server::serve(config)) {
+    match runtime.block_on(domarinn_server::serve_on(config, bind)) {
         Ok(()) => exit::OK,
         Err(e) => fail(exit::INFRA, &e),
     }
@@ -509,15 +551,125 @@ fn cmd_gen_types(dir: &Path) -> u8 {
     exit::OK
 }
 
-fn cmd_healthcheck(port: u16) -> u8 {
-    // Minimal dependency-free probe: open a TCP connection to the port. A full
-    // HTTP probe lands with the client work in Phase 3.
-    let addr = format!("127.0.0.1:{port}");
-    match std::net::TcpStream::connect(&addr) {
-        Ok(_) => exit::OK,
+/// How long the whole probe — connect, request, response — may take. Under the
+/// image HEALTHCHECK's own `--timeout=5s`, so a hung server is reported by this
+/// binary with a reason rather than killed by Docker without one.
+const HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn cmd_healthcheck(port: u16, host: Option<String>) -> u8 {
+    let bind = std::env::var("DOMARINN_BIND").ok();
+    let host = host.unwrap_or_else(|| healthcheck_default_host(bind.as_deref()));
+    let url = healthcheck_url(&host, port);
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
         Err(e) => {
-            eprintln!("healthcheck failed: {e}");
+            eprintln!("healthcheck failed: starting the async runtime: {e}");
+            return exit::INFRA;
+        }
+    };
+    let probe = async {
+        let client = reqwest::Client::builder()
+            .timeout(HEALTHCHECK_TIMEOUT)
+            // Never probe through a proxy: the target is this machine.
+            .no_proxy()
+            .build()?;
+        client.get(&url).send().await
+    };
+    match runtime.block_on(probe) {
+        Ok(response) if response.status().is_success() => exit::OK,
+        Ok(response) => {
+            eprintln!("healthcheck failed: {url} returned {}", response.status());
             exit::INFRA
         }
+        Err(e) => {
+            // The whole source chain: reqwest's Display alone is "error
+            // sending request for url (...)", which hides whether it was a
+            // refusal or a timeout.
+            let mut message = e.to_string();
+            let mut source = std::error::Error::source(&e);
+            while let Some(cause) = source {
+                message.push_str(&format!(": {cause}"));
+                source = cause.source();
+            }
+            eprintln!("healthcheck failed: {message}");
+            exit::INFRA
+        }
+    }
+}
+
+/// The host `healthcheck` probes when `--host` is not given.
+///
+/// A server bound to a wildcard listens on loopback too, so loopback is probed
+/// (of the matching family — `::` may be v6-only). A server bound to one
+/// specific address does *not* answer on loopback, so that address is probed:
+/// this keeps the image HEALTHCHECK green when only DOMARINN_BIND changes.
+fn healthcheck_default_host(bind: Option<&str>) -> String {
+    match bind.and_then(|b| b.trim().parse::<IpAddr>().ok()) {
+        Some(IpAddr::V4(v4)) if v4.is_unspecified() => "127.0.0.1".to_string(),
+        Some(IpAddr::V6(v6)) if v6.is_unspecified() => "::1".to_string(),
+        Some(ip) => ip.to_string(),
+        None => "127.0.0.1".to_string(),
+    }
+}
+
+/// `http://host:port/api/v1/health`, bracketing an IPv6 literal.
+fn healthcheck_url(host: &str, port: u16) -> String {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("http://[{host}]:{port}/api/v1/health")
+    } else {
+        format!("http://{host}:{port}/api/v1/health")
+    }
+}
+
+fn cmd_completions(shell: clap_complete::Shell) -> u8 {
+    let mut command = Cli::command();
+    clap_complete::generate(shell, &mut command, "domarinn", &mut std::io::stdout());
+    exit::OK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn healthcheck_probes_loopback_unless_bound_to_one_address() {
+        assert_eq!(healthcheck_default_host(None), "127.0.0.1");
+        assert_eq!(healthcheck_default_host(Some("0.0.0.0")), "127.0.0.1");
+        assert_eq!(healthcheck_default_host(Some("::")), "::1");
+        assert_eq!(healthcheck_default_host(Some("10.0.0.5")), "10.0.0.5");
+        assert_eq!(healthcheck_default_host(Some("::1")), "::1");
+        // Unparseable: the server would refuse to start on it anyway; probe
+        // loopback rather than echo garbage into a URL.
+        assert_eq!(healthcheck_default_host(Some("nonsense")), "127.0.0.1");
+    }
+
+    #[test]
+    fn healthcheck_url_brackets_ipv6() {
+        assert_eq!(
+            healthcheck_url("127.0.0.1", 8321),
+            "http://127.0.0.1:8321/api/v1/health"
+        );
+        assert_eq!(
+            healthcheck_url("::1", 9000),
+            "http://[::1]:9000/api/v1/health"
+        );
+        assert_eq!(
+            healthcheck_url("[::1]", 9000),
+            "http://[::1]:9000/api/v1/health"
+        );
+        assert_eq!(
+            healthcheck_url("domarinn.internal", 80),
+            "http://domarinn.internal:80/api/v1/health"
+        );
+    }
+
+    #[test]
+    fn the_cli_definition_is_valid() {
+        Cli::command().debug_assert();
     }
 }

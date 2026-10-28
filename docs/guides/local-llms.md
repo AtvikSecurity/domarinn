@@ -70,7 +70,9 @@ $ OPENAI_BASE_URL=http://localhost:11434/v1 \
   domarinn run examples/26-openai-provider
 ```
 
-`OPENAI_API_KEY` still has to be *set*: the client sends a bearer token unconditionally, and domarinn's [credential preflight](../reference/providers.md#credential-preflight) fails with exit `2` — naming the provider and the variable — before it makes a single call. Ollama ignores the value, so any non-empty string does. It is named by `api_key_env`, so whatever you put there never enters the suite, the cache key, or a shared run.
+`OPENAI_API_KEY` still has to be *set* for this example: by default the client sends a bearer token, and domarinn's [credential preflight](../reference/providers.md#credential-preflight) fails with exit `2` — naming the provider and the variable — before it makes a single call. Ollama ignores the value, so any non-empty string does. It is named by `api_key_env`, so whatever you put there never enters the suite, the cache key, or a shared run.
+
+In a suite of your own you can drop the dummy key entirely: [`request: {auth: none}`](../reference/providers.md#customizing-the-request) on the provider sends no credential, reads no variable, and is skipped by the preflight.
 
 Note what `label` does in that fragment: it interpolates the same variable as `model`. A run against `qwen3:4b` reports itself as `qwen3:4b` on every page of the UI. A label hard-coded to `gpt-4o-mini` would quietly attribute local results to a model you never called, and eval results that misname the system under test are worse than no results.
 

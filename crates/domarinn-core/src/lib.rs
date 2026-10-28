@@ -56,6 +56,7 @@ pub mod progress;
 pub mod provenance;
 pub mod provider;
 pub mod provider_factory;
+pub mod rate_limit;
 pub mod render;
 mod request_cache;
 pub mod request_cfg;

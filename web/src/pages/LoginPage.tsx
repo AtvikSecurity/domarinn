@@ -6,6 +6,7 @@ import {
   useSearchParams,
 } from "react-router";
 import { ApiError, isMockEnabled } from "@/api/client";
+import { apiErrorMessage } from "@/api/errorMessage";
 import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -22,6 +23,26 @@ function destinationFrom(state: LocationState | null): string {
   const from = state?.from;
   if (!from?.pathname) return "/";
   return `${from.pathname}${from.search ?? ""}${from.hash ?? ""}`;
+}
+
+/**
+ * What to tell the user when sign-in failed. A 401 is always the generic
+ * wrong-credentials line (the server never says which half was wrong). Any
+ * other refusal carries the server's sentence: notably the throttle's 429,
+ * whose body states how long to wait ("try again in 14 minutes"), since the
+ * API client does not surface `Retry-After`.
+ */
+function loginErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && err.status === 401) {
+    return "Invalid username or password.";
+  }
+  if (err instanceof ApiError && err.status === 429) {
+    return apiErrorMessage(
+      err,
+      "Too many failed sign-in attempts. Wait a few minutes and try again.",
+    );
+  }
+  return apiErrorMessage(err, "Sign in failed. Please try again.");
 }
 
 export function LoginPage() {
@@ -79,11 +100,7 @@ export function LoginPage() {
       await login(username.trim(), password);
       void navigate(dest, { replace: true });
     } catch (err) {
-      setError(
-        err instanceof ApiError && err.status === 401
-          ? "Invalid username or password."
-          : "Sign in failed. Please try again.",
-      );
+      setError(loginErrorMessage(err));
       setPending(false);
     }
   }

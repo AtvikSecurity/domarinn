@@ -43,7 +43,7 @@ test.describe("Admin — user management", () => {
     await page.getByRole("button", { name: "Delete user" }).click();
 
     await expect(page.getByRole("alert")).toHaveText(
-      /Cannot remove the last active admin/,
+      /cannot delete the last admin/,
     );
     // The row survives the failed delete.
     await expect(page.getByTestId("user-row-admin")).toBeVisible();

@@ -391,7 +391,7 @@ fn example_39_the_committed_conversion_is_the_converters_output_and_runs() {
         notes.len(),
         2,
         "the shipped promptfoo config carries two deliberately unmappable \
-         assertions (`not-icontains` and `javascript`), so the converter must \
+         assertions (`javascript` and `moderation`), so the converter must \
          emit two notes; it emitted: {notes:?}"
     );
     for note in &notes {

@@ -225,11 +225,26 @@ pub async fn run_exec_raw(
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // Without this a timed-out child outlives its timeout: tokio's `Child` does
+    // not kill on drop by default, so the process keeps running — and keeps
+    // spending — after the call has already been reported as failed.
+    cmd.kill_on_drop(true);
+    // `kill_on_drop` reaches the direct child only. A wrapper such as
+    // `[sh, -c, "setup; python agent.py"]` puts the real work in a grandchild,
+    // which would be orphaned and carry on. So on Unix the child leads a
+    // process group of its own, and `GroupKill` takes the whole group down.
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     let mut child = cmd.spawn().map_err(|source| ExecError::Spawn {
         command: command.to_vec(),
         source,
     })?;
+    // Declared after `child`, so it drops first: the group is signalled while
+    // the leader is still unreaped and its pid cannot have been reused. Every
+    // early return below — and the caller dropping this future mid-call —
+    // relies on it.
+    let mut group = GroupKill::of(&child);
 
     let request_bytes = serde_json::to_vec(request).map_err(|e| ExecError::BadJson {
         command: command.to_vec(),
@@ -255,7 +270,7 @@ pub async fn run_exec_raw(
         drop(stdin);
     }
 
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+    let output = match tokio::time::timeout(timeout, collect_output(&mut child)).await {
         Ok(result) => result.map_err(|source| ExecError::Io {
             command: command.to_vec(),
             source,
@@ -267,6 +282,9 @@ pub async fn run_exec_raw(
             })
         }
     };
+    // It ran to completion. Anything it deliberately left running behind it
+    // (with its output pipes closed) is its own business, not a leak.
+    group.disarm();
 
     if !output.status.success() {
         return Err(ExecError::NonZero {
@@ -277,6 +295,87 @@ pub async fn run_exec_raw(
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// `Child::wait_with_output`, but borrowing the child rather than consuming it,
+/// so the child (and with it the pid that names its process group) stays
+/// unreaped until [`GroupKill`] has had its say.
+async fn collect_output(
+    child: &mut tokio::process::Child,
+) -> std::io::Result<std::process::Output> {
+    use tokio::io::AsyncReadExt;
+
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let read_stdout = async {
+        match stdout_pipe.as_mut() {
+            Some(pipe) => pipe.read_to_end(&mut stdout).await.map(drop),
+            None => Ok(()),
+        }
+    };
+    let read_stderr = async {
+        match stderr_pipe.as_mut() {
+            Some(pipe) => pipe.read_to_end(&mut stderr).await.map(drop),
+            None => Ok(()),
+        }
+    };
+    let (status, (), ()) = tokio::try_join!(child.wait(), read_stdout, read_stderr)?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// SIGKILLs a child's whole process group when dropped, unless disarmed.
+///
+/// Unix only; elsewhere it holds nothing and `kill_on_drop` is all there is.
+struct GroupKill {
+    #[cfg(unix)]
+    pgid: Option<libc::pid_t>,
+}
+
+impl GroupKill {
+    fn of(child: &tokio::process::Child) -> Self {
+        #[cfg(unix)]
+        {
+            // The child was spawned with `process_group(0)`, so its pid is its
+            // group id. Refuse anything that could address a group other than
+            // the child's: 0 is our own group and 1 is init's.
+            let pgid = child
+                .id()
+                .and_then(|pid| libc::pid_t::try_from(pid).ok())
+                .filter(|&pid| pid > 1);
+            GroupKill { pgid }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child;
+            GroupKill {}
+        }
+    }
+
+    fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.pgid = None;
+        }
+    }
+}
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid.take() {
+            // SAFETY: killpg(2) only sends a signal; it touches no memory. The
+            // result is ignored on purpose: ESRCH means the group already
+            // exited, which is the outcome wanted.
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -345,5 +444,113 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ExecError::Spawn { .. }));
         assert!(err.is_retriable());
+    }
+
+    /// A timed-out child is killed, not abandoned. The script would create
+    /// `marker` a second after it started; the timeout fires long before that,
+    /// so if the marker appears later the process outlived its own failure.
+    #[tokio::test]
+    async fn a_timed_out_child_is_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let script = format!("sleep 1; touch '{}'", marker.display());
+        let err = run_exec_json(
+            &["sh".to_string(), "-c".to_string(), script],
+            &BTreeMap::new(),
+            None,
+            Duration::from_millis(100),
+            &json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ExecError::Timeout { ms: 100, .. }), "{err}");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !marker.exists(),
+            "the child kept running after its timeout was reported"
+        );
+    }
+
+    /// Whether `pid` names a live process. A zombie is not live: it has
+    /// stopped running and is only waiting for its new parent to reap it.
+    #[cfg(unix)]
+    fn alive(pid: libc::pid_t) -> bool {
+        // SAFETY: signal 0 performs only the existence and permission check.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // The state follows the parenthesised command name.
+            Ok(stat) => !stat
+                .rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')),
+            Err(_) => true,
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_pid(pidfile: &Path) -> libc::pid_t {
+        let text = std::fs::read_to_string(pidfile).expect("the wrapper wrote its pidfile");
+        text.trim().parse().expect("a pid")
+    }
+
+    /// The work a wrapper starts dies with the wrapper. `sh -c` here does what
+    /// `[sh, -c, "setup; python agent.py"]` does: the process doing the
+    /// spending is a grandchild, which `kill_on_drop` alone never reached.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timed_out_childs_grandchildren_are_killed_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let script = format!("sleep 30 & echo $! > '{}'; wait", pidfile.display());
+        let err = run_exec_json(
+            &["sh".to_string(), "-c".to_string(), script],
+            &BTreeMap::new(),
+            None,
+            Duration::from_millis(300),
+            &json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ExecError::Timeout { .. }), "{err}");
+        let grandchild = read_pid(&pidfile);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while alive(grandchild) {
+            if std::time::Instant::now() > deadline {
+                // SAFETY: as in `alive`; this only cleans up after a failure.
+                unsafe { libc::kill(grandchild, libc::SIGKILL) };
+                panic!("grandchild {grandchild} outlived its wrapper's timeout");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Completion is not cancellation: a child that finishes normally may leave
+    /// something running on purpose, and nothing of its is killed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_completed_child_leaves_its_group_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let script = format!(
+            "sleep 30 >/dev/null 2>&1 & echo $! > '{}'; echo '{{}}'",
+            pidfile.display()
+        );
+        let out = run_exec_json(
+            &["sh".to_string(), "-c".to_string(), script],
+            &BTreeMap::new(),
+            None,
+            timeout(),
+            &json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, json!({}));
+        let background = read_pid(&pidfile);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let survived = alive(background);
+        // SAFETY: as in `alive`; the test cleans up what it started.
+        unsafe { libc::kill(background, libc::SIGKILL) };
+        assert!(survived, "a normal completion killed the child's group");
     }
 }

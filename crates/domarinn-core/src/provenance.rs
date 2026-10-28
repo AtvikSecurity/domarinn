@@ -289,39 +289,89 @@ pub fn collect_git(dir: &Path) -> Option<GitMeta> {
 /// predicate. That is why there is no separate boolean: a second field that
 /// could disagree with this one would be a worse shape, not a better one.
 pub fn collect_ci() -> Option<CiMeta> {
-    if env("GITHUB_ACTIONS").is_some() {
-        let run_url = match (
-            env("GITHUB_SERVER_URL"),
-            env("GITHUB_REPOSITORY"),
-            env("GITHUB_RUN_ID"),
-        ) {
-            (Some(server), Some(repo), Some(id)) => {
-                Some(format!("{server}/{repo}/actions/runs/{id}"))
-            }
-            _ => None,
-        };
-        return Some(CiMeta {
-            provider: Some("github".into()),
+    ci_from(env)
+}
+
+/// [`collect_ci`] with the environment injected, for the same reason
+/// [`branch_from`] takes one: the detection order is the thing worth testing,
+/// and `std::env::set_var` is global to a test binary that runs in parallel.
+///
+/// **Gitea and Forgejo come first** because their runners also set
+/// `GITHUB_ACTIONS=true` — that is how a GitHub-shaped workflow runs there
+/// unchanged — so checked after it they would be recorded as GitHub, with a
+/// run URL built the GitHub way. On these forges that URL is wrong:
+///
+/// - **Forgejo** addresses a run page by the repository's run *number*
+///   (`GITHUB_RUN_NUMBER`, the per-repo index), not the instance-wide
+///   `GITHUB_RUN_ID`. Built from the id, the link opens a different run of the
+///   same repository, or 404s.
+/// - **Gitea** used the run number in the URL up to 1.25 and the id from 1.26,
+///   where the run page still accepts a number when asked with `?by_index=1`
+///   (an older server ignores the unknown query). Number plus `by_index` is
+///   the one spelling that opens the right run on both sides of that change;
+///   the id alone 404s or lands on a different run on every Gitea before 1.26.
+///
+/// `GITHUB_SERVER_URL` is trimmed of a trailing slash: Gitea derives it from
+/// its `ROOT_URL`, which it stores with one, and `host//owner/repo` is a link
+/// that only works by accident.
+///
+/// The rest hand over a direct link, so they are taken at face value. A
+/// system whose link would have to be assembled from parts (Azure Pipelines,
+/// Bitbucket) is left to the bare `CI` fallback rather than guessed at.
+/// Woodpecker is matched on `CI=woodpecker` and checked before Drone, whose
+/// variable names older Woodpecker releases also set.
+fn ci_from(get: impl Fn(&str) -> Option<String>) -> Option<CiMeta> {
+    let found = |provider: &str, run_url: Option<String>| {
+        Some(CiMeta {
+            provider: Some(provider.into()),
             run_url,
-        });
+        })
+    };
+    let actions_run = |run: Option<String>, query: &str| match (
+        get("GITHUB_SERVER_URL"),
+        get("GITHUB_REPOSITORY"),
+        run,
+    ) {
+        (Some(server), Some(repo), Some(run)) => Some(format!(
+            "{}/{repo}/actions/runs/{run}{query}",
+            server.trim_end_matches('/')
+        )),
+        _ => None,
+    };
+    if get("FORGEJO_ACTIONS").is_some() {
+        return found("forgejo", actions_run(get("GITHUB_RUN_NUMBER"), ""));
     }
-    if env("GITLAB_CI").is_some() {
-        return Some(CiMeta {
-            provider: Some("gitlab".into()),
-            run_url: env("CI_JOB_URL"),
-        });
+    if get("GITEA_ACTIONS").is_some() {
+        return found(
+            "gitea",
+            actions_run(get("GITHUB_RUN_NUMBER"), "?by_index=1"),
+        );
     }
-    if env("JENKINS_URL").is_some() {
-        return Some(CiMeta {
-            provider: Some("jenkins".into()),
-            run_url: env("BUILD_URL"),
-        });
+    if get("GITHUB_ACTIONS").is_some() {
+        return found("github", actions_run(get("GITHUB_RUN_ID"), ""));
     }
-    if env("CI").is_some() {
-        return Some(CiMeta {
-            provider: Some("ci".into()),
-            run_url: None,
-        });
+    // Each marker, and the variable holding that system's link to this run.
+    for (marker, provider, url) in [
+        ("GITLAB_CI", "gitlab", "CI_JOB_URL"),
+        ("BUILDKITE", "buildkite", "BUILDKITE_BUILD_URL"),
+        ("CIRCLECI", "circleci", "CIRCLE_BUILD_URL"),
+        ("TRAVIS", "travis", "TRAVIS_BUILD_WEB_URL"),
+    ] {
+        if get(marker).is_some() {
+            return found(provider, get(url));
+        }
+    }
+    if get("CI").as_deref() == Some("woodpecker") {
+        return found("woodpecker", get("CI_PIPELINE_URL"));
+    }
+    if get("DRONE").is_some() {
+        return found("drone", get("DRONE_BUILD_LINK"));
+    }
+    if get("JENKINS_URL").is_some() {
+        return found("jenkins", get("BUILD_URL"));
+    }
+    if get("CI").is_some() {
+        return found("ci", None);
     }
     None
 }
@@ -480,6 +530,155 @@ mod tests {
     #[test]
     fn nothing_in_the_environment_means_no_ci_branch() {
         assert_eq!(branch_from(|_| None), None);
+    }
+
+    /// GitHub's run page is addressed by the instance-wide run id.
+    #[test]
+    fn a_github_run_links_by_run_id() {
+        let vars = [
+            ("GITHUB_ACTIONS", "true"),
+            ("GITHUB_SERVER_URL", "https://github.com"),
+            ("GITHUB_REPOSITORY", "acme/widgets"),
+            ("GITHUB_RUN_ID", "9001"),
+            ("GITHUB_RUN_NUMBER", "42"),
+        ];
+        let ci = ci_from(lookup(&vars)).expect("a CI run");
+        assert_eq!(ci.provider.as_deref(), Some("github"));
+        assert_eq!(
+            ci.run_url.as_deref(),
+            Some("https://github.com/acme/widgets/actions/runs/9001")
+        );
+    }
+
+    /// Forgejo's runner sets `GITHUB_ACTIONS=true` too, so the forge marker has
+    /// to win — and its run page is the per-repo run *number*. The GitHub-style
+    /// link built from `GITHUB_RUN_ID` opens a different run or none.
+    #[test]
+    fn a_forgejo_run_links_by_run_number_not_run_id() {
+        let vars = [
+            ("FORGEJO_ACTIONS", "true"),
+            ("GITHUB_ACTIONS", "true"),
+            ("GITHUB_SERVER_URL", "https://code.example/"),
+            ("GITHUB_REPOSITORY", "acme/widgets"),
+            ("GITHUB_RUN_ID", "117195"),
+            ("GITHUB_RUN_NUMBER", "9384"),
+        ];
+        let ci = ci_from(lookup(&vars)).expect("a CI run");
+        assert_eq!(ci.provider.as_deref(), Some("forgejo"));
+        assert_eq!(
+            ci.run_url.as_deref(),
+            Some("https://code.example/acme/widgets/actions/runs/9384"),
+            "the trailing slash on the server URL must not double up either"
+        );
+    }
+
+    /// Gitea switched its run URLs from number to id in 1.26 and kept the
+    /// number reachable behind `?by_index=1`; an older server ignores the
+    /// query and reads the path as a number anyway. Either way, the number is
+    /// the run this job is.
+    #[test]
+    fn a_gitea_run_links_by_run_number_on_every_gitea_version() {
+        let vars = [
+            ("GITEA_ACTIONS", "true"),
+            ("GITHUB_ACTIONS", "true"),
+            ("GITHUB_SERVER_URL", "https://gitea.example/"),
+            ("GITHUB_REPOSITORY", "acme/widgets"),
+            ("GITHUB_RUN_ID", "5521"),
+            ("GITHUB_RUN_NUMBER", "17"),
+        ];
+        let ci = ci_from(lookup(&vars)).expect("a CI run");
+        assert_eq!(ci.provider.as_deref(), Some("gitea"));
+        assert_eq!(
+            ci.run_url.as_deref(),
+            Some("https://gitea.example/acme/widgets/actions/runs/17?by_index=1")
+        );
+    }
+
+    /// Forgejo began as a Gitea fork; a runner that sets both markers is a
+    /// Forgejo runner, and the two forges address runs differently.
+    #[test]
+    fn forgejo_wins_over_gitea_when_both_markers_are_set() {
+        let vars = [
+            ("FORGEJO_ACTIONS", "true"),
+            ("GITEA_ACTIONS", "true"),
+            ("GITHUB_ACTIONS", "true"),
+        ];
+        let ci = ci_from(lookup(&vars)).expect("a CI run");
+        assert_eq!(ci.provider.as_deref(), Some("forgejo"));
+        assert_eq!(ci.run_url, None, "no server, repo or number: no link");
+    }
+
+    /// The systems that hand over a direct link get it recorded, not just a
+    /// provider name. Woodpecker is told apart by `CI=woodpecker`, which also
+    /// keeps it from falling through to the anonymous `ci` bucket.
+    #[test]
+    fn the_other_ci_systems_record_their_run_link() {
+        for (vars, provider, url) in [
+            (
+                &[("GITLAB_CI", "true"), ("CI_JOB_URL", "https://gl/j/1")][..],
+                "gitlab",
+                "https://gl/j/1",
+            ),
+            (
+                &[
+                    ("BUILDKITE", "true"),
+                    ("BUILDKITE_BUILD_URL", "https://bk/b/2"),
+                ][..],
+                "buildkite",
+                "https://bk/b/2",
+            ),
+            (
+                &[("CIRCLECI", "true"), ("CIRCLE_BUILD_URL", "https://cc/b/3")][..],
+                "circleci",
+                "https://cc/b/3",
+            ),
+            (
+                &[
+                    ("TRAVIS", "true"),
+                    ("TRAVIS_BUILD_WEB_URL", "https://tr/b/4"),
+                ][..],
+                "travis",
+                "https://tr/b/4",
+            ),
+            (
+                &[
+                    ("CI", "woodpecker"),
+                    // Older Woodpecker releases also set Drone's names.
+                    ("DRONE", "true"),
+                    ("DRONE_BUILD_LINK", "https://wp/wrong"),
+                    ("CI_PIPELINE_URL", "https://wp/repos/7/pipeline/8"),
+                ][..],
+                "woodpecker",
+                "https://wp/repos/7/pipeline/8",
+            ),
+            (
+                &[("DRONE", "true"), ("DRONE_BUILD_LINK", "https://dr/o/r/42")][..],
+                "drone",
+                "https://dr/o/r/42",
+            ),
+            (
+                &[
+                    ("JENKINS_URL", "https://j/"),
+                    ("BUILD_URL", "https://j/job/5"),
+                ][..],
+                "jenkins",
+                "https://j/job/5",
+            ),
+        ] {
+            let ci = ci_from(lookup(vars)).unwrap_or_else(|| panic!("{provider}: a CI run"));
+            assert_eq!(ci.provider.as_deref(), Some(provider));
+            assert_eq!(ci.run_url.as_deref(), Some(url), "{provider}");
+        }
+    }
+
+    /// A bare `CI` still marks a CI run — `ci.is_some()` is the server's
+    /// "was this CI?" predicate — just with nothing to link to.
+    #[test]
+    fn a_bare_ci_marker_is_a_ci_run_without_a_link() {
+        let ci = ci_from(lookup(&[("CI", "true")])).expect("a CI run");
+        assert_eq!(ci.provider.as_deref(), Some("ci"));
+        assert_eq!(ci.run_url, None);
+        assert!(ci_from(|_| None).is_none());
     }
 
     /// A directory that is not a repo must not be reported as a clean checkout.

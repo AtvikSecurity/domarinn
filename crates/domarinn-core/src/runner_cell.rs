@@ -63,6 +63,8 @@ pub(super) async fn run_cell<'a>(
     cache_state: &runner_cache::CacheRunState,
     policy: &crate::empty_policy::EmptyPolicy,
     fallback_policy: &super::runner_fallback::FallbackPolicy,
+    limiter: Option<&crate::rate_limit::RateLimiter>,
+    short_circuit: bool,
 ) -> CaseResult {
     let test_id = test.id.clone().unwrap_or_default();
     let cell = CellKey {
@@ -263,6 +265,7 @@ pub(super) async fn run_cell<'a>(
                 policy,
             },
             retry_cfg,
+            limiter,
             empty_policy: policy,
             fallback: fallback_policy,
             include_raw,
@@ -348,6 +351,7 @@ pub(super) async fn run_cell<'a>(
             migration: &cache_state.migration,
             repeat,
             aborted,
+            short_circuit,
             tool_calls: &response.tool_calls,
             empty_reason: empty_reason.as_ref(),
         },

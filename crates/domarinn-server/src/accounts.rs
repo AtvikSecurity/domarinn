@@ -5,12 +5,17 @@
 //! `me`) inspect the request [`Identity`] directly; the management endpoints use
 //! the [`Scoped`] extractors so they obey the active [`crate::AuthMode`].
 
-use axum::extract::{Path, State};
+use std::net::SocketAddr;
+use std::sync::{Arc, LazyLock};
+use std::time::Instant;
+
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::Utc;
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 use ts_rs::TS;
 
 use crate::auth::{self, Admin, Identity, Read, Scope, Scoped};
@@ -26,6 +31,85 @@ use crate::AppState;
 
 /// Minimum acceptable password length.
 const MIN_PASSWORD_LEN: usize = 8;
+
+mod throttle;
+
+pub(crate) use throttle::LoginThrottle;
+use throttle::{login_throttle_key, throttled_response};
+
+// ---------------------------------------------------------------------------
+// Password hashing
+// ---------------------------------------------------------------------------
+
+/// A real argon2 hash (default parameters, so the same cost as any stored
+/// one) of a password nobody holds, verified against when the username has no
+/// usable hash. Computed once, on first use.
+fn dummy_hash() -> &'static str {
+    static DUMMY: LazyLock<String> = LazyLock::new(|| {
+        auth::hash_password(&auth::generate_session_token())
+            .expect("hashing the timing-equalizer password")
+    });
+    DUMMY.as_str()
+}
+
+/// Bounds how many argon2 computations run at once. Each one costs ~19 MiB
+/// and a core for tens of milliseconds; unbounded, a burst of password
+/// requests would exhaust memory and the blocking pool long before the
+/// throttle's budgets ran out across many keys.
+fn hash_permits() -> &'static Arc<Semaphore> {
+    static PERMITS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
+        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        Arc::new(Semaphore::new(cores.max(2)))
+    });
+    &PERMITS
+}
+
+/// Run an argon2 computation off the async workers, behind [`hash_permits`],
+/// so password checks never stall unrelated requests such as `/health`.
+async fn run_argon2<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> ApiResult<T> {
+    run_blocking_with_permit(hash_permits(), work).await
+}
+
+/// Run `work` on the blocking pool while holding one of `permits`.
+///
+/// The permit moves *into* the blocking closure rather than living in this
+/// future. A client that disconnects mid-login drops the future, but a
+/// `spawn_blocking` task cannot be cancelled and keeps hashing; were the
+/// permit the future's, it would be released right then, and reconnecting
+/// clients could stack up computations to the blocking pool's size (512)
+/// rather than the cap.
+async fn run_blocking_with_permit<T: Send + 'static>(
+    permits: &Arc<Semaphore>,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> ApiResult<T> {
+    let permit = Arc::clone(permits)
+        .acquire_owned()
+        .await
+        .map_err(|e| ApiError::from(anyhow::anyhow!("password hashing unavailable: {e}")))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow::anyhow!("password hashing task failed: {e}")))
+}
+
+/// [`auth::hash_password`] on the blocking pool.
+async fn hash_password(password: &str) -> ApiResult<String> {
+    let password = password.to_string();
+    Ok(run_argon2(move || auth::hash_password(&password)).await??)
+}
+
+/// [`auth::verify_password`] on the blocking pool; `None` verifies against
+/// [`dummy_hash`] so a missing hash costs the same as a real one.
+async fn verify_password(stored: Option<String>, password: &str) -> ApiResult<bool> {
+    let password = password.to_string();
+    run_argon2(move || {
+        let stored = stored.as_deref().unwrap_or_else(|| dummy_hash());
+        auth::verify_password(stored, &password)
+    })
+    .await
+}
 
 // ---------------------------------------------------------------------------
 // Setup / login / logout / me
@@ -52,7 +136,7 @@ pub(crate) async fn setup(
     }
     let username = validate_username(&body.username)?;
     validate_password(&body.password)?;
-    let hash = auth::hash_password(&body.password)?;
+    let hash = hash_password(&body.password).await?;
     let user = state
         .storage
         .create_user(username, hash, Role::Admin)
@@ -63,30 +147,112 @@ pub(crate) async fn setup(
 }
 
 /// `POST /auth/login` — exchange username + password for a session token.
+///
+/// Throttled per (client address, username) by [`LoginThrottle`], and
+/// constant-shape for every failure: an unknown username, an SSO-only
+/// account, and a disabled account all pay for one argon2 verify (against
+/// [`dummy_hash`] when there is no real one) and get the same 401, so neither
+/// the status nor the latency tells a caller which usernames exist.
 pub(crate) async fn login(
     State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     ApiJson(body): ApiJson<CredentialsBody>,
 ) -> ApiResult<Response> {
-    let invalid = || ApiError::status(StatusCode::UNAUTHORIZED, "invalid credentials");
-    let Some(user) = state
+    let peer = peer.map(|Extension(ConnectInfo(addr))| addr);
+    let key = login_throttle_key(peer, &body.username);
+    if let Err(retry_after) = state.login_throttle.begin(&key, Instant::now()) {
+        return Ok(throttled_response(retry_after));
+    }
+    let user = state
         .storage
         .get_user_by_username(body.username.clone())
-        .await?
-    else {
-        return Err(invalid());
+        .await?;
+    // SSO-only accounts carry the empty-string password sentinel, which
+    // `verify_password` would reject instantly; they verify against the dummy
+    // hash instead, like an unknown username, so they cost the same.
+    let stored = user
+        .as_ref()
+        .map(|u| u.password_hash.clone())
+        .filter(|h| !h.is_empty());
+    let has_password = stored.is_some();
+    let password_ok = verify_password(stored, &body.password).await?;
+    let user = match user {
+        Some(user) if has_password && password_ok && !user.disabled => user,
+        _ => {
+            return Err(ApiError::status(
+                StatusCode::UNAUTHORIZED,
+                "invalid credentials",
+            ))
+        }
     };
-    // SSO-only accounts have the empty-string password sentinel; reject them
-    // here so a caller can never brute-force their way past `verify_password`
-    // (which already fails closed on a non-PHC hash — this is defense in
-    // depth and avoids account enumeration via a distinct error).
-    if user.password_hash.is_empty()
-        || user.disabled
-        || !auth::verify_password(&user.password_hash, &body.password)
-    {
-        return Err(invalid());
-    }
+    state.login_throttle.clear(&key);
     let token = issue_session(&state, &user.id).await?;
     Ok(session_response(&state, StatusCode::OK, token, &user))
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChangePasswordBody {
+    current_password: String,
+    new_password: String,
+}
+
+/// `POST /me/password` — change the caller's own password.
+///
+/// Requires the current password even though the caller is already
+/// authenticated: a borrowed laptop or a stolen session cookie must not be
+/// enough to take the account over for good. Every *other* session of the
+/// user is revoked; the presenting one survives, so the browser that made the
+/// change stays signed in. Wrong guesses at `current_password` count against
+/// the same [`LoginThrottle`] as login, keyed on the account.
+pub(crate) async fn change_password(
+    scope: Scoped<Read>,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<ChangePasswordBody>,
+) -> ApiResult<Response> {
+    // `Read` is open to anonymous callers outside `closed` mode; there is no
+    // "own password" to change without a credential, so say so with a 401
+    // (as `logout` does) rather than `require_user`'s 403.
+    if !scope.identity.is_authenticated() {
+        return Err(ApiError::status(
+            StatusCode::UNAUTHORIZED,
+            "authentication required",
+        ));
+    }
+    let user_id = require_user(&scope.identity)?;
+    let user = state
+        .storage
+        .get_user_by_id(user_id.clone())
+        .await?
+        .ok_or_else(|| not_found("user"))?;
+    if user.password_hash.is_empty() {
+        return Err(ApiError::status(
+            StatusCode::BAD_REQUEST,
+            "this account signs in through SSO and has no local password to change",
+        ));
+    }
+    validate_password(&body.new_password)?;
+
+    let key = format!("password-change\0{}", user_id.as_str());
+    if let Err(retry_after) = state.login_throttle.begin(&key, Instant::now()) {
+        return Ok(throttled_response(retry_after));
+    }
+    // 403, not 401: the caller *is* authenticated, and the web client treats
+    // any 401 as "your session is gone" and prompts for a new credential.
+    if !verify_password(Some(user.password_hash.clone()), &body.current_password).await? {
+        return Err(ApiError::status(
+            StatusCode::FORBIDDEN,
+            "current password is incorrect",
+        ));
+    }
+    state.login_throttle.clear(&key);
+
+    let hash = hash_password(&body.new_password).await?;
+    state
+        .storage
+        .update_password_keeping_session(user_id, hash, scope.identity.session_token_hash.clone())
+        .await?;
+    Ok(Json(OkResponse { ok: true }).into_response())
 }
 
 /// `POST /auth/logout` — revoke the presenting session and clear the session
@@ -274,7 +440,7 @@ pub(crate) async fn create_user(
 ) -> ApiResult<Response> {
     let username = validate_username(&body.username)?;
     validate_password(&body.password)?;
-    let hash = auth::hash_password(&body.password)?;
+    let hash = hash_password(&body.password).await?;
     let user = state
         .storage
         .create_user(username, hash, body.role)
@@ -284,8 +450,12 @@ pub(crate) async fn create_user(
 }
 
 /// `PATCH /users/{id}` — change role, enabled state, and/or password.
+///
+/// A password reset revokes all of the target's sessions, and so does
+/// disabling the account (in storage, alongside the flag). An admin resetting
+/// their *own* password keeps the session they made the request with.
 pub(crate) async fn patch_user(
-    _scope: Scoped<Admin>,
+    scope: Scoped<Admin>,
     State(state): State<AppState>,
     Path(id): Path<UserId>,
     ApiJson(body): ApiJson<PatchUserBody>,
@@ -315,8 +485,16 @@ pub(crate) async fn patch_user(
     }
     if let Some(password) = &body.password {
         validate_password(password)?;
-        let hash = auth::hash_password(password)?;
-        state.storage.update_password(id.clone(), hash).await?;
+        let hash = hash_password(password).await?;
+        let keep = if scope.identity.user_id.as_ref() == Some(&id) {
+            scope.identity.session_token_hash.clone()
+        } else {
+            None
+        };
+        state
+            .storage
+            .update_password_keeping_session(id.clone(), hash, keep)
+            .await?;
     }
     let updated = state
         .storage
@@ -412,4 +590,60 @@ fn validate_password(password: &str) -> ApiResult<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn argon2_runs_off_the_async_workers() {
+        let hash = hash_password("correct horse").await.ok().unwrap();
+        assert!(verify_password(Some(hash), "correct horse")
+            .await
+            .ok()
+            .unwrap());
+        assert!(!verify_password(None, "").await.ok().unwrap());
+    }
+
+    /// A dropped request future must not free the permit while its blocking
+    /// work, which cannot be cancelled, is still running.
+    #[tokio::test]
+    async fn the_permit_outlives_a_dropped_caller_until_the_work_ends() {
+        let permits = Arc::new(Semaphore::new(1));
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let caller = tokio::spawn({
+            let permits = Arc::clone(&permits);
+            async move {
+                run_blocking_with_permit(&permits, move || {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                })
+                .await
+            }
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+            .await
+            .unwrap();
+
+        // The client disconnects: its future is dropped mid-await.
+        caller.abort();
+        assert!(matches!(caller.await, Err(e) if e.is_cancelled()));
+        assert_eq!(permits.available_permits(), 0, "work still running");
+
+        // The permit comes back only once the work itself finishes.
+        release_tx.send(()).unwrap();
+        let _permit = tokio::time::timeout(Duration::from_secs(10), permits.acquire())
+            .await
+            .expect("permit released after the work ended")
+            .unwrap();
+    }
+
+    #[test]
+    fn the_dummy_hash_is_a_real_argon2_hash() {
+        assert!(dummy_hash().starts_with("$argon2"));
+        assert!(!auth::verify_password(dummy_hash(), ""));
+    }
 }

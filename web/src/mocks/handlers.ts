@@ -64,6 +64,32 @@ function forbidden(): Response {
   return json({ error: "forbidden" }, 403);
 }
 
+/**
+ * The account endpoints' refusals, word for word as `accounts.rs` sends them.
+ * The UI shows the server's sentence verbatim (`apiErrorMessage`), so a mock
+ * that answers with its own codes — it used to send `username_taken` and
+ * `last_admin` — tests a page against a server that does not exist.
+ */
+const MIN_PASSWORD_LEN = 8;
+
+function badRequest(message: string): Response {
+  return json({ error: message }, 400);
+}
+
+/** `validate_username`: trimmed, and not empty. */
+function usernameRefusal(username: string | undefined): Response | null {
+  return (username ?? "").trim() === ""
+    ? badRequest("username must not be empty")
+    : null;
+}
+
+/** `validate_password`: at least `MIN_PASSWORD_LEN` bytes. */
+function passwordRefusal(password: string | undefined): Response | null {
+  return new TextEncoder().encode(password ?? "").length < MIN_PASSWORD_LEN
+    ? badRequest(`password must be at least ${MIN_PASSWORD_LEN} characters`)
+    : null;
+}
+
 /** Extract the bearer token from a request's headers, if present. */
 function bearer(init: RequestInit): string | null {
   const headers = init.headers as Record<string, string> | undefined;
@@ -323,9 +349,17 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       return res ? json(res) : json({ error: "invalid_credentials" }, 401);
     }
     if (method === "POST" && seg[1] === "setup" && seg.length === 2) {
-      if (!auth.setupRequired()) return json({ error: "already_setup" }, 409);
+      if (!auth.setupRequired()) {
+        return json({ error: "setup has already been completed" }, 409);
+      }
       const body = readJson<{ username?: string; password?: string }>(init);
-      return json(auth.setup(body.username ?? "", body.password ?? ""), 201);
+      const refused =
+        usernameRefusal(body.username) ?? passwordRefusal(body.password);
+      if (refused) return refused;
+      return json(
+        auth.setup((body.username ?? "").trim(), body.password ?? ""),
+        201,
+      );
     }
     if (method === "POST" && seg[1] === "logout" && seg.length === 2) {
       // Real server: 401 for an anonymous caller, otherwise `OkResponse`.
@@ -374,24 +408,44 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
         password?: string;
         role?: Role;
       }>(init);
-      const created = auth.createUser(body.username, body.password, body.role);
-      return created ? json(created, 201) : json({ error: "username_taken" }, 409);
+      const refused =
+        usernameRefusal(body.username) ?? passwordRefusal(body.password);
+      if (refused) return refused;
+      const created = auth.createUser(
+        body.username?.trim(),
+        body.password,
+        body.role,
+      );
+      return created
+        ? json(created, 201)
+        : json({ error: "username already exists" }, 409);
     }
     if (method === "PATCH" && seg.length === 2) {
       const targetId = seg[1];
       if (targetId === undefined) return notFound();
       const body = readJson<auth.UserPatch>(init);
-      const res = auth.updateUser(targetId, body);
-      if (res === "last_admin") return json({ error: "last_admin" }, 409);
-      if (res === "not_found") return notFound();
+      // The server applies role/disabled first (refusing the last admin),
+      // then validates and sets the password — so a bad password still
+      // lands any role change sent alongside it.
+      const { password, ...rest } = body;
+      const badPassword =
+        password !== undefined ? passwordRefusal(password) : null;
+      const res = auth.updateUser(targetId, badPassword ? rest : body);
+      if (res === "not_found") return json({ error: "user not found" }, 404);
+      if (res === "last_admin") {
+        return json({ error: "cannot remove the last admin" }, 409);
+      }
+      if (badPassword) return badPassword;
       return json(res);
     }
     if (method === "DELETE" && seg.length === 2) {
       const targetId = seg[1];
       if (targetId === undefined) return notFound();
       const res = auth.deleteUser(targetId);
-      if (res === "last_admin") return json({ error: "last_admin" }, 409);
-      if (res === "not_found") return notFound();
+      if (res === "last_admin") {
+        return json({ error: "cannot delete the last admin" }, 409);
+      }
+      if (res === "not_found") return json({ error: "user not found" }, 404);
       return noContent();
     }
   }
@@ -441,6 +495,16 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
     // to navigate away on success, and that is what the e2e asserts.
     if (method === "DELETE" && seg.length === 2) {
       return new Response(null, { status: 204 });
+    }
+    // GET /runs/:id/export — the server returns the stored run document. The
+    // fixtures keep no such document, so the detail stands in: the UI only
+    // saves whatever JSON comes back.
+    if (seg[2] === "export" && method === "GET" && seg.length === 3) {
+      try {
+        return json(fx.runDetail(runId));
+      } catch {
+        return notFound();
+      }
     }
     if (seg[2] === "cases") {
       // GET /runs/:id/cases
@@ -512,12 +576,36 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       if (method === "GET" && seg.length === 3) {
         return json({ project, suites: fx.suiteSummaries(project) });
       }
-      // PUT /projects/:project/suites/:suite/baseline
-      if (method === "PUT" && seg[4] === "baseline" && seg.length === 5) {
+      // PUT/DELETE /projects/:project/suites/:suite/baseline — write scope,
+      // like the server's `Scoped<Write>` (the restricted-set upload grant on
+      // top of it is not modelled here).
+      if (
+        (method === "PUT" || method === "DELETE") &&
+        seg[4] === "baseline" &&
+        seg.length === 5
+      ) {
         const suite = seg[3];
         if (suite === undefined) return notFound();
-        const runId = readJson<{ run_id?: string }>(init).run_id ?? "";
-        if (!runId) return json({ error: "run_id required" }, 400);
+        const { me } = auth.resolveAuth(bearer(init));
+        if (!scopeAtLeast(me.scope ?? undefined, "write")) {
+          return json({ error: "this action requires write scope" }, 403);
+        }
+        if (method === "DELETE") {
+          return fx.clearSuiteBaseline(project, suite)
+            ? noContent()
+            : json({ error: "baseline not found" }, 404);
+        }
+        // `BaselineBody`: exactly one of the two pin kinds.
+        const body = readJson<{ run_id?: string; branch?: string }>(init);
+        const branch = body.branch?.trim();
+        if (branch && !body.run_id) {
+          fx.pinSuiteBaselineBranch(project, suite, branch);
+          return json({ project, suite, branch });
+        }
+        const runId = body.run_id ?? "";
+        if (!runId) {
+          return json({ error: "exactly one of `run_id` or `branch` must be set" }, 400);
+        }
         fx.setSuiteBaseline(project, suite, runId);
         return json({ project, suite, run_id: runId });
       }
@@ -674,8 +762,31 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
         "Authorization"
       ];
       if (!authed) return json({ error: "unauthorized" }, 401);
-      const res: PruneResponse = { pruned: 128 };
+      // A bare prune applies the configured retention; `older_than_days`
+      // evicts on age alone, counted against the fixture's own clock (its
+      // newest entry) so the answer is stable across days.
+      const days = p.get("older_than_days");
+      let pruned = 128;
+      if (days !== null) {
+        const created = fx.cacheEntryList().map((e) => parseTimestamp(e.created_at));
+        const cutoff = Math.max(...created) - Number(days) * 86_400_000;
+        pruned = created.filter((t) => t < cutoff).length;
+      }
+      const res: PruneResponse = { pruned };
       return json(res);
+    }
+    // DELETE /cache/entries/:key — admin scope, 204 or 404 like the server.
+    // The fixture corpus is regenerated per request, so the entry is not
+    // actually removed; the UI's job is to close the drawer and refetch.
+    if (method === "DELETE" && seg[1] === "entries" && seg.length === 3) {
+      const { me } = auth.resolveAuth(bearer(init));
+      if (!scopeAtLeast(me.scope ?? undefined, "admin")) {
+        return json({ error: "this action requires admin scope" }, 403);
+      }
+      const key = decodeURIComponent(seg[2] as string);
+      return fx.cacheEntryList().some((e) => e.key === key)
+        ? noContent()
+        : json({ error: "cache entry not found" }, 404);
     }
   }
 

@@ -18,15 +18,27 @@ environment variables, logging, and storage. For Docker/Kubernetes/backups, see
 `domarinn server` runs the results server: a JSON API under `/api/v1` **and** the embedded React web UI, served from the **same binary**. There is no separate frontend to deploy, no sidecar database, and no runtime dependency — the binary is the eval engine, the CLI, the server, and its own container healthcheck.
 
 ```sh
-domarinn server [--port 8321] [--data-dir /data]
+domarinn server [--port 8321] [--bind 0.0.0.0] [--data-dir /data]
 ```
 
-| Flag         | Default | Effect |
-|--------------|---------|--------|
-| `--port`     | `8321`  | Listen port. The server always binds `0.0.0.0`. |
-| `--data-dir` | `/data` | State directory (also `DOMARINN_DATA_DIR`). Holds the SQLite databases. |
+| Flag         | Default   | Effect |
+|--------------|-----------|--------|
+| `--port`     | `8321`    | Listen port (also `DOMARINN_LISTEN_PORT`). |
+| `--bind`     | `0.0.0.0` | Listen address, IPv4 or IPv6 (also `DOMARINN_BIND`). The default is every IPv4 interface, which a container needs; `127.0.0.1` or `::1` keeps a bare-metal server off the network, and `::` listens on IPv6. |
+| `--data-dir` | `/data`   | State directory (also `DOMARINN_DATA_DIR`). Holds the SQLite databases. |
 
-The server runs until Ctrl-C (graceful shutdown). Health is exposed at both `/health` and `/api/v1/health`. See [`cli.md`](cli.md) for the rest of the binary's subcommands and [Self-hosting](../guides/self-host.md) for Docker/Kubernetes hosting.
+**Shutdown.** The server stops gracefully on **SIGTERM** (what `docker stop` and a Kubernetes pod termination send) or **Ctrl-C/SIGINT**: it stops accepting connections, lets in-flight requests finish, so their database writes commit, and exits `0`. The log line `shutting down: draining in-flight requests` names the signal that triggered it. The container runs the binary as PID 1 with no init, which is why it handles SIGTERM itself. Leave your orchestrator's grace period at its default (Docker 10s, Kubernetes 30s) or longer if large run uploads are common.
+
+**Health and readiness.** Two unauthenticated probes, both reachable in every auth mode:
+
+| Route | Meaning | Use it for |
+|-------|---------|------------|
+| `GET /health`, `GET /api/v1/health` | **Liveness.** `200 {"status":"ok"}` whenever the process serves HTTP. It does not touch storage. | Container `HEALTHCHECK`, Kubernetes `livenessProbe`. |
+| `GET /api/v1/ready` | **Readiness.** `200 {"status":"ready"}` when both databases answer a `SELECT 1`, else `503 {"status":"unavailable"}`. The cause is logged at `warn`, never returned. | Kubernetes `readinessProbe`, load-balancer health checks. |
+
+Keep liveness on `/health`: restarting a server because its Postgres is briefly unreachable does not help, but taking it out of rotation does.
+
+See [`cli.md`](cli.md) for the rest of the binary's subcommands and [Self-hosting](../guides/self-host.md) for Docker/Kubernetes hosting.
 
 - [Quick start](#quick-start)
 - [Accounts & auth model](#accounts--auth-model)
@@ -107,7 +119,9 @@ Each comma-separated entry is `scope:secret`, where scope is `read`, `write`, or
 
 - Passwords are **argon2**-hashed (minimum 8 characters).
 - Three roles: **`admin`**, **`member`**, and **`viewer`**. Role maps to a scope ceiling: `admin → admin`, `member → write`, `viewer → read`.
-- Logging in mints a **session** (token prefix `mses_`, 30-day lifetime). The browser UI uses sessions; `POST /auth/logout` revokes the presenting one.
+- Logging in mints a **session** (token prefix `mses_`, 30-day lifetime). The browser UI uses sessions; `POST /auth/logout` revokes the presenting one. Expired sessions are deleted by the hourly retention task.
+- **Failed logins are throttled** per server process and in memory (a restart resets them): each (client address, username) pair gets 5 attempts without a success within 15 minutes, then a `429` with `Retry-After` (and a message stating the wait) until that window lapses. IPv6 clients are counted per /64, so rotating addresses inside one prefix does not buy fresh attempts. A successful login resets that pair's count. The client address is the TCP peer: `X-Forwarded-For` is never believed, because the server has no trusted-proxy setting yet and honoring an attacker-supplied header would hand every guess a fresh budget. **Behind a reverse proxy the peer is the proxy**, so throttling is effectively per username alone: anyone can keep a known account out of *password* login for up to 15 minutes by repeating bad attempts against it. There is deliberately no budget per address across usernames, because behind a proxy it would let one client lock *everyone* out of password login; the server never refuses a correct password because of other usernames' failures. Spraying many usernames is instead bounded by the argon2 cost of every attempt (below) and by 5 guesses per account per window; rate-limiting a spraying client belongs at the proxy until a trusted-proxy setting exists. Lockouts survive memory pressure: the tracker holds up to 100,000 keys, makes room by dropping lapsed and least-used entries but never a locked one, and if every slot is a live lockout it refuses new sign-in attempts with a `429` rather than forget one. Existing sessions, API keys, and SSO keep working throughout. An unknown username costs the same argon2 verify and gets the same `401` as a wrong password, so neither timing nor status reveals which accounts exist. Password hashing runs off the request workers with a concurrency cap of one per CPU core (minimum two), held until the hash finishes even if the client disconnects, so a burst of logins queues instead of stalling other endpoints such as `/api/v1/health`.
+- **Password changes end other sessions.** `POST /api/v1/me/password` lets a local account change its own password (it must supply the current one) and revokes every other session it holds; an admin resetting a password via `PATCH /api/v1/users/{id}` revokes all of that account's sessions, and disabling an account does the same. API keys are separate credentials and are not revoked by either — revoke them explicitly.
 - Each account can mint **API keys** (prefix `domarinn_`, 256 bits of entropy). The secret is shown **exactly once** on creation, is revocable, and carries a **scope ceiling** — a key may be created at or below the creator's own scope, never above it.
 
 **What `viewer` is for.** A viewer reads: the runs it may see, the run sets it has been granted, and the analysis views built on them. It can mint API keys — capped, like every account, at its own `read` scope — which is what makes it the right role for a dashboard, an auditor, or an agent pointed at the [MCP endpoint](mcp.md). It can never upload a run, pin a baseline, or change policy: even a viewer holding a `manage` grant on a [run set](rest-api.md#run-sets-access-control) sees that set's access list read-only, because editing it takes `write` scope. Minting and revoking your own keys is `read`-scoped for exactly this reason; nothing else about the key endpoints is loosened.
@@ -235,6 +249,8 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 
 | Variable                        | Default        | Purpose |
 |---------------------------------|----------------|---------|
+| `DOMARINN_LISTEN_PORT`               | `8321`         | Listen port. Also settable with `--port`. `domarinn healthcheck` reads it too, so setting it (rather than passing `--port`) keeps the image `HEALTHCHECK` pointed at the right port. Deliberately not `DOMARINN_PORT`: Kubernetes injects `<SERVICE>_PORT=tcp://…` into every pod for each Service, so a Service named `domarinn` would hand the server an unparseable port and crash-loop it. |
+| `DOMARINN_BIND`               | `0.0.0.0`      | Listen address, IPv4 or IPv6 (`127.0.0.1`, `::1`, `::`). Also settable with `--bind`. `domarinn healthcheck` probes this address when it names one interface, and loopback otherwise. |
 | `DOMARINN_DATA_DIR`           | `/data`        | State directory. Holds `domarinn.db` and `cache.db` (SQLite mode); still required under Postgres, where it keeps only the local cache tier. Also settable with `--data-dir`. |
 | `DOMARINN_DATABASE_URL`       | (unset)        | Postgres connection URL. When set, **all durable state** — runs, users, sessions, API keys, baselines, and the shared cache — lives in that one database instead of SQLite files under the data dir, and running **multiple replicas** becomes supported. TLS follows the URL's `sslmode` (`disable` \| `prefer` \| `require`). See [Storage](#storage). |
 | `DOMARINN_TOKENS`             | (unset)        | Static bearer tokens as `scope:secret` pairs, comma-separated. Grants access but never changes the mode. |

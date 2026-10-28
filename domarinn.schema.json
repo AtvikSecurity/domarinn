@@ -1263,7 +1263,7 @@
           ]
         },
         {
-          "description": "Total cost in USD must be <= max. Bypasses the cache.",
+          "description": "Total cost in USD must be <= max. Served from the cache like any other\nassertion: a hit is re-priced from its stored token usage at today's\nrate. Only `latency` bypasses the cache.",
           "type": "object",
           "properties": {
             "max": {
@@ -1811,6 +1811,7 @@
           "minimum": 0
         },
         "retries": {
+          "description": "Retry policy for retriable provider failures (429, 5xx, timeouts).\nRetries are on by default — 2 of them, backing off from 500 ms to at\nmost 8 s — so omitting this block is not the same as `max: 0`.",
           "anyOf": [
             {
               "$ref": "#/$defs/RetryCfg"
@@ -1821,6 +1822,7 @@
           ]
         },
         "rate_limit": {
+          "description": "Cap on outgoing provider requests per second, across the whole run.\n\nEvery live attempt takes a slot — retries and `fallback:` links\nincluded — while cache hits take none. Grader and embedding calls are\nnot limited.",
           "anyOf": [
             {
               "$ref": "#/$defs/RateLimit"
@@ -1831,6 +1833,7 @@
           ]
         },
         "timeout_ms": {
+          "description": "Per-request timeout for provider calls, in milliseconds.\n\nReplaces each provider kind's default (120 s for `anthropic`, `openai`\nand `http`; 60 s for `exec` and the embeddings client). An `exec`\nprovider's own `timeout_ms` wins over this. Applies to each attempt, not\nto the retry loop as a whole. Graders are not covered: they have\n`grader.timeout_ms`. An expiry is a retriable `provider_timeout`.",
           "type": [
             "integer",
             "null"
@@ -1839,7 +1842,7 @@
           "minimum": 0
         },
         "short_circuit": {
-          "description": "Whether deterministic asserts short-circuit the grader. Default true.",
+          "description": "Skip graded asserts once the deterministic ones have decided the case.\nDefault true. `false` grades every assertion anyway, for a full\nper-assertion report — at the cost of the judge calls this saves.",
           "type": [
             "boolean",
             "null"
@@ -1876,11 +1879,13 @@
       "type": "object",
       "properties": {
         "max": {
+          "description": "Retries after the first attempt. Required inside a `retries:` block;\nwith no block at all the default is 2. `0` turns retrying off.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
         },
         "initial_ms": {
+          "description": "First backoff delay in milliseconds (default 500), doubling per retry.",
           "type": [
             "integer",
             "null"
@@ -1889,6 +1894,7 @@
           "minimum": 0
         },
         "max_ms": {
+          "description": "Ceiling on the exponential backoff, in milliseconds (default 8000).",
           "type": [
             "integer",
             "null"
@@ -1920,6 +1926,7 @@
       "type": "object",
       "properties": {
         "rps": {
+          "description": "Requests per second; must be positive. Requests are spaced `1 / rps`\napart, with no burst allowance.",
           "type": "number",
           "format": "double"
         }

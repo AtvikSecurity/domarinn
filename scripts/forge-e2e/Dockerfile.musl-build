@@ -1,0 +1,22 @@
+# Static x86_64-musl `domarinn` for the forge e2e harness, on hosts with no
+# musl C toolchain (`mise run musl-build` needs musl-gcc, which NixOS and most
+# non-Debian dev boxes lack). Alpine's Rust is a musl toolchain, so its host
+# target is the release target and the binary links statically by default:
+# the same artifact shape release.yml publishes.
+#
+# Used only by run.sh, and only when musl-gcc is absent; CI installs
+# musl-tools and runs `mise run musl-build` instead. Output-only:
+#   docker buildx build -f scripts/forge-e2e/Dockerfile.musl-build \
+#     --output type=local,dest=<dir> .
+FROM docker.io/library/rust:1.99.1-alpine3.24@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS build
+RUN apk add --no-cache musl-dev gcc make perl
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ ./crates/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p domarinn-cli && \
+    cp target/release/domarinn /domarinn
+
+FROM scratch
+COPY --from=build /domarinn /domarinn

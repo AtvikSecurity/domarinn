@@ -6,7 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { apiRequest } from "./client";
+import { apiRequest, apiRequestBytes } from "./client";
 import { rankProjects } from "@/lib/setSearch";
 import type {
   ApiKeyCreatedResponse,
@@ -370,6 +370,34 @@ export function useSetBaseline(project: string, suite: string) {
       void client.invalidateQueries({ queryKey: ["compare"] });
       // The set browser surfaces the pin as a chip at both detail levels.
       void client.invalidateQueries({ queryKey: qk.sets() });
+      // The case drawer's history rail marks the baseline run from
+      // `baseline_run_id` on this response.
+      void client.invalidateQueries({ queryKey: ["caseHistory"] });
+    },
+  });
+}
+
+/**
+ * Unpin a suite's baseline (`DELETE .../baseline`), whichever kind it was.
+ *
+ * Same gate as pinning: write scope, plus an upload grant on a restricted set.
+ * Invalidates exactly what {@link useSetBaseline} does, since it undoes it.
+ */
+export function useClearBaseline(project: string, suite: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiRequest(
+        `/projects/${encodeURIComponent(project)}/suites/${encodeURIComponent(
+          suite,
+        )}/baseline`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: qk.suites(project) });
+      void client.invalidateQueries({ queryKey: ["compare"] });
+      void client.invalidateQueries({ queryKey: qk.sets() });
+      void client.invalidateQueries({ queryKey: ["caseHistory"] });
     },
   });
 }
@@ -533,8 +561,52 @@ export function useDeleteRun() {
       void client.invalidateQueries({ queryKey: ["suites"] });
       void client.invalidateQueries({ queryKey: ["projects"] });
       void client.invalidateQueries({ queryKey: ["compare"] });
+      // The set browser's counts and sparklines, search hits that link to it,
+      // and every case timeline it was a point on.
+      void client.invalidateQueries({ queryKey: qk.sets() });
+      void client.invalidateQueries({ queryKey: ["search"] });
+      void client.invalidateQueries({ queryKey: ["caseHistory"] });
     },
   });
+}
+
+/**
+ * Fetch a run's original document (`GET /runs/{id}/export`) and save it as a
+ * file.
+ *
+ * Through `apiRequest` rather than a plain `<a href download>`: a link sends
+ * the session cookie but not a bearer token pasted in Settings, so on a server
+ * reached by token the link would save a 401 body instead of the run.
+ */
+export function useExportRun() {
+  return useMutation({
+    mutationFn: async (runId: string) => {
+      // The bytes as served, not parsed: re-serializing would reformat the
+      // document and silently round integers past 2^53, so the "original
+      // document" would no longer be the original.
+      const bytes = await apiRequestBytes(
+        `/runs/${encodeURIComponent(runId)}/export`,
+      );
+      saveFile(
+        `${runId}.json`,
+        new Blob([bytes], { type: "application/json" }),
+      );
+    },
+  });
+}
+
+/** Hand `blob` to the browser as a file download. */
+function saveFile(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on the next tick: some browsers start the download asynchronously
+  // and an immediately revoked URL aborts it.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function useCacheStats() {
@@ -544,14 +616,48 @@ export function useCacheStats() {
   });
 }
 
+/**
+ * What a prune evicts. Omit `olderThanDays` for the server's configured
+ * retention (age *and* size limits); naming it evicts on age alone — see
+ * `cache_prune` in the server's `cachebrowse.rs`.
+ */
+export interface PruneOptions {
+  olderThanDays?: number;
+}
+
 export function usePruneCache() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: () => apiRequest<PruneResponse>("/cache/prune", { method: "POST" }),
+    mutationFn: (opts: PruneOptions = {}) =>
+      apiRequest<PruneResponse>("/cache/prune", {
+        method: "POST",
+        params: { older_than_days: opts.olderThanDays },
+      }),
     // The whole ["cache"] subtree, not just the stats. A prune deletes entries,
     // so leaving the entries list cached would keep rendering rows the server
     // has just evicted.
     onSuccess: () => client.invalidateQueries({ queryKey: ["cache"] }),
+  });
+}
+
+/**
+ * Delete one cache entry (`DELETE /cache/entries/{key}`, admin scope).
+ *
+ * The entry's own queries are removed rather than invalidated: invalidating
+ * would refetch the open drawer's entry into a 404 in the moment before the
+ * drawer closes. Everything else under `["cache"]` is refetched — the entry is
+ * gone from the list, the stats and the facet counts.
+ */
+export function useDeleteCacheEntry() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) =>
+      apiRequest(`/cache/entries/${encodeURIComponent(key)}`, { method: "DELETE" }),
+    onSuccess: (_data, key) => {
+      client.removeQueries({ queryKey: ["cache", "entry", key] });
+      client.removeQueries({ queryKey: qk.cacheEntryRuns(key) });
+      void client.invalidateQueries({ queryKey: ["cache"] });
+    },
   });
 }
 
@@ -696,7 +802,12 @@ export function useUpdateUser() {
         method: "PATCH",
         body: input.patch,
       }),
-    onSuccess: () => client.invalidateQueries({ queryKey: qk.users }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: qk.users });
+      // An admin can change their own role; `/auth/me` carries it, and with
+      // it every canWrite/canAdmin gate in the UI.
+      void client.invalidateQueries({ queryKey: qk.me });
+    },
   });
 }
 
@@ -705,6 +816,10 @@ export function useDeleteUser() {
   return useMutation({
     mutationFn: (id: string) =>
       apiRequest(`/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
-    onSuccess: () => client.invalidateQueries({ queryKey: qk.users }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: qk.users });
+      // Their grants went with them, and access panels list grants by name.
+      void client.invalidateQueries({ queryKey: qk.sets() });
+    },
   });
 }

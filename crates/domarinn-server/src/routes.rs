@@ -49,12 +49,14 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/health", get(health))
         .route("/api/v1/health", get(health))
+        .route("/api/v1/ready", get(ready))
         .route("/api/v1/meta", get(meta))
         // Local accounts, sessions, and API keys.
         .route("/api/v1/auth/setup", post(accounts::setup))
         .route("/api/v1/auth/login", post(accounts::login))
         .route("/api/v1/auth/logout", post(accounts::logout))
         .route("/api/v1/auth/me", get(accounts::me))
+        .route("/api/v1/me/password", post(accounts::change_password))
         // SSO login flows (unauthenticated by design — they are the way in).
         .route(
             "/api/v1/auth/oidc/{provider}/start",
@@ -263,8 +265,28 @@ pub(crate) type ApiResult<T> = Result<T, ApiError>;
 // Open endpoints
 // ---------------------------------------------------------------------------
 
+/// Liveness: the process is up and serving HTTP. Touches nothing else, so a
+/// slow or unreachable database never gets a healthy server restarted.
 async fn health() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
+}
+
+/// Readiness: the storage backend answers a query. `503` when it does not, so
+/// a load balancer or Kubernetes readiness probe stops routing to a replica
+/// whose database went away without restarting it. Unauthenticated like
+/// `/health`, which is why the body is generic — the cause goes to the log.
+async fn ready(State(state): State<AppState>) -> Response {
+    match state.storage.ping().await {
+        Ok(()) => Json(json!({ "status": "ready" })).into_response(),
+        Err(e) => {
+            tracing::warn!(error = %format!("{e:#}"), "readiness probe failed: storage unavailable");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "status": "unavailable", "error": "storage unavailable" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn meta(State(state): State<AppState>) -> ApiResult<Response> {

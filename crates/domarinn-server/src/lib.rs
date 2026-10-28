@@ -47,6 +47,7 @@ pub mod mcp;
 pub mod routes;
 pub mod runsets;
 pub mod sets;
+mod shutdown;
 pub mod sso;
 pub mod storage;
 
@@ -66,7 +67,8 @@ const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 ///
 /// Constructed verbatim by the CLI; the public field set is a stable contract
 /// (exactly `port`, `data_dir`, `auth_mode`). Any additional settings are read
-/// from the environment inside [`serve`].
+/// from the environment inside [`serve`], or — the listen address — passed to
+/// [`serve_on`].
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub port: u16,
@@ -305,6 +307,8 @@ pub struct AppState {
     pub(crate) auth: Arc<dyn Authenticator>,
     pub(crate) api_key_auth: Arc<ApiKeyAuthenticator>,
     pub(crate) session_auth: Arc<SessionAuthenticator>,
+    /// Failed-password backoff for `/auth/login` and `/me/password`.
+    pub(crate) login_throttle: Arc<accounts::LoginThrottle>,
     pub(crate) auth_mode: AuthMode,
     pub(crate) public_url: Option<String>,
     pub(crate) cache_limits: CacheLimits,
@@ -377,6 +381,7 @@ impl AppState {
         Ok(AppState {
             api_key_auth: Arc::new(ApiKeyAuthenticator::new(storage.clone())),
             session_auth: Arc::new(SessionAuthenticator::new(storage.clone())),
+            login_throttle: Arc::default(),
             storage,
             auth: Arc::new(authenticator),
             auth_mode,
@@ -577,20 +582,47 @@ pub async fn build_app(
     Ok((router, state))
 }
 
-/// Bind and serve until shutdown (Ctrl-C).
+/// The address [`serve`] listens on: every IPv4 interface, which is what a
+/// container needs — its port mapping arrives on the container's own
+/// interface, never on loopback.
+pub const DEFAULT_BIND: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+
+/// Bind [`DEFAULT_BIND`] and serve until shutdown (SIGTERM or Ctrl-C).
 pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
+    serve_on(config, DEFAULT_BIND).await
+}
+
+/// Bind `bind:port` and serve until shutdown (SIGTERM or Ctrl-C).
+///
+/// A separate entry point rather than a [`ServerConfig`] field so the
+/// config's public field set — which callers construct verbatim — stays
+/// unchanged. `bind` may be IPv6 (`::1`, `::`); the CLI's `--bind` /
+/// `DOMARINN_BIND` lands here.
+pub async fn serve_on(config: ServerConfig, bind: std::net::IpAddr) -> anyhow::Result<()> {
     let settings = Settings::from_env()?;
     let (app, state) = build_app(&config, settings).await?;
     spawn_cache_index_backfill(state.clone());
     spawn_cache_retention(state);
 
-    let port = config.port;
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("domarinn server listening on http://{addr}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let addr = std::net::SocketAddr::new(bind, config.port);
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("binding {addr}: {e}"))?;
+    // The bound address, not the requested one: with `--port 0` the OS picks
+    // the port and this line is the only place it is reported.
+    let local = listener.local_addr().unwrap_or(addr);
+    tracing::info!("domarinn server listening on http://{local}");
+    // With connect info, so the login throttle can key on the peer address;
+    // without it every bucket degrades to the username alone, and anyone could
+    // lock a known account out of password login. Behind a reverse proxy the
+    // peer is the proxy, which degrades to the same username-only key.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown::shutdown_signal())
+    .await?;
+    tracing::info!("domarinn server stopped");
     Ok(())
 }
 
@@ -716,6 +748,7 @@ fn spawn_cache_retention(state: AppState) {
             if let Err(e) = state.storage.sso_gc().await {
                 tracing::warn!(error = %e, "sso gc failed");
             }
+            state.storage.sweep_expired_sessions().await;
             // Opt-in: `None` never deletes a run. See storage::retention.
             if let Some(days) = state.run_max_age_days {
                 match state.storage.sweep_runs(days).await {
@@ -731,11 +764,6 @@ fn spawn_cache_retention(state: AppState) {
             }
         }
     });
-}
-
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutting down");
 }
 
 /// Export TypeScript type definitions for the server's DTO layer (response
@@ -769,7 +797,9 @@ async fn shutdown_signal() {
 pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError> {
     use ts_rs::Config;
 
-    use crate::accounts::{CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody};
+    use crate::accounts::{
+        ChangePasswordBody, CreateKeyBody, CreateUserBody, CredentialsBody, PatchUserBody,
+    };
     use crate::baselines::BaselineBody;
     use crate::domain::{
         CacheSort, CacheTier, CachedFilter, OriginFilter, RunStatusFilter, SortOrder,
@@ -841,6 +871,7 @@ pub fn export_api_types(dir: &std::path::Path) -> Result<(), ts_rs::ExportError>
     CreateUserBody::export_all(&cfg)?;
     PatchUserBody::export_all(&cfg)?;
     CreateKeyBody::export_all(&cfg)?;
+    ChangePasswordBody::export_all(&cfg)?;
     BaselineBody::export_all(&cfg)?;
     SetGrantUpsert::export_all(&cfg)?;
 

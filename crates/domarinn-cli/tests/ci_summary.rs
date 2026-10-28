@@ -591,6 +591,51 @@ fn ci_summary_appends_to_an_existing_github_output_file() {
     assert!(out.contains("passed=1"));
 }
 
+/// `--step-output` is the same flag under a name that does not claim the file
+/// belongs to GitHub — a Gitea or Forgejo workflow, or a hand-rolled pipeline
+/// on another forge, should not have to spell a competitor's product name.
+#[test]
+fn ci_summary_accepts_the_forge_neutral_step_output_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+    bin().arg("run").current_dir(dir.path()).assert().success();
+    bin()
+        .args(["ci-summary", "--step-output", "steps.txt"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let out = std::fs::read_to_string(dir.path().join("steps.txt")).unwrap();
+    assert!(out.contains("passed=1"), "got: {out}");
+}
+
+/// A Forgejo runner sets `GITHUB_ACTIONS=true` as well, and its run page is
+/// the per-repo run number. Recorded as a GitHub run, the PR comment's
+/// `CI run` link would point at `GITHUB_RUN_ID` — a different run, or a 404.
+#[test]
+fn ci_summary_links_a_forgejo_run_by_its_run_number() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("domarinn.yaml"), suite("hello", "hello")).unwrap();
+    bin()
+        .arg("run")
+        .env("FORGEJO_ACTIONS", "true")
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_SERVER_URL", "https://code.example")
+        .env("GITHUB_REPOSITORY", "acme/widgets")
+        .env("GITHUB_RUN_ID", "117195")
+        .env("GITHUB_RUN_NUMBER", "9384")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    bin()
+        .arg("ci-summary")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "[CI run](https://code.example/acme/widgets/actions/runs/9384)",
+        ));
+}
+
 /// A shared run links to itself; the CI run URL comes from the workflow env.
 #[test]
 fn ci_summary_links_to_the_shared_run_and_the_ci_run() {

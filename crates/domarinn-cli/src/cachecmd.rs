@@ -238,8 +238,8 @@ pub fn execute(cmd: CacheCmd) -> u8 {
             // wanted `clear` reaching for the gentler-sounding verb.
             if older_than.is_none() && newer_than.is_none() && empty_reason.is_empty() {
                 eprintln!(
-                    "error: cache gc needs a bound — --older-than (e.g. --older-than 30d), \
-                     --newer-than or --empty-reason; \
+                    "error: cache gc needs a bound — --older-than (e.g. --older-than 30d) \
+                     or --empty-reason (--newer-than only narrows an --older-than window); \
                      to remove every entry, use `domarinn cache clear`"
                 );
                 return exit::USAGE;

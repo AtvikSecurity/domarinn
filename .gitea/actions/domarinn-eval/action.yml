@@ -1,0 +1,733 @@
+# domarinn-eval for Gitea Actions — run a domarinn suite in CI and gate the PR
+# on the result.
+#
+# The Gitea twin of `.github/actions/domarinn-eval`. Everything that decides the
+# verdict — resolving the binary, the run, the summary, the gate — is the same
+# shell, byte for byte; `crates/domarinn-cli/tests/action_contract/forge_tests.rs`
+# fails if one copy is edited without the others. Three things differ, each
+# because the GitHub version leans on something only github.com provides:
+#
+# - **The PR comment** is a plain REST create-or-update against Gitea's own API
+#   (`github.api_url`, which Gitea sets to `https://<host>/api/v1`), not
+#   `actions/github-script`. That is Octokit, which speaks GitHub's API.
+# - **The artifact upload** uses `actions/upload-artifact` v3. Every v4+ release
+#   aborts on a host that is not github.com: it takes the host for GitHub
+#   Enterprise Server, which it refuses. Gitea has served the v3 protocol since
+#   Actions shipped; its v4 backend (1.22+) still needs a patched fork of the
+#   action to get past that check, and a pinned first-party release is a
+#   smaller trust surface than a fork.
+# - **The job summary** is appended only when `$GITHUB_STEP_SUMMARY` is set.
+#   (That guard lives in the shared step, so the GitHub copy carries it too.)
+#
+# Usage:
+#   - uses: AtvikSecurity/domarinn/.gitea/actions/domarinn-eval@0.1.0
+#     with:
+#       config: eval/domarinn.yaml
+#       server-url: https://domarinn.example.com   # optional (enables --share)
+#       token: ${{ secrets.DOMARINN_TOKEN }}        # optional bearer token
+#       against: server:baseline                      # optional baseline to diff
+#       fail-on-regression: "true"
+#       # release-base-url: https://gitea.example.com/mirrors/domarinn  # air-gapped
+#
+# The bare `owner/repo/path@ref` form resolves against the instance's
+# `[actions] DEFAULT_ACTIONS_URL`, which is github.com unless an admin changed
+# it. An instance set to `self` needs either a mirror of this repository or the
+# URL form, `uses: https://github.com/AtvikSecurity/domarinn/.gitea/actions/domarinn-eval@0.1.0`.
+# The `actions/upload-artifact` step below is resolved the same way, so a
+# `self` instance needs that mirrored as well.
+#
+# Token: the PR comment posts with `comment-token`, which defaults to the job's
+# automatic token. Gitea 1.26 and later honour a workflow's `permissions:` key
+# for it (`issues: write` and `pull-requests: write` cover the comment), clamped
+# by the repository's and owner's Actions token settings; older releases ignore
+# the key and the settings alone decide. A pull request from a fork gets a
+# read-only token either way, so its comment is a warning, not a failure.
+#
+# Exit-code contract (from the CLI): 0 = all pass; 1 = assertion failure or
+# regression; 2 = config/usage error, including a case that errored because of
+# the suite; 3 = infrastructure error, including a grader that broke or could
+# not be reached. This action maps 1 to a failed check only when
+# `fail-on-regression` is true; 2 and 3 always fail the job. The artifact upload
+# and the PR comment run regardless of the result, and neither can fail the job
+# on its own: the gate step is the only verdict.
+#
+# An errored case never arrives as 1, so `fail-on-regression: "false"` does not
+# make one green — it only ever disarms assertion failures and regressions. The
+# gate annotation names the error classes behind a 2 or a 3
+# (`... (exit 3) — grader_failed × 2`), which is also published as the
+# `error-classes` output.
+#
+# With `server-url` set, the run is uploaded and a failed upload is one of those
+# infrastructure errors: the job fails (3) rather than going green over results
+# nobody can find. Set `allow-share-failure: "true"` to demote that to a warning.
+# A server that says up front it cannot accept this CLI's result schema is a
+# usage error (2) raised *before* the suite runs, so the skew costs no provider
+# calls; the same input downgrades that refusal to a warning too.
+
+name: domarinn eval
+description: Run a domarinn eval suite on Gitea Actions, gate on regressions, and comment the result on the PR.
+
+inputs:
+  config:
+    description: Path to the suite file or a directory containing domarinn.yaml.
+    required: false
+    default: "domarinn.yaml"
+  binary-path:
+    description: >-
+      Path to a prebuilt `domarinn` binary. When set, resolution stops here
+      (no download, no build).
+    required: false
+    default: ""
+  version:
+    description: >-
+      Release tag to download the binary from (e.g. "0.1.0"), or "latest".
+      Used only when `binary-path` is empty. If the download fails, the action
+      falls back to building/installing from source with cargo.
+    required: false
+    default: "latest"
+  release-base-url:
+    description: >-
+      The domarinn repository to download releases from, and to build from if
+      no asset matches. The default is the upstream repository on github.com.
+      Point it at a mirror (a GitHub Enterprise, Gitea or Forgejo copy of the
+      repository, with its releases) where the runner cannot reach github.com:
+      the mirror must serve the same `/releases/download/<tag>/<asset>` layout.
+      Off github.com, `version: latest` is resolved through the Gitea/Forgejo
+      API (`/api/v1/repos/<owner>/<repo>/releases/latest`); anywhere that API
+      does not exist — GitHub Enterprise among them — pin a concrete `version`.
+    required: false
+    default: "https://github.com/AtvikSecurity/domarinn"
+  server-url:
+    description: >-
+      Results server base URL. When set, the run is uploaded with `--share`
+      (exported as DOMARINN_SERVER_URL). Optional.
+    required: false
+    default: ""
+  token:
+    description: >-
+      Bearer token for the results server (exported as DOMARINN_TOKEN). Pass a
+      secret, never a literal. Optional.
+    required: false
+    default: ""
+  allow-share-failure:
+    description: >-
+      If "true", a failed upload no longer fails the job (appends
+      `--allow-share-failure`). Off by default: with `server-url` set,
+      publishing the run is the point of the step, and a job that goes green
+      having stored nothing reports success for work nobody can find. Turn it
+      on where the upload is genuinely optional — a fork's pull request with no
+      server credentials, say. Ignored without `server-url`, since the flag is
+      only meaningful alongside `--share`.
+    required: false
+    default: "false"
+  provider:
+    description: >-
+      Provider id(s) to run, comma- or space-separated; each becomes a repeated
+      `--provider`. Selection only: a selected cell keeps its whole `fallback:`
+      chain, exactly as on the command line. Empty (the default) runs the full
+      matrix. An id containing a comma or space is unaddressable through this
+      input — none of the shipped examples use one. Prefer `fallback_only: true`
+      in the suite where the intent is "this provider is only a fallback
+      target": that keeps the cost model reviewable in the file rather than in
+      the invocation.
+    required: false
+    default: ""
+  against:
+    description: >-
+      Baseline to diff this run against. Use "server:baseline" in CI: it
+      resolves the pin for this suite on the results server — a fixed run, or a
+      branch pin that merges the newest runs on the branch per case — and needs
+      `server-url` plus `project:`/`suite:` in the config.
+      "server:branch:<name>" resolves the same branch merge with no pin at all.
+      "latest" reads the local .domarinn/runs store, which a fresh checkout
+      does not have — in CI it silently finds nothing and the gate never fires.
+      Also accepts a run id, a result.json path, or "none" to override a
+      `baseline:` suite default. Empty passes no reference (a `baseline:` key
+      in the suite still applies). A regression makes the CLI exit 1; a
+      baseline that was requested but could not be resolved makes it exit 2.
+    required: false
+    default: ""
+  fail-on-regression:
+    description: >-
+      If "true" (default), an assertion failure or regression (CLI exit 1) fails
+      the check. If "false", exit 1 is reported as a warning and does not fail
+      the job. Exit 2 (config/usage) and exit 3 (infra) always fail the job —
+      which includes every errored case, so this input cannot turn a broken
+      grader or a misconfigured suite green.
+    required: false
+    default: "true"
+  comment:
+    description: >-
+      If "true" (default), post/update a summary comment on the PR. Runs on
+      `pull_request` and `pull_request_target` events; a comment that cannot be
+      posted is a warning, never a failure.
+    required: false
+    default: "true"
+  comment-token:
+    description: >-
+      Token the PR comment is posted with. Defaults to the job's automatic
+      token; pass a secret where that token cannot write to the pull request
+      (see the header for each forge's rules). Used for nothing else.
+    required: false
+    default: ${{ github.token }}
+  artifact-name:
+    description: Name of the uploaded artifact holding results.xml and summary.md.
+    required: false
+    default: "domarinn-results"
+  allow-empty:
+    description: >-
+      If "true", succeed when the run resolves to zero test cases. Off by
+      default: a green result over no cells is indistinguishable from a green
+      result over every cell. Turn it on for a sharded matrix where a shard
+      legitimately has no work.
+    required: false
+    default: "false"
+  cache-dir:
+    description: >-
+      Directory for the local response cache, e.g. a path restored by
+      actions/cache. Passed to domarinn as --cache-dir. Empty uses the
+      default (.domarinn/cache beside the suite), which a cache action
+      may not save.
+    required: false
+    default: ""
+  branch:
+    description: >-
+      Branch to record on the run (exported as DOMARINN_BRANCH). Leave empty:
+      domarinn reads GITHUB_HEAD_REF / GITHUB_REF itself, which is what makes a
+      pull request record its source branch rather than `refs/pull/N/merge` —
+      and `actions/checkout` leaves a detached HEAD, so git alone would answer
+      `HEAD` for every run. Set it only where the event's ref is not the branch
+      you mean: a `merge_group` run (whose ref is the queue's temporary branch)
+      or a `workflow_run` run (whose ref is the default branch, not the branch
+      of the workflow that triggered it).
+    required: false
+    default: ""
+
+outputs:
+  exit-code:
+    description: The CLI's raw exit code (0 pass, 1 fail/regression, 2 usage, 3 infra).
+    value: ${{ steps.eval.outputs.exit-code }}
+  passed:
+    description: Number of test cases that passed.
+    value: ${{ steps.summary.outputs.passed }}
+  failed:
+    description: Number of test cases that failed or errored.
+    value: ${{ steps.summary.outputs.failed-or-errored }}
+  errored:
+    description: Number of test cases that errored (a subset of `failed`).
+    value: ${{ steps.summary.outputs.errored }}
+  error-classes:
+    description: >-
+      What kind of errors, as `grader_failed × 2, provider_timeout × 1`. Empty
+      when nothing errored. The exit code says a run broke; this says what
+      broke, which is the difference between paging an operator and fixing a
+      rubric.
+    value: ${{ steps.summary.outputs.error-classes }}
+  total:
+    description: Total number of test cases.
+    value: ${{ steps.summary.outputs.total }}
+  xfailed:
+    description: >-
+      Number of `expect_fail` cases that failed as expected. Not part of
+      `failed` — an expected failure never fails the gate.
+    value: ${{ steps.summary.outputs.xfailed }}
+  xpassed:
+    description: >-
+      Number of `expect_fail` cases that passed unexpectedly. Not folded into
+      `failed` (that output's meaning predates the statuses), but the run's
+      exit code is 1 whenever this is nonzero — strict expect_fail.
+    value: ${{ steps.summary.outputs.xpassed }}
+  pass-rate:
+    description: Percentage of cases that passed, one decimal place (e.g. "91.7").
+    value: ${{ steps.summary.outputs.pass-rate }}
+  cache-hit-rate:
+    description: Percentage of cases served from the cache, one decimal place.
+    value: ${{ steps.summary.outputs.cache-hit-rate }}
+  regressed:
+    description: Number of tests that newly regressed vs the baseline (0 without `against`).
+    value: ${{ steps.summary.outputs.regressed }}
+  cost-usd:
+    description: Cost of the work this run represents, in USD (empty when unpriced).
+    value: ${{ steps.summary.outputs.cost-usd }}
+  cache-savings-usd:
+    description: >-
+      What the cached cases would have cost, in USD. Actual spend is
+      `cost-usd` minus this.
+    value: ${{ steps.summary.outputs.cache-savings-usd }}
+  grader-cost-usd:
+    description: >-
+      What the graders cost, in USD (empty when unpriced). Not included in
+      `cost-usd`, which is what the systems under test cost.
+    value: ${{ steps.summary.outputs.grader-cost-usd }}
+  cache-read-tokens:
+    description: Input tokens served from a provider-side prompt cache.
+    value: ${{ steps.summary.outputs.cache-read-tokens }}
+  cache-write-tokens:
+    description: Input tokens written into a provider-side prompt cache.
+    value: ${{ steps.summary.outputs.cache-write-tokens }}
+  fallback-cases:
+    description: Number of graded cases answered by a `fallback:` provider rather than the one the cell names.
+    value: ${{ steps.summary.outputs.fallback-cases }}
+  run-url:
+    description: URL of the uploaded run on the results server (empty without `server-url`).
+    value: ${{ steps.summary.outputs.run-url }}
+  summary-path:
+    description: Path to the Markdown summary.
+    value: ${{ steps.summary.outputs.summary-path }}
+  results-path:
+    description: Path to the JUnit XML report written by the run.
+    value: ${{ steps.eval.outputs.results-path }}
+
+runs:
+  using: composite
+  steps:
+    # -- Resolve the binary: provided path -> release download -> build. -------
+    - name: Resolve domarinn binary
+      id: bin
+      shell: bash
+      env:
+        INPUT_BINARY_PATH: ${{ inputs.binary-path }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_RELEASE_BASE_URL: ${{ inputs.release-base-url }}
+      run: |
+        set -uo pipefail
+
+        if [ -n "${INPUT_BINARY_PATH}" ]; then
+          echo "Using provided binary: ${INPUT_BINARY_PATH}"
+          echo "path=${INPUT_BINARY_PATH}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # `arch` is what the released filename uses; `legacy_target` is the Rust
+        # triple 0.1.3 and earlier were named after.
+        machine="$(uname -m)"
+        case "$machine" in
+          x86_64)  arch=amd64; legacy_target=x86_64-unknown-linux-musl ;;
+          aarch64|arm64) arch=arm64; legacy_target=aarch64-unknown-linux-musl ;;
+          *) echo "::error::unsupported arch $machine"; exit 3 ;;
+        esac
+
+        # The repository, not its releases page: the source-build fallback below
+        # clones the same URL, so a mirror serves both. A trailing slash would
+        # double up in every URL built from it.
+        repo="${INPUT_RELEASE_BASE_URL%/}"
+        base="${repo}/releases"
+        ver="${INPUT_VERSION}"
+        if [ "$ver" = "latest" ]; then
+          # Asset names carry the version, so "latest" has to become a concrete
+          # tag before a URL exists — GitHub has no wildcard in
+          # /releases/latest/download/. It does redirect /releases/latest to
+          # /releases/tag/<tag>, and reading that needs no token and is not
+          # rate-limited the way unauthenticated api.github.com is.
+          #
+          # A mirror is not github.com, and that redirect is GitHub's behaviour,
+          # not a forge standard. Gitea and Forgejo both answer the release API
+          # at `<instance>/api/v1/repos/<owner>/<repo>/releases/latest` with a
+          # `tag_name`, and that is documented, so ask it. The instance is the
+          # URL minus its last two segments — which keeps a forge served under
+          # a path prefix working. `sed` rather than `jq`: a runner image is
+          # not guaranteed to have jq, and this needs one string field of a
+          # one-object response.
+          #
+          # `|| ver=""` is load-bearing: this is a network call, an assignment
+          # takes the pipeline's status as its own, and `-e` is on (see the eval
+          # step). Without it a 404 or a DNS failure aborts the step here and
+          # the annotation below — the only thing that tells an operator what
+          # broke — never runs.
+          case "$repo" in
+            https://github.com/*)
+              ver="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${base}/latest" | sed 's#.*/tag/##')" || ver=""
+              ;;
+            *)
+              api="${repo%/*/*}/api/v1/repos/${repo#"${repo%/*/*}/"}/releases/latest"
+              ver="$(curl -fsSL "$api" | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p')" || ver=""
+              ;;
+          esac
+          if [ -z "$ver" ] || [ "$ver" = "latest" ]; then
+            echo "::error::could not resolve the latest domarinn release tag from ${repo} (set \`version\` to a concrete tag to skip the lookup)"
+            exit 3
+          fi
+          echo "Resolved latest to ${ver}"
+        fi
+        ver="${ver#v}"
+
+        # Second URL covers 0.1.3 and earlier, which named assets after the Rust
+        # target triple and carried no version. Without it, pinning an older
+        # release would silently fall through to a much slower source build.
+        urls=(
+          "${base}/download/${ver}/domarinn_${ver}_linux_${arch}"
+          "${base}/download/${ver}/domarinn-${legacy_target}"
+        )
+        for url in "${urls[@]}"; do
+          echo "Downloading $url"
+          if curl -fsSL "$url" -o domarinn; then
+            chmod +x domarinn
+            echo "path=$(pwd)/domarinn" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        done
+
+        # Fallback: build from source. Prefer a local checkout of this repo;
+        # otherwise install straight from git. Requires a Rust toolchain.
+        echo "::warning::no release asset for ${ver} on ${arch}; building domarinn from source"
+        if ! command -v cargo >/dev/null 2>&1; then
+          echo "::error::no prebuilt binary available and cargo is not installed (add dtolnay/rust-toolchain before this action)"
+          exit 3
+        fi
+        root="${RUNNER_TEMP}/domarinn-install"
+        if [ -f "${GITHUB_WORKSPACE}/crates/domarinn-cli/Cargo.toml" ]; then
+          cargo install --path "${GITHUB_WORKSPACE}/crates/domarinn-cli" --locked --root "$root"
+        else
+          cargo install --git "${repo}" --locked --root "$root" domarinn-cli
+        fi
+        echo "path=${root}/bin/domarinn" >> "$GITHUB_OUTPUT"
+
+    # -- Run the suite: JUnit report, optional baseline + upload. ---------------
+    - name: Run eval
+      id: eval
+      shell: bash
+      env:
+        DOMARINN_BIN: ${{ steps.bin.outputs.path }}
+        DOMARINN_SERVER_URL: ${{ inputs.server-url }}
+        DOMARINN_TOKEN: ${{ inputs.token }}
+        # Empty is the normal case and means "autodetect": domarinn ignores an
+        # empty value and falls through to the runner's own GITHUB_* refs.
+        DOMARINN_BRANCH: ${{ inputs.branch }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_AGAINST: ${{ inputs.against }}
+        INPUT_ALLOW_EMPTY: ${{ inputs.allow-empty }}
+        INPUT_ALLOW_SHARE_FAILURE: ${{ inputs.allow-share-failure }}
+        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
+      run: |
+        # `shell: bash` runs as `bash --noprofile --norc -eo pipefail {0}`, so
+        # `-e` is on whether this script asks for it or not — see the `|| code=$?`
+        # below, which is what actually keeps a non-zero CLI exit from aborting
+        # the step before the outputs are written.
+        set -uo pipefail
+
+        results="results.xml"
+
+        args=(run "${INPUT_CONFIG}" --format junit --out "${results}")
+        # Split on commas and spaces with `read`, not unquoted expansion —
+        # unquoted `$var` in a for-loop also GLOBS, so an id like `model-[a]`
+        # (or a careless `*`) would be matched against workspace files and a
+        # different id passed to the CLI, silently. `read` splits and nothing
+        # else. Ids containing spaces or commas are unaddressable here by
+        # design.
+        if [ -n "${INPUT_PROVIDER}" ]; then
+          IFS=', ' read -r -a providers <<< "${INPUT_PROVIDER}"
+          for p in "${providers[@]}"; do
+            [ -n "$p" ] && args+=(--provider "$p")
+          done
+        fi
+        [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
+        [ -n "${INPUT_CACHE_DIR}" ] && args+=(--cache-dir "${INPUT_CACHE_DIR}")
+        [ "${INPUT_ALLOW_EMPTY}" = "true" ] && args+=(--allow-empty)
+        # Upload the run when a server is configured (token via DOMARINN_TOKEN).
+        # `--share` also records the run's URL on the stored run, which is where
+        # the summary step reads it from. A failed upload is an infrastructure
+        # error (exit 3) unless the caller opts out — and the opt-out only
+        # travels with `--share`, because the CLI rejects it on its own and
+        # would turn an input meant to make the job *more* tolerant into a
+        # usage error (exit 2) that fails it.
+        [ -n "${DOMARINN_SERVER_URL}" ] && args+=(--share)
+        [ -n "${DOMARINN_SERVER_URL}" ] && [ "${INPUT_ALLOW_SHARE_FAILURE}" = "true" ] && args+=(--allow-share-failure)
+
+        echo "Running: domarinn ${args[*]}"
+        # A non-zero exit is the answer here, not a failure to run: the gate
+        # step below cannot tell a regression (1) from a broken harness (3)
+        # without it, and the artifact upload is gated on `results-path`. Both
+        # are lost if this line is allowed to abort the step.
+        code=0
+        "${DOMARINN_BIN}" "${args[@]}" || code=$?
+        echo "domarinn exited with $code"
+
+        {
+          echo "exit-code=$code"
+          echo "results-path=${results}"
+        } >> "$GITHUB_OUTPUT"
+
+    # -- Summarize: markdown for the PR/job summary + the headline numbers as
+    # step outputs. `ci-summary` writes the `key=value` pairs to $GITHUB_OUTPUT
+    # itself, so nothing here parses the report. It is a reporter and always
+    # exits 0 on a completed run; the gate step below owns the verdict.
+    - name: Summarize
+      id: summary
+      if: ${{ always() && steps.eval.conclusion != 'skipped' }}
+      shell: bash
+      env:
+        DOMARINN_BIN: ${{ steps.bin.outputs.path }}
+        # The same server credentials the eval step gets. Without them
+        # `--against server:baseline` cannot resolve anything here, so the PR
+        # comment silently loses its comparison table and the `regressed`
+        # output is hard-zero for every caller using the documented CI default.
+        DOMARINN_SERVER_URL: ${{ inputs.server-url }}
+        DOMARINN_TOKEN: ${{ inputs.token }}
+        INPUT_AGAINST: ${{ inputs.against }}
+      run: |
+        set -uo pipefail
+
+        summary="summary.md"
+        args=(ci-summary latest --out "${summary}")
+        [ -n "${INPUT_AGAINST}" ] && args+=(--against "${INPUT_AGAINST}")
+
+        # The condition is "there is no usable summary", not "the command
+        # failed". A file is what the `cat` below and the PR comment actually
+        # need, and `ci-summary` exiting 0 without writing one would otherwise
+        # take the success branch and then abort the step on the missing file —
+        # letting a reporter fail the job the gate step is supposed to own.
+        if ! "${DOMARINN_BIN}" "${args[@]}" || [ ! -s "${summary}" ]; then
+          # A suite that never ran (bad config, missing binary) persists no run,
+          # so there is nothing to summarize. Say so rather than leaving the PR
+          # comment and job summary blank.
+          echo "::warning::no completed run to summarize"
+          printf '### domarinn eval\n\n_The suite did not produce a run; see the job log._\n' > "${summary}"
+        fi
+
+        echo "summary-path=${summary}" >> "$GITHUB_OUTPUT"
+        # GitHub always sets $GITHUB_STEP_SUMMARY; a Gitea or Forgejo runner
+        # may not (this step is shared verbatim with those actions). Unset,
+        # `set -u` would abort a reporter over a page nobody would render — and
+        # an empty value would make the redirect itself the error.
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          cat "${summary}" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    # -- Upload the JUnit report + summary as an artifact (always). -------------
+    # v3, not v4+: see the header. `continue-on-error` because an instance can
+    # run Actions with artifact storage disabled, and the upload failing there
+    # must not stand in for the gate's verdict — or skip it, since the gate
+    # runs on `always()` either way. The `-node20` build because the v3 line's
+    # original runtime, Node 16, is end-of-life and newer runner images drop it.
+    - name: Upload results
+      if: ${{ always() && steps.eval.outputs.results-path != '' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@c6a3b2bd78b3985e4b2f15397fec357f0fd808de # v3.2.2-node20 # pin to SHA
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ steps.eval.outputs.results-path }}
+          ${{ steps.summary.outputs.summary-path }}
+        if-no-files-found: warn
+
+    # -- Comment the summary on the PR (create-or-update a single comment). -----
+    # A plain REST create-or-update, not `actions/github-script`: that is
+    # Octokit, which speaks GitHub's API, and this forge's issue-comment routes
+    # (`GET|POST /repos/{o}/{r}/issues/{n}/comments`,
+    # `PATCH /repos/{o}/{r}/issues/comments/{id}`) are its own.
+    #
+    # Which comment to update: only one the token itself wrote, found by
+    # `GET /user` and matched on `user.id`, whose body *starts* with the hidden
+    # marker; the oldest such comment wins. Both checks matter because the
+    # forge will not stop a wrong edit: a token with issue write access may
+    # edit anyone's comment on Gitea and Forgejo, and the automatic token has
+    # that access. Matching on the marker alone would overwrite a reviewer's
+    # quote-reply (which copies the marker) and would let a PR author plant a
+    # marked comment of their own to receive the results and then rewrite
+    # them. If `GET /user` fails, nothing is edited: a fresh comment is posted.
+    # An update the forge refuses also falls back to a fresh comment.
+    #
+    # Node rather than curl + jq: every runner that can run a JavaScript action
+    # has `node`, and none is promised `jq`. `http`/`https` rather than `fetch`,
+    # because the stock `node:16` job image predates a global `fetch`.
+    #
+    # Nothing in this step can fail the job. A forge without the token scope,
+    # an unreachable API, a missing `node` — each is a `::warning::`, because
+    # the gate below owns the verdict and a reporter that could also go red
+    # would make the same run fail twice for different reasons.
+    - name: Comment on PR
+      id: comment
+      if: ${{ always() && inputs.comment == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') }}
+      shell: bash
+      env:
+        SUMMARY_PATH: ${{ steps.summary.outputs.summary-path }}
+        COMMENT_TOKEN: ${{ inputs.comment-token }}
+        # `https://<host>/api/v1` on both forges.
+        API_URL: ${{ github.api_url }}
+        REPOSITORY: ${{ github.repository }}
+        # `pull_request.number` is in both events' payloads; `number` is the
+        # top-level copy GitHub's webhook shape also carries.
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.number }}
+      run: |
+        set -uo pipefail
+        if ! command -v node >/dev/null 2>&1; then
+          echo "::warning::PR comment skipped: node is not on PATH in this job's image"
+          exit 0
+        fi
+        # The script arrives on stdin so this file stays the only copy of it.
+        # The heredoc delimiter is quoted: bash expands nothing inside, so the
+        # JavaScript's own `${…}` reaches node untouched.
+        node - <<'JS' || echo "::warning::PR comment step failed (node exited $?); the gate step still reports the verdict"
+        const fs = require('fs');
+        const marker = '<!-- domarinn-eval -->';
+        // One line, always: a newline would end the annotation early.
+        const warn = (m) => console.log(`::warning::${String(m).replace(/\s+/g, ' ')}`);
+        const { SUMMARY_PATH, COMMENT_TOKEN, API_URL, REPOSITORY, PR_NUMBER } = process.env;
+
+        function call(method, url, payload) {
+          const target = new URL(url);
+          const lib = require(target.protocol === 'http:' ? 'http' : 'https');
+          const data = payload === undefined ? undefined : JSON.stringify(payload);
+          const headers = { Accept: 'application/json', 'User-Agent': 'domarinn-eval' };
+          if (COMMENT_TOKEN) headers.Authorization = `token ${COMMENT_TOKEN}`;
+          if (data !== undefined) {
+            headers['Content-Type'] = 'application/json';
+            headers['Content-Length'] = Buffer.byteLength(data);
+          }
+          return new Promise((resolve, reject) => {
+            const req = lib.request(target, { method, headers, timeout: 30000 }, (res) => {
+              let text = '';
+              res.setEncoding('utf8');
+              res.on('data', (chunk) => { text += chunk; });
+              res.on('end', () => {
+                if (res.statusCode < 200 || res.statusCode >= 300) {
+                  reject(new Error(`${method} ${target.pathname} -> HTTP ${res.statusCode}: ${text.slice(0, 200)}`));
+                  return;
+                }
+                try {
+                  resolve(text ? JSON.parse(text) : null);
+                } catch (e) {
+                  reject(new Error(`${method} ${target.pathname} -> unparsable JSON: ${e.message}`));
+                }
+              });
+            });
+            req.on('timeout', () => req.destroy(new Error(`${method} ${target.pathname} timed out`)));
+            req.on('error', reject);
+            if (data !== undefined) req.write(data);
+            req.end();
+          });
+        }
+
+        async function main() {
+          if (!API_URL || !REPOSITORY || !PR_NUMBER) {
+            warn(`PR comment skipped: api_url, repository or the PR number is empty (api_url=${API_URL || ''}, repository=${REPOSITORY || ''}, number=${PR_NUMBER || ''})`);
+            return;
+          }
+          if (!COMMENT_TOKEN) warn('comment-token is empty; trying the API unauthenticated');
+          let body = `${marker}\n### domarinn eval\n\n_No summary was produced._`;
+          try {
+            body = `${marker}\n` + fs.readFileSync(SUMMARY_PATH, 'utf8');
+          } catch (e) {
+            warn(`no summary at ${SUMMARY_PATH}: ${e.message}`);
+          }
+          const repo = `${API_URL.replace(/\/+$/, '')}/repos/${REPOSITORY}`;
+
+          // Whose comments may be edited: the token's own, and nobody else's.
+          // Without an identity there is no safe match, so post a new one.
+          let self = null;
+          try {
+            const me = await call('GET', `${API_URL.replace(/\/+$/, '')}/user`);
+            if (me && me.id != null) self = me.id;
+            else warn('GET /user returned no user id; posting a new comment rather than editing one');
+          } catch (e) {
+            warn(`could not resolve the token's user (${e.message}); posting a new comment rather than editing one`);
+          }
+
+          // Paginated, though Gitea and Forgejo currently ignore `page`/`limit`
+          // on this route and answer with every comment: a page that brings no
+          // id not already seen ends the walk, so an ignored `page` costs one
+          // extra request instead of looping forever. Of the token's own
+          // comments that start with the marker, the oldest (lowest id) wins.
+          let existing = null;
+          if (self !== null) {
+            const limit = 50;
+            const seen = new Set();
+            for (let page = 1; page <= 200; page++) {
+              const batch = await call('GET', `${repo}/issues/${PR_NUMBER}/comments?page=${page}&limit=${limit}`);
+              if (!Array.isArray(batch)) throw new Error('comment list is not a JSON array');
+              const fresh = batch.filter((c) => !seen.has(c.id));
+              for (const c of fresh) {
+                seen.add(c.id);
+                const mine = c.user != null && c.user.id === self;
+                const marked = typeof c.body === 'string' && c.body.startsWith(marker);
+                if (mine && marked && (existing === null || c.id < existing.id)) existing = c;
+              }
+              if (fresh.length === 0 || batch.length < limit) break;
+            }
+          }
+
+          if (existing) {
+            try {
+              await call('PATCH', `${repo}/issues/comments/${existing.id}`, { body });
+              console.log(`Updated PR comment ${existing.id}`);
+              return;
+            } catch (e) {
+              warn(`could not update comment ${existing.id} (${e.message}); posting a new one`);
+            }
+          }
+          const created = await call('POST', `${repo}/issues/${PR_NUMBER}/comments`, { body });
+          console.log(`Posted PR comment ${created && created.id}`);
+        }
+
+        main().catch((e) => warn(`PR comment failed: ${e.message}`));
+        JS
+
+    # -- Gate the job on the CLI exit code (runs after upload + comment). -------
+    - name: Gate on result
+      if: ${{ always() }}
+      shell: bash
+      env:
+        CODE: ${{ steps.eval.outputs.exit-code }}
+        FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+        ERROR_CLASSES: ${{ steps.summary.outputs.error-classes }}
+        SERVER_URL: ${{ inputs.server-url }}
+        RUN_URL: ${{ steps.summary.outputs.run-url }}
+        SUMMARY_OUTCOME: ${{ steps.summary.outcome }}
+      run: |
+        set -uo pipefail
+        code="${CODE:-3}"
+        # Appended to the exit-2/exit-3 annotations. `${VAR:+ — $VAR}` expands
+        # to nothing when the summary step did not run or the run errored
+        # nowhere, so the message never trails a bare em dash. Defaulted
+        # because `set -u` would otherwise abort the gate on a skipped summary
+        # step — and a gate that dies before its `case` reports no verdict at
+        # all, which is worse than an unadorned one.
+        classes="${ERROR_CLASSES:-}"
+        case "$code" in
+          0)
+            echo "domarinn: all checks passed"
+            ;;
+          1)
+            if [ "${FAIL_ON_REGRESSION}" = "true" ]; then
+              echo "::error::domarinn reported assertion failures or regressions (exit 1)"
+              exit 1
+            fi
+            echo "::warning::domarinn reported failures/regressions (exit 1, not gated)"
+            ;;
+          2)
+            # Also the code for a server whose schema window excludes this CLI,
+            # refused before the suite ran: upgrade one side, or set
+            # `allow-share-failure: "true"` to run anyway.
+            # Also how a suite-caused error arrives: a grader the suite never
+            # configured, a prompt that will not render, an assert that cannot
+            # be evaluated. Those are the config's problem, so they land here
+            # rather than in the infra bucket where they used to.
+            echo "::error::domarinn config/usage error (exit 2)${classes:+ — $classes}"
+            exit 2
+            ;;
+          3)
+            # Includes a failed upload with `server-url` set. The results are
+            # graded and on the runner (see the artifact) — recovery is a
+            # re-share once the server is reachable, not a re-run. Set
+            # `allow-share-failure: "true"` to stop gating on the upload.
+            #
+            # A failed upload is exit 3 *outside* the error-class model — the
+            # breakdown tallies errored cases, and the upload is not a case —
+            # so it is detected here instead: sharing was requested, the
+            # summary step ran against the stored run, and the run carries no
+            # URL. Without this clause the annotation named only the case
+            # classes (or nothing), and an operator "fixed" those, re-ran, and
+            # was red again on the upload that was never mentioned.
+            upload=""
+            if [ -n "${SERVER_URL:-}" ] && [ "${SUMMARY_OUTCOME:-}" = "success" ] && [ -z "${RUN_URL:-}" ]; then
+              upload=" — results upload failed (re-share when the server is reachable; the run is graded and in the artifact)"
+            fi
+            echo "::error::domarinn infrastructure error (exit 3)${upload}${classes:+ — $classes}"
+            exit 3
+            ;;
+          *)
+            echo "::error::domarinn exited with $code"
+            exit "$code"
+            ;;
+        esac

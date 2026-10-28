@@ -55,7 +55,15 @@ whoami = "2"
 # builds at.
 jsonschema = { version = "0.59", default-features = false }
 
+# Already in the tree through tokio; named directly for `killpg`, so a timed-out
+# exec child takes its whole process group down with it (see `exec.rs`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
+# `test-util` for paused time: the rate limiter's tests measure the delay it
+# imposes without sleeping for it.
+tokio = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true }
 tempfile = "3"
 wiremock = "0.6"

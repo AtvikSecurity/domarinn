@@ -64,6 +64,13 @@ impl HttpProvider {
         }
     }
 
+    /// Replace the default per-request timeout (`runner.timeout_ms`). See
+    /// [`crate::anthropic::AnthropicProvider::with_timeout`].
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.client = http_client(timeout);
+        self
+    }
+
     /// Merge the [`crate::request_cfg::GLOBAL_HEADERS_ENV`] injection into this
     /// provider's declared headers.
     ///

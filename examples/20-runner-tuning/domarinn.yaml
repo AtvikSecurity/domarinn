@@ -38,7 +38,9 @@ runner:
   rate_limit:
     rps: 20
 
-  # A whole-run ceiling, distinct from the provider's per-call one above.
+  # The per-request default for every provider that does not set its own —
+  # `slow-service` above does, and the more specific one wins. Applies to each
+  # attempt, not to the whole run.
   timeout_ms: 120000
 
   # Retry only what the provider says is worth retrying. See example 19.

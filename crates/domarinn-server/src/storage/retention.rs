@@ -39,6 +39,19 @@ impl Storage {
     pub async fn sweep_runs(&self, max_age_days: u64) -> anyhow::Result<Swept> {
         self.runs.write(move |conn| sweep(conn, max_age_days)).await
     }
+
+    /// The hourly task's expired-session sweep. Unlike [`Self::sweep_runs`]
+    /// this is not opt-in: an expired session is unusable by definition, so
+    /// deleting it can never cost anyone anything. Logs rather than returning
+    /// an error — a failed sweep is retried next hour and must not stop the
+    /// rest of the retention pass.
+    pub async fn sweep_expired_sessions(&self) {
+        match self.prune_expired_sessions().await {
+            Ok(0) => {}
+            Ok(pruned) => tracing::info!(pruned, "session retention swept expired sessions"),
+            Err(e) => tracing::warn!(error = %e, "session retention failed"),
+        }
+    }
 }
 
 /// Runs that must survive any sweep: every pinned baseline, plus the newest run

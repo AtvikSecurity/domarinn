@@ -11,7 +11,8 @@ use domarinn_core::progress::ProgressSink;
 use domarinn_core::runner::RunOptions;
 
 use crate::exit;
-use crate::output::{self, Format};
+use crate::output;
+use crate::outputplan::{self, FormatSpec};
 use crate::progress::RunProgressBar;
 use crate::style::Palette;
 use crate::{cachecfg, diffcmd};
@@ -102,23 +103,37 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_retries: bool,
 
-    /// Output format(s) (repeatable): table, json, jsonl, junit, md.
-    #[arg(long = "format", value_enum)]
-    pub format: Vec<Format>,
+    /// Output format, as FMT or FMT=PATH (repeatable): table, json, jsonl,
+    /// junit, md.
+    ///
+    /// A bare format is written to `--out`, or stdout. To write several
+    /// formats from one run, give each its own file, as in
+    /// `--format json=results.json --format junit=results.xml`. Two formats
+    /// that would share a destination (one `--out`, or stdout) are a usage
+    /// error, refused before the run spends anything.
+    #[arg(long = "format", value_name = "FMT[=PATH]", value_parser = outputplan::parse_format_spec)]
+    pub format: Vec<FormatSpec>,
 
-    /// Write the primary output to a file instead of stdout.
+    /// Write the bare `--format` output to a file instead of stdout.
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Compare against a baseline run; regressions fail.
+    /// Compare against a baseline run; regressions fail. REF: server:baseline,
+    /// server:branch:<name>, branch:<name>, latest, a run id, a result.json
+    /// path, or none.
     ///
     /// `server:baseline` uses the baseline pinned for this suite on the results
-    /// server — the only reference that works in CI, where a fresh checkout has
-    /// no local run store. `latest` uses the newest local run *of this same
-    /// suite*. Also accepts a run id or a `result.json` path. Unlike a missing
-    /// baseline, a baseline that cannot be resolved is a usage error, so a gate
-    /// can never report green without having compared.
-    #[arg(long)]
+    /// server (a run or a branch) — the reliable choice in CI, where a fresh
+    /// checkout has no local run store. `server:branch:<name>` merges the
+    /// newest server runs on `<name>` with no pin at all; `branch:<name>` does
+    /// the same from the local run store. `latest` uses the newest local run
+    /// *of this same suite*. Also accepts a run id or a `result.json` path.
+    /// `none` disables the comparison, overriding a suite's `baseline:`
+    /// default — which otherwise applies when this flag is absent.
+    ///
+    /// Unlike a missing baseline, a baseline that cannot be resolved is a
+    /// usage error, so a gate can never report green without having compared.
+    #[arg(long, value_name = "REF")]
     pub against: Option<String>,
 
     /// Write a markdown summary (for CI / PR comments) to this path.
@@ -241,6 +256,15 @@ impl From<StoreEmptyOutputsArg> for domarinn_core::config::StoreEmptyOutputs {
 }
 
 pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verbose: u8) -> u8 {
+    // First, so a `--format`/`--out` combination that would lose output is
+    // refused before anything is loaded, let alone billed.
+    let emissions = match outputplan::plan_emissions(&args.format, args.out.as_deref()) {
+        Ok(e) => e,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return exit::USAGE;
+        }
+    };
     let (suite, raw) = match domarinn_core::loader::load_file_raw(&args.path) {
         Ok(pair) => pair,
         Err(e) => {
@@ -376,19 +400,34 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         None
     };
 
-    let run_result = runtime.block_on(domarinn_core::run_with_progress(
-        &suite,
-        &base_dir,
-        cache.as_ref(),
-        Some(&grader),
-        &opts,
-        progress.as_ref().map(|p| p as &dyn ProgressSink),
-    ));
+    // Ctrl-C is handled rather than left to the default disposition. Exec
+    // children run in their own process group, so the terminal's SIGINT no
+    // longer reaches them; what stops them is dropping the run future, whose
+    // guards kill each child's whole group. Dying on the signal instead would
+    // skip those drops and leave a live exec provider spending on its own.
+    let run_result = runtime.block_on(async {
+        tokio::select! {
+            r = domarinn_core::run_with_progress(
+                &suite,
+                &base_dir,
+                cache.as_ref(),
+                Some(&grader),
+                &opts,
+                progress.as_ref().map(|p| p as &dyn ProgressSink),
+            ) => Some(r),
+            _ = tokio::signal::ctrl_c() => None,
+        }
+    });
     // Unconditionally clear the bar: an error path must never leave it stuck, and
     // clearing an already-finished bar is a no-op.
     if let Some(bar) = &progress {
         bar.finish();
     }
+    let Some(run_result) = run_result else {
+        eprintln!("interrupted: run cancelled, nothing persisted");
+        // 128 + SIGINT, the code a shell reports for a process killed by Ctrl-C.
+        return 130;
+    };
 
     let mut result = match run_result {
         Ok(r) => r,
@@ -410,16 +449,20 @@ pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verb
         tracing::warn!(error = %e, "could not persist run");
     }
 
-    let formats = if args.format.is_empty() {
-        vec![Format::Table]
-    } else {
-        args.format.clone()
-    };
-    for format in &formats {
+    for emission in &emissions {
         // `run` never filters cases; the human table is the only palette-aware
         // output.
-        if let Err(e) = output::emit(*format, &result, args.out.as_deref(), palette, false) {
-            eprintln!("error writing output: {e}");
+        if let Err(e) = output::emit(
+            emission.format,
+            &result,
+            emission.out.as_deref(),
+            palette,
+            false,
+        ) {
+            match &emission.out {
+                Some(path) => eprintln!("error writing {}: {e}", path.display()),
+                None => eprintln!("error writing output: {e}"),
+            }
             return exit::INFRA;
         }
     }
