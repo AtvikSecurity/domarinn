@@ -1,7 +1,14 @@
 import { useState } from "react";
 import type { CacheEntryDetail } from "@/api";
 import { Link } from "react-router";
-import { useCacheEntry, useCacheEntryRuns } from "@/api/queries";
+import {
+  useCacheEntry,
+  useCacheEntryRuns,
+  useDeleteCacheEntry,
+} from "@/api/queries";
+import { apiErrorMessage } from "@/api/errorMessage";
+import { useAuthView } from "@/auth/AuthProvider";
+import { Button } from "@/components/ui/Button";
 import { JsonTree, OutputViewer, RawText } from "@/components/output";
 import { ErrorState } from "@/components/States";
 import { Chip } from "@/components/ui/Chip";
@@ -79,6 +86,7 @@ export function CacheEntryDrawer({
   const withRaw = rawFor !== undefined && rawFor === entryKey;
   const query = useCacheEntry(entryKey, { raw: withRaw });
   const compact = (size ?? 0) > SMALL_ENTRY_BYTES;
+  const { canAdmin } = useAuthView();
 
   return (
     <DetailDrawer
@@ -123,6 +131,19 @@ export function CacheEntryDrawer({
             rawPending={withRaw && query.isFetching}
             onRequestRaw={() => setRawFor(entryKey)}
           />
+          {/* Admin-scoped on the server, like prune: destroying rows out of
+              a shared corpus. Keyed so a half-confirmed delete does not
+              carry onto the next entry when stepping. */}
+          {canAdmin ? (
+            <DeleteEntry
+              key={entry.key}
+              entryKey={entry.key}
+              onDeleted={() => {
+                setRawFor(undefined);
+                onClose();
+              }}
+            />
+          ) : null}
         </div>
       )}
     />
@@ -346,6 +367,70 @@ function UsedByRuns({ entryKey }: { entryKey?: string }) {
         </ul>
       )}
     </CollapsibleSection>
+  );
+}
+
+/**
+ * Delete this one entry, after an inline confirm.
+ *
+ * Inline rather than a modal: the drawer is already a dialog, and the
+ * question needs nothing more than the entry the reader is looking at.
+ */
+function DeleteEntry({
+  entryKey,
+  onDeleted,
+}: {
+  entryKey: string;
+  onDeleted: () => void;
+}) {
+  const del = useDeleteCacheEntry();
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <section className="space-y-2 border-t border-border pt-4">
+      <p className="text-sm text-muted">
+        Deleting removes this entry from the shared cache. The next run that
+        makes this call goes to the provider again and stores a fresh answer.
+      </p>
+      <div className="flex items-center gap-2">
+        {confirming ? (
+          <>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => del.mutate(entryKey, { onSuccess: onDeleted })}
+              disabled={del.isPending}
+            >
+              {del.isPending ? "Deleting…" : "Confirm delete"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirming(false)}
+              disabled={del.isPending}
+            >
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              del.reset();
+              setConfirming(true);
+            }}
+          >
+            Delete entry…
+          </Button>
+        )}
+      </div>
+      {del.isError ? (
+        <p role="alert" className="text-sm text-fail">
+          {apiErrorMessage(del.error, "Could not delete the entry. Try again.")}
+        </p>
+      ) : null}
+    </section>
   );
 }
 

@@ -3,7 +3,9 @@ import { Link, useParams, useSearchParams } from "react-router";
 import { useRuns, useSetBaseline, useSetSuite } from "@/api/queries";
 import type { RunListItem } from "@/api";
 import { ApiError } from "@/api/client";
+import { apiErrorMessage } from "@/api/errorMessage";
 import { useAuthView } from "@/auth/AuthProvider";
+import { canPinBaseline } from "@/lib/baselineAccess";
 import { Breadcrumb } from "@/components/ui/Breadcrumb";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -50,6 +52,7 @@ import {
 } from "@/lib/routes";
 import { useRowNav } from "@/lib/useRowNav";
 import { AccessPanel } from "./AccessPanel";
+import { UnpinBaselineButton } from "./UnpinBaselineButton";
 
 /** From a pair of selected run ids, resolve which is base (older) / head (newer). */
 function comparePair(
@@ -142,6 +145,10 @@ export function SetSuitePage() {
   const detail = q.data;
   const last = isoFromEpoch(detail.last_run_at);
   const canOpenAccess = view.canAdmin || detail.my_level === "manage";
+  const canPin = canPinBaseline(view, detail);
+  const pinned =
+    detail.baseline_run_id ??
+    (detail.baseline_branch ? `branch ${detail.baseline_branch}` : null);
   const pair = comparePair(runs, selected);
   // Carry this page's own view through, so the stream opens showing what the
   // table above it was showing rather than always widening to everything.
@@ -198,39 +205,59 @@ export function SetSuitePage() {
               baseline: {detail.baseline_branch}
             </Chip>
           ) : null}
-          <Popover
-            open={pinOpen}
-            onOpenChange={setPinOpen}
-            trigger={
-              <Button variant="ghost" size="sm" title="Pin a branch as this suite's comparison baseline">
-                Pin branch…
-              </Button>
-            }
-          >
-            <form
-              className="flex w-56 flex-col gap-2 p-1"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const branch = branchDraft.trim();
-                if (!branch) return;
-                pin.mutate(
-                  { branch },
-                  { onSuccess: () => setPinOpen(false) },
-                );
+          {/* Hidden from anyone the server would refuse: pinning needs write
+              scope, and an upload grant on a restricted set. */}
+          {canPin ? (
+            <Popover
+              open={pinOpen}
+              onOpenChange={(next) => {
+                if (next) {
+                  // Open on what is pinned now, so changing one letter of a
+                  // branch name does not mean retyping it.
+                  setBranchDraft(detail.baseline_branch ?? "");
+                  pin.reset();
+                }
+                setPinOpen(next);
               }}
+              trigger={
+                <Button variant="ghost" size="sm" title="Pin a branch as this suite's comparison baseline">
+                  Pin branch…
+                </Button>
+              }
             >
-              <TextField
-                label="Baseline branch"
-                hint="The newest runs on this branch merge into the comparison baseline — a filtered run cannot shrink coverage."
-                placeholder="main"
-                value={branchDraft}
-                onChange={(e) => setBranchDraft(e.target.value)}
-              />
-              <Button type="submit" size="sm" disabled={pin.isPending || !branchDraft.trim()}>
-                {pin.isPending ? "Pinning…" : pin.isError ? "Could not pin — retry" : "Pin branch"}
-              </Button>
-            </form>
-          </Popover>
+              <form
+                className="flex w-56 flex-col gap-2 p-1"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const branch = branchDraft.trim();
+                  if (!branch) return;
+                  pin.mutate(
+                    { branch },
+                    { onSuccess: () => setPinOpen(false) },
+                  );
+                }}
+              >
+                <TextField
+                  label="Baseline branch"
+                  hint="The newest runs on this branch merge into the comparison baseline — a filtered run cannot shrink coverage."
+                  placeholder="main"
+                  value={branchDraft}
+                  onChange={(e) => setBranchDraft(e.target.value)}
+                />
+                {pin.isError ? (
+                  <p role="alert" className="text-xs text-fail">
+                    {apiErrorMessage(pin.error, "Could not pin the branch. Try again.")}
+                  </p>
+                ) : null}
+                <Button type="submit" size="sm" disabled={pin.isPending || !branchDraft.trim()}>
+                  {pin.isPending ? "Pinning…" : "Pin branch"}
+                </Button>
+              </form>
+            </Popover>
+          ) : null}
+          {canPin && pinned ? (
+            <UnpinBaselineButton project={project} suite={suite} pinned={pinned} />
+          ) : null}
           {canOpenAccess ? (
             <Button
               className="ml-auto"

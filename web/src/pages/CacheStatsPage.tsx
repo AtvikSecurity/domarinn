@@ -7,7 +7,9 @@ import { ErrorState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { StatBlock } from "@/components/ui/StatBlock";
+import { TextField } from "@/components/ui/TextField";
 import { ApiError } from "@/api/client";
+import { apiErrorMessage } from "@/api/errorMessage";
 import { useAuth } from "@/auth/AuthProvider";
 
 export function CacheStatsPage() {
@@ -16,6 +18,9 @@ export function CacheStatsPage() {
   const { view } = useAuth();
   const prune = usePruneCache();
   const [confirming, setConfirming] = useState(false);
+  // Raw field text; blank means "the configured retention".
+  const [days, setDays] = useState("");
+  const olderThanDays = parseDays(days);
 
   const isOpen = meta.data?.auth_mode === "open";
 
@@ -75,46 +80,119 @@ export function CacheStatsPage() {
         <h2 className="text-[10px] font-medium uppercase tracking-wide text-muted">
           Prune cache
         </h2>
-        <p className="mt-1 text-sm text-muted">
-          Remove expired and least-recently-used entries. This is an admin action
-          {isOpen ? "" : " and requires a valid token"}.
-        </p>
-        <div className="mt-3 flex items-center gap-2">
-          {confirming ? (
-            <>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => {
-                  prune.mutate(undefined, { onSettled: () => setConfirming(false) });
-                }}
-                disabled={prune.isPending}
-              >
-                {prune.isPending ? "Pruning…" : "Confirm prune"}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <Button variant="secondary" size="sm" onClick={() => setConfirming(true)}>
-              Prune cache…
-            </Button>
-          )}
-        </div>
-        {prune.isError ? (
-          <p className="mt-2 text-sm text-fail">
-            {prune.error instanceof ApiError && prune.error.status === 401
-              ? "Unauthorized — enter an admin token in the modal, then retry."
-              : "Prune failed."}
+        {/* The endpoint is admin-scoped, so the control is shown only to
+            someone it would not refuse — as "Browse entries" above is. */}
+        {view.canAdmin ? (
+          <>
+            <p className="mt-1 text-sm text-muted">
+              Leave the age blank to apply this server's configured retention
+              (age and size limits). Give an age to remove only entries
+              older than that many days.
+            </p>
+            <div className="mt-3 flex flex-wrap items-end gap-2">
+              <div className="w-40">
+                <TextField
+                  label="Older than (days)"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  placeholder="retention"
+                  value={days}
+                  onChange={(e) => {
+                    setDays(e.target.value);
+                    setConfirming(false);
+                  }}
+                  disabled={prune.isPending}
+                />
+              </div>
+              {confirming ? (
+                <>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => {
+                      prune.mutate(
+                        { olderThanDays: olderThanDays ?? undefined },
+                        { onSettled: () => setConfirming(false) },
+                      );
+                    }}
+                    disabled={prune.isPending}
+                  >
+                    {prune.isPending ? "Pruning…" : "Confirm prune"}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    prune.reset();
+                    setConfirming(true);
+                  }}
+                  disabled={olderThanDays === null && days.trim() !== ""}
+                >
+                  Prune cache…
+                </Button>
+              )}
+            </div>
+            {confirming ? (
+              <p className="mt-2 text-sm text-muted">
+                {olderThanDays === null
+                  ? "Entries past the configured retention limits will be removed."
+                  : `Every entry older than ${formatInt(olderThanDays)} ${
+                      olderThanDays === 1 ? "day" : "days"
+                    } will be removed.`}{" "}
+                This cannot be undone.
+              </p>
+            ) : null}
+            {olderThanDays === null && days.trim() !== "" ? (
+              <p className="mt-2 text-sm text-fail">
+                Enter a whole number of days, or leave it blank.
+              </p>
+            ) : null}
+            {prune.isError ? (
+              <p role="alert" className="mt-2 text-sm text-fail">
+                {prune.error instanceof ApiError && prune.error.status === 401
+                  ? "Your session has expired. Sign in again, then retry."
+                  : apiErrorMessage(prune.error, "Prune failed.")}
+              </p>
+            ) : null}
+            {prune.isSuccess ? (
+              <p role="status" className="mt-2 text-sm text-pass">
+                {prune.data.pruned === 0
+                  ? "Nothing to prune."
+                  : `Pruned ${formatInt(prune.data.pruned)} ${
+                      prune.data.pruned === 1 ? "entry" : "entries"
+                    }.`}
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="mt-1 text-sm text-muted">
+            Expired and least-recently-used entries are removed on this
+            server's retention schedule. Pruning by hand is an admin action
+            {isOpen ? "" : "; sign in as an admin to do it"}.
           </p>
-        ) : null}
-        {prune.isSuccess ? (
-          <p className="mt-2 text-sm text-pass">Cache pruned.</p>
-        ) : null}
+        )}
       </Card>
     </div>
   );
+}
+
+/**
+ * The age field as `older_than_days`: a non-negative whole number, or `null`
+ * for blank or anything else. The server refuses a negative window (it would
+ * put the cutoff in the future and match every entry), so it never leaves here.
+ */
+function parseDays(raw: string): number | null {
+  const text = raw.trim();
+  if (!/^\d+$/.test(text)) return null;
+  const n = Number(text);
+  return Number.isSafeInteger(n) ? n : null;
 }
 
 function Tile({

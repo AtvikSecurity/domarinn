@@ -496,6 +496,16 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
     if (method === "DELETE" && seg.length === 2) {
       return new Response(null, { status: 204 });
     }
+    // GET /runs/:id/export — the server returns the stored run document. The
+    // fixtures keep no such document, so the detail stands in: the UI only
+    // saves whatever JSON comes back.
+    if (seg[2] === "export" && method === "GET" && seg.length === 3) {
+      try {
+        return json(fx.runDetail(runId));
+      } catch {
+        return notFound();
+      }
+    }
     if (seg[2] === "cases") {
       // GET /runs/:id/cases
       if (method === "GET" && seg.length === 3) {
@@ -566,12 +576,36 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
       if (method === "GET" && seg.length === 3) {
         return json({ project, suites: fx.suiteSummaries(project) });
       }
-      // PUT /projects/:project/suites/:suite/baseline
-      if (method === "PUT" && seg[4] === "baseline" && seg.length === 5) {
+      // PUT/DELETE /projects/:project/suites/:suite/baseline — write scope,
+      // like the server's `Scoped<Write>` (the restricted-set upload grant on
+      // top of it is not modelled here).
+      if (
+        (method === "PUT" || method === "DELETE") &&
+        seg[4] === "baseline" &&
+        seg.length === 5
+      ) {
         const suite = seg[3];
         if (suite === undefined) return notFound();
-        const runId = readJson<{ run_id?: string }>(init).run_id ?? "";
-        if (!runId) return json({ error: "run_id required" }, 400);
+        const { me } = auth.resolveAuth(bearer(init));
+        if (!scopeAtLeast(me.scope ?? undefined, "write")) {
+          return json({ error: "this action requires write scope" }, 403);
+        }
+        if (method === "DELETE") {
+          return fx.clearSuiteBaseline(project, suite)
+            ? noContent()
+            : json({ error: "baseline not found" }, 404);
+        }
+        // `BaselineBody`: exactly one of the two pin kinds.
+        const body = readJson<{ run_id?: string; branch?: string }>(init);
+        const branch = body.branch?.trim();
+        if (branch && !body.run_id) {
+          fx.pinSuiteBaselineBranch(project, suite, branch);
+          return json({ project, suite, branch });
+        }
+        const runId = body.run_id ?? "";
+        if (!runId) {
+          return json({ error: "exactly one of `run_id` or `branch` must be set" }, 400);
+        }
         fx.setSuiteBaseline(project, suite, runId);
         return json({ project, suite, run_id: runId });
       }
@@ -728,8 +762,31 @@ export async function mockFetch(rawUrl: string, init: RequestInit = {}): Promise
         "Authorization"
       ];
       if (!authed) return json({ error: "unauthorized" }, 401);
-      const res: PruneResponse = { pruned: 128 };
+      // A bare prune applies the configured retention; `older_than_days`
+      // evicts on age alone, counted against the fixture's own clock (its
+      // newest entry) so the answer is stable across days.
+      const days = p.get("older_than_days");
+      let pruned = 128;
+      if (days !== null) {
+        const created = fx.cacheEntryList().map((e) => parseTimestamp(e.created_at));
+        const cutoff = Math.max(...created) - Number(days) * 86_400_000;
+        pruned = created.filter((t) => t < cutoff).length;
+      }
+      const res: PruneResponse = { pruned };
       return json(res);
+    }
+    // DELETE /cache/entries/:key — admin scope, 204 or 404 like the server.
+    // The fixture corpus is regenerated per request, so the entry is not
+    // actually removed; the UI's job is to close the drawer and refetch.
+    if (method === "DELETE" && seg[1] === "entries" && seg.length === 3) {
+      const { me } = auth.resolveAuth(bearer(init));
+      if (!scopeAtLeast(me.scope ?? undefined, "admin")) {
+        return json({ error: "this action requires admin scope" }, 403);
+      }
+      const key = decodeURIComponent(seg[2] as string);
+      return fx.cacheEntryList().some((e) => e.key === key)
+        ? noContent()
+        : json({ error: "cache entry not found" }, 404);
     }
   }
 
