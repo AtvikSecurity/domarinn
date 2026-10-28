@@ -174,8 +174,10 @@ VOLUME ["/data"]
 EXPOSE 8321
 USER nonroot
 
-# The binary probes its own /api/v1/health — distroless has no curl/wget/shell,
-# so domarinn is the only thing that can healthcheck domarinn.
+# The binary probes its own /api/v1/health over HTTP — distroless has no
+# curl/wget/shell, so domarinn is the only thing that can healthcheck domarinn.
+# It reads DOMARINN_PORT and DOMARINN_BIND exactly as `server` does, so move
+# the server with those env vars, not `--port`/`--bind` args, and this follows.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["/domarinn", "healthcheck"]
 
