@@ -80,7 +80,10 @@ REST ones and truncation is never silent:
 - A serialized result over 64 KiB is refused with an actionable `isError`, never a truncated JSON
   body.
 - `tools/call` is rate-limited per identity: 60/minute, burst 10, answered with `429` and
-  `Retry-After`. Holders of the same static token share one bucket.
+  `Retry-After`. An account (session or API key) has one bucket wherever it connects from.
+  Anonymous callers and static-token holders have no account, so their buckets are split by
+  client address as well (IPv6 by /64); behind a proxy that needs
+  [`DOMARINN_TRUSTED_PROXIES`](server.md#behind-a-reverse-proxy).
 
 ## Untrusted content
 
