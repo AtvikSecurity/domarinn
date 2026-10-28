@@ -612,9 +612,16 @@ pub async fn serve_on(config: ServerConfig, bind: std::net::IpAddr) -> anyhow::R
     // the port and this line is the only place it is reported.
     let local = listener.local_addr().unwrap_or(addr);
     tracing::info!("domarinn server listening on http://{local}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown::shutdown_signal())
-        .await?;
+    // With connect info, so the login throttle can key on the peer address;
+    // without it every bucket degrades to the username alone, and anyone could
+    // lock a known account out of password login. Behind a reverse proxy the
+    // peer is the proxy, which degrades to the same username-only key.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown::shutdown_signal())
+    .await?;
     tracing::info!("domarinn server stopped");
     Ok(())
 }
