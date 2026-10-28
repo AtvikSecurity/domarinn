@@ -182,7 +182,7 @@ pub fn router(state: AppState) -> Router {
     // middleware has attached the Identity it inspects.
     api.layer(axum::middleware::from_fn_with_state(
         state.clone(),
-        crate::csrf_middleware,
+        crate::csrf::csrf_middleware,
     ))
     .layer(axum::middleware::from_fn_with_state(
         state.clone(),
