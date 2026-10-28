@@ -241,8 +241,8 @@ fi
 '''
 
 [tasks.workflow-lint]
-description = "Static-analyse the GitHub Actions workflows with zizmor (the CI workflow-lint job). Offline, so it matches the pre-commit hook in .lefthook.toml byte for byte."
-run = "zizmor --offline .github/workflows/*.yml .github/actions/*/action.yml"
+description = "Static-analyse the GitHub Actions workflows, and the Gitea/Forgejo copies of the composite action, with zizmor (the CI workflow-lint job). Offline, so it matches the pre-commit hook in .lefthook.toml byte for byte."
+run = "zizmor --offline .github/workflows/*.yml .github/actions/*/action.yml .gitea/actions/*/action.yml .forgejo/actions/*/action.yml"
 
 [tasks.docs]
 description = "Build the full docs site (MkDocs user docs + the protocol crate's rustdoc) into site/. Fails on a broken link, a missing nav file, or a `--8<--` include pointing at a file that is not there."

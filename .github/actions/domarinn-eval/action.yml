@@ -37,6 +37,14 @@
 # A server that says up front it cannot accept this CLI's result schema is a
 # usage error (2) raised *before* the suite runs, so the skew costs no provider
 # calls; the same input downgrades that refusal to a warning too.
+#
+# Gitea and Forgejo Actions have their own copies of this action, at
+# `.gitea/actions/domarinn-eval` and `.forgejo/actions/domarinn-eval`. Their
+# four shell steps (resolve, eval, summarize, gate) are byte-for-byte these;
+# only the artifact upload and the PR comment differ, because the actions this
+# file uses for those refuse to run off github.com.
+# `crates/domarinn-cli/tests/action_contract/forge_tests.rs` fails when a shell
+# step here is edited without the other two.
 
 name: domarinn eval
 description: Run a domarinn eval suite, gate on regressions, and comment the result on the PR.
@@ -59,6 +67,18 @@ inputs:
       falls back to building/installing from source with cargo.
     required: false
     default: "latest"
+  release-base-url:
+    description: >-
+      The domarinn repository to download releases from, and to build from if
+      no asset matches. The default is the upstream repository on github.com.
+      Point it at a mirror (a GitHub Enterprise, Gitea or Forgejo copy of the
+      repository, with its releases) where the runner cannot reach github.com:
+      the mirror must serve the same `/releases/download/<tag>/<asset>` layout.
+      Off github.com, `version: latest` is resolved through the Gitea/Forgejo
+      API (`/api/v1/repos/<owner>/<repo>/releases/latest`); anywhere that API
+      does not exist — GitHub Enterprise among them — pin a concrete `version`.
+    required: false
+    default: "https://github.com/AtvikSecurity/domarinn"
   server-url:
     description: >-
       Results server base URL. When set, the run is uploaded with `--share`
@@ -240,6 +260,7 @@ runs:
       env:
         INPUT_BINARY_PATH: ${{ inputs.binary-path }}
         INPUT_VERSION: ${{ inputs.version }}
+        INPUT_RELEASE_BASE_URL: ${{ inputs.release-base-url }}
       run: |
         set -uo pipefail
 
@@ -258,7 +279,11 @@ runs:
           *) echo "::error::unsupported arch $machine"; exit 3 ;;
         esac
 
-        base="https://github.com/AtvikSecurity/domarinn/releases"
+        # The repository, not its releases page: the source-build fallback below
+        # clones the same URL, so a mirror serves both. A trailing slash would
+        # double up in every URL built from it.
+        repo="${INPUT_RELEASE_BASE_URL%/}"
+        base="${repo}/releases"
         ver="${INPUT_VERSION}"
         if [ "$ver" = "latest" ]; then
           # Asset names carry the version, so "latest" has to become a concrete
@@ -267,14 +292,31 @@ runs:
           # /releases/tag/<tag>, and reading that needs no token and is not
           # rate-limited the way unauthenticated api.github.com is.
           #
+          # A mirror is not github.com, and that redirect is GitHub's behaviour,
+          # not a forge standard. Gitea and Forgejo both answer the release API
+          # at `<instance>/api/v1/repos/<owner>/<repo>/releases/latest` with a
+          # `tag_name`, and that is documented, so ask it. The instance is the
+          # URL minus its last two segments — which keeps a forge served under
+          # a path prefix working. `sed` rather than `jq`: a runner image is
+          # not guaranteed to have jq, and this needs one string field of a
+          # one-object response.
+          #
           # `|| ver=""` is load-bearing: this is a network call, an assignment
           # takes the pipeline's status as its own, and `-e` is on (see the eval
           # step). Without it a 404 or a DNS failure aborts the step here and
           # the annotation below — the only thing that tells an operator what
           # broke — never runs.
-          ver="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${base}/latest" | sed 's#.*/tag/##')" || ver=""
+          case "$repo" in
+            https://github.com/*)
+              ver="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${base}/latest" | sed 's#.*/tag/##')" || ver=""
+              ;;
+            *)
+              api="${repo%/*/*}/api/v1/repos/${repo#"${repo%/*/*}/"}/releases/latest"
+              ver="$(curl -fsSL "$api" | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p')" || ver=""
+              ;;
+          esac
           if [ -z "$ver" ] || [ "$ver" = "latest" ]; then
-            echo "::error::could not resolve the latest domarinn release tag"
+            echo "::error::could not resolve the latest domarinn release tag from ${repo} (set \`version\` to a concrete tag to skip the lookup)"
             exit 3
           fi
           echo "Resolved latest to ${ver}"
@@ -308,7 +350,7 @@ runs:
         if [ -f "${GITHUB_WORKSPACE}/crates/domarinn-cli/Cargo.toml" ]; then
           cargo install --path "${GITHUB_WORKSPACE}/crates/domarinn-cli" --locked --root "$root"
         else
-          cargo install --git https://github.com/AtvikSecurity/domarinn --locked --root "$root" domarinn-cli
+          cargo install --git "${repo}" --locked --root "$root" domarinn-cli
         fi
         echo "path=${root}/bin/domarinn" >> "$GITHUB_OUTPUT"
 
@@ -416,7 +458,13 @@ runs:
         fi
 
         echo "summary-path=${summary}" >> "$GITHUB_OUTPUT"
-        cat "${summary}" >> "$GITHUB_STEP_SUMMARY"
+        # GitHub always sets $GITHUB_STEP_SUMMARY; a Gitea or Forgejo runner
+        # may not (this step is shared verbatim with those actions). Unset,
+        # `set -u` would abort a reporter over a page nobody would render — and
+        # an empty value would make the redirect itself the error.
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          cat "${summary}" >> "$GITHUB_STEP_SUMMARY"
+        fi
 
     # -- Upload the JUnit report + summary as an artifact (always). -------------
     - name: Upload results

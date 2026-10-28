@@ -4,6 +4,7 @@ domarinn is built to gate pull requests: it runs an eval suite, compares against
 
 - [The exit-code contract](#the-exit-code-contract)
 - [The reusable action](#the-reusable-action)
+- [Gitea and Forgejo](#gitea-and-forgejo)
 - [The `ci-summary` command](#the-ci-summary-command)
 - [Gate a pull request on regressions](#gate-a-pull-request-on-regressions)
 - [Gating a PR by hand](#gating-a-pr-by-hand)
@@ -62,6 +63,7 @@ jobs:
 | `config`             | `domarinn.yaml`   | Suite file, or a directory containing `domarinn.yaml`. |
 | `binary-path`        | `""`                | Path to a prebuilt `domarinn`. When set, binary resolution stops here (no download, no build). |
 | `version`            | `latest`            | Release tag to download the binary from (e.g. `0.1.0`), or `latest`. Used only when `binary-path` is empty. |
+| `release-base-url`   | `https://github.com/AtvikSecurity/domarinn` | The repository to download releases from — and to build from if no asset matches. Point it at a mirror (GitHub Enterprise, Gitea or Forgejo) where the runner cannot reach github.com; the mirror must serve the same `/releases/download/<tag>/<asset>` layout. Off github.com, `latest` is resolved through the Gitea/Forgejo release API, so on a GitHub Enterprise mirror pin a concrete `version`. |
 | `server-url`         | `""`                | Results server base URL. When set, the run is uploaded with `--share` (exported as `DOMARINN_SERVER_URL`). |
 | `token`              | `""`                | Bearer token for the results server (exported as `DOMARINN_TOKEN`). Pass a **secret**, never a literal. |
 | `allow-share-failure` | `"false"`          | If `true`, a failed upload no longer fails the job (becomes `--allow-share-failure`). Off by default: with `server-url` set, publishing the run is the point of the step. Ignored without `server-url`. See [Uploading CI runs](#uploading-ci-runs-to-a-shared-server). |
@@ -104,7 +106,7 @@ Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command), w
 
 ### What it does, step by step
 
-1. **Resolve the binary.** Provided `binary-path` → download `domarinn-<target>` from the repo's GitHub Releases (`version` or `latest`, arch auto-detected) → **fallback** to building from source with `cargo` (`cargo install --path crates/domarinn-cli` if this repo is checked out, else `cargo install --git …`). The cargo fallback requires a Rust toolchain on the runner — add `dtolnay/rust-toolchain` before this action if you rely on it.
+1. **Resolve the binary.** Provided `binary-path` → download `domarinn-<target>` from the repo's releases (`version` or `latest`, arch auto-detected; `release-base-url` swaps in a mirror) → **fallback** to building from source with `cargo` (`cargo install --path crates/domarinn-cli` if this repo is checked out, else `cargo install --git …`). The cargo fallback requires a Rust toolchain on the runner — add `dtolnay/rust-toolchain` before this action if you rely on it.
 2. **Run the suite:** `domarinn run <config> --format junit --out results.xml`, appending a `--provider <id>` per `provider:` entry, `--against <against>`, `--cache-dir <cache-dir>`, `--allow-empty` and `--share` when those inputs are set — plus `--allow-share-failure` when that input is `true` *and* a `server-url` made it a shared run, since the CLI rejects the flag on its own. It captures the exit code without aborting so the later steps still run.
 3. **Summarize** — `domarinn ci-summary latest --out summary.md` writes the Markdown and appends the headline numbers to `$GITHUB_OUTPUT` itself. If the suite never produced a run (a config error, say), the step warns and writes a placeholder summary rather than leaving the PR comment blank.
 4. **Upload** `results.xml` + `summary.md` as an artifact (**always**, even on failure), and append the summary to the job's step summary.
@@ -123,6 +125,83 @@ Every count below comes from [`domarinn ci-summary`](#the-ci-summary-command), w
     server-url: https://domarinn.example.com   # enables --share
     token: ${{ secrets.DOMARINN_TOKEN }}        # write-scoped token
 ```
+
+---
+
+## Gitea and Forgejo
+
+Gitea and Forgejo Actions run GitHub-shaped workflows, but two of the steps above lean on actions that refuse to run anywhere but github.com, so each forge gets its own copy of the action:
+
+| Forge   | Action path |
+|---------|-------------|
+| Gitea   | [`.gitea/actions/domarinn-eval`](https://github.com/AtvikSecurity/domarinn/blob/main/.gitea/actions/domarinn-eval/action.yml) |
+| Forgejo | [`.forgejo/actions/domarinn-eval`](https://github.com/AtvikSecurity/domarinn/blob/main/.forgejo/actions/domarinn-eval/action.yml) |
+
+Everything that decides the verdict — resolving the binary, the run, the summary, the gate — is the same shell in all three copies, byte for byte, and a test fails if they drift. So are the [inputs](#inputs), the [outputs](#outputs) and the [exit-code contract](#the-exit-code-contract). What differs:
+
+- **The PR comment** is a plain create-or-update against the forge's own REST API (`github.api_url`, i.e. `https://<host>/api/v1`), matched by the same hidden `<!-- domarinn-eval -->` marker, instead of `actions/github-script`. It needs `node` in the job image — every image that can run a JavaScript action has it. It runs on `pull_request` and `pull_request_target`, and posts with the forge-only **`comment-token`** input, which defaults to the job's automatic token. A comment the forge refuses is a warning, never a failure: the gate step owns the verdict.
+- **The artifact upload** uses an action that works on that forge (below), and is `continue-on-error` — an instance with artifact storage switched off loses the artifact, not the gate.
+- **The job summary** is written only where the runner sets `$GITHUB_STEP_SUMMARY`. Forgejo documents no such file, so there the summary lives in the PR comment and the artifact.
+
+Both copies also take **`release-base-url`** for an instance that cannot reach github.com: mirror this repository, with its releases, onto the forge, and point the input at the mirror. `version: latest` is then resolved through the forge's own release API, and the source-build fallback clones the mirror too.
+
+### Gitea
+
+```yaml
+name: eval
+on: pull_request
+
+# Gitea 1.26 and later scope the automatic token by this block, capped by the
+# repository's and owner's Actions settings. Older releases ignore it, and
+# those settings alone decide.
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: AtvikSecurity/domarinn/.gitea/actions/domarinn-eval@<version>
+        with:
+          config: eval/domarinn.yaml
+          against: server:baseline
+```
+
+A bare `owner/repo/path@ref` resolves against the instance's `[actions] DEFAULT_ACTIONS_URL`, which is github.com unless an administrator changed it. On an instance set to `self`, use the URL form — `uses: https://github.com/AtvikSecurity/domarinn/.gitea/actions/domarinn-eval@<version>`, or the URL of a mirror.
+
+**Artifacts:** the upload uses `actions/upload-artifact` v3 (the `-node20` build, pinned by SHA). Every v4+ release aborts on a host that is not github.com — it takes the host for GitHub Enterprise Server, which it does not support — and Gitea has served the v3 protocol for as long as it has had Actions. Gitea 1.22+ also has a v4 backend, but reaching it still takes a patched fork of the action; a pinned first-party release is the smaller trust surface. On an instance whose `DEFAULT_ACTIONS_URL` is `self`, that action needs mirroring as well.
+
+### Forgejo
+
+```yaml
+name: eval
+on: pull_request
+
+jobs:
+  eval:
+    runs-on: docker
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - uses: https://github.com/AtvikSecurity/domarinn/.forgejo/actions/domarinn-eval@<version>
+        with:
+          config: eval/domarinn.yaml
+          against: server:baseline
+```
+
+**The URL form is required.** Forgejo resolves a bare `owner/repo@ref` against its own `DEFAULT_ACTIONS_URL`, `https://data.forgejo.org`, which mirrors a curated set of actions and not this one. A mirror of this repository on your instance works the same way: `uses: https://forgejo.example.com/mirrors/domarinn/.forgejo/actions/domarinn-eval@<version>`.
+
+**Token:** Forgejo documents no `permissions:` key. The automatic token can write on a `pull_request` from the same repository and on `pull_request_target`; on a pull request from a fork it is read-only, so that comment is skipped with a warning. Where the token cannot comment, pass a secret holding a token with `write:issue` scope as `comment-token`.
+
+**Artifacts:** the upload uses Forgejo's fork, `https://data.forgejo.org/forgejo/upload-artifact`, pinned to its `v4` tag's commit — upstream v4.3.1 with the GitHub-Enterprise check removed, which is how the Forgejo runner's release notes say to use artifacts v4.
+
+### What the copies record
+
+The CLI tells the forges apart from GitHub even though their runners also set `GITHUB_ACTIONS=true`: a run records `ci.provider` as `gitea` or `forgejo`, and the `CI run` link in the summary points at the right page. Forgejo addresses a run by its per-repository run number, not the instance-wide `GITHUB_RUN_ID`; Gitea did too until 1.26 and still accepts the number with `?by_index=1`, which is the form recorded so the link opens on either side of that change. Branch detection needs nothing extra — both runners set `GITHUB_HEAD_REF` and `GITHUB_REF` as GitHub does.
+
+Hand-rolling instead? [`ci-summary`](#the-ci-summary-command) takes `--step-output <file>` as a forge-neutral spelling of `--github-output`; both default to `$GITHUB_OUTPUT`, which all three runners set.
 
 ---
 
@@ -353,7 +432,7 @@ Set `allow-share-failure: "true"` where publishing is genuinely optional — a f
 
 **The schema preflight.** With `--share`, the CLI asks the server what result-schema versions it accepts (one `GET /api/v1/meta`, 5s timeout) *before* the runner starts. A confirmed mismatch exits **`2`** with a message naming which side to upgrade, so a version-skewed pair costs a round trip rather than a full suite of provider calls with nowhere to put the results. Anything less than a confirmed mismatch — unreachable, slow, `404`, unparsable, or a server that states no window — proceeds with a warning, because the upload's own response is authoritative and a preflight that inferred refusal from silence would break every run behind a proxy. A missing server URL is refused the same way (exit `2`, before the run): with no destination the upload is *certain* to fail, so running first would only spend the provider budget to prove it. The action never hits that case — it only passes `--share` when `server-url` is set. `allow-share-failure` downgrades every preflight refusal to a warning too.
 
-On GitHub Actions the CLI automatically enriches the uploaded run with git (branch, commit, dirty flag) and CI (provider + run URL) metadata, so shared runs are traceable back to the workflow.
+On GitHub Actions — and on Gitea and Forgejo Actions, which it tells apart from GitHub — the CLI automatically enriches the uploaded run with git (branch, commit, dirty flag) and CI (provider + run URL) metadata, so shared runs are traceable back to the workflow.
 
 **The branch is read from the workflow environment, not from git.** `actions/checkout` leaves a detached HEAD, so `git rev-parse --abbrev-ref HEAD` answers the literal `HEAD` on every runner — and on a pull request the checked-out ref is `refs/pull/N/merge`, which is nobody's branch. domarinn therefore prefers `GITHUB_HEAD_REF` (the PR's source branch), then `GITHUB_REF`, and understands the equivalents on GitLab, Buildkite, CircleCI, Travis, Drone/Woodpecker, Bitbucket, Azure Pipelines and Jenkins. A tag build records no branch rather than the tag. Override it with the action's **`branch`** input (or `DOMARINN_BRANCH`) where the event's ref is not the branch you mean — a merge-queue or `workflow_run` build. This is what makes `?branch=` filters, `--against` comparisons and the server's per-branch retention behave on CI runs.
 
