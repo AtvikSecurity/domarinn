@@ -10,6 +10,7 @@ Request-body size is capped at **64 MiB**; request bodies may be gzip/deflate co
 |--------|-------------------|-------|-------|
 | GET    | `/health`         | —     | `{ "status": "ok" }`. Also the container healthcheck target. |
 | GET    | `/api/v1/health`  | —     | Same as above. |
+| GET    | `/api/v1/ready`   | —     | Readiness: `200 { "status": "ready" }` when storage answers a query, else `503 { "status": "unavailable", "error": "storage unavailable" }`. `/health` stays the liveness check. |
 | GET    | `/api/v1/meta`    | —     | Server metadata (below). Always open. |
 
 `GET /api/v1/meta` returns:

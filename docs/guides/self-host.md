@@ -52,7 +52,7 @@ The image is a multi-stage build (see the [`Dockerfile`](https://github.com/Atvi
 
 1. **web** — `node:22-alpine` builds the React/Vite UI into `web/dist`.
 2. **builder** — `rust:1-alpine` compiles a **static musl** binary with `web/dist` embedded via `rust-embed`, so the UI ships inside the binary.
-3. **runtime** — `gcr.io/distroless/static-debian12:nonroot`: just the binary on a scratch-like base. No shell, no libc, no package manager — **nothing to CVE-scan but the binary itself**. It runs as a non-root user, and the binary is **its own `HEALTHCHECK`** (`domarinn healthcheck` probes `/api/v1/health` from inside the container, since there is no curl/wget).
+3. **runtime** — `gcr.io/distroless/static-debian12:nonroot`: just the binary on a scratch-like base. No shell, no libc, no package manager — **nothing to CVE-scan but the binary itself**. It runs as a non-root user, and the binary is **its own `HEALTHCHECK`** (`domarinn healthcheck` sends an HTTP request to `/api/v1/health` from inside the container, since there is no curl/wget). Change the port or listen address with `DOMARINN_PORT` / `DOMARINN_BIND`, not `--port`/`--bind` arguments: the healthcheck reads the same variables and follows them. The binary runs as PID 1 and handles SIGTERM itself, so `docker stop` drains in-flight requests before the container exits.
 
 ## Docker
 

@@ -17,6 +17,9 @@ domarinn-core = { workspace = true }
 domarinn-cache = { workspace = true, features = ["remote-http", "s3"] }
 domarinn-server = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
+# `domarinn completions <shell>`. Same clap 4.6 line as `clap` above, so it
+# shares the resolved clap/clap_builder and adds only itself to the build.
+clap_complete = "4.6"
 # Color/styling layer. Both crates are already in the lockfile via clap
 # (clap_builder depends on anstyle 1.0.14 and anstream 1.0.0), so declaring them
 # here reuses the resolved versions and adds no new crates to the build.

@@ -342,12 +342,20 @@ domarinn list tests . --json
 domarinn list tests . --generators
 ```
 
-## `domarinn server [--port N] [--data-dir DIR]`
+## `domarinn server [--port N] [--bind ADDR] [--data-dir DIR]`
 
-Run the self-hostable results server + embedded web UI (default port `8321`, binds `0.0.0.0`; default data dir `/data`, env `DOMARINN_DATA_DIR`). See [server.md](server.md) and [self-host.md](../guides/self-host.md).
+Run the self-hostable results server + embedded web UI. See [server.md](server.md) and [self-host.md](../guides/self-host.md).
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--port <N>` | `8321` | Listen port (also `DOMARINN_PORT`). |
+| `--bind <ADDR>` | `0.0.0.0` | Listen address, IPv4 or IPv6 (also `DOMARINN_BIND`). Use `127.0.0.1` or `::1` to stay off the network. |
+| `--data-dir <DIR>` | `/data` | State directory (also `DOMARINN_DATA_DIR`). |
+
+The server stops gracefully on SIGTERM or Ctrl-C: in-flight requests finish, then it exits `0`. See [server.md](server.md) for the liveness and readiness routes.
 
 ```sh
-domarinn server --port 8321 --data-dir ./data
+domarinn server --port 8321 --bind 127.0.0.1 --data-dir ./data
 ```
 
 ## `domarinn migrate-db [--data-dir DIR] [--database-url URL]`
@@ -367,9 +375,26 @@ Afterwards, start the server with `DOMARINN_DATABASE_URL` set. See [server.md](s
 domarinn migrate-db --data-dir /data --database-url "postgres://domarinn:secret@db.example.com:5432/domarinn"
 ```
 
-## `domarinn healthcheck [--port N]`
+## `domarinn healthcheck [--port N] [--host HOST]`
 
-Probe **this binary's own** server health and exit `0`/non-zero accordingly. Designed for the container `HEALTHCHECK` in the distroless image, which has no shell or curl.
+Send an HTTP `GET /api/v1/health` to a local server and exit `0` on a `2xx` response, `3` otherwise: connection refused, no answer within 3 seconds, or any other status. The reason goes to stderr. Designed for the container `HEALTHCHECK` in the distroless image, which has no shell or curl.
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--port <N>` | `8321` | Port to probe (also `DOMARINN_PORT`, the same variable `server` reads). |
+| `--host <HOST>` | loopback | Host or IP to probe. When unset: `DOMARINN_BIND` if it names a specific address (a server bound to one interface does not answer on loopback), else `127.0.0.1`, or `::1` when `DOMARINN_BIND` is `::`. |
+
+Because both commands read the same variables, configure a container's port and address through `DOMARINN_PORT` and `DOMARINN_BIND`. If you pass `--port` to `server` as an argument, the image's `HEALTHCHECK` keeps probing `8321` and the container reports unhealthy.
+
+## `domarinn completions <SHELL>`
+
+Print a shell completion script to stdout for `bash`, `zsh`, `fish`, `elvish`, or `powershell`. Covers every subcommand and flag.
+
+```sh
+domarinn completions bash > ~/.local/share/bash-completion/completions/domarinn
+domarinn completions zsh > "${fpath[1]}/_domarinn"
+domarinn completions fish > ~/.config/fish/completions/domarinn.fish
+```
 
 ---
 
