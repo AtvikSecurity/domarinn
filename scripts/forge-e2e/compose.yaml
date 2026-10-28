@@ -1,0 +1,113 @@
+# A real Gitea or Forgejo, plus that forge's own runner, for the end-to-end
+# test of the domarinn-eval composite actions. Driven by run.sh, which picks a
+# forge with a compose profile and sets every `${…}` below; nothing here is
+# meant to be brought up by hand (see README.md for KEEP=1 to poke at one).
+#
+# One project per forge (`-p domarinn-forge-e2e-<forge>`), so `all` runs them
+# back to back without either seeing the other's state.
+#
+# Images are pinned to tag + digest, and Renovate's docker-compose manager
+# picks them up from this file like any other.
+#
+# Runner execution mode: **docker**, not host. Every job runs in a fresh
+# `node:<n>-bookworm` container that the runner starts on the host's Docker
+# through the mounted socket. That is how both forges document a runner and
+# how this action is actually consumed, and it is the only mode in which the
+# action's own assumptions are tested rather than papered over: the job
+# image's `bash`, `curl`, `node` and `python3` are the stock ones, not a list
+# someone `apk add`ed to make the test pass. The cost is network wiring: the
+# job containers are siblings of the forge, not children of the runner, so the
+# runner is told to attach them to this project's network by name
+# (`container.network` in the runner config run.sh writes). On that network
+# the forge is reachable as `http://<forge>:3000`, which is also its ROOT_URL —
+# so the clone URL, `github.server_url`, `github.api_url`, the release download
+# and the action's `uses:` URL are all the same host the job can resolve.
+
+name: domarinn-forge-e2e-${FORGE:?set FORGE to gitea or forgejo}
+
+networks:
+  default:
+    # Named explicitly: the runner config refers to it by this name.
+    name: domarinn-forge-e2e-${FORGE}
+
+services:
+  gitea:
+    profiles: [gitea]
+    image: docker.io/gitea/gitea:28.2.0@sha256:30777c91280d973fa02be48b1ade735bd6859e8f6f7af3b4444d519437852504
+    environment:
+      # Headless install: no web installer, SQLite on the container's volume.
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__server__DOMAIN: gitea
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__ROOT_URL: http://gitea:3000/
+      GITEA__server__DISABLE_SSH: "true"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__repository__DEFAULT_BRANCH: main
+      GITEA__actions__ENABLED: "true"
+      GITEA__log__LEVEL: Info
+    ports:
+      # A free port on loopback; run.sh reads it back with `docker compose port`.
+      - 127.0.0.1::3000
+    healthcheck: &forge-health
+      test: [CMD, curl, -fsS, http://localhost:3000/api/healthz]
+      interval: 2s
+      timeout: 5s
+      retries: 90
+
+  gitea-runner:
+    profiles: [gitea]
+    image: docker.io/gitea/runner:5.2.4@sha256:e8b3c7a5ed435fec38d1faf730cb784606cdd1c02e8543b6b96525b53281e60a
+    depends_on:
+      gitea:
+        condition: service_healthy
+    environment:
+      # The image's run.sh registers once (state lands in /data/.runner) and
+      # then execs the daemon.
+      GITEA_INSTANCE_URL: http://gitea:3000
+      GITEA_RUNNER_REGISTRATION_TOKEN: ${RUNNER_TOKEN:-}
+      GITEA_RUNNER_NAME: e2e-runner
+      CONFIG_FILE: /config.yaml
+    volumes:
+      - ${WORK_DIR:?}/runner-config.yaml:/config.yaml:ro
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+      - gitea-runner-data:/data
+
+  forgejo:
+    profiles: [forgejo]
+    image: data.forgejo.org/forgejo/forgejo:17.0.1@sha256:fcd19ff4ebc85fb098a67e8e1d0d5a84d07dd6e8a23edcfdfd5b71a6178953be
+    environment:
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__server__DOMAIN: forgejo
+      FORGEJO__server__HTTP_PORT: "3000"
+      FORGEJO__server__ROOT_URL: http://forgejo:3000/
+      FORGEJO__server__DISABLE_SSH: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__repository__DEFAULT_BRANCH: main
+      FORGEJO__actions__ENABLED: "true"
+      FORGEJO__log__LEVEL: Info
+    ports:
+      - 127.0.0.1::3000
+    healthcheck: *forge-health
+
+  forgejo-runner:
+    profiles: [forgejo]
+    image: data.forgejo.org/forgejo/runner:13.2.0@sha256:ca3d5eea46004789a175d1369eec6829d3ea9bfbe2011a06625b4bdaa55f7552
+    depends_on:
+      forgejo:
+        condition: service_healthy
+    # Root for the Docker socket; the image's default user (1000) is not in
+    # the host's docker group. Registration is offline: run.sh registers a
+    # shared secret on the forge (`forgejo-cli actions register`) and the
+    # runner config carries the matching uuid + token.
+    user: "0:0"
+    command: [forgejo-runner, daemon, --config, /config.yaml]
+    volumes:
+      - ${WORK_DIR:?}/runner-config.yaml:/config.yaml:ro
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+      - forgejo-runner-data:/data
+
+volumes:
+  gitea-runner-data:
+  forgejo-runner-data:

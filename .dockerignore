@@ -16,6 +16,9 @@ web/.vite/
 .domarinn/
 data/
 
+# Forge e2e harness scratch (a built binary, fixture checkouts, logs)
+scripts/forge-e2e/.work/
+
 # VCS + CI + docs (not needed to compile)
 .git/
 .gitignore

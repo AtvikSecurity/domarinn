@@ -1,0 +1,42 @@
+# The consumer workflow the forge e2e harness pushes into `e2e/consumer` as
+# `.<forge>/workflows/eval.yml`. A template: scenario.py fills the @…@ slots.
+# Written the way the gate-in-ci guide tells a user to write it, except that
+# the action and its releases come from a repository on the same instance.
+name: eval
+on: pull_request
+
+# @PERMISSIONS@
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: "@CHECKOUT@"
+      - id: eval
+        # The URL form: a bare `owner/repo` resolves against the instance's
+        # DEFAULT_ACTIONS_URL (github.com on Gitea, data.forgejo.org on
+        # Forgejo), not against this instance.
+        uses: "@FORGE_URL@/e2e/domarinn/.@FORGE@/actions/domarinn-eval@main"
+        with:
+          config: eval/suite
+          # The asset comes from this instance's release of e2e/domarinn, and
+          # `latest` is resolved through the forge's own release API.
+          release-base-url: "@FORGE_URL@/e2e/domarinn"
+          version: latest
+          comment: "true"
+          fail-on-regression: "true"
+      # The action's outputs, on one line the harness reads back from the log.
+      # `printf` with the tag as an argument, so the runner's echo of this
+      # script never contains the literal line the harness looks for.
+      - name: Report outputs
+        if: always()
+        env:
+          EXIT_CODE: ${{ steps.eval.outputs.exit-code }}
+          PASSED: ${{ steps.eval.outputs.passed }}
+          FAILED: ${{ steps.eval.outputs.failed }}
+          TOTAL: ${{ steps.eval.outputs.total }}
+          PASS_RATE: ${{ steps.eval.outputs.pass-rate }}
+          RESULTS_PATH: ${{ steps.eval.outputs.results-path }}
+        run: >-
+          printf 'E2E-%s exit-code=%s passed=%s failed=%s total=%s pass-rate=%s results-path=%s\n'
+          OUTPUTS "${EXIT_CODE}" "${PASSED}" "${FAILED}" "${TOTAL}" "${PASS_RATE}" "${RESULTS_PATH}"
