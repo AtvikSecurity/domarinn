@@ -26,6 +26,7 @@ mod import;
 mod loadrun;
 mod output;
 mod outputmd;
+mod outputplan;
 mod progress;
 mod run;
 mod runscmd;

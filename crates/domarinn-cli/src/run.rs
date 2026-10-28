@@ -11,7 +11,8 @@ use domarinn_core::progress::ProgressSink;
 use domarinn_core::runner::RunOptions;
 
 use crate::exit;
-use crate::output::{self, FormatSpec};
+use crate::output;
+use crate::outputplan::{self, FormatSpec};
 use crate::progress::RunProgressBar;
 use crate::style::Palette;
 use crate::{cachecfg, diffcmd};
@@ -110,7 +111,7 @@ pub struct RunArgs {
     /// `--format json=results.json --format junit=results.xml`. Two formats
     /// that would share a destination (one `--out`, or stdout) are a usage
     /// error, refused before the run spends anything.
-    #[arg(long = "format", value_name = "FMT[=PATH]", value_parser = output::parse_format_spec)]
+    #[arg(long = "format", value_name = "FMT[=PATH]", value_parser = outputplan::parse_format_spec)]
     pub format: Vec<FormatSpec>,
 
     /// Write the bare `--format` output to a file instead of stdout.
@@ -257,7 +258,7 @@ impl From<StoreEmptyOutputsArg> for domarinn_core::config::StoreEmptyOutputs {
 pub fn execute(args: RunArgs, server_url: Option<String>, palette: Palette, verbose: u8) -> u8 {
     // First, so a `--format`/`--out` combination that would lose output is
     // refused before anything is loaded, let alone billed.
-    let emissions = match output::plan_emissions(&args.format, args.out.as_deref()) {
+    let emissions = match outputplan::plan_emissions(&args.format, args.out.as_deref()) {
         Ok(e) => e,
         Err(msg) => {
             eprintln!("error: {msg}");
