@@ -67,6 +67,7 @@ mod composite;
 mod drift_tests;
 pub(crate) mod exec;
 mod ftsdialect;
+mod health;
 mod history;
 mod matrix;
 pub mod migratedb;
