@@ -1,9 +1,13 @@
 import { useState } from "react";
 import { Navigate, useNavigate } from "react-router";
+import { apiErrorMessage } from "@/api/errorMessage";
 import { useAuth } from "@/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { TextField } from "@/components/ui/TextField";
+
+/** Mirrors the server's `MIN_PASSWORD_LEN` (`accounts.rs`). */
+const MIN_PASSWORD_LEN = 8;
 
 export function SetupPage() {
   const { view, setup } = useAuth();
@@ -27,16 +31,18 @@ export function SetupPage() {
       setError("Passwords do not match.");
       return;
     }
-    if (password.length < 4) {
-      setError("Choose a password of at least 4 characters.");
+    if (password.length < MIN_PASSWORD_LEN) {
+      setError(`Choose a password of at least ${MIN_PASSWORD_LEN} characters.`);
       return;
     }
     setPending(true);
     try {
       await setup(username.trim(), password);
       void navigate("/", { replace: true });
-    } catch {
-      setError("Setup failed. Please try again.");
+    } catch (err) {
+      // The server's sentence ("username already exists", "setup has already
+      // been completed") is the remediation; show it verbatim.
+      setError(apiErrorMessage(err, "Setup failed. Please try again."));
       setPending(false);
     }
   }
@@ -65,6 +71,7 @@ export function SetupPage() {
             label="Password"
             type="password"
             autoComplete="new-password"
+            hint={`At least ${MIN_PASSWORD_LEN} characters.`}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
