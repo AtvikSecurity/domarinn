@@ -17,7 +17,7 @@ export function apiErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
     const body = err.body;
     if (body && typeof body === "object" && "error" in body) {
-      const msg = (body as { error: unknown }).error;
+      const msg = body.error;
       if (typeof msg === "string" && msg.trim() !== "") return msg;
     }
     if (err.status === 403) return "You don't have permission to do that.";
