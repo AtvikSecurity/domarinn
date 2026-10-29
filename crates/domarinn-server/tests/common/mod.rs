@@ -79,6 +79,107 @@ pub async fn test_app_with_storage(
     (app, storage, dir)
 }
 
+/// `n` independent [`Storage`] handles onto one fresh database, with no app.
+/// Each handle has its own writer (and its own writer mutex), so this stands
+/// in for `n` server replicas sharing a database: state that must hold across
+/// replicas is only proven when concurrent writes through *different* handles
+/// still agree. Backend follows `DOMARINN_TEST_BACKEND`, as in
+/// [`test_app_with_storage`].
+pub async fn test_storage_handles(n: usize) -> (Vec<Storage>, TempDir) {
+    let dir = TempDir::new().expect("tempdir");
+    let mut handles = Vec::with_capacity(n);
+    if pg::backend_is_postgres() {
+        let url = tokio::task::spawn_blocking(pg::fresh_database_url)
+            .await
+            .expect("create postgres test database");
+        for _ in 0..n {
+            handles.push(
+                Storage::open_postgres(url.clone())
+                    .await
+                    .expect("open storage handle"),
+            );
+        }
+    } else {
+        seed_sqlite_from_template(dir.path()).await;
+        for _ in 0..n {
+            handles.push(
+                Storage::open(dir.path().to_path_buf())
+                    .await
+                    .expect("open storage handle"),
+            );
+        }
+    }
+    (handles, dir)
+}
+
+/// Two routers, each with its own `AppState` (its own storage handles and
+/// in-memory limiters), over one fresh database: two server replicas sharing
+/// a backend. Backend follows `DOMARINN_TEST_BACKEND`, as in
+/// [`test_app_with_storage`].
+pub async fn test_app_pair(
+    settings: Settings,
+    auth_mode: domarinn_server::AuthMode,
+) -> (Router, Router, TempDir) {
+    let db = SharedDb::new(auth_mode).await;
+    let a = db.app(settings.clone()).await;
+    let b = db.app(settings).await;
+    (a, b, db.dir)
+}
+
+/// One fresh database that apps can be built over at any point, each with
+/// its own `Settings`: a restart with changed configuration, or a replica
+/// started later. Backend follows `DOMARINN_TEST_BACKEND`.
+pub struct SharedDb {
+    /// Keep alive for the test; it holds the SQLite files.
+    pub dir: TempDir,
+    config: ServerConfig,
+    database_url: Option<String>,
+}
+
+impl SharedDb {
+    pub async fn new(auth_mode: domarinn_server::AuthMode) -> SharedDb {
+        let dir = TempDir::new().expect("tempdir");
+        let database_url = if pg::backend_is_postgres() {
+            Some(
+                tokio::task::spawn_blocking(pg::fresh_database_url)
+                    .await
+                    .expect("create postgres test database"),
+            )
+        } else {
+            seed_sqlite_from_template(dir.path()).await;
+            None
+        };
+        let config = ServerConfig {
+            port: 0,
+            data_dir: dir.path().to_path_buf(),
+            auth_mode,
+        };
+        SharedDb {
+            dir,
+            config,
+            database_url,
+        }
+    }
+
+    /// Build an app over this database. `settings.database_url` is replaced
+    /// by this database's.
+    pub async fn app(&self, mut settings: Settings) -> Router {
+        settings.database_url = self.database_url.clone();
+        build_app(&self.config, settings)
+            .await
+            .expect("build app over the shared database")
+            .0
+    }
+}
+
+/// [`test_storage_handles`] with two handles.
+pub async fn test_storage_pair() -> (Storage, Storage, TempDir) {
+    let (mut handles, dir) = test_storage_handles(2).await;
+    let b = handles.pop().expect("second handle");
+    let a = handles.pop().expect("first handle");
+    (a, b, dir)
+}
+
 /// Copy pre-migrated SQLite files into `dir` — the SQLite analogue of the
 /// Postgres template database: both migration ledgers replay once per test
 /// process instead of twice per test, and every subsequent `Storage::open`

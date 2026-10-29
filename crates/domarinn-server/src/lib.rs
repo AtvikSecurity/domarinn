@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use axum::extract::{Request, State};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::Router;
 use ts_rs::TS;
 
@@ -39,11 +39,14 @@ pub mod accounts;
 pub mod auth;
 pub mod baselines;
 pub mod cachebrowse;
+pub mod clientip;
+mod csrf;
 pub mod domain;
 pub mod dto;
 pub mod extract;
 pub mod localcache;
 pub mod mcp;
+mod ratelimit;
 pub mod routes;
 pub mod runsets;
 pub mod sets;
@@ -207,6 +210,10 @@ pub struct Settings {
     /// environment variable rather than a `ServerConfig` field, per that
     /// struct's documented contract (see `local_cache_dir`).
     pub database_url: Option<String>,
+    /// Reverse proxies whose `X-Forwarded-For` is believed
+    /// (`DOMARINN_TRUSTED_PROXIES`, comma-separated IPs/CIDRs). Unset trusts
+    /// nobody, and the TCP peer is the client; see [`clientip`].
+    pub trusted_proxies: Option<String>,
 }
 
 impl Settings {
@@ -237,6 +244,7 @@ impl Settings {
             local_cache_max_scan: env("DOMARINN_LOCAL_CACHE_MAX_SCAN").and_then(|v| v.parse().ok()),
             cache_sweep_empty_reason: env("DOMARINN_CACHE_SWEEP_EMPTY_REASON"),
             database_url: env("DOMARINN_DATABASE_URL"),
+            trusted_proxies: env("DOMARINN_TRUSTED_PROXIES"),
         })
     }
 }
@@ -307,8 +315,8 @@ pub struct AppState {
     pub(crate) auth: Arc<dyn Authenticator>,
     pub(crate) api_key_auth: Arc<ApiKeyAuthenticator>,
     pub(crate) session_auth: Arc<SessionAuthenticator>,
-    /// Failed-password backoff for `/auth/login` and `/me/password`.
-    pub(crate) login_throttle: Arc<accounts::LoginThrottle>,
+    /// Throttling and device cookies for the password endpoints.
+    pub(crate) login_guard: Arc<accounts::LoginGuard>,
     pub(crate) auth_mode: AuthMode,
     pub(crate) public_url: Option<String>,
     pub(crate) cache_limits: CacheLimits,
@@ -327,6 +335,8 @@ pub struct AppState {
     /// — the default — sweeps none, and the prune that would carry them is not
     /// issued at all.
     pub(crate) cache_sweep_empty_reason: Vec<String>,
+    /// Peers allowed to name the client via `X-Forwarded-For`.
+    pub(crate) trusted_proxies: Arc<clientip::TrustedProxies>,
 }
 
 impl AppState {
@@ -341,8 +351,10 @@ impl AppState {
             StaticTokenAuthenticator::from_env_value(settings.tokens.as_deref().unwrap_or(""));
 
         bootstrap_admin(&storage, &settings).await?;
+        let login_guard = Arc::new(accounts::LoginGuard::load(&storage).await?);
 
         let auth_mode = resolve_mode(config.auth_mode, settings.auth_mode);
+        let trusted_proxies = clientip::TrustedProxies::parse(settings.trusted_proxies.as_deref())?;
         let cache_limits = CacheLimits {
             max_entry_bytes: settings
                 .cache_max_entry_bytes
@@ -381,7 +393,7 @@ impl AppState {
         Ok(AppState {
             api_key_auth: Arc::new(ApiKeyAuthenticator::new(storage.clone())),
             session_auth: Arc::new(SessionAuthenticator::new(storage.clone())),
-            login_throttle: Arc::default(),
+            login_guard,
             storage,
             auth: Arc::new(authenticator),
             auth_mode,
@@ -395,6 +407,7 @@ impl AppState {
             cache_sweep_empty_reason: parse_sweep_empty_reasons(
                 settings.cache_sweep_empty_reason.as_deref(),
             ),
+            trusted_proxies: Arc::new(trusted_proxies),
         })
     }
 }
@@ -433,6 +446,12 @@ async fn bootstrap_admin(storage: &Storage, settings: &Settings) -> anyhow::Resu
             if !auth::verify_password(&existing.password_hash, password) {
                 let hash = auth::hash_password(password)?;
                 storage.update_password(existing.id.clone(), hash).await?;
+                // The operator's way back in when the sole admin is locked
+                // out of untrusted sign-in: a new password here is as good as
+                // an admin reset, so it clears the lock the way one does.
+                storage
+                    .clear_login_attempts(accounts::guard::account_key(username))
+                    .await?;
             }
         }
     }
@@ -464,111 +483,6 @@ pub(crate) async fn auth_middleware(
     .await;
     req.extensions_mut().insert(identity);
     next.run(req).await
-}
-
-/// CSRF defense-in-depth for cookie-authed mutations. The session cookie is
-/// `SameSite=Lax`, which already withholds it from cross-site POSTs in every
-/// current browser; this middleware additionally rejects unsafe-method
-/// requests whose identity was resolved *from the cookie* when they present
-/// an `Origin` (or `Referer`) that matches neither `DOMARINN_PUBLIC_URL` nor
-/// the request's own `Host`. Header-credential traffic (CLI, API keys, static
-/// tokens) is structurally exempt — a cross-site attacker cannot set headers.
-pub(crate) async fn csrf_middleware(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
-    use axum::http::Method;
-    let safe_method = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    let via_cookie = req
-        .extensions()
-        .get::<auth::Identity>()
-        .is_some_and(|identity| identity.via_cookie);
-    if !safe_method && via_cookie {
-        match presented_origin(req.headers()) {
-            // A parseable Origin/Referer: it must match our origin.
-            PresentedOrigin::Host(presented) => {
-                if !origin_allowed(&presented, state.public_url.as_deref(), req.headers()) {
-                    tracing::warn!(origin = %presented, "rejected cross-origin cookie-authed request");
-                    return cross_origin_rejected();
-                }
-            }
-            // A header is present but does not parse to a host (e.g. the
-            // literal `Origin: null` a sandboxed iframe sends). Fail closed —
-            // we cannot prove it is same-origin.
-            PresentedOrigin::Unparseable => {
-                tracing::warn!("rejected cookie-authed request with an unparseable Origin/Referer");
-                return cross_origin_rejected();
-            }
-            // Neither header present: allow. Browsers always send Origin on
-            // cross-site POSTs, so this is non-browser traffic that chose to
-            // authenticate with a cookie.
-            PresentedOrigin::Absent => {}
-        }
-    }
-    next.run(req).await
-}
-
-fn cross_origin_rejected() -> Response {
-    (
-        axum::http::StatusCode::FORBIDDEN,
-        axum::Json(serde_json::json!({ "error": "cross-origin request rejected" })),
-    )
-        .into_response()
-}
-
-enum PresentedOrigin {
-    Host(String),
-    Unparseable,
-    Absent,
-}
-
-/// Classify the request's `Origin` (falling back to `Referer`): parsed to a
-/// `host[:port]`, present-but-unparseable, or absent.
-fn presented_origin(headers: &axum::http::HeaderMap) -> PresentedOrigin {
-    let Some(value) = headers
-        .get(axum::http::header::ORIGIN)
-        .or_else(|| headers.get(axum::http::header::REFERER))
-    else {
-        return PresentedOrigin::Absent;
-    };
-    match value.to_str().ok().and_then(url_host) {
-        Some(host) => PresentedOrigin::Host(host),
-        None => PresentedOrigin::Unparseable,
-    }
-}
-
-/// Extract `host[:port]` (lowercased) from an absolute URL. Returns `None`
-/// for anything that does not look like `scheme://host...` — including the
-/// literal `Origin: null`.
-fn url_host(url: &str) -> Option<String> {
-    let rest = url.split_once("://")?.1;
-    let host = rest.split(['/', '?', '#']).next()?;
-    if host.is_empty() {
-        return None;
-    }
-    Some(host.to_ascii_lowercase())
-}
-
-fn origin_allowed(
-    presented: &str,
-    public_url: Option<&str>,
-    headers: &axum::http::HeaderMap,
-) -> bool {
-    if let Some(public_host) = public_url.and_then(url_host) {
-        if presented == public_host {
-            return true;
-        }
-    }
-    if let Some(host) = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-    {
-        if presented == host.to_ascii_lowercase() {
-            return true;
-        }
-    }
-    false
 }
 
 /// Build the axum application and its state. Exposed so integration tests can
@@ -612,10 +526,10 @@ pub async fn serve_on(config: ServerConfig, bind: std::net::IpAddr) -> anyhow::R
     // the port and this line is the only place it is reported.
     let local = listener.local_addr().unwrap_or(addr);
     tracing::info!("domarinn server listening on http://{local}");
-    // With connect info, so the login throttle can key on the peer address;
-    // without it every bucket degrades to the username alone, and anyone could
-    // lock a known account out of password login. Behind a reverse proxy the
-    // peer is the proxy, which degrades to the same username-only key.
+    // With connect info, so the peer address can feed `ClientIp`: it is the
+    // client itself, or — when it is a `DOMARINN_TRUSTED_PROXIES` entry — the
+    // proxy whose `X-Forwarded-For` names the client. Without it no request
+    // gets a `ClientIp` at all, and nothing can be limited per client.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -749,6 +663,7 @@ fn spawn_cache_retention(state: AppState) {
                 tracing::warn!(error = %e, "sso gc failed");
             }
             state.storage.sweep_expired_sessions().await;
+            state.storage.sweep_login_attempts().await;
             // Opt-in: `None` never deletes a run. See storage::retention.
             if let Some(days) = state.run_max_age_days {
                 match state.storage.sweep_runs(days).await {

@@ -716,6 +716,37 @@ fn runs_migrations() -> Migrations<'static> {
         ALTER TABLE baselines_new RENAME TO baselines;
         "#,
         ),
+        // Migration 21: login throttling in the database rather than in
+        // process memory, so a restart does not hand an attacker a fresh
+        // budget and every replica behind a load balancer counts against the
+        // same one. One row per throttle key (an account or a device); the
+        // upsert in `storage::attempts` conflicts on `key`.
+        //
+        // There is no per-row expiry column: the attempt window and the
+        // lockout-escalation window are crate-wide constants, so pruning can
+        // derive "this row is dead" from `window_start`, `locked_until` and
+        // `lockout_window_start` alone.
+        //
+        // `server_secrets` holds keys the server mints for itself on first
+        // use (the device-cookie HMAC key), stored here so every replica signs
+        // and verifies with the same one.
+        M::up(
+            r#"
+        CREATE TABLE login_attempts (
+            key                  TEXT PRIMARY KEY,
+            failures             INTEGER NOT NULL,
+            window_start         INTEGER NOT NULL,
+            locked_until         INTEGER NOT NULL DEFAULT 0,
+            lockouts             INTEGER NOT NULL DEFAULT 0,
+            lockout_window_start INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE server_secrets (
+            name       TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        "#,
+        ),
     ])
 }
 

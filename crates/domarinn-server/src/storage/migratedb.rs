@@ -48,6 +48,8 @@ const RUNS_TABLES: &[&str] = &[
     "saml_consumed_assertions",
     "run_set_restrictions",
     "run_set_grants",
+    "login_attempts",
+    "server_secrets",
 ];
 
 /// The cache database. `cache_counters` is updated, not inserted (Postgres

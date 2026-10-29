@@ -1226,6 +1226,7 @@ dependencies = [
  "domarinn-core",
  "flate2",
  "hex",
+ "hmac 0.13.0",
  "http-body-util",
  "mime_guess",
  "openidconnect",

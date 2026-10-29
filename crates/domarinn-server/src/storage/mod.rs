@@ -27,6 +27,7 @@
 //! * [`matrix`] — the per-run prompt × provider aggregate matrix,
 //! * [`projects`] — projects, suites, and baselines,
 //! * [`runsets`] — run-set restrictions and per-user grants,
+//! * [`attempts`] — login-attempt throttle counters and server secrets,
 //! * [`sets`] — the run-set browser's per-project/per-suite aggregates,
 //! * [`search`] — FTS5 full-text search over runs and cases,
 //! * [`cache`] — the content-addressed cache table, stats, and pruning,
@@ -54,6 +55,7 @@ use crate::dto::runs::CaseAssertLean;
 
 use self::exec::Conn;
 
+mod attempts;
 mod auth;
 mod backfill;
 mod cache;
@@ -83,6 +85,9 @@ mod search;
 mod sets;
 mod sso;
 
+pub use attempts::{
+    lock_duration_ms, AttemptPolicy, AttemptVerdict, ATTEMPT_WINDOW_MS, LOCKOUT_ESCALATION_MS,
+};
 pub use auth::{
     ApiKeyAuth, ApiKeyInfo, DeleteUserOutcome, SessionUser, UpdateUserOutcome, UserRow,
 };

@@ -1,91 +1,51 @@
-//! A per-identity token bucket for `tools/call`.
+//! A token bucket for `tools/call`, per identity, or per identity and client
+//! address.
 //!
-//! The spec makes rate limiting a MUST for tool invocations, and the rest of
-//! the server has none. Hand-rolled rather than pulling in `tower-governor`:
-//! it is sixty lines, and a `tower` layer could not key on the identity the
-//! auth middleware resolves.
+//! The spec makes rate limiting a MUST for tool invocations. The bucket
+//! mechanics live in [`crate::ratelimit`]; this module only decides what a
+//! caller's key is.
 //!
-//! **Keyed on identity, not IP.** [`crate::serve`] uses `axum::serve` without
-//! `into_make_service_with_connect_info`, so `ConnectInfo<SocketAddr>` is not
-//! available — and would not exist under the `oneshot` test harness either.
-//! One consequence worth knowing: every holder of a given static token shares
-//! a single bucket, because a static token's only identity is its scope label.
+//! **Keyed on the account, then the client address.** An account-backed
+//! identity gets one bucket wherever it connects from: the account is a better
+//! identity than an address, and a user moving between networks should not
+//! mint fresh budgets. Anonymous callers and static-token holders have no
+//! identity of their own (a static token's only identity is its scope label),
+//! so they are told apart by the resolved [`ClientIp`] — one bucket per label
+//! per client, rather than one bucket every holder of the token shares. Under
+//! the `oneshot` test harness there is no `ClientIp`, and the keys fall back to
+//! the label alone.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::auth::Identity;
+use crate::clientip::ClientIp;
+use crate::ratelimit::TokenBuckets;
 
-/// Sustained `tools/call` rate per identity.
+/// Sustained `tools/call` rate per identity, or per identity and client
+/// address.
 pub const DEFAULT_PER_MINUTE: u32 = 60;
 /// How many calls may arrive back-to-back before the sustained rate applies.
 pub const DEFAULT_BURST: u32 = 10;
-/// Cap on tracked identities before idle buckets are swept.
+/// Cap on tracked keys; past it the fullest buckets are evicted.
 const MAX_TRACKED: usize = 4096;
 
-struct Bucket {
-    tokens: f64,
-    last: Instant,
-}
-
-/// A refill-on-read token bucket. No background task: buckets are advanced
-/// lazily when they are next consulted.
+/// The `tools/call` limiter: [`TokenBuckets`] keyed by [`bucket_key`].
 pub struct RateLimiter {
-    buckets: Mutex<HashMap<String, Bucket>>,
-    capacity: f64,
-    refill_per_sec: f64,
+    buckets: TokenBuckets,
 }
 
 impl RateLimiter {
     pub fn new(per_minute: u32, burst: u32) -> RateLimiter {
         RateLimiter {
-            buckets: Mutex::new(HashMap::new()),
-            capacity: f64::from(burst.max(1)),
-            refill_per_sec: f64::from(per_minute.max(1)) / 60.0,
+            buckets: TokenBuckets::new(per_minute, burst, MAX_TRACKED),
         }
     }
 
-    /// Take one token for `identity`. `Err(retry_after)` when the bucket is
-    /// empty.
-    pub fn check(&self, identity: &Identity) -> Result<(), Duration> {
-        self.take(&bucket_key(identity), Instant::now())
-    }
-
-    fn take(&self, key: &str, now: Instant) -> Result<(), Duration> {
-        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-
-        if buckets.len() >= MAX_TRACKED && !buckets.contains_key(key) {
-            // A bucket back at capacity carries no state worth keeping.
-            let capacity = self.capacity;
-            let refill = self.refill_per_sec;
-            buckets.retain(|_, b| {
-                refilled(b.tokens, b.last, now, refill, capacity) < capacity - f64::EPSILON
-            });
-        }
-
-        let bucket = buckets.entry(key.to_string()).or_insert(Bucket {
-            tokens: self.capacity,
-            last: now,
-        });
-        bucket.tokens = refilled(
-            bucket.tokens,
-            bucket.last,
-            now,
-            self.refill_per_sec,
-            self.capacity,
-        );
-        bucket.last = now;
-
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
-            return Ok(());
-        }
-        // Round up so a client that honors `Retry-After` always succeeds.
-        let deficit = 1.0 - bucket.tokens;
-        Err(Duration::from_secs_f64(
-            (deficit / self.refill_per_sec).ceil().max(1.0),
-        ))
+    /// Take one token for `identity` calling from `client`.
+    /// `Err(retry_after)` when the bucket is empty.
+    pub fn check(&self, identity: &Identity, client: Option<&ClientIp>) -> Result<(), Duration> {
+        self.buckets
+            .take(&bucket_key(identity, client), Instant::now())
     }
 }
 
@@ -95,78 +55,90 @@ impl Default for RateLimiter {
     }
 }
 
-fn refilled(tokens: f64, last: Instant, now: Instant, per_sec: f64, capacity: f64) -> f64 {
-    let elapsed = now.saturating_duration_since(last).as_secs_f64();
-    (tokens + elapsed * per_sec).min(capacity)
-}
-
-/// The bucket an identity falls into. Anonymous callers share one bucket,
-/// which is the point: they are indistinguishable to us.
-fn bucket_key(identity: &Identity) -> String {
+/// The bucket an identity falls into. Without a client address, anonymous
+/// callers share one bucket: they are indistinguishable to us.
+fn bucket_key(identity: &Identity, client: Option<&ClientIp>) -> String {
     if let Some(user_id) = &identity.user_id {
         return format!("user:{}", user_id.as_str());
     }
-    match &identity.label {
+    let base = match &identity.label {
         Some(label) => format!("label:{label}"),
         None => "anonymous".to_string(),
+    };
+    match client {
+        Some(client) => format!("{base}@{}", client.bucket()),
+        None => base,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::IpAddr;
 
-    #[test]
-    fn burst_is_allowed_then_the_bucket_empties() {
-        let limiter = RateLimiter::new(60, 3);
-        let now = Instant::now();
-        for i in 0..3 {
-            assert!(limiter.take("k", now).is_ok(), "call {i} should pass");
-        }
-        assert!(limiter.take("k", now).is_err(), "burst+1 should be limited");
+    fn client(addr: &str) -> ClientIp {
+        ClientIp(addr.parse::<IpAddr>().unwrap())
+    }
+
+    fn anonymous() -> Identity {
+        Identity::anonymous(crate::AuthMode::Closed)
     }
 
     #[test]
-    fn tokens_refill_over_time() {
-        let limiter = RateLimiter::new(60, 2);
-        let start = Instant::now();
-        assert!(limiter.take("k", start).is_ok());
-        assert!(limiter.take("k", start).is_ok());
-        assert!(limiter.take("k", start).is_err());
-        // 60/min = 1/s, so one second buys exactly one call.
-        assert!(limiter.take("k", start + Duration::from_secs(1)).is_ok());
+    fn anonymous_callers_from_different_addresses_get_different_buckets() {
+        let a = bucket_key(&anonymous(), Some(&client("192.0.2.10")));
+        let b = bucket_key(&anonymous(), Some(&client("198.51.100.20")));
+        assert_eq!(a, "anonymous@192.0.2.10");
+        assert_eq!(b, "anonymous@198.51.100.20");
     }
 
     #[test]
-    fn buckets_are_independent() {
-        let limiter = RateLimiter::new(60, 1);
-        let now = Instant::now();
-        assert!(limiter.take("a", now).is_ok());
-        assert!(limiter.take("a", now).is_err());
-        assert!(limiter.take("b", now).is_ok());
+    fn static_token_holders_are_split_by_address() {
+        let mut identity = anonymous();
+        identity.label = Some("ci".to_string());
+        assert_eq!(
+            bucket_key(&identity, Some(&client("203.0.113.5"))),
+            "label:ci@203.0.113.5"
+        );
+        // IPv6 callers fall into their /64, as `ClientIp::bucket` defines.
+        assert_eq!(
+            bucket_key(&identity, Some(&client("2001:db8:1:2::abcd"))),
+            format!("label:ci@{}", client("2001:db8:1:2::abcd").bucket())
+        );
     }
 
     #[test]
-    fn retry_after_is_at_least_one_second() {
-        let limiter = RateLimiter::new(60, 1);
-        let now = Instant::now();
-        assert!(limiter.take("k", now).is_ok());
-        let wait = limiter.take("k", now).unwrap_err();
-        assert!(wait >= Duration::from_secs(1));
-    }
-
-    #[test]
-    fn anonymous_identities_share_a_bucket() {
-        let anon = Identity::anonymous(crate::AuthMode::Closed);
-        assert_eq!(bucket_key(&anon), "anonymous");
-    }
-
-    #[test]
-    fn a_user_backed_identity_gets_its_own_bucket() {
-        let mut identity = Identity::anonymous(crate::AuthMode::Closed);
+    fn a_user_backed_identity_ignores_the_client_address() {
+        let mut identity = anonymous();
         identity.user_id = Some(crate::domain::UserId::new("u1"));
         identity.label = Some("root".to_string());
-        // The account id wins over the display label.
-        assert_eq!(bucket_key(&identity), "user:u1");
+        // The account id wins over both the display label and the address.
+        assert_eq!(
+            bucket_key(&identity, Some(&client("192.0.2.10"))),
+            "user:u1"
+        );
+        assert_eq!(
+            bucket_key(&identity, Some(&client("198.51.100.20"))),
+            "user:u1"
+        );
+        assert_eq!(bucket_key(&identity, None), "user:u1");
+    }
+
+    #[test]
+    fn without_a_client_address_the_keys_are_the_legacy_ones() {
+        assert_eq!(bucket_key(&anonymous(), None), "anonymous");
+        let mut identity = anonymous();
+        identity.label = Some("ci".to_string());
+        assert_eq!(bucket_key(&identity, None), "label:ci");
+    }
+
+    #[test]
+    fn the_limit_applies_per_client_address() {
+        let limiter = RateLimiter::new(60, 1);
+        let anon = anonymous();
+        let first = client("192.0.2.10");
+        assert!(limiter.check(&anon, Some(&first)).is_ok());
+        assert!(limiter.check(&anon, Some(&first)).is_err());
+        assert!(limiter.check(&anon, Some(&client("192.0.2.11"))).is_ok());
     }
 }

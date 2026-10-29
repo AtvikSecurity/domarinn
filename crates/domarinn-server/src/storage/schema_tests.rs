@@ -250,3 +250,43 @@ fn a_grant_is_unique_per_scope_and_dies_with_its_user() {
         .unwrap();
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM run_set_grants"), 0);
 }
+
+/// The login-throttling tables: one counter row per throttle key (an account
+/// or a device), so the key must be the primary key the upsert conflicts on.
+#[test]
+fn login_attempts_and_server_secrets_exist_on_the_latest_schema() {
+    let conn = latest_conn();
+    let pk_cols = |table: &str| -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(5)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|(_, pk)| *pk > 0)
+            .map(|(name, _)| name)
+            .collect()
+    };
+    assert_eq!(pk_cols("login_attempts"), ["key"]);
+    assert_eq!(pk_cols("server_secrets"), ["name"]);
+
+    conn.execute(
+        "INSERT INTO login_attempts (key, failures, window_start) VALUES ('k', 1, 1)",
+        [],
+    )
+    .unwrap();
+    let defaults: (i64, i64, i64) = conn
+        .query_row(
+            "SELECT locked_until, lockouts, lockout_window_start FROM login_attempts",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(defaults, (0, 0, 0));
+    assert!(conn
+        .execute(
+            "INSERT INTO login_attempts (key, failures, window_start) VALUES ('k', 1, 1)",
+            [],
+        )
+        .is_err());
+}

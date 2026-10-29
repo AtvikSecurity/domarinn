@@ -119,8 +119,8 @@ Each comma-separated entry is `scope:secret`, where scope is `read`, `write`, or
 
 - Passwords are **argon2**-hashed (minimum 8 characters).
 - Three roles: **`admin`**, **`member`**, and **`viewer`**. Role maps to a scope ceiling: `admin → admin`, `member → write`, `viewer → read`.
-- Logging in mints a **session** (token prefix `mses_`, 30-day lifetime). The browser UI uses sessions; `POST /auth/logout` revokes the presenting one. Expired sessions are deleted by the hourly retention task.
-- **Failed logins are throttled** per server process and in memory (a restart resets them): each (client address, username) pair gets 5 attempts without a success within 15 minutes, then a `429` with `Retry-After` (and a message stating the wait) until that window lapses. IPv6 clients are counted per /64, so rotating addresses inside one prefix does not buy fresh attempts. A successful login resets that pair's count. The client address is the TCP peer: `X-Forwarded-For` is never believed, because the server has no trusted-proxy setting yet and honoring an attacker-supplied header would hand every guess a fresh budget. **Behind a reverse proxy the peer is the proxy**, so throttling is effectively per username alone: anyone can keep a known account out of *password* login for up to 15 minutes by repeating bad attempts against it. There is deliberately no budget per address across usernames, because behind a proxy it would let one client lock *everyone* out of password login; the server never refuses a correct password because of other usernames' failures. Spraying many usernames is instead bounded by the argon2 cost of every attempt (below) and by 5 guesses per account per window; rate-limiting a spraying client belongs at the proxy until a trusted-proxy setting exists. Lockouts survive memory pressure: the tracker holds up to 100,000 keys, makes room by dropping lapsed and least-used entries but never a locked one, and if every slot is a live lockout it refuses new sign-in attempts with a `429` rather than forget one. Existing sessions, API keys, and SSO keep working throughout. An unknown username costs the same argon2 verify and gets the same `401` as a wrong password, so neither timing nor status reveals which accounts exist. Password hashing runs off the request workers with a concurrency cap of one per CPU core (minimum two), held until the hash finishes even if the client disconnects, so a burst of logins queues instead of stalling other endpoints such as `/api/v1/health`.
+- Logging in mints a **session** (token prefix `mses_`, 30-day lifetime). The browser UI uses sessions, carried in the `domarinn_session` cookie; a password sign-in also sets the [`domarinn_device` cookie](#the-device-cookie), which grants no access. `POST /auth/logout` revokes the presenting one. Expired sessions are deleted by the hourly retention task.
+- **Password sign-in is throttled** per account through the database (shared by every replica, kept across restarts), and per client in memory on each replica. A browser the user has signed in from before carries a `domarinn_device` cookie that keeps it out of reach of other people's failed guesses. Existing sessions, API keys, static tokens, and SSO are never throttled. The limits, the cookie, and how an owner gets back into an account under attack are in [Password sign-in throttling](#password-sign-in-throttling). An unknown username costs the same argon2 verify, gets the same `401`, and is counted and locked exactly like a real one, so neither timing, status, nor lockout reveals which accounts exist. Password hashing runs off the request workers with a concurrency cap of one per CPU core (minimum two), held until the hash finishes even if the client disconnects, so a burst of logins queues instead of stalling other endpoints such as `/api/v1/health`.
 - **Password changes end other sessions.** `POST /api/v1/me/password` lets a local account change its own password (it must supply the current one) and revokes every other session it holds; an admin resetting a password via `PATCH /api/v1/users/{id}` revokes all of that account's sessions, and disabling an account does the same. API keys are separate credentials and are not revoked by either — revoke them explicitly.
 - Each account can mint **API keys** (prefix `domarinn_`, 256 bits of entropy). The secret is shown **exactly once** on creation, is revocable, and carries a **scope ceiling** — a key may be created at or below the creator's own scope, never above it.
 
@@ -154,13 +154,79 @@ Two operator-facing consequences:
 
 The endpoints and the full model are in the [REST API reference](rest-api.md#run-sets-access-control); the browser is the [Sets page](web-ui.md#run-sets).
 
+### Password sign-in throttling
+
+Three endpoints check a password: sign-in (`POST /api/v1/auth/login`), first-admin setup (`POST /api/v1/auth/setup`), and the self-service password change (`POST /api/v1/me/password`). Each is throttled; nothing else is. API keys, static tokens, existing sessions, and SSO keep working however hard an account's password is being guessed.
+
+| Limit | Applies to | Counted per | Budget | Then | Kept |
+|-------|------------|-------------|--------|------|------|
+| Per client | Sign-in and setup, one shared budget | Client address (IPv6 by /64) | A burst of 10, refilling at 10 a minute | `429` before any database or argon2 work, whatever the credentials, the right password included | In memory, per replica |
+| Unrecognised browser | Sign-in without a device cookie for the account | Username, across every such browser | 10 attempts without a success in a 15-minute window | Sign-in to the account from any unrecognised browser is locked for 5 minutes. Each further lock within 24 hours of the previous one doubles (10, 20, 40 minutes), capped at 1 hour. The 24 hours run from the latest lock, so a sustained attack stays at the cap; a day with no lock starts the ladder again at 5 minutes | Database |
+| Recognised browser | Sign-in with a valid device cookie for the account | That browser | 10 attempts without a success in a 15-minute window | That browser is locked for 15 minutes | Database |
+| Password change | `POST /api/v1/me/password` | Account | 5 wrong `current_password` guesses in a 15-minute window | Locked for 15 minutes | Database |
+
+The window starts with the first attempt and lasts 15 minutes. An attempt is counted when it begins, before the password is checked, so a batch of concurrent guesses cannot slip under the limit together, and a success clears the counter it was charged to. The attempt after the budget is spent is refused and starts the lock; when the lock lapses the counter starts again from zero. A password change refused with a `400` (a short new password, or an SSO-only account) is not counted. If the database cannot record an attempt, the request fails with a `500` rather than going through unthrottled.
+
+The per-client limit is what makes spraying one password across many usernames cost the attacker time instead of costing the server CPU. It refuses a correct password too, which is acceptable because it is per client rather than per account, and nobody types ten passwords a minute. It stays in memory per replica on purpose: it protects that replica's CPU. The argon2 concurrency cap above remains the ceiling across all clients.
+
+**An account under attack.** While the unrecognised-browser lock is on, those attempts get the `429` without the password being checked at all, so the correct password is refused too. That is the point: guessing stops. The owner has four ways in:
+
+- **A browser they have signed in from before.** It carries a device cookie for the account and is charged to its own counter, which nobody else's failures touch.
+- **SSO**, where a provider is configured. It is not throttled.
+- **An admin password reset** (`PATCH /api/v1/users/{id}` with a new `password`), which also lifts the account's unrecognised-browser lock.
+- **A new `DOMARINN_ADMIN_PASSWORD`**, for the account named by `DOMARINN_ADMIN_USER`. When the server starts and finds that the password has changed, it sets the new one and lifts the account's unrecognised-browser lock, as an admin reset does. This is the way back in when the locked account is the only admin.
+
+When the locked account is the only admin, an admin static token (a `DOMARINN_TOKENS` entry with the `admin:` scope) or an `admin`-scoped API key can also make the `PATCH /api/v1/users/{id}` reset: neither signs in with a password, so neither is throttled.
+
+#### The device cookie
+
+A successful sign-in or setup sets `domarinn_device` next to the session cookie. It is `HttpOnly`, `SameSite=Strict`, scoped to `Path=/api/v1/auth`, and lasts one year; its `Secure` flag follows the session cookie's rule (`DOMARINN_COOKIE_SECURE`, else on when `DOMARINN_PUBLIC_URL` is `https://`). Each later sign-in from that browser sends it again, which renews the year.
+
+The cookie grants no access. It says only that this browser has signed in as this account before, and it decides which counter a failed attempt is charged to. That is why it survives logout and password changes. A cookie for a different account counts as absent, and so does one that fails its signature check.
+
+A browser holds one `domarinn_device` cookie. Signing into a different account in the same browser replaces it, and the earlier account is then treated as an unrecognised browser there until it signs in there again.
+
+The cookie is signed (HMAC-SHA256) with a key the server generates on first start and stores in the `server_secrets` table, so every replica accepts every other replica's cookies. `domarinn migrate-db` copies that table, so cookies issued before a move to Postgres keep working after it. SSO sign-in does not set the cookie.
+
+#### What a refused attempt sees
+
+Every throttled response is a `429` with `Retry-After` in whole seconds (rounded up, never zero) and a JSON `error` sentence stating the wait, which the web UI shows as is:
+
+| Limit | `error` |
+|-------|---------|
+| Per client | `too many sign-in attempts from your network address; try again in 6 seconds` |
+| Unrecognised browser | `too many failed sign-in attempts for this account from unrecognised browsers; try again in 12 minutes, or sign in from a browser you've used before` |
+| Recognised browser | `too many failed sign-in attempts from this browser; try again in 15 minutes` |
+| Password change | `too many failed password attempts; try again in 15 minutes` |
+
+The wait is stated in minutes, rounded up, or in seconds under a minute. The unrecognised-browser sentence is the same whether or not the account exists. Each refusal is logged at `warn` with the limit, the client bucket (the address for IPv4, its /64 for IPv6), and `proxy_unconfigured`, never the username. `proxy_unconfigured = true` means the request came from a private-range peer that sent `X-Forwarded-For` while `DOMARINN_TRUSTED_PROXIES` is empty: the client being refused is then probably your proxy, and everyone behind it shares its budget (see [Behind a reverse proxy](#behind-a-reverse-proxy)).
+
+#### Where the counters live
+
+The account, browser, and password-change counters are rows in the `login_attempts` table of the runs database (`domarinn.db`, or Postgres), shared by every replica and kept across restarts. Each attempt is one atomic upsert, so replicas cannot race each other past a limit. The hourly retention task deletes rows whose windows and locks have all lapsed. A row stays for 24 hours after its latest lock, so the next lock still doubles.
+
+The per-client limit holds back how fast one address can add rows, to about 10 a minute. A botnet spraying usernames from many addresses can still add rows at its combined rate until they lapse and are pruned. That is an accepted cost.
+
+#### Behind a reverse proxy
+
+Every client-keyed limit uses the resolved client address. Without help, behind a proxy or an ingress that address is the proxy's, so everyone behind it shares one per-client budget of 10 sign-ins a minute on each replica. List the proxies in `DOMARINN_TRUSTED_PROXIES` (comma-separated IPs or CIDRs, such as `10.244.0.0/16`) and the server reads the client from `X-Forwarded-For` instead. List only the proxies themselves. Any address inside the list can claim to be anyone, so a range that also covers your users (a broad `10.0.0.0/8` on a network where people sit on 10.x addresses, say) lets them choose their own client address and escape the per-client limit. The rules:
+
+- A request from a peer that is not listed is that peer's, and any `X-Forwarded-For` it sends is ignored. Nobody can pick their own address.
+- From a listed peer, the header is read right to left, skipping addresses that are themselves listed; the first unlisted one is the client.
+- A missing or malformed header, or one listing only trusted hops, falls back to the peer.
+- Only `X-Forwarded-For` is read. `Forwarded` (RFC 7239) is ignored.
+
+The default is empty, which trusts no one. An entry that is not an IP or CIDR stops the server at startup, naming the entry. Host bits below the prefix are ignored (`10.1.2.3/8` means `10.0.0.0/8`). An IPv4-mapped entry such as `::ffff:10.0.0.0/104` means the IPv4 network it maps (`10.0.0.0/8`); a mapped prefix shorter than `/96` is a startup error. A catch-all entry (`0.0.0.0/0` or `::/0`) is accepted but logged at startup as trusting every peer, since any client that can reach the server could then pick its own address. If a peer in a private range (RFC 1918, loopback, link-local, `100.64.0.0/10`, or IPv6 ULA and link-local) sends `X-Forwarded-For` while the setting is empty, the server logs a warning naming the setting, at most once every 10 minutes, because that is what an unlisted ingress looks like. Throttle refusals for such requests also carry `proxy_unconfigured = true`.
+
+The same address is the `client_ip` field of every [request log](#logging--observability) line, and it keys the MCP rate limit for callers without an account. See [Self-hosting](../guides/self-host.md#reverse-proxies) for the deployment side.
+
 ---
 
 ## Single sign-on (OIDC & SAML)
 
 domarinn can delegate login to one or more external identity providers — any OIDC provider (Google, Authentik, Okta, Entra, Keycloak, …) and any SAML 2.0 IdP. SSO is configured **entirely through the environment**; each configured provider becomes a "Continue with …" button on the login page.
 
-**How it works.** A first SSO login **just-in-time provisions** a local account, matched strictly on the provider + IdP subject (never on email). The account's role is mapped from the IdP's group/claim data and **re-synced on every SSO login**, so the IdP stays the source of truth — with one exception: the last enabled admin is never auto-demoted. SSO-only accounts have no password and cannot use the password form. Browser sessions ride a secure, HttpOnly cookie; `Authorization: Bearer` (API keys, static tokens, the CLI) is unaffected.
+**How it works.** A first SSO login **just-in-time provisions** a local account, matched strictly on the provider + IdP subject (never on email). The account's role is mapped from the IdP's group/claim data and **re-synced on every SSO login**, so the IdP stays the source of truth — with one exception: the last enabled admin is never auto-demoted. SSO-only accounts have no password and cannot use the password form. Browser sessions ride a secure, HttpOnly cookie (`domarinn_session`); SSO sign-in is not subject to [password throttling](#password-sign-in-throttling) and does not set the device cookie; `Authorization: Bearer` (API keys, static tokens, the CLI) is unaffected.
 
 > `DOMARINN_PUBLIC_URL` **must** be set whenever any provider is configured —
 > it builds the OIDC redirect URI (`{PUBLIC_URL}/api/v1/auth/oidc/<name>/callback`)
@@ -258,7 +324,8 @@ The API rejects malformed requests loudly instead of quietly guessing. A typo in
 | `DOMARINN_ADMIN_USER`         | (unset)        | Bootstrap admin username. Requires the password too. |
 | `DOMARINN_ADMIN_PASSWORD`     | (unset)        | Bootstrap admin password. The account is (re)ensured on every startup. |
 | `DOMARINN_PUBLIC_URL`         | (unset)        | Public base URL for share links / absolute URLs. No trailing slash, no path prefix. **Required when any SSO provider is configured** (redirect URIs / SAML endpoints). |
-| `DOMARINN_COOKIE_SECURE`      | (from URL)     | Force the session cookie's `Secure` flag `true`\|`false`. Defaults to on when `DOMARINN_PUBLIC_URL` is `https://`. |
+| `DOMARINN_COOKIE_SECURE`      | (from URL)     | Force the `Secure` flag on the session and device cookies, `true`\|`false`. Defaults to on when `DOMARINN_PUBLIC_URL` is `https://`. |
+| `DOMARINN_TRUSTED_PROXIES`    | (unset)        | Reverse proxies whose `X-Forwarded-For` is believed, as comma-separated IPs or CIDRs (IPv4 or IPv6), e.g. `10.244.0.0/16`. List only the proxies: any address in the list can claim to be any client. Unset trusts no one, and the TCP peer is the client. Set it behind any proxy or ingress, or every client shares the proxy's address and its sign-in budget. An invalid entry is a startup error. See [Behind a reverse proxy](#behind-a-reverse-proxy). |
 | `DOMARINN_CACHE_MAX_ENTRY_BYTES` | `4194304` (4 MiB)   | Max size of a single cache entry; a larger `PUT` gets a `413`. Since 0.5.0 an entry carries the request it answers and, for a grading, the grading model's whole response, so entries are bigger than they were — an oversized one is logged by the client and re-paid on every run rather than failing it. Raise this before lowering what a suite sends. |
 | `DOMARINN_CACHE_MAX_BYTES`    | `1073741824` (1 GiB) | Total cache size target for retention. |
 | `DOMARINN_CACHE_MAX_AGE_DAYS` | `30`           | Cache entry max age for retention. |
@@ -286,10 +353,10 @@ See [`cli.md`](cli.md) and [`../concepts/caching.md`](../concepts/caching.md) fo
 
 The server logs to **stderr** at `info` by default. API responses go over the wire, never into the log stream, so structured logs stay clean for aggregation.
 
-**Request logging.** Every HTTP request produces an `http` span carrying its `method`, `path`, and `request_id`, and a `response` event carrying the `status` and `latency_ms`. Schematically, one request reads:
+**Request logging.** Every HTTP request produces an `http` span carrying its `method`, `path`, `request_id`, and `client_ip` (the [resolved client address](#behind-a-reverse-proxy), or `-` when there is none), and a `response` event carrying the `status` and `latency_ms`. Schematically, one request reads:
 
 ```
-INFO http{method=GET path=/api/v1/runs request_id=01J...}: response status=200 latency_ms=7
+INFO http{method=GET path=/api/v1/runs request_id=01J... client_ip=192.0.2.10}: response status=200 latency_ms=7
 ```
 
 **Request ids.** If a request arrives with an `x-request-id` header, that id is honored and threaded through its log line; otherwise the server mints a ULID. In both cases the id is echoed back on the response's `x-request-id` header, so a client or a proxy can correlate a single call end to end.

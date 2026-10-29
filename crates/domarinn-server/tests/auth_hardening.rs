@@ -1,5 +1,5 @@
-//! Account-security behavior around passwords and sessions: login
-//! throttling, session revocation on password reset / disable, the
+//! Account-security behavior around passwords and sessions: a username
+//! spray sparing everyone else, session revocation on password reset / disable, the
 //! self-service password change, and the expired-session sweep.
 
 mod common;
@@ -97,82 +97,6 @@ async fn change_password(app: &Router, token: Option<&str>, current: &str, new: 
 // Login throttling
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn login_is_throttled_after_five_failures_even_for_the_right_password() {
-    let (app, _dir) = test_app(protected()).await;
-    setup_admin(&app).await;
-
-    for i in 0..5 {
-        let r = login(&app, "root", "wrong-password").await;
-        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "attempt {i}");
-    }
-    let locked = login(&app, "root", ADMIN_PW).await;
-    assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
-    let retry_after: u64 = locked.headers[header::RETRY_AFTER]
-        .to_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(
-        (1..=15 * 60).contains(&retry_after),
-        "retry_after={retry_after}"
-    );
-    // The body states the wait too, for clients that only show the body.
-    let msg = locked.json()["error"].as_str().unwrap().to_string();
-    assert!(msg.contains("try again in 15 minutes"), "{msg}");
-}
-
-#[tokio::test]
-async fn throttle_does_not_spill_across_usernames() {
-    let (app, _dir) = test_app(protected()).await;
-    let admin = setup_admin(&app).await;
-    create_member(&app, &admin, "alice").await;
-
-    for _ in 0..5 {
-        login(&app, "root", "wrong-password").await;
-    }
-    assert_eq!(
-        login(&app, "root", ADMIN_PW).await.status,
-        StatusCode::TOO_MANY_REQUESTS
-    );
-    assert_eq!(login(&app, "alice", MEMBER_PW).await.status, StatusCode::OK);
-}
-
-#[tokio::test]
-async fn unknown_usernames_are_throttled_like_real_ones() {
-    let (app, _dir) = test_app(protected()).await;
-    setup_admin(&app).await;
-    for _ in 0..5 {
-        assert_eq!(
-            login(&app, "ghost", "whatever-pw").await.status,
-            StatusCode::UNAUTHORIZED
-        );
-    }
-    // Same 429 an existing account gets — no enumeration via the throttle.
-    assert_eq!(
-        login(&app, "ghost", "whatever-pw").await.status,
-        StatusCode::TOO_MANY_REQUESTS
-    );
-}
-
-#[tokio::test]
-async fn a_successful_login_resets_the_failure_count() {
-    let (app, _dir) = test_app(protected()).await;
-    setup_admin(&app).await;
-    for _ in 0..4 {
-        login(&app, "root", "wrong-password").await;
-    }
-    assert_eq!(login(&app, "root", ADMIN_PW).await.status, StatusCode::OK);
-    for i in 0..4 {
-        assert_eq!(
-            login(&app, "root", "wrong-password").await.status,
-            StatusCode::UNAUTHORIZED,
-            "attempt {i} after reset"
-        );
-    }
-    assert_eq!(login(&app, "root", ADMIN_PW).await.status, StatusCode::OK);
-}
-
 /// A login as if it arrived over a real socket from `peer`: the `oneshot`
 /// harness has no `ConnectInfo`, so it is injected as a request extension,
 /// which is exactly where `into_make_service_with_connect_info` puts it.
@@ -188,22 +112,25 @@ async fn login_from(app: &Router, peer: SocketAddr, username: &str, password: &s
     app.clone().oneshot(req).await.unwrap().status()
 }
 
-/// Behind a reverse proxy every client is the proxy's address. However many
-/// usernames one client sprays from it, nobody else's correct password is
-/// ever refused: the per-username buckets bound the guessing, and argon2 cost
-/// is bounded by the hashing semaphore, not by refusing the address.
+/// However many usernames are sprayed, nobody else's correct password is
+/// refused: each made-up name only spends its own per-account budget, and
+/// argon2 cost is bounded by the hashing semaphore and the per-client limit,
+/// never by refusing other accounts. (Per-account and per-device limits are
+/// covered in `tests/login_throttle.rs`.)
 #[tokio::test(flavor = "multi_thread")]
-async fn a_spray_from_a_shared_address_never_refuses_a_correct_password() {
+async fn a_spray_of_usernames_never_refuses_a_colleagues_correct_password() {
     let (app, _dir) = test_app(protected()).await;
     let admin = setup_admin(&app).await;
     create_member(&app, &admin, "alice").await;
-    let proxy: SocketAddr = "203.0.113.7:40000".parse().unwrap();
 
     // Concurrent, so the argon2 verifies really do contend for permits.
     let mut set = tokio::task::JoinSet::new();
-    for i in 0..40 {
+    for i in 0..40u8 {
         let app = app.clone();
-        set.spawn(async move { login_from(&app, proxy, &format!("ghost{i}"), "nope-nope").await });
+        let sprayer: SocketAddr = format!("198.51.100.{}:40000", i + 1).parse().unwrap();
+        set.spawn(
+            async move { login_from(&app, sprayer, &format!("ghost{i}"), "nope-nope").await },
+        );
     }
     while let Some(status) = set.join_next().await {
         assert_eq!(status.unwrap(), StatusCode::UNAUTHORIZED);
@@ -216,38 +143,6 @@ async fn a_spray_from_a_shared_address_never_refuses_a_correct_password() {
     );
     assert_eq!(
         login_from(&app, colleague, "alice", MEMBER_PW).await,
-        StatusCode::OK
-    );
-    // A fresh wrong guess is an honest 401, not a blanket address refusal.
-    assert_eq!(
-        login_from(&app, colleague, "ghost-new", "nope-nope").await,
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-/// Rotating the interface identifier inside one IPv6 /64 is still one client:
-/// it shares the per-username bucket instead of minting a fresh one per
-/// address. A different /64 is a different client.
-#[tokio::test]
-async fn ipv6_addresses_in_one_64_share_a_username_bucket() {
-    let (app, _dir) = test_app(protected()).await;
-    setup_admin(&app).await;
-    for i in 1..=5 {
-        let rotated: SocketAddr = format!("[2001:db8:1:2::{i:x}]:40000").parse().unwrap();
-        assert_eq!(
-            login_from(&app, rotated, "root", "wrong-password").await,
-            StatusCode::UNAUTHORIZED,
-            "attempt {i}"
-        );
-    }
-    let next: SocketAddr = "[2001:db8:1:2:ffff::99]:40000".parse().unwrap();
-    assert_eq!(
-        login_from(&app, next, "root", ADMIN_PW).await,
-        StatusCode::TOO_MANY_REQUESTS
-    );
-    let elsewhere: SocketAddr = "[2001:db8:1:3::1]:40000".parse().unwrap();
-    assert_eq!(
-        login_from(&app, elsewhere, "root", ADMIN_PW).await,
         StatusCode::OK
     );
 }
@@ -385,6 +280,12 @@ async fn change_password_guesses_are_throttled() {
     let locked = change_password(&app, Some(&admin), ADMIN_PW, "whatever-new").await;
     assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
     assert!(locked.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(
+        locked.json()["error"],
+        "too many failed password attempts; try again in 15 minutes"
+    );
+    // The refusal changed nothing, and it is its own counter: login is fine.
+    assert_eq!(login(&app, "root", ADMIN_PW).await.status, StatusCode::OK);
 }
 
 #[tokio::test]

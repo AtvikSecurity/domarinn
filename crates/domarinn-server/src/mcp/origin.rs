@@ -4,13 +4,13 @@
 //! malicious page resolves its own hostname to `127.0.0.1` and then talks to a
 //! local MCP server from the victim's browser.
 //!
-//! **This deliberately does not reuse [`crate::origin_allowed`].** That helper
-//! accepts any origin equal to the request's own `Host`, which is exactly what
-//! a rebinding attacker produces — the browser sends `Host: evil.example` *and*
-//! `Origin: http://evil.example`, they match, and the check passes. A CSRF
-//! defense can afford that (the cookie is `SameSite=Lax` anyway); the MCP
-//! endpoint cannot. Here the allowlist is closed and never derived from the
-//! request.
+//! **This deliberately does not reuse [`crate::csrf::origin_allowed`].** That
+//! helper accepts any origin equal to the request's own `Host`, which is
+//! exactly what a rebinding attacker produces — the browser sends
+//! `Host: evil.example` *and* `Origin: http://evil.example`, they match, and
+//! the check passes. A CSRF defense can afford that (the cookie is
+//! `SameSite=Lax` anyway); the MCP endpoint cannot. Here the allowlist is
+//! closed and never derived from the request.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +18,7 @@ use std::time::Duration;
 use axum::http::{header, HeaderValue, Method};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::{presented_origin, url_host, PresentedOrigin};
+use crate::csrf::{presented_origin, url_host, PresentedOrigin};
 
 /// Hosts always allowed when no explicit policy is configured: an operator
 /// running `domarinn server` locally should not have to configure anything to
@@ -172,7 +172,7 @@ mod tests {
         assert!(!OriginPolicy::new(None, None).permits(&with_origin("null")));
     }
 
-    /// The rebinding case `crate::origin_allowed` would let through: the
+    /// The rebinding case `crate::csrf::origin_allowed` would let through: the
     /// attacker controls both `Host` and `Origin`, so they always agree.
     #[test]
     fn a_matching_host_header_does_not_rescue_a_foreign_origin() {

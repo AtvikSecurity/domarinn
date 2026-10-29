@@ -47,9 +47,15 @@ async fn login_and_setup_set_a_hardened_session_cookie() {
     .await;
     assert_eq!(login.status, StatusCode::OK);
 
+    // The session cookie, and the device cookie marking this browser as one
+    // the account signs in from (see tests/login_throttle.rs).
     let cookies = login.set_cookies();
-    assert_eq!(cookies.len(), 1, "exactly one Set-Cookie: {cookies:?}");
+    assert_eq!(cookies.len(), 2, "session + device Set-Cookie: {cookies:?}");
     let cookie = &cookies[0];
+    let device = &cookies[1];
+    assert!(device.starts_with("domarinn_device=v1."), "{device}");
+    assert!(device.contains("Path=/api/v1/auth"), "{device}");
+    assert!(!device.contains("Secure"), "{device}");
     assert!(cookie.starts_with("domarinn_session=mses_"), "{cookie}");
     assert!(cookie.contains("HttpOnly"), "{cookie}");
     assert!(cookie.contains("SameSite=Lax"), "{cookie}");
@@ -291,6 +297,9 @@ async fn secure_flag_follows_public_url_scheme() {
     .await;
     let cookies = created.set_cookies();
     assert!(cookies[0].contains("Secure"), "{cookies:?}");
+    // The device cookie follows the same rule.
+    assert!(cookies[1].starts_with("domarinn_device="), "{cookies:?}");
+    assert!(cookies[1].contains("Secure"), "{cookies:?}");
 }
 
 #[tokio::test]

@@ -87,14 +87,19 @@ describe("LoginPage failures", () => {
   it("tells a throttled user how long to wait", async () => {
     stubServer(() =>
       json(
-        { error: "too many failed password attempts; try again in 14 minutes" },
+        {
+          error:
+            "too many failed sign-in attempts for this account from unrecognised browsers; " +
+            "try again in 14 minutes, or sign in from a browser you've used before",
+        },
         429,
         { "Retry-After": "812" },
       ),
     );
     await signIn();
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "too many failed password attempts; try again in 14 minutes",
+      "too many failed sign-in attempts for this account from unrecognised browsers; " +
+        "try again in 14 minutes, or sign in from a browser you've used before",
     );
   });
 
