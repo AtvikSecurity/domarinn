@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.6](https://github.com/AtvikSecurity/domarinn/compare/0.10.5...0.10.6) (2026-10-30)
+
+
+### Features
+
+* Gitea and Forgejo eval actions with real-forge e2e tests, plus fixes from a full UI and CLI/server audit ([#162](https://github.com/AtvikSecurity/domarinn/issues/162)) ([31883e5](https://github.com/AtvikSecurity/domarinn/commit/31883e57ddf806542f228b010110dbef5a57521e))
+* **server:** login throttling that cannot lock out the real user ([#163](https://github.com/AtvikSecurity/domarinn/issues/163)) ([284b1d7](https://github.com/AtvikSecurity/domarinn/commit/284b1d756670d61f8116d369cc0f852cb3248546))
+
+
+### Bug Fixes
+
+* **deps:** replace unmaintained serde_yaml_ng with serde-saphyr ([#154](https://github.com/AtvikSecurity/domarinn/issues/154)) ([664c3d8](https://github.com/AtvikSecurity/domarinn/commit/664c3d868f3f3840f035f0fee64c9e357b73b7b6))
+
 ## [0.10.5](https://github.com/AtvikSecurity/domarinn/compare/0.10.4...0.10.5) (2026-08-22)
 
 
