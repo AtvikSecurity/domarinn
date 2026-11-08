@@ -57,7 +57,7 @@ services:
 
   gitea-runner:
     profiles: [gitea]
-    image: docker.io/gitea/runner:5.4.0@sha256:b3f222d3290f8a48f34ce53fbb9a726d98a70dfa2e202e47c1ee09e7e7ece2dc
+    image: docker.io/gitea/runner:5.4.1@sha256:a19f8dd10e66398e77429806e4fe10587cc7e9bade450f069cf5ad525d8a2b5d
     depends_on:
       gitea:
         condition: service_healthy
