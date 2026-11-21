@@ -42,7 +42,7 @@ serde_path_to_error = "0.1"
 schemars = { version = "1.0", features = ["preserve_order", "chrono04"] }
 
 # templating
-minijinja = { version = "2", features = ["loader", "json", "builtins"] }
+minijinja = { version = "3", features = ["loader", "json", "builtins"] }
 
 # async / http
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "fs", "io-util", "signal"] }
