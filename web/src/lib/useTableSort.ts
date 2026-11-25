@@ -26,7 +26,7 @@ function sortForIn(sorting: SortingState, id: string): false | "asc" | "desc" {
 }
 
 /** URL-backed sort (`?sort=col` / `?sort=-col`) for page-level tables. */
-export function useSortParam(): TableSort {
+export function useSortParam(view?: string): TableSort {
   const [params, setParams] = useSearchParams();
   const sorting = useMemo(() => parseSort(params.get("sort")), [params]);
   const toggle = useCallback(
@@ -37,11 +37,14 @@ export function useSortParam(): TableSort {
         (prev) =>
           mergeParams(prev, {
             sort: serializeSort(cycleSort(parseSort(prev.get("sort")), id)),
+            // A legacy sort link may be the only reason the table is visible.
+            // Keep that view when the next click clears the sort.
+            ...(view ? { view } : {}),
           }),
         { replace: true },
       );
     },
-    [setParams],
+    [setParams, view],
   );
   return useMemo(
     () => ({ sorting, sortFor: (id) => sortForIn(sorting, id), toggle }),

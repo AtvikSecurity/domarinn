@@ -36,7 +36,7 @@ test.describe("Run sets", () => {
     await expect(page.getByRole("heading", { name: "regression" })).toBeVisible();
 
     // The suite's runs are listed here, and lead into the run itself.
-    await page.getByRole("link", { name: "checkout-agent-regression-12" }).click();
+    await page.getByRole("link", { name: "checkout-agent-regression-12", exact: true }).click();
     await expect(page).toHaveURL(/\/runs\/checkout-agent-regression-12$/);
 
     // Back up the trail: the breadcrumb is the only way home from a suite.

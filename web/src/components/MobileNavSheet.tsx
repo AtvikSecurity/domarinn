@@ -4,7 +4,7 @@ import { NavLink } from "react-router";
 import type { NavItem } from "@/lib/nav";
 import { cn } from "@/lib/cn";
 
-/** Matches the `md` breakpoint the header strip appears at. */
+/** Matches the `md` breakpoint the desktop sidebar appears at. */
 const DESKTOP_QUERY = "(min-width: 768px)";
 
 const MenuIcon = () => (
@@ -37,19 +37,7 @@ const CloseIcon = () => (
   </svg>
 );
 
-/**
- * The primary navigation, below the `md` breakpoint where the header strip is
- * hidden.
- *
- * Anchored right, because `drawer-in` in index.css animates from `translateX(100%)`
- * and is shared with the two case drawers; a left-hand sheet would need its own
- * keyframe for no gain. Living inside the header's existing `ml-auto shrink-0`
- * cluster also keeps it out of the flex row that the width comment in Layout
- * warns about.
- *
- * The header nav is `hidden md:flex` rather than unmounted, so it is still in
- * the accessibility tree — hence "Main menu" here, not a second "Primary".
- */
+/** Mobile counterpart to the desktop rail, with space for a search field. */
 export function MobileNavSheet({
   nav,
   children,
@@ -64,7 +52,7 @@ export function MobileNavSheet({
   const [open, setOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
-  // Widening past the breakpoint reveals the strip and hides the trigger, but
+  // Widening past the breakpoint reveals the sidebar and hides the trigger, but
   // Radix knows nothing about media queries — the sheet would be left open
   // with a live focus trap and no visible way out. Note the fix is to close
   // it, NOT to hide the content at `md`: that would leave the trap and the

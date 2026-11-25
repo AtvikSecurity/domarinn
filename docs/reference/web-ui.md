@@ -7,7 +7,7 @@ beside it discusses what the shot shows. -->
 
 # The web UI
 
-`domarinn server` serves a React single-page app at the web root, out of the **same binary** as the JSON API — there is no second thing to deploy. Client-side routing means the service wants its own hostname, not a path prefix. See [Server](server.md) for auth and environment variables, and [Self-hosting](../guides/self-host.md) for getting it running.
+`domarinn server` serves a React single-page app at the web root, out of the **same binary** as the JSON API — there is no second thing to deploy. The desktop sidebar keeps Overview, Runs, Sets, and Cache one click away. Collapse it to icons when you need more width; the browser remembers the choice. On phones, open the menu for navigation and search. Client-side routing means the service wants its own hostname, not a path prefix. See [Server](server.md) for auth and environment variables, and [Self-hosting](../guides/self-host.md) for getting it running.
 
 | Path                          | Page | What it does |
 |-------------------------------|------|--------------|
@@ -41,7 +41,7 @@ Every image below is a real capture, not a mock-up: `mise run screenshots` start
 ![The domarinn sign-in page](../assets/screenshots/login-light.png#only-light)
 ![The domarinn sign-in page](../assets/screenshots/login-dark.png#only-dark)
 
-The server is **closed by default**, so this is the first page an unauthenticated visitor lands on whatever URL they asked for. The card takes a username and password and mints a 30-day session cookie; the header strip on the right reports the build and the active auth mode (`v0.4.0 · closed` here), which is the fastest way to confirm which mode a deployment actually came up in.
+The server is **closed by default**, so this is the first page an unauthenticated visitor lands on whatever URL they asked for. The card takes a username and password and mints a 30-day session cookie; after sign-in, Settings → Server reports the build and the active authentication mode.
 
 Nothing else appears on this page unless you configured it. Each OIDC or SAML provider adds a "Continue with …" button below the password form, and an SSO-only account cannot use the form at all. On a fresh install with zero users this route redirects to `/setup` instead, which creates the first admin.
 
@@ -67,15 +67,15 @@ One card is worth a second look: `(no project) / (no suite)`. That is [example 3
 ![The runs list with its filter bar and per-suite groups](../assets/screenshots/runs-light.png#only-light)
 ![The runs list with its filter bar and per-suite groups](../assets/screenshots/runs-dark.png#only-dark)
 
-This is the page you live in. Runs are grouped by suite, newest first inside each group, with a pass-rate sparkline per group — the `examples / smoke` group at the bottom has two runs, so it has a line to draw; the single-run groups above it show one dot.
+Runs opens in **Activity**, a newest-first feed across all suites. Scan the origin, branch, age, and result, then open the run or its suite directly. Switch to **Table** (shown above) to group runs by suite, inspect exact fields, choose columns, or select two runs for comparison. Switching views keeps your filters.
 
 The filter bar spans project, suite, tag, branch, origin (all / CI / local), actor, a date window, status, and cached runs. **Every filter lives in the URL**, which is the point of the design: the view you are looking at is a link you can paste into an incident channel, and "runs of `checkout-assistant` on `main` that failed since Monday" is a bookmark rather than a saved search. The `Clear 1 filter` affordance next to the controls tells you the current view is not the default one.
 
-Each row carries the run ULID (with a copy button), when it ran, who ran it (`local` origin, actor `demo`), the branch and short commit it ran against, the pass rate, and the case, token, cost and duration totals. A `cached` badge means every provider response in that run was replayed rather than paid for.
+In Table, each row carries the run ULID (with a copy button), when it ran, who ran it (`local` origin, actor `demo`), the branch and short commit it ran against, the pass rate, and the case, token, cost and duration totals. A `cached` badge means every provider response in that run was replayed rather than paid for.
 
 /// note | Why this shot has a filter set
 
-By default the list **hides fully-cached runs** — every provider call served from cache, nothing paid for — and says so in one line: `N fully cached runs hidden · Show`. A run that hit the provider even once is not a replay and stays. This capture is taken at `/runs?cached=all` so you can see the whole seeded stream at once; on a real server the default keeps re-runs out of your way.
+By default the list **hides fully-cached runs** — every provider call served from cache, nothing paid for — and says so in one line: `N fully cached runs hidden · Show`. A run that hit the provider even once is not a replay and stays. This capture is taken at `/runs?view=table&cached=all` so you can see the whole seeded stream at once; on a real server the default keeps re-runs out of your way.
 
 The verdict does not enter into it. An earlier rule spared replays that had failed, on the grounds that grader verdicts are not cached so a re-run could still surface a regression — but [graders have shared one cache and one key space with provider calls since 0.5.0](../concepts/caching.md), so a fully-cached run replayed its grading too and its verdict said nothing new. What the exception did do was fire on every run of any suite whose failures are not rare, leaving those suites with no filtering at all.
 
@@ -94,7 +94,7 @@ Two places never hide cached runs, whatever you have chosen. The overview's suit
 ![One run: provenance, totals, and every case](../assets/screenshots/run-detail-light.png#only-light)
 ![One run: provenance, totals, and every case](../assets/screenshots/run-detail-dark.png#only-dark)
 
-A single run, with its identity on top: the ULID as the heading, then the line that makes the result reproducible — when it ran, `branch@commit`, the actor, the host, which credential uploaded it, and the domarinn version that produced it. If you only ever read one line on this page in an incident, read that one.
+A single run, with its identity on top. **View suite** opens its history and baseline. The heading shows the ULID, followed by the line that makes the result reproducible — when it ran, `branch@commit`, the actor, the host, which credential uploaded it, and the domarinn version that produced it. If you only ever read one line on this page in an incident, read that one.
 
 The card strip is the run's whole story in seven numbers: pass rate, case count, the `pass / fail / err` split kept as three separate figures (a `fail` and an `error` mean different things and gate differently), tokens in and out, cost, wall-clock duration, and how much of it came from the cache. `COST` reads `–` here rather than `$0.00`, which is the honest answer for a run whose model has no rate: [cost not reported is not the same as cost zero](providers.md#pricing).
 
@@ -159,7 +159,7 @@ Note what the two red rows do *not* do: `failing-gate` at 33.3% and `errors-and-
 ![One suite: its record, its runs, and the access button](../assets/screenshots/set-suite-light.png#only-light)
 ![One suite: its record, its runs, and the access button](../assets/screenshots/set-suite-dark.png#only-dark)
 
-A suite's whole record on one page: how many runs, the newest run's pass rate, the case total with the share that passed across all of them, when it last ran, and a pass-rate trend as soon as there are two runs to draw a line between.
+A suite's whole record on one page: how many runs, the newest run's pass rate, the case total with the share that passed across all of them, when it last ran, and an interactive **Pass-rate history**. The chart shows up to 16 recent loaded runs under the current cached-run filter. Each point opens its run; circles and a line mark CI results, while diamonds mark local results. Runs are evenly spaced in run order, not by elapsed time. Runs without scored cases stay in the table but are not plotted as 0%.
 
 Below that, the suite's runs, under the same cached default as everywhere else — this shot is taken at `?cached=all`, which is why both replays are listed and both carry a `cached` badge. Whenever the page is hiding some, it says so on the line above the table rather than letting the rows silently disagree with the `RUNS 2` beside them. Tick two and `Compare 2 runs` opens them in [Compare](#compare--mcnemar), older as base; the per-row `Compare` link takes a run against the one before it, which is why the oldest row has a `—` instead. `View in Runs →` hands the same project and suite to the runs list, carrying this page's own cached view through so the stream opens showing what the table did.
 

@@ -366,7 +366,15 @@ export function RunDetail() {
             </div>
           </div>
 
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            {r.project && r.suite ? (
+              <Link
+                to={suitePath(r.project, r.suite)}
+                className="rounded-sm px-2 py-1 text-sm font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                View suite
+              </Link>
+            ) : null}
             {/* Admin-only, and behind a confirm: retention is off by default,
                 so without this a run pushed by mistake was permanent. */}
             {auth.canAdmin ? (

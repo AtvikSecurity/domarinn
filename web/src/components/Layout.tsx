@@ -6,7 +6,6 @@ import {
   useLocation,
   useNavigate,
 } from "react-router";
-import { useMeta } from "@/api/queries";
 import { isMockEnabled } from "@/api/client";
 import { useAuth } from "@/auth/AuthProvider";
 import { onUnauthorized } from "@/lib/auth";
@@ -14,6 +13,7 @@ import { cn } from "@/lib/cn";
 import { navItems } from "@/lib/nav";
 import { Button } from "./ui/Button";
 import { Chip } from "./ui/Chip";
+import { DesktopNav } from "./DesktopNav";
 import { MobileNavSheet } from "./MobileNavSheet";
 import { SearchBar } from "./SearchBar";
 import { ThemeToggleButton } from "./ThemeToggle";
@@ -101,7 +101,6 @@ function LogoutButton() {
 }
 
 export function Layout() {
-  const meta = useMeta();
   const { view } = useAuth();
   const location = useLocation();
   // A page can claim the shell's remaining height instead of scrolling in it.
@@ -115,71 +114,29 @@ export function Layout() {
     return <Navigate to="/setup" replace />;
   }
 
-  // Closed mode + anonymous: the only reachable page is /login, so a full nav
-  // would show dead links that bounce straight back. Render a bare header.
-  const chromeOnly = view.needsLogin;
-
-  const nav = navItems(view);
+  const publicPage = location.pathname === "/login" || location.pathname === "/setup";
+  const nav = publicPage ? [] : navItems(view);
+  const showWorkspace = nav.length > 0;
 
   return (
-    // `h-dvh` + a non-scrolling root: the shell owns the viewport, so a page
-    // that fills it (see `useFillViewport`) can hand its own scroller the exact
-    // remaining height instead of nesting one scrollport inside another.
+    // Pages such as run detail use the remaining height for their own grid.
     <div className="flex h-dvh flex-col overflow-hidden">
-      {/* Same fill as the page body. The bar is a flex sibling of `<main>`, not
-          an overlay, so nothing ever scrolls beneath it — the translucency and
-          `backdrop-blur` this used to carry had nothing to act on and only
-          composited `--surface` against `--bg`. */}
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:ring-2 focus:ring-ring">
+        Skip to content
+      </a>
       <header className="z-30 shrink-0 border-b border-border bg-bg">
-        {/* `min-w-0` on the flex children plus a scrollable nav: with neither,
-            the nav and the right-hand cluster refused to shrink and pushed the
-            document to 508px wide at a 390px viewport — the one place the page
-            body itself scrolled sideways. Still load-bearing between `md` and
-            a narrow desktop; below `md` the two elements that were fighting
-            for that width are no longer rendered at all, and the menu sheet
-            carries them instead. */}
-        <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-3 px-4 sm:gap-4 sm:px-6">
+        <div className="flex h-14 w-full items-center gap-3 px-4 sm:gap-4 sm:px-6">
           <NavLink
             to="/"
-            className="flex shrink-0 items-center gap-2 font-semibold"
+            aria-label="domarinn"
+            className="flex shrink-0 items-center gap-2 font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:w-36 lg:w-40"
           >
             <Logo />
-            <span className="hidden tracking-tight sm:inline">domarinn</span>
+            <span className="hidden text-sm tracking-tight min-[360px]:inline">domarinn</span>
           </NavLink>
-          {/* A horizontally scrolling strip has no affordance saying it
-              scrolls, so on a phone the later items — API keys, Admin,
-              Settings — simply vanished off the right edge. Below `md` the
-              menu sheet owns navigation instead. */}
-          <nav
-            className="hidden min-w-0 items-center gap-1 overflow-x-auto md:flex"
-            aria-label="Primary"
-          >
-            {nav.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                className={({ isActive }) =>
-                  cn(
-                    "shrink-0 whitespace-nowrap rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:px-3",
-                    isActive
-                      ? "bg-surface-2 text-fg"
-                      : "text-muted hover:bg-surface-2 hover:text-fg",
-                  )
-                }
-              >
-                {item.label}
-              </NavLink>
-            ))}
-          </nav>
-          {chromeOnly ? null : <SearchBar />}
+          {showWorkspace && <SearchBar />}
           <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
             {isMockEnabled() ? <Chip tone="amber">mock data</Chip> : null}
-            {meta.data ? (
-              <span className="hidden text-xs text-muted sm:inline">
-                v{meta.data.version} · {meta.data.auth_mode}
-              </span>
-            ) : null}
             {view.authenticated ? (
               <div className="flex items-center gap-2">
                 <span className="hidden items-center gap-1.5 text-sm sm:flex">
@@ -208,12 +165,7 @@ export function Layout() {
               </NavLink>
             )}
             <ThemeToggleButton />
-            {chromeOnly ? null : (
-              // Search is the bigger phone gap than the nav strip was: the
-              // header bar is `hidden md:flex`, so below `md` there was no way
-              // to search at all. The header instance stays mounted but can
-              // never be focused, so it never opens its panel and the two
-              // cannot both claim the results element's id.
+            {showWorkspace && (
               <MobileNavSheet nav={nav}>
                 {(close) => <SearchBar variant="sheet" onNavigate={close} />}
               </MobileNavSheet>
@@ -221,22 +173,25 @@ export function Layout() {
           </div>
         </div>
       </header>
-      <main
-        className={cn(
-          "mx-auto w-full max-w-[1600px] min-h-0 flex-1 px-4 py-6 sm:px-6",
-          // Filling pages manage their own scrolling; everything else scrolls
-          // here, in exactly one place. Below `lg` the fill is dropped: the
-          // run header stacks into three rows of tiles there and would leave
-          // the grid no height, with no page scroll to reach it.
-          fill
-            ? "overflow-y-auto lg:flex lg:flex-col lg:overflow-hidden"
-            : "overflow-y-auto",
-        )}
-      >
-        <FillViewportProvider value={setFill}>
-          <Outlet />
-        </FillViewportProvider>
-      </main>
+      <div className="flex min-h-0 flex-1">
+        {showWorkspace && <DesktopNav nav={nav} />}
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className={cn(
+            "mx-auto w-full max-w-[1600px] min-h-0 min-w-0 flex-1 px-4 py-6 sm:px-6",
+            // Filling pages manage their grid's scroll. On narrow screens,
+            // the stacked header leaves too little height, so main scrolls.
+            fill
+              ? "overflow-y-auto lg:flex lg:flex-col lg:overflow-hidden"
+              : "overflow-y-auto",
+          )}
+        >
+          <FillViewportProvider value={setFill}>
+            <Outlet />
+          </FillViewportProvider>
+        </main>
+      </div>
     </div>
   );
 }

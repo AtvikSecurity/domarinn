@@ -114,7 +114,7 @@ test.describe("Columns on a real <table>", () => {
   test("the runs list hides a column and its cells together", async ({
     page,
   }) => {
-    await page.goto("/runs?cached=all");
+    await page.goto("/runs?view=table&cached=all");
     await expect(
       page.getByRole("columnheader", { name: "Tokens" }).first(),
     ).toBeVisible();
@@ -139,7 +139,7 @@ test.describe("Columns on a real <table>", () => {
   });
 
   test("a runs column resizes and the width persists", async ({ page }) => {
-    await page.goto("/runs?cached=all");
+    await page.goto("/runs?view=table&cached=all");
     const before = await headerWidth(page, "when");
     await dragHandle(page, "when", 70);
     await expect.poll(() => headerWidth(page, "when")).toBeGreaterThan(before);
