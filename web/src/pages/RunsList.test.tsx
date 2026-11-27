@@ -14,7 +14,7 @@ function renderRunsList() {
     // a provider ancestor.
     <QueryClientProvider client={client}>
       <TooltipProvider>
-        <MemoryRouter initialEntries={["/"]}>
+        <MemoryRouter initialEntries={["/runs?view=table"]}>
           <RunsList />
         </MemoryRouter>
       </TooltipProvider>

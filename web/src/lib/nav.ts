@@ -5,6 +5,8 @@ export interface NavItem {
   label: string;
   /** Match the path exactly. Only "/" needs it, since every route starts with it. */
   end?: boolean;
+  /** Belongs with the workspace utilities rather than result browsing. */
+  utility?: boolean;
 }
 
 /**
@@ -27,8 +29,8 @@ export function navItems(view: AuthView): NavItem[] {
   ];
   // Keys are per-identity; offering them to someone who has not signed in
   // would show a page that can only tell them to sign in.
-  if (!view.promptLogin) items.push({ to: "/keys", label: "API keys" });
-  if (view.canAdmin) items.push({ to: "/admin", label: "Admin" });
-  items.push({ to: "/settings", label: "Settings" });
+  if (!view.promptLogin) items.push({ to: "/keys", label: "API keys", utility: true });
+  if (view.canAdmin) items.push({ to: "/admin", label: "Admin", utility: true });
+  items.push({ to: "/settings", label: "Settings", utility: true });
   return items;
 }

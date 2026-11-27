@@ -70,13 +70,16 @@ test.describe("Run detail", () => {
   test("the status column stays pinned while the grid scrolls right", async ({
     page,
   }) => {
+    await page.setViewportSize({ width: 1080, height: 800 });
     await page.goto(`/runs/${MONEY_RUN}`);
     const grid = page.getByRole("grid");
     await expect(grid).toBeVisible();
 
     const status = page.getByRole("columnheader", { name: "Status" });
     const before = await status.boundingBox();
+    expect(before?.x).toBe((await grid.boundingBox())?.x);
     await grid.evaluate((el) => el.scrollBy(400, 0));
+    await expect.poll(() => grid.evaluate((el) => el.scrollLeft)).toBeGreaterThan(50);
     await expect
       .poll(async () => (await status.boundingBox())?.x)
       .toBe(before?.x);

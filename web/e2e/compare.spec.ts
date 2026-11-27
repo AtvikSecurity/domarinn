@@ -11,7 +11,7 @@ test.describe("Compare view", () => {
   test("reached from the runs list, the compare page labels the older run as base", async ({
     page,
   }) => {
-    await page.goto("/runs");
+    await page.goto("/runs?view=table");
     await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
 
     // Select the baseline (older) and money (newer) runs and follow the

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { MONEY_RUN } from "./helpers";
 
 /**
  * Deleting a run. The endpoint has existed since the server did and nothing
@@ -10,7 +11,7 @@ test.describe("Delete run", () => {
     page,
   }) => {
     await page.goto("/runs?cached=all");
-    await page.locator("tbody tr td:nth-child(2) a").first().click();
+    await page.getByRole("list", { name: "Run activity" }).getByRole("link", { name: MONEY_RUN, exact: true }).click();
     await expect(page).toHaveURL(/\/runs\//);
 
     const trigger = page.getByRole("button", { name: "Delete run" });
@@ -28,7 +29,7 @@ test.describe("Delete run", () => {
 
   test("cancelling leaves the run alone", async ({ page }) => {
     await page.goto("/runs?cached=all");
-    await page.locator("tbody tr td:nth-child(2) a").first().click();
+    await page.getByRole("list", { name: "Run activity" }).getByRole("link", { name: MONEY_RUN, exact: true }).click();
     const runUrl = page.url();
 
     await page.getByRole("button", { name: "Delete run" }).click();

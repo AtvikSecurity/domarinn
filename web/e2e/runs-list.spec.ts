@@ -8,7 +8,7 @@ const SMOKE_RUN = "checkout-agent-smoke-08";
 
 test.describe("Runs list", () => {
   test("renders suites grouped with pass-rate, and lists runs", async ({ page }) => {
-    await page.goto("/runs");
+    await page.goto("/runs?view=table");
 
     // Page shell.
     await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
@@ -34,7 +34,7 @@ test.describe("Runs list", () => {
   test("clicking a header sorts the runs and round-trips through ?sort", async ({
     page,
   }) => {
-    await page.goto("/runs");
+    await page.goto("/runs?view=table");
     await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
 
     // Every suite group repeats the same header row; the sort is page-level,
@@ -57,13 +57,15 @@ test.describe("Runs list", () => {
   test("deep-loads a sort from the URL", async ({ page }) => {
     await page.goto("/runs?sort=-cost");
     await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
-    await expect(
-      page.getByRole("columnheader", { name: /Cost/ }).first(),
-    ).toHaveAttribute("aria-sort", "descending");
+    const cost = page.getByRole("columnheader", { name: /Cost/ }).first();
+    await expect(cost).toHaveAttribute("aria-sort", "descending");
+    await cost.getByRole("button").click();
+    await expect(cost).toHaveAttribute("aria-sort", "none");
+    await expect(page).toHaveURL(/\/runs\?view=table$/);
   });
 
   test("the suite group header links to that set", async ({ page }) => {
-    await page.goto("/runs");
+    await page.goto("/runs?view=table");
     // Every group is named by the set it belongs to; that name is the only
     // route from the stream back up into /sets.
     await page
@@ -74,7 +76,7 @@ test.describe("Runs list", () => {
   });
 
   test("the whole run row navigates to that run", async ({ page }) => {
-    await page.goto("/runs");
+    await page.goto("/runs?view=table");
     const row = page
       .getByRole("row")
       .filter({ has: page.getByRole("link", { name: MONEY_RUN, exact: true }) });
@@ -84,7 +86,7 @@ test.describe("Runs list", () => {
   });
 
   test("selecting and comparing runs never navigates to a run", async ({ page }) => {
-    await page.goto("/runs");
+    await page.goto("/runs?view=table");
     const row = page
       .getByRole("row")
       .filter({ has: page.getByRole("link", { name: MONEY_RUN, exact: true }) });
@@ -93,7 +95,7 @@ test.describe("Runs list", () => {
     // row's navigation out from under the selection.
     await row.getByRole("checkbox").check();
     await expect(row.getByRole("checkbox")).toBeChecked();
-    await expect(page).toHaveURL(/\/runs$/);
+    await expect(page).toHaveURL(/\/runs\?view=table$/);
 
     // And the per-row Compare link goes to the comparison, not the run.
     await row.getByRole("link", { name: "Compare" }).click();
@@ -101,7 +103,7 @@ test.describe("Runs list", () => {
   });
 
   test("marks the suite's pinned baseline run with a chip", async ({ page }) => {
-    await page.goto("/runs");
+    await page.goto("/runs?view=table");
 
     // The default baseline for checkout-agent/regression is the run before the
     // latest (see BASELINE_BY_SUITE in src/mocks/fixtures.ts) — its row carries
@@ -115,7 +117,7 @@ test.describe("Runs list", () => {
   });
 
   test("project filter narrows the list and writes the URL param", async ({ page }) => {
-    await page.goto("/runs");
+    await page.goto("/runs?view=table");
 
     // Runs from every project are present initially.
     await expect(

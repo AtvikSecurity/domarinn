@@ -40,7 +40,16 @@ test.describe("Mobile navigation", () => {
     });
   }
 
-  test("the header strip is replaced by a menu", async ({ page }) => {
+  test("the menu is on screen at 320px, even with the mock badge", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 720 });
+    await page.goto("/runs");
+    await expect(page.getByRole("list", { name: "Run activity" })).toBeVisible();
+    const banner = page.getByRole("banner");
+    expect(await banner.evaluate((el) => el.scrollWidth)).toBe(320);
+    await expect(banner.getByRole("button", { name: "Open menu" })).toBeInViewport({ ratio: 1 });
+  });
+
+  test("the desktop sidebar is replaced by a menu", async ({ page }) => {
     await page.goto("/runs");
     // A scrolling strip with no scroll affordance silently hid API keys,
     // Admin and Settings off the right edge.
@@ -74,11 +83,7 @@ test.describe("Mobile navigation", () => {
 
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    expect(
-      await page.evaluate(() =>
-        document.activeElement?.getAttribute("aria-label"),
-      ),
-    ).toBe("Open menu");
+    await expect(page.getByRole("button", { name: "Open menu" })).toBeFocused();
   });
 
   test("the menu carries the search that the header cannot show here", async ({

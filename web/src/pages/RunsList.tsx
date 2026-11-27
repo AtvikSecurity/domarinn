@@ -39,6 +39,8 @@ import { ErrorState, EmptyState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { RunOriginCell } from "@/components/RunOriginCell";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import { RunActivity } from "./runs/RunActivity";
 
 /** From a pair of selected run ids, resolve which is base (older) / head (newer). */
 function comparePair(
@@ -140,7 +142,10 @@ export function RunsList() {
     () => q.data?.pages.flatMap((p) => p.runs) ?? [],
     [q.data],
   );
-  const groups = useMemo(() => groupRuns(runs), [runs]);
+  const requestedView = params.get("view");
+  // Existing shared sort URLs used to open directly on the grouped tables.
+  const tableView = requestedView === "table" || (requestedView !== "activity" && params.has("sort"));
+  const groups = useMemo(() => tableView ? groupRuns(runs) : [], [runs, tableView]);
   // Present only on the first page of the hidden view; the toggle keeps the
   // suppression discoverable and one click away.
   const cachedHidden = q.data?.pages[0]?.cached_hidden ?? 0;
@@ -150,15 +155,25 @@ export function RunsList() {
   // One `?sort=` for the page: every suite group is the same table repeated,
   // so a sort applies to all of them (within each group — group order stays
   // most-recently-active first either way).
-  const sort = useSortParam();
+  const sort = useSortParam("table");
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">Eval runs</h1>
-        <p className="text-sm text-muted">
-          Browse runs grouped by suite. Filters live in the URL and are shareable.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Eval runs</h1>
+          <p className="mt-0.5 text-sm text-muted">
+            {tableView ? "Compare runs within each suite." : "Recent runs across projects, newest first."}
+          </p>
+        </div>
+        <SegmentedControl
+          ariaLabel="Runs view"
+          options={[{ value: "activity", label: "Activity" }, { value: "table", label: "Table" }]}
+          value={tableView ? "table" : "activity"}
+          onChange={(view) => {
+            if ((view === "table") !== tableView) setParams(mergeParams(params, { view }));
+          }}
+        />
       </div>
 
       <RunsFilterBar />
@@ -173,7 +188,7 @@ export function RunsList() {
             setParams(mergeParams(params, { cached: next }), { replace: true })
           }
         />
-        <div className="flex items-center gap-3">
+        {tableView && <div className="flex items-center gap-3">
           {/* The list is cursor paginated, so a client sort can only order
               what is loaded — say so whenever more pages remain. */}
           {sort.sorting.length > 0 && q.hasNextPage ? (
@@ -189,22 +204,22 @@ export function RunsList() {
             }
             onReset={() => resetColumns(RUNS_TABLE_ID)}
           />
-        </div>
+        </div>}
       </div>
 
       {q.isPending ? (
         <CenteredSpinner label="Loading runs…" />
       ) : q.isError ? (
         <ErrorState error={q.error} onRetry={() => q.refetch()} />
-      ) : groups.length === 0 ? (
+      ) : runs.length === 0 ? (
         <EmptyState title="No runs match these filters">
           Try clearing filters or uploading a run.
         </EmptyState>
       ) : (
         <div className="space-y-6">
-          {groups.map((g) => (
+          {tableView ? groups.map((g) => (
             <SuiteGroup key={g.key} group={g} sort={sort} />
-          ))}
+          )) : <RunActivity runs={runs} />}
           {q.hasNextPage ? (
             <div className="flex justify-center">
               <Button

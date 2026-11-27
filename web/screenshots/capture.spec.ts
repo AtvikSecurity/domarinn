@@ -86,7 +86,7 @@ for (const theme of THEMES) {
       // therefore two suites and a "14 fully cached runs hidden" line, which
       // documents the seed rather than the page. The filter lives in the URL,
       // which is what the page itself says about its filters.
-      await page.goto("/runs?cached=all");
+      await page.goto("/runs?view=table&cached=all");
       await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
       await shoot(page, "runs", theme);
     });

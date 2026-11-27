@@ -23,7 +23,7 @@ test.describe("Origin + actor filters", () => {
   test("origin=ci hides developer runs and round-trips through the URL", async ({
     page,
   }) => {
-    await page.goto("/runs");
+    await page.goto("/runs?view=table");
     await expect(page.getByRole("heading", { name: "Eval runs" })).toBeVisible();
     // Precondition: the unfiltered list holds both kinds, so what follows
     // proves a filter rather than an already-empty set.
@@ -37,7 +37,7 @@ test.describe("Origin + actor filters", () => {
   });
 
   test("origin=local hides CI runs", async ({ page }) => {
-    await page.goto("/runs?origin=local");
+    await page.goto("/runs?view=table&origin=local");
     await expect(page.getByRole("radio", { name: "Local" })).toBeChecked();
 
     await expect(rows(page).getByText("CI", { exact: true })).toHaveCount(0);
@@ -47,7 +47,7 @@ test.describe("Origin + actor filters", () => {
   test("a deep-linked actor filter is reflected in the control and the rows", async ({
     page,
   }) => {
-    await page.goto("/runs?actor=alice");
+    await page.goto("/runs?view=table&actor=alice");
     await expect(page.getByLabel("Actor")).toHaveValue("alice");
 
     await expect(rows(page).getByText("alice", { exact: true }).first()).toBeVisible();
@@ -70,7 +70,7 @@ test.describe("Origin + actor filters", () => {
     // `git_dirty` has been a stored column since the first migration and was
     // rendered nowhere. It is the one signal that says a result cannot be
     // reproduced from the commit shown beside it.
-    await page.goto("/runs?cached=all");
+    await page.goto("/runs?view=table&cached=all");
     await expect(page.getByLabel("dirty worktree").first()).toBeVisible();
   });
 });

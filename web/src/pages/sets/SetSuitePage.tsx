@@ -20,7 +20,7 @@ import { NotFound } from "@/components/NotFound";
 import { EmptyState, ErrorState } from "@/components/States";
 import { PassRateBadge, RateBadge } from "@/components/PassRateBadge";
 import { RunOriginCell } from "@/components/RunOriginCell";
-import { Sparkline } from "@/components/Sparkline";
+import { SuiteRunHistory } from "./SuiteRunHistory";
 import { previousRun } from "@/lib/compare";
 import { hiddenByCachedExclude, isFullyCached, resolveCached } from "@/lib/cached";
 import { useCachedPref } from "@/lib/cachedPref";
@@ -272,8 +272,8 @@ export function SetSuitePage() {
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatBlock label="Runs">{formatInt(detail.run_count)}</StatBlock>
-          <StatBlock label="Latest pass rate">
-            <RateBadge rate={detail.latest_pass_rate} title="Newest run" />
+          <StatBlock label="Latest run" sub="Passed / all cases">
+            <RateBadge rate={detail.latest_pass_rate} title="Passes divided by all cases in the newest run, including skipped cases" />
           </StatBlock>
           <StatBlock
             label="Cases"
@@ -294,19 +294,6 @@ export function SetSuitePage() {
           </StatBlock>
         </div>
 
-        {detail.sparkline.length > 1 ? (
-          <div className="mt-4 flex items-center gap-3">
-            <span className="text-[11px] text-muted">pass-rate trend</span>
-            <Sparkline
-              values={detail.sparkline}
-              min={0}
-              max={1}
-              width={160}
-              height={30}
-              title={`Pass rate trend for ${suite}`}
-            />
-          </div>
-        ) : null}
       </Card>
 
       <section className="space-y-3">
@@ -386,6 +373,7 @@ export function SetSuitePage() {
           <EmptyState title="No runs in this suite yet" />
         ) : (
           <>
+            <SuiteRunHistory runs={runs} />
             <Card padding="flush">
               {/* `relative`: contains the `sr-only` column headers, which are
                   `position: absolute` and escape a scroller that is not a

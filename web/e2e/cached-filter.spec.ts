@@ -36,12 +36,12 @@ test.describe("Cached-runs filter", () => {
     // One click reveals them, encoded in the shareable URL.
     await page.getByRole("button", { name: "Show", exact: true }).click();
     await expect(page).toHaveURL(/cached=all/);
-    const cachedRow = page.getByRole("row").filter({
+    const cachedRow = page.getByRole("listitem").filter({
       has: page.getByRole("link", { name: CANARY_CACHED, exact: true }),
     });
     await expect(cachedRow).toBeVisible();
     // Revealed cached rows are visibly labeled.
-    await expect(cachedRow.getByText("cached", { exact: true })).toBeVisible();
+    await expect(cachedRow.getByText("Cached", { exact: true })).toBeVisible();
   });
 
   // The rule this feature originally shipped with — hide fully cached *and
@@ -57,10 +57,10 @@ test.describe("Cached-runs filter", () => {
     // It is a replay that failed, not a replay that passed: revealing it shows
     // both the `cached` label and a pass rate short of 100%.
     await page.goto("/runs?cached=all");
-    const row = page.getByRole("row").filter({
+    const row = page.getByRole("listitem").filter({
       has: page.getByRole("link", { name: GAPS_CACHED_FAILING, exact: true }),
     });
-    await expect(row.getByText("cached", { exact: true })).toBeVisible();
+    await expect(row.getByText("Cached", { exact: true })).toBeVisible();
     await expect(row.getByText("100.0%")).toHaveCount(0);
   });
 

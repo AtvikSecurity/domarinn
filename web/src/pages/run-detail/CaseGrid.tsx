@@ -567,7 +567,8 @@ export function CaseGrid({
                     "relative min-w-0 px-1",
                     // The pinned cell must carry its own background or the
                     // columns scrolling underneath show through it.
-                    s.sticky && "sticky left-0 z-10 bg-surface-2",
+                    // Paint the row's left gutter too, retaining the text inset.
+                    s.sticky && "sticky left-0 z-10 -ml-3 flex items-center self-stretch bg-surface-2 pl-4",
                   )}
                   role="columnheader"
                   aria-sort={
@@ -677,7 +678,7 @@ export function CaseGrid({
                       className={cn(
                         "min-w-0 px-1",
                         spec(cell.column.id).sticky &&
-                          "sticky left-0 z-10 bg-inherit",
+                          "sticky left-0 z-10 -ml-3 flex items-center self-stretch bg-inherit pl-4",
                       )}
                       role="gridcell"
                     >
