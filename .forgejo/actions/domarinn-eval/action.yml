@@ -504,7 +504,7 @@ runs:
     - name: Upload results
       if: ${{ always() && steps.eval.outputs.results-path != '' }}
       continue-on-error: true
-      uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4 (v4.3.1, GHES check disabled) # pin to SHA
+      uses: https://data.forgejo.org/forgejo/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1 (v4.3.1, GHES check disabled) # pin to SHA
       with:
         name: ${{ inputs.artifact-name }}
         path: |
