@@ -35,7 +35,7 @@
     "react-markdown": "^10.1.0",
     "react-router": "^8.5.3",
     "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.1"
   },
   "devDependencies": {
     "@conventional-commits/parser": "^0.4.1",
