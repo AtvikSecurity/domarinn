@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.7](https://github.com/AtvikSecurity/domarinn/compare/0.10.6...0.10.7) (2026-11-28)
+
+
+### Features
+
+* **web:** streamline workspace navigation and run history ([#172](https://github.com/AtvikSecurity/domarinn/issues/172)) ([2641323](https://github.com/AtvikSecurity/domarinn/commit/26413236a0dfb73eb63bdb42790be5b5a8af2dd9))
+
 ## [0.10.6](https://github.com/AtvikSecurity/domarinn/compare/0.10.5...0.10.6) (2026-11-03)
 
 
